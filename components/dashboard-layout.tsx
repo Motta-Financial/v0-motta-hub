@@ -15,9 +15,8 @@ import {
   Settings,
   Menu,
   Inbox,
-  Sparkles,
-  ExternalLink,
   CheckSquare,
+  UserCircle,
 } from "lucide-react"
 import Image from "next/image"
 
@@ -26,6 +25,7 @@ const navigation = [
   { name: "Triage", href: "/triage", icon: Inbox, alfredSuggestions: 12 },
   { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
   { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
+  { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Service Pipelines", href: "/pipelines", icon: GitBranch, alfredSuggestions: 15 },
   { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
   { name: "Settings", href: "/settings", icon: Settings },
@@ -85,37 +85,6 @@ function Sidebar() {
         />
       </div>
 
-      <a
-        href="https://alfred.motta.cpa"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="block rounded-lg p-4 transition-all hover:shadow-md border-2"
-        style={{
-          background: "linear-gradient(135deg, #6B745D 0%, #8E9B79 100%)",
-          borderColor: "#333333",
-        }}
-      >
-        <div className="flex items-center gap-3">
-          <div className="flex-shrink-0">
-            <Image
-              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/ALFRED%20Ai_Logo_Icon%20%28No%20Back%29-wHHQbf3QCCdxOyaDuy8TUXXYerulGR.png"
-              alt="ALFRED AI"
-              width={32}
-              height={32}
-              className="h-8 w-8"
-            />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-white">ALFRED AI</span>
-              <ExternalLink className="h-3 w-3 text-white/80" />
-            </div>
-            <p className="text-xs text-white/90 mt-0.5">Vercel AI Assistant</p>
-          </div>
-          <Sparkles className="h-5 w-5 text-white/80 animate-pulse" />
-        </div>
-      </a>
-
       <nav className="flex flex-1 flex-col">
         <ul role="list" className="flex flex-1 flex-col gap-y-7">
           <li>
@@ -171,7 +140,26 @@ function Sidebar() {
         </ul>
       </nav>
 
-      <div className="border-t pt-4" style={{ borderColor: "#8E9B79" }}>
+      <a
+        href="https://alfred.motta.cpa"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="block rounded-xl p-4 transition-all hover:shadow-lg bg-white mb-4"
+      >
+        <div className="flex items-center justify-center">
+          <div className="relative animate-pulse">
+            <Image
+              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/ALFRED%20Ai_Logo_Icon%20%28No%20Back%29-wHHQbf3QCCdxOyaDuy8TUXXYerulGR.png"
+              alt="ALFRED AI"
+              width={48}
+              height={48}
+              className="h-12 w-12"
+            />
+          </div>
+        </div>
+      </a>
+
+      <div className="pt-4">
         <div className="flex items-center gap-2 text-sm text-gray-600">
           <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
           <span>ALFRED AI Online</span>

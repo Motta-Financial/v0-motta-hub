@@ -1,7 +1,7 @@
 export interface FilterView {
   id: string
   name: string
-  type: "clients" | "workItems"
+  type: "clients" | "workItems" | "teammates"
   filters: {
     searchQuery?: string
     serviceLines?: string[]
@@ -17,6 +17,10 @@ export interface FilterView {
     priority?: string[]
     workType?: string[]
     clientGroup?: string[]
+    userStatus?: "all" | "active" | "inactive"
+    department?: string
+    officeLocation?: string
+    teams?: string[]
   }
   isShared: boolean
   createdBy: string

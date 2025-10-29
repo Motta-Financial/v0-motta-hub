@@ -5,7 +5,12 @@ export async function GET() {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
+  console.log("[v0] Starting clients fetch...")
+  console.log("[v0] Access Key exists:", !!accessKey)
+  console.log("[v0] Bearer Token exists:", !!bearerToken)
+
   if (!accessKey || !bearerToken) {
+    console.error("[v0] Missing Karbon API credentials")
     return NextResponse.json({ error: "Karbon API credentials not configured" }, { status: 401 })
   }
 
@@ -13,23 +18,57 @@ export async function GET() {
     // Fetch all work items
     let allWorkItems: any[] = []
     let nextLink = "https://api.karbonhq.com/v3/WorkItems"
+    let pageCount = 0
+    const MAX_PAGES = 50 // Limit to prevent infinite loops and timeouts
 
-    while (nextLink) {
-      const response = await fetch(nextLink, {
-        headers: {
-          AccessKey: accessKey,
-          Authorization: `Bearer ${bearerToken}`,
-          "Content-Type": "application/json",
-        },
-      })
+    console.log("[v0] Starting to fetch work items...")
 
-      if (!response.ok) {
-        throw new Error(`Karbon API error: ${response.status}`)
+    while (nextLink && pageCount < MAX_PAGES) {
+      pageCount++
+      console.log(`[v0] Fetching page ${pageCount}...`)
+
+      try {
+        const response = await fetch(nextLink, {
+          headers: {
+            AccessKey: accessKey,
+            Authorization: `Bearer ${bearerToken}`,
+            "Content-Type": "application/json",
+          },
+          signal: AbortSignal.timeout(30000), // 30 second timeout per request
+        })
+
+        console.log(`[v0] Page ${pageCount} response status:`, response.status)
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error(`[v0] Karbon API error on page ${pageCount}:`, response.status, errorText)
+          throw new Error(`Karbon API error: ${response.status} - ${errorText}`)
+        }
+
+        const data = await response.json()
+        const itemsInPage = data.value?.length || 0
+        console.log(`[v0] Page ${pageCount} returned ${itemsInPage} items`)
+
+        allWorkItems = allWorkItems.concat(data.value || [])
+        nextLink = data["@odata.nextLink"]
+
+        if (nextLink) {
+          console.log(`[v0] Next link exists, continuing...`)
+        } else {
+          console.log(`[v0] No more pages, finished fetching`)
+        }
+      } catch (fetchError: any) {
+        console.error(`[v0] Error fetching page ${pageCount}:`, fetchError.message)
+        if (allWorkItems.length > 0) {
+          console.log(`[v0] Continuing with ${allWorkItems.length} items fetched so far`)
+          break
+        }
+        throw fetchError
       }
+    }
 
-      const data = await response.json()
-      allWorkItems = allWorkItems.concat(data.value || [])
-      nextLink = data["@odata.nextLink"]
+    if (pageCount >= MAX_PAGES) {
+      console.log(`[v0] Reached max pages limit (${MAX_PAGES}), stopping pagination`)
     }
 
     const prospectWorkItems = allWorkItems.filter((item) => item.Title && item.Title.toUpperCase().includes("PROSPECT"))
@@ -170,9 +209,20 @@ export async function GET() {
       return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime()
     })
 
+    console.log("[v0] Successfully returning", clients.length, "clients")
     return NextResponse.json({ clients, totalCount: clients.length })
-  } catch (error) {
-    console.error("Error fetching clients:", error)
-    return NextResponse.json({ error: "Failed to fetch clients from Karbon" }, { status: 500 })
+  } catch (error: any) {
+    console.error("[v0] Error fetching clients:", error)
+    console.error("[v0] Error name:", error.name)
+    console.error("[v0] Error message:", error.message)
+    console.error("[v0] Error stack:", error.stack)
+    return NextResponse.json(
+      {
+        error: "Failed to fetch clients from Karbon",
+        details: error.message,
+        errorType: error.name,
+      },
+      { status: 500 },
+    )
   }
 }

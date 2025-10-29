@@ -179,3 +179,34 @@ export interface KarbonContact {
   }>
   CustomFields?: Record<string, any>
 }
+
+export interface KarbonUser {
+  userKey: string
+  fullName: string
+  firstName?: string
+  lastName?: string
+  email: string
+  title?: string
+  department?: string
+  isActive: boolean
+  avatarUrl?: string
+  phoneNumber?: string
+  mobileNumber?: string
+  officeLocation?: string
+  startDate?: string
+  role?: string
+  permissions?: string[]
+  lastLoginDate?: string
+  teams?: Array<{
+    teamKey: string
+    teamName: string
+    role?: string
+  }>
+  manager?: string
+  employeeId?: string
+  timezone?: string
+  language?: string
+  bio?: string
+  skills?: string[]
+  certifications?: string[]
+}
