@@ -17,6 +17,8 @@ import {
   Inbox,
   CheckSquare,
   UserCircle,
+  CalendarClock,
+  Video,
 } from "lucide-react"
 import Image from "next/image"
 
@@ -26,6 +28,8 @@ const navigation = [
   { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
   { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
+  { name: "Calendly", href: "/calendly", icon: CalendarClock },
+  { name: "Zoom", href: "/zoom", icon: Video },
   { name: "Service Pipelines", href: "/pipelines", icon: GitBranch, alfredSuggestions: 15 },
   { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
   { name: "Settings", href: "/settings", icon: Settings },
