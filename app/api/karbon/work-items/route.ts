@@ -89,6 +89,21 @@ export async function GET() {
         : [],
       Priority: item.Priority || "Normal",
       Description: item.Description || "",
+      UserRoleAssignments: item.UserRoleAssignments || [],
+      FeeSettings: item.FeeSettings
+        ? {
+            FeeType: item.FeeSettings.FeeType,
+            FeeValue: item.FeeSettings.FeeValue,
+          }
+        : undefined,
+      Budget: item.Budget
+        ? {
+            BudgetedHours: item.Budget.BudgetedHours,
+            BudgetedAmount: item.Budget.BudgetedAmount,
+          }
+        : undefined,
+      Tags: item.Tags || [],
+      CustomFields: item.CustomFields || {},
     }))
 
     return NextResponse.json({

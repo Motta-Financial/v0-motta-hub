@@ -26,6 +26,7 @@ import {
   Briefcase,
 } from "lucide-react"
 import Link from "next/link"
+import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
 
 interface ClientProfileProps {
   clientId?: string
@@ -432,7 +433,15 @@ export function ClientProfile({ clientId = "1" }: ClientProfileProps) {
                   <div key={index} className="border border-gray-200 rounded-lg p-4">
                     <div className="flex items-start justify-between mb-2">
                       <div className="flex-1">
-                        <h4 className="font-medium text-gray-900">{item.Title}</h4>
+                        <a
+                          href={getKarbonWorkItemUrl(item.WorkKey)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline flex items-center gap-2"
+                        >
+                          <h4 className="font-medium text-gray-900">{item.Title}</h4>
+                          <ExternalLink className="h-3 w-3 text-gray-400" />
+                        </a>
                         <div className="flex items-center gap-2 mt-1">
                           <Badge variant="secondary" className="text-xs">
                             {item.PrimaryStatus}
@@ -482,7 +491,15 @@ export function ClientProfile({ clientId = "1" }: ClientProfileProps) {
                   <div key={index} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
                     <div className="flex items-start justify-between mb-2">
                       <div className="flex-1">
-                        <h4 className="font-medium text-gray-900">{item.Title}</h4>
+                        <a
+                          href={getKarbonWorkItemUrl(item.WorkKey)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline flex items-center gap-2"
+                        >
+                          <h4 className="font-medium text-gray-900">{item.Title}</h4>
+                          <ExternalLink className="h-3 w-3 text-gray-400" />
+                        </a>
                         <div className="flex items-center gap-2 mt-1">
                           <Badge variant="default" className="text-xs bg-green-100 text-green-700">
                             Completed
@@ -582,7 +599,7 @@ export function ClientProfile({ clientId = "1" }: ClientProfileProps) {
           <Card className="bg-white shadow-sm border-gray-200">
             <CardHeader>
               <div className="flex items-center justify-between">
-                <CardTitle className="text-lg font-semibold text-gray-900">Team Notes</CardTitle>
+                <CardTitle className="text-lg font-semibold text-gray-900">Client Notes</CardTitle>
                 <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700">
                   <Plus className="h-4 w-4 mr-2" />
                   Add Note

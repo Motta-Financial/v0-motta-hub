@@ -10,11 +10,8 @@ import { Badge } from "@/components/ui/badge"
 import {
   LayoutDashboard,
   Users,
-  ClipboardList,
   GitBranch,
-  Bot,
   Calendar,
-  StickyNote,
   Settings,
   Menu,
   Inbox,
@@ -29,11 +26,8 @@ const navigation = [
   { name: "Triage", href: "/triage", icon: Inbox, alfredSuggestions: 12 },
   { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
   { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
-  { name: "Onboarding Tracker", href: "/onboarding", icon: ClipboardList, alfredSuggestions: 8 },
   { name: "Service Pipelines", href: "/pipelines", icon: GitBranch, alfredSuggestions: 15 },
-  { name: "ALFRED AI", href: "/alfred", icon: Bot },
   { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
-  { name: "Team Notes", href: "/notes", icon: StickyNote },
   { name: "Settings", href: "/settings", icon: Settings },
 ]
 
@@ -93,6 +87,8 @@ function Sidebar() {
 
       <a
         href="https://alfred.motta.cpa"
+        target="_blank"
+        rel="noopener noreferrer"
         className="block rounded-lg p-4 transition-all hover:shadow-md border-2"
         style={{
           background: "linear-gradient(135deg, #6B745D 0%, #8E9B79 100%)",
@@ -102,7 +98,7 @@ function Sidebar() {
         <div className="flex items-center gap-3">
           <div className="flex-shrink-0">
             <Image
-              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/ALFRED%20Ai-vu0KAQ4ZR1fBs564bL8SLnRp5atDeW.png"
+              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/ALFRED%20Ai_Logo_Icon%20%28No%20Back%29-wHHQbf3QCCdxOyaDuy8TUXXYerulGR.png"
               alt="ALFRED AI"
               width={32}
               height={32}
@@ -114,34 +110,11 @@ function Sidebar() {
               <span className="text-sm font-semibold text-white">ALFRED AI</span>
               <ExternalLink className="h-3 w-3 text-white/80" />
             </div>
-            <p className="text-xs text-white/90 mt-0.5">AI Client Management</p>
+            <p className="text-xs text-white/90 mt-0.5">Vercel AI Assistant</p>
           </div>
           <Sparkles className="h-5 w-5 text-white/80 animate-pulse" />
         </div>
       </a>
-
-      <div
-        className="bg-gradient-to-r from-gray-50 to-gray-100 rounded-lg p-3 border"
-        style={{ borderColor: "#8E9B79" }}
-      >
-        <div className="flex items-center gap-2 mb-2">
-          <Image
-            src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/ALFRED%20Ai-vu0KAQ4ZR1fBs564bL8SLnRp5atDeW.png"
-            alt="ALFRED AI"
-            width={20}
-            height={20}
-            className="h-5 w-5"
-          />
-          <span className="text-sm font-medium" style={{ color: "#333333" }}>
-            ALFRED AI Assistant
-          </span>
-        </div>
-        <p className="text-xs text-gray-600 mb-2">Ready to help with tasks, insights, and automation</p>
-        <Button size="sm" className="w-full text-xs" style={{ backgroundColor: "#6B745D", color: "white" }}>
-          <Sparkles className="h-3 w-3 mr-1" />
-          Ask ALFRED
-        </Button>
-      </div>
 
       <nav className="flex flex-1 flex-col">
         <ul role="list" className="flex flex-1 flex-col gap-y-7">

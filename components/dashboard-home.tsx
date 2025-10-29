@@ -2,30 +2,49 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Users, CheckSquare, Clock, FileText, TrendingUp } from "lucide-react"
+import { TriageSummary } from "@/components/triage-summary"
+import { TeamsChat } from "@/components/teams-chat"
+import { MessageBoard } from "@/components/message-board"
+import { WorldClocks } from "@/components/world-clocks"
 
 export function DashboardHome() {
   return (
     <div className="space-y-6">
-      {/* Welcome Header */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <div className="flex items-center justify-between">
+      <Card className="bg-white shadow-sm border-gray-200">
+        <CardHeader>
+          <div className="flex items-start justify-between">
+            <div>
+              <CardTitle className="text-2xl font-bold text-gray-900">Welcome back, Sarah</CardTitle>
+              <CardDescription className="mt-1">Here's what's happening with your clients today.</CardDescription>
+            </div>
+            <div className="text-right">
+              <p className="text-sm text-gray-500">Today</p>
+              <p className="text-base font-medium text-gray-900">
+                {new Date().toLocaleDateString("en-US", {
+                  weekday: "long",
+                  year: "numeric",
+                  month: "long",
+                  day: "numeric",
+                })}
+              </p>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
           <div>
-            <h1 className="text-2xl font-semibold text-gray-900">Welcome back, Sarah</h1>
-            <p className="text-gray-600 mt-1">Here's what's happening with your clients today.</p>
+            <p className="text-sm font-medium text-gray-700 mb-3">Global Time Zones</p>
+            <WorldClocks />
           </div>
-          <div className="text-right">
-            <p className="text-sm text-gray-500">Today</p>
-            <p className="text-lg font-medium text-gray-900">
-              {new Date().toLocaleDateString("en-US", {
-                weekday: "long",
-                year: "numeric",
-                month: "long",
-                day: "numeric",
-              })}
-            </p>
+
+          <div className="border-t pt-6">
+            <MessageBoard />
           </div>
-        </div>
-      </div>
+
+          <div className="border-t pt-6">
+            <TeamsChat />
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -76,6 +95,9 @@ export function DashboardHome() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Karbon Triage section */}
+      <TriageSummary />
 
       {/* Recent Activity */}
       <Card className="bg-white shadow-sm border-gray-200">

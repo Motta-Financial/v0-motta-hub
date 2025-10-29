@@ -16,11 +16,15 @@ import {
   Building2,
   Search,
   UserCheck,
+  ExternalLink,
 } from "lucide-react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getServiceLineColor, type ServiceLine } from "@/lib/service-lines"
+import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { ViewManager } from "@/components/view-manager"
+import type { FilterView } from "@/lib/view-types"
 
 interface WorkItem {
   WorkKey: string
@@ -56,6 +60,9 @@ export function WorkItemsView() {
   const [selectedFiscalYear, setSelectedFiscalYear] = useState<string>("all")
   const [currentUserEmail, setCurrentUserEmail] = useState<string>("")
   const [showAssignedToMe, setShowAssignedToMe] = useState(false)
+  const [selectedPriorities, setSelectedPriorities] = useState<string[]>(["all"])
+  const [selectedWorkTypes, setSelectedWorkTypes] = useState<string[]>(["all"])
+  const [dateRange, setDateRange] = useState<{ start?: string; end?: string }>({})
 
   const fetchWorkItems = async () => {
     setLoading(true)
@@ -235,6 +242,25 @@ export function WorkItemsView() {
       filtered = filtered.filter((item) => selectedServiceLines.includes(item.ServiceLine))
     }
 
+    if (!selectedPriorities.includes("all")) {
+      filtered = filtered.filter((item) => item.Priority && selectedPriorities.includes(item.Priority))
+    }
+
+    if (!selectedWorkTypes.includes("all")) {
+      filtered = filtered.filter((item) => selectedWorkTypes.includes(item.WorkType))
+    }
+
+    if (dateRange.start || dateRange.end) {
+      filtered = filtered.filter((item) => {
+        const itemDate = item.DueDate || item.StartDate || item.ModifiedDate
+        if (!itemDate) return false
+        const date = new Date(itemDate)
+        if (dateRange.start && date < new Date(dateRange.start)) return false
+        if (dateRange.end && date > new Date(dateRange.end)) return false
+        return true
+      })
+    }
+
     switch (filter) {
       case "active":
         return filtered.filter((item) => determineStatus(item) === "active")
@@ -291,6 +317,40 @@ export function WorkItemsView() {
     }
   }
 
+  const getAllPriorities = () => {
+    const priorities = new Set(workItems.map((item) => item.Priority).filter(Boolean))
+    return ["all", ...Array.from(priorities).sort()]
+  }
+
+  const getAllWorkTypes = () => {
+    const workTypes = new Set(workItems.map((item) => item.WorkType).filter(Boolean))
+    return ["all", ...Array.from(workTypes).sort()]
+  }
+
+  const handleLoadView = (view: FilterView) => {
+    if (view.filters.searchQuery !== undefined) setSearchQuery(view.filters.searchQuery)
+    if (view.filters.serviceLines) setSelectedServiceLines(view.filters.serviceLines)
+    if (view.filters.fiscalYear) setSelectedFiscalYear(view.filters.fiscalYear)
+    if (view.filters.status) setActiveTab(view.filters.status)
+    if (view.filters.assignedTo) setCurrentUserEmail(view.filters.assignedTo)
+    if (view.filters.showAssignedToMe !== undefined) setShowAssignedToMe(view.filters.showAssignedToMe)
+    if (view.filters.priority) setSelectedPriorities(view.filters.priority)
+    if (view.filters.workType) setSelectedWorkTypes(view.filters.workType)
+    if (view.filters.dateRange) setDateRange(view.filters.dateRange)
+  }
+
+  const getCurrentFilters = () => ({
+    searchQuery,
+    serviceLines: selectedServiceLines,
+    fiscalYear: selectedFiscalYear,
+    status: activeTab,
+    assignedTo: currentUserEmail,
+    showAssignedToMe,
+    priority: selectedPriorities,
+    workType: selectedWorkTypes,
+    dateRange,
+  })
+
   if (error) {
     return (
       <div className="space-y-6">
@@ -345,10 +405,13 @@ export function WorkItemsView() {
           </h1>
           <p className="text-muted-foreground">Real-time data from Karbon</p>
         </div>
-        <Button onClick={fetchWorkItems} disabled={loading} variant="outline">
-          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
+        <div className="flex gap-2">
+          <ViewManager type="workItems" currentFilters={getCurrentFilters()} onLoadView={handleLoadView} />
+          <Button onClick={fetchWorkItems} disabled={loading} variant="outline">
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
@@ -435,7 +498,7 @@ export function WorkItemsView() {
           {!loading && workItems.length > 0 && (
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium">Filter by Service Line</CardTitle>
+                <CardTitle className="text-sm font-medium">Filters</CardTitle>
                 <CardDescription className="text-xs">
                   TAX • ACCOUNTING • BOOKKEEPING • ADVISORY • MWM • MOTTA (Internal) • ALFRED AI (Internal)
                 </CardDescription>
@@ -519,6 +582,94 @@ export function WorkItemsView() {
                     ))}
                   </div>
                 </div>
+
+                <div className="pt-2 border-t">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">Priority</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {getAllPriorities().map((priority) => (
+                      <Button
+                        key={priority}
+                        variant={selectedPriorities.includes(priority) ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => {
+                          if (priority === "all") {
+                            setSelectedPriorities(["all"])
+                          } else {
+                            setSelectedPriorities((prev) => {
+                              const filtered = prev.filter((p) => p !== "all")
+                              if (filtered.includes(priority)) {
+                                const newSelection = filtered.filter((p) => p !== priority)
+                                return newSelection.length === 0 ? ["all"] : newSelection
+                              } else {
+                                return [...filtered, priority]
+                              }
+                            })
+                          }
+                        }}
+                        className="text-xs h-7"
+                      >
+                        {priority === "all" ? "All Priorities" : priority}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">Work Type</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {getAllWorkTypes().map((workType) => (
+                      <Button
+                        key={workType}
+                        variant={selectedWorkTypes.includes(workType) ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => {
+                          if (workType === "all") {
+                            setSelectedWorkTypes(["all"])
+                          } else {
+                            setSelectedWorkTypes((prev) => {
+                              const filtered = prev.filter((t) => t !== "all")
+                              if (filtered.includes(workType)) {
+                                const newSelection = filtered.filter((t) => t !== workType)
+                                return newSelection.length === 0 ? ["all"] : newSelection
+                              } else {
+                                return [...filtered, workType]
+                              }
+                            })
+                          }
+                        }}
+                        className="text-xs h-7"
+                      >
+                        {workType === "all" ? "All Types" : workType}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">Due Date Range</p>
+                  <div className="flex gap-2 items-center">
+                    <Input
+                      type="date"
+                      value={dateRange.start || ""}
+                      onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
+                      className="h-9 text-sm"
+                      placeholder="Start date"
+                    />
+                    <span className="text-sm text-muted-foreground">to</span>
+                    <Input
+                      type="date"
+                      value={dateRange.end || ""}
+                      onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
+                      className="h-9 text-sm"
+                      placeholder="End date"
+                    />
+                    {(dateRange.start || dateRange.end) && (
+                      <Button variant="ghost" size="sm" onClick={() => setDateRange({})} className="h-9">
+                        Clear
+                      </Button>
+                    )}
+                  </div>
+                </div>
               </CardContent>
             </Card>
           )}
@@ -556,7 +707,17 @@ export function WorkItemsView() {
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-2 flex-wrap">
-                          <CardTitle className="text-lg">{item.Title}</CardTitle>
+                          <a
+                            href={getKarbonWorkItemUrl(item.WorkKey)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="hover:underline"
+                          >
+                            <CardTitle className="text-lg flex items-center gap-2">
+                              {item.Title}
+                              <ExternalLink className="h-4 w-4 text-gray-400" />
+                            </CardTitle>
+                          </a>
                           <Badge variant="outline" className="text-xs font-mono">
                             {item.WorkKey}
                           </Badge>
@@ -579,6 +740,11 @@ export function WorkItemsView() {
                           {item.WorkType && (
                             <Badge variant="secondary" className="text-xs">
                               {item.WorkType}
+                            </Badge>
+                          )}
+                          {item.PrimaryStatus && (
+                            <Badge variant="outline" className="text-xs">
+                              {item.PrimaryStatus}
                             </Badge>
                           )}
                         </CardDescription>

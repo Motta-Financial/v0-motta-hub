@@ -2,7 +2,6 @@ import type React from "react"
 import type { Metadata } from "next"
 import { Inter, Source_Code_Pro } from "next/font/google"
 import "./globals.css"
-import { AlfredChatWidget } from "@/components/alfred-chat-widget"
 
 const inter = Inter({
   subsets: ["latin"],
@@ -29,10 +28,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} ${sourceCodePro.variable} antialiased`}>
-      <body>
-        {children}
-        <AlfredChatWidget />
-      </body>
+      <body>{children}</body>
     </html>
   )
 }

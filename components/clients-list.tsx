@@ -9,6 +9,9 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Search, Users, TrendingUp, CheckCircle, Clock, ArrowRight, Briefcase, AlertCircle } from "lucide-react"
 import type { KarbonClient } from "@/lib/karbon-types"
 import Link from "next/link"
+import { ViewManager } from "@/components/view-manager"
+import type { FilterView } from "@/lib/view-types"
+import { Label } from "@/components/ui/label"
 
 export function ClientsList() {
   const [clients, setClients] = useState<KarbonClient[]>([])
@@ -17,6 +20,8 @@ export function ClientsList() {
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedServiceLine, setSelectedServiceLine] = useState<string>("all")
   const [activeTab, setActiveTab] = useState<"active" | "prospects">("active")
+  const [clientGroup, setClientGroup] = useState<string>("all")
+  const [dateRange, setDateRange] = useState<{ start?: string; end?: string }>({})
 
   useEffect(() => {
     fetchClients()
@@ -41,7 +46,7 @@ export function ClientsList() {
     }
   }
 
-  // Filter clients by search query and service line
+  // Filter clients by search query, service line, client group, and date range
   const filteredClients = clients.filter((client) => {
     const matchesSearch =
       searchQuery === "" ||
@@ -50,7 +55,18 @@ export function ClientsList() {
 
     const matchesServiceLine = selectedServiceLine === "all" || client.serviceLinesUsed.includes(selectedServiceLine)
 
-    return matchesSearch && matchesServiceLine
+    const matchesClientGroup = clientGroup === "all" || client.clientGroup === clientGroup
+
+    const matchesDateRange = (() => {
+      if (!dateRange.start && !dateRange.end) return true
+      if (!client.lastActivity) return false
+      const activityDate = new Date(client.lastActivity)
+      if (dateRange.start && activityDate < new Date(dateRange.start)) return false
+      if (dateRange.end && activityDate > new Date(dateRange.end)) return false
+      return true
+    })()
+
+    return matchesSearch && matchesServiceLine && matchesClientGroup && matchesDateRange
   })
 
   const sortedFilteredClients = [...filteredClients].sort((a, b) => {
@@ -63,6 +79,8 @@ export function ClientsList() {
   // Get unique service lines
   const allServiceLines = Array.from(new Set(clients.flatMap((client) => client.serviceLinesUsed))).sort()
 
+  const allClientGroups = Array.from(new Set(clients.map((c) => c.clientGroup).filter(Boolean))).sort()
+
   // Calculate summary stats
   const totalClients = clients.length
   const activeClientsCount = clients.filter((c) => c.activeWorkItems > 0).length
@@ -73,6 +91,22 @@ export function ClientsList() {
   const prospectClients = sortedFilteredClients.filter((client) => client.isProspect)
 
   const displayedClients = activeTab === "active" ? activeClients : prospectClients
+
+  const handleLoadView = (view: FilterView) => {
+    if (view.filters.searchQuery !== undefined) setSearchQuery(view.filters.searchQuery)
+    if (view.filters.serviceLines) setSelectedServiceLine(view.filters.serviceLines[0] || "all")
+    if (view.filters.clientType) setActiveTab(view.filters.clientType === "prospects" ? "prospects" : "active")
+    if (view.filters.clientGroup) setClientGroup(view.filters.clientGroup[0] || "all")
+    if (view.filters.dateRange) setDateRange(view.filters.dateRange)
+  }
+
+  const getCurrentFilters = () => ({
+    searchQuery,
+    serviceLines: [selectedServiceLine],
+    clientType: activeTab,
+    clientGroup: [clientGroup],
+    dateRange,
+  })
 
   if (loading) {
     return (
@@ -113,9 +147,12 @@ export function ClientsList() {
           <h1 className="text-3xl font-bold text-gray-900">Clients</h1>
           <p className="text-gray-600 mt-1">Manage and view all client information</p>
         </div>
-        <Button onClick={fetchClients} variant="outline">
-          Refresh
-        </Button>
+        <div className="flex gap-2">
+          <ViewManager type="clients" currentFilters={getCurrentFilters()} onLoadView={handleLoadView} />
+          <Button onClick={fetchClients} variant="outline">
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Summary Cards */}
@@ -197,6 +234,61 @@ export function ClientsList() {
                 ))}
               </div>
             )}
+
+            {/* Client Group Filter */}
+            {allClientGroups.length > 0 && (
+              <div>
+                <Label className="text-sm font-medium mb-2 block">Client Group</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant={clientGroup === "all" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setClientGroup("all")}
+                    className="h-7 text-xs"
+                  >
+                    All Groups
+                  </Button>
+                  {allClientGroups.map((group) => (
+                    <Button
+                      key={group}
+                      variant={clientGroup === group ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setClientGroup(group!)}
+                      className="h-7 text-xs"
+                    >
+                      {group}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Date Range Filter */}
+            <div>
+              <Label className="text-sm font-medium mb-2 block">Last Activity Date Range</Label>
+              <div className="flex gap-2 items-center">
+                <Input
+                  type="date"
+                  value={dateRange.start || ""}
+                  onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
+                  className="h-9 text-sm"
+                  placeholder="Start date"
+                />
+                <span className="text-sm text-gray-500">to</span>
+                <Input
+                  type="date"
+                  value={dateRange.end || ""}
+                  onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
+                  className="h-9 text-sm"
+                  placeholder="End date"
+                />
+                {(dateRange.start || dateRange.end) && (
+                  <Button variant="ghost" size="sm" onClick={() => setDateRange({})} className="h-9">
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
