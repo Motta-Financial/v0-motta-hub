@@ -19,6 +19,14 @@ import {
   UserCircle,
   CalendarClock,
   Video,
+  Calculator,
+  FileText,
+  Sparkles,
+  Flame,
+  DollarSign,
+  ClipboardList,
+  Lightbulb,
+  Mail,
 } from "lucide-react"
 import Image from "next/image"
 
@@ -30,6 +38,14 @@ const navigation = [
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Calendly", href: "/calendly", icon: CalendarClock },
   { name: "Zoom", href: "/zoom", icon: Video },
+  { name: "Accounting", href: "/accounting", icon: Calculator },
+  { name: "Tax", href: "/tax", icon: FileText },
+  { name: "Tax Estimates", href: "/tax/estimates", icon: DollarSign, alfredSuggestions: 4, isSubItem: true },
+  { name: "Planning", href: "/tax/planning", icon: ClipboardList, alfredSuggestions: 6, isSubItem: true },
+  { name: "Busy Season", href: "/tax/busy-season", icon: Flame, alfredSuggestions: 8, isSubItem: true },
+  { name: "Advisory", href: "/tax/advisory", icon: Lightbulb, alfredSuggestions: 5, isSubItem: true },
+  { name: "IRS Notices", href: "/tax/irs-notices", icon: Mail, alfredSuggestions: 3, isSubItem: true },
+  { name: "Special Teams", href: "/special-teams", icon: Sparkles },
   { name: "Service Pipelines", href: "/pipelines", icon: GitBranch, alfredSuggestions: 15 },
   { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
   { name: "Settings", href: "/settings", icon: Settings },
@@ -102,7 +118,8 @@ function Sidebar() {
                       href={item.href}
                       className={cn(
                         isCurrent ? "text-white border-r-2" : "text-gray-700 hover:text-white hover:bg-opacity-80",
-                        "group flex gap-x-3 rounded-l-md py-2 pl-2 pr-3 text-sm leading-6 font-medium transition-colors relative",
+                        item.isSubItem ? "pl-8 text-sm" : "pl-2",
+                        "group flex gap-x-3 rounded-l-md py-2 pr-3 leading-6 font-medium transition-colors relative",
                       )}
                       style={{
                         backgroundColor: isCurrent ? "#6B745D" : "transparent",
@@ -122,7 +139,8 @@ function Sidebar() {
                       <item.icon
                         className={cn(
                           isCurrent ? "text-white" : "text-gray-400 group-hover:text-white",
-                          "h-5 w-5 shrink-0",
+                          item.isSubItem ? "h-4 w-4" : "h-5 w-5",
+                          "shrink-0",
                         )}
                         aria-hidden="true"
                       />

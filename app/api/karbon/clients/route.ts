@@ -34,7 +34,7 @@ export async function GET() {
             Authorization: `Bearer ${bearerToken}`,
             "Content-Type": "application/json",
           },
-          signal: AbortSignal.timeout(30000), // 30 second timeout per request
+          signal: AbortSignal.timeout(60000), // 60 second timeout per request
         })
 
         console.log(`[v0] Page ${pageCount} response status:`, response.status)
@@ -42,10 +42,30 @@ export async function GET() {
         if (!response.ok) {
           const errorText = await response.text()
           console.error(`[v0] Karbon API error on page ${pageCount}:`, response.status, errorText)
+          if (allWorkItems.length > 0) {
+            console.log(`[v0] Continuing with ${allWorkItems.length} items fetched so far`)
+            break
+          }
           throw new Error(`Karbon API error: ${response.status} - ${errorText}`)
         }
 
-        const data = await response.json()
+        const data = await Promise.race([
+          response.json(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("JSON parsing timeout")), 30000)),
+        ]).catch((jsonError) => {
+          console.error(`[v0] Error parsing JSON on page ${pageCount}:`, jsonError.message)
+          // If JSON parsing fails but we have data, continue with what we have
+          if (allWorkItems.length > 0) {
+            console.log(`[v0] JSON parsing failed, continuing with ${allWorkItems.length} items`)
+            return null
+          }
+          throw jsonError
+        })
+
+        if (!data) {
+          break
+        }
+
         const itemsInPage = data.value?.length || 0
         console.log(`[v0] Page ${pageCount} returned ${itemsInPage} items`)
 
@@ -59,7 +79,7 @@ export async function GET() {
         }
       } catch (fetchError: any) {
         console.error(`[v0] Error fetching page ${pageCount}:`, fetchError.message)
-        if (allWorkItems.length > 0) {
+        if (allWorkItems.length >= 1000) {
           console.log(`[v0] Continuing with ${allWorkItems.length} items fetched so far`)
           break
         }
@@ -70,6 +90,8 @@ export async function GET() {
     if (pageCount >= MAX_PAGES) {
       console.log(`[v0] Reached max pages limit (${MAX_PAGES}), stopping pagination`)
     }
+
+    console.log(`[v0] Successfully fetched ${allWorkItems.length} work items across ${pageCount} pages`)
 
     const prospectWorkItems = allWorkItems.filter((item) => item.Title && item.Title.toUpperCase().includes("PROSPECT"))
     console.log("[v0] Total work items:", allWorkItems.length)

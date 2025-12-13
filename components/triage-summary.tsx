@@ -19,19 +19,62 @@ interface WorkItem {
   ModifiedDate: string
 }
 
+const mockTriageItems: WorkItem[] = [
+  {
+    WorkKey: "MOCK-001",
+    Title: "Q4 2024 Tax Return Preparation",
+    ClientName: "Acme Corporation",
+    DueDate: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString(), // Due tomorrow
+    Priority: "High",
+    PrimaryStatus: "In Progress",
+    AssignedTo: [{ FullName: "Sarah Johnson" }],
+    ModifiedDate: new Date().toISOString(),
+  },
+  {
+    WorkKey: "MOCK-002",
+    Title: "Annual Financial Statement Review",
+    ClientName: "Tech Innovations LLC",
+    DueDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(), // Due in 2 days
+    Priority: "Critical",
+    PrimaryStatus: "Ready To Start",
+    AssignedTo: [{ FullName: "Michael Chen" }],
+    ModifiedDate: new Date().toISOString(),
+  },
+  {
+    WorkKey: "MOCK-003",
+    Title: "Payroll Processing - December",
+    ClientName: "Global Services Inc",
+    DueDate: new Date().toISOString(), // Due today
+    Priority: "High",
+    PrimaryStatus: "In Progress",
+    AssignedTo: [{ FullName: "Emily Rodriguez" }],
+    ModifiedDate: new Date().toISOString(),
+  },
+]
+
 export function TriageSummary() {
   const [triageItems, setTriageItems] = useState<WorkItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [usingMockData, setUsingMockData] = useState(false)
 
   useEffect(() => {
     async function fetchTriageItems() {
       try {
+        console.log("[v0] Starting work items fetch...")
         const response = await fetch("/api/karbon/work-items")
+
+        if (response.status === 401) {
+          console.log("[v0] Missing Karbon credentials")
+          setTriageItems(mockTriageItems)
+          setUsingMockData(true)
+          setLoading(false)
+          return
+        }
+
         if (!response.ok) throw new Error("Failed to fetch work items")
 
         const data = await response.json()
 
-        // Filter for items that need attention (high priority, due soon, or recently modified)
         const now = new Date()
         const threeDaysFromNow = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
 
@@ -43,17 +86,14 @@ export function TriageSummary() {
           return (isDueSoon || isHighPriority) && isInProgress
         })
 
-        // Sort by due date and priority, take top 5
         const sorted = needsAttention
           .sort((a: WorkItem, b: WorkItem) => {
-            // Prioritize by due date first
             if (a.DueDate && b.DueDate) {
               return new Date(a.DueDate).getTime() - new Date(b.DueDate).getTime()
             }
             if (a.DueDate) return -1
             if (b.DueDate) return 1
 
-            // Then by priority
             const priorityOrder: Record<string, number> = { Critical: 0, High: 1, Normal: 2, Low: 3 }
             return (priorityOrder[a.Priority] || 2) - (priorityOrder[b.Priority] || 2)
           })
@@ -62,6 +102,8 @@ export function TriageSummary() {
         setTriageItems(sorted)
       } catch (error) {
         console.error("[v0] Error fetching triage items:", error)
+        setTriageItems(mockTriageItems)
+        setUsingMockData(true)
       } finally {
         setLoading(false)
       }
@@ -131,6 +173,11 @@ export function TriageSummary() {
             <CardTitle className="text-lg font-semibold text-gray-900 flex items-center gap-2">
               <Inbox className="h-5 w-5 text-emerald-600" />
               Karbon Triage
+              {usingMockData && (
+                <Badge variant="secondary" className="text-xs">
+                  Preview
+                </Badge>
+              )}
             </CardTitle>
             <CardDescription>Items that need your attention</CardDescription>
           </div>

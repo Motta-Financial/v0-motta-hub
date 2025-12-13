@@ -21,6 +21,15 @@ export function getKarbonContactUrl(contactKey: string): string {
 }
 
 /**
+ * Generate a direct link to a Karbon client
+ * @param clientKey - The ClientKey from Karbon API
+ * @returns URL to the client in Karbon web app
+ */
+export function getKarbonClientUrl(clientKey: string): string {
+  return `https://app.karbonhq.com/clients/${clientKey}`
+}
+
+/**
  * All available Karbon work item statuses
  */
 export const KARBON_WORK_STATUSES = ["Ready To Start", "Planned", "In Progress", "Waiting", "Complete"] as const
