@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -11,12 +11,13 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
-  Calendar,
   User,
   Building2,
   Search,
-  UserCheck,
   ExternalLink,
+  ChevronDown,
+  X,
+  Database,
 } from "lucide-react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getServiceLineColor, type ServiceLine } from "@/lib/service-lines"
@@ -25,29 +26,42 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ViewManager } from "@/components/view-manager"
 import type { FilterView } from "@/lib/view-types"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 
 interface WorkItem {
-  WorkKey: string
+  WorkItemKey: string
   Title: string
-  ServiceLine: string
-  WorkStatus: string
-  PrimaryStatus: string
-  SecondaryStatus?: string
-  WorkType: string
   ClientName?: string
   ClientKey?: string
-  ClientGroup?: string
-  DueDate?: string
-  DeadlineDate?: string
+  WorkStatus?: string
   StartDate?: string
+  DueDate?: string
   CompletedDate?: string
-  ModifiedDate?: string
-  AssignedTo?: Array<{
-    FullName: string
-    Email: string
-  }>
+  WorkType?: string
+  AssignedTo?:
+    | {
+        FullName: string
+        Email: string
+        UserKey?: string
+      }
+    | Array<{
+        FullName: string
+        Email: string
+        UserKey?: string
+      }>
   Priority?: string
   Description?: string
+  ClientGroup?: { Name: string }
+  ClientGroupName?: string
 }
 
 export function WorkItemsView() {
@@ -63,6 +77,17 @@ export function WorkItemsView() {
   const [selectedPriorities, setSelectedPriorities] = useState<string[]>(["all"])
   const [selectedWorkTypes, setSelectedWorkTypes] = useState<string[]>(["all"])
   const [dateRange, setDateRange] = useState<{ start?: string; end?: string }>({})
+
+  const [karbonData, setKarbonData] = useState<{
+    workTypes: Record<string, number>
+    statuses: Record<string, number>
+    assignees: Record<string, number>
+    clientGroups: Record<string, number>
+    totalItems: number
+    sampleItem: any
+  } | null>(null)
+  const [fetchingKarbonData, setFetchingKarbonData] = useState(false)
+  const [showDataDialog, setShowDataDialog] = useState(false)
 
   const fetchWorkItems = async () => {
     setLoading(true)
@@ -85,13 +110,66 @@ export function WorkItemsView() {
     }
   }
 
+  const fetchKarbonData = async () => {
+    setFetchingKarbonData(true)
+    try {
+      const response = await fetch("/api/karbon/work-items")
+      const data = await response.json()
+
+      if (data.value) {
+        const items = data.value
+        const workTypes: Record<string, number> = {}
+        const statuses: Record<string, number> = {}
+        const assignees: Record<string, number> = {}
+        const clientGroups: Record<string, number> = {}
+
+        items.forEach((item: any) => {
+          // Work Types
+          const workType = item.WorkType || "Unknown"
+          workTypes[workType] = (workTypes[workType] || 0) + 1
+
+          // Statuses
+          const status = item.WorkItemStatus || item.ClientStatus || "Unknown"
+          statuses[status] = (statuses[status] || 0) + 1
+
+          // Assignees
+          if (item.AssignedTo) {
+            const assigned = Array.isArray(item.AssignedTo) ? item.AssignedTo : [item.AssignedTo]
+            assigned.forEach((a: any) => {
+              const name = a?.FullName || "Unassigned"
+              assignees[name] = (assignees[name] || 0) + 1
+            })
+          }
+
+          // Client Groups
+          const clientGroup = item.ClientGroup?.Name || item.ClientGroupName || "No Group"
+          clientGroups[clientGroup] = (clientGroups[clientGroup] || 0) + 1
+        })
+
+        setKarbonData({
+          workTypes,
+          statuses,
+          assignees,
+          clientGroups,
+          totalItems: items.length,
+          sampleItem: items[0],
+        })
+        setShowDataDialog(true)
+      }
+    } catch (error) {
+      console.error("Error fetching Karbon data:", error)
+    } finally {
+      setFetchingKarbonData(false)
+    }
+  }
+
   useEffect(() => {
     fetchWorkItems()
   }, [])
 
   const determineStatus = (item: WorkItem): "completed" | "active" | "cancelled" => {
-    const primaryStatus = item.PrimaryStatus?.toLowerCase() || ""
-    const secondaryStatus = item.SecondaryStatus?.toLowerCase() || ""
+    const primaryStatus = item.WorkStatus?.toLowerCase() || ""
+    const secondaryStatus = item.WorkStatus?.toLowerCase() || ""
 
     if (
       secondaryStatus.includes("cancelled") ||
@@ -139,7 +217,7 @@ export function WorkItemsView() {
   }
 
   const getServiceLines = (): string[] => {
-    const serviceLines = new Set(workItems.map((item) => item.ServiceLine))
+    const serviceLines = new Set(workItems.map((item) => item.WorkType))
     const sortedLines = Array.from(serviceLines).sort()
     const filtered = sortedLines.filter((line) => line !== "OTHER")
     if (serviceLines.has("OTHER")) {
@@ -163,7 +241,7 @@ export function WorkItemsView() {
     if (serviceLine === "all") {
       return baseItems.length
     }
-    return baseItems.filter((item) => item.ServiceLine === serviceLine).length
+    return baseItems.filter((item) => item.WorkType === serviceLine).length
   }
 
   const getFiscalYear = (dateString?: string): number | null => {
@@ -197,17 +275,24 @@ export function WorkItemsView() {
     ]
   }
 
+  const normalizeAssignedTo = (
+    assignedTo: WorkItem["AssignedTo"],
+  ): Array<{ FullName: string; Email: string; UserKey?: string }> => {
+    if (!assignedTo) return []
+    if (Array.isArray(assignedTo)) return assignedTo
+    return [assignedTo]
+  }
+
   const getAllAssignees = (): Array<{ email: string; name: string }> => {
     const assigneesMap = new Map<string, string>()
 
     workItems.forEach((item) => {
-      if (item.AssignedTo) {
-        item.AssignedTo.forEach((assignee) => {
-          if (assignee.Email && assignee.FullName) {
-            assigneesMap.set(assignee.Email, assignee.FullName)
-          }
-        })
-      }
+      const assignees = normalizeAssignedTo(item.AssignedTo)
+      assignees.forEach((assignee) => {
+        if (assignee.Email && assignee.FullName) {
+          assigneesMap.set(assignee.Email, assignee.FullName)
+        }
+      })
     })
 
     return Array.from(assigneesMap.entries())
@@ -229,17 +314,18 @@ export function WorkItemsView() {
         (item) =>
           item.Title?.toLowerCase().includes(query) ||
           item.ClientName?.toLowerCase().includes(query) ||
-          item.ClientGroup?.toLowerCase().includes(query) ||
-          item.WorkKey?.toLowerCase().includes(query),
+          item.WorkItemKey?.toLowerCase().includes(query),
       )
     }
 
     if (showAssignedToMe && currentUserEmail) {
-      filtered = filtered.filter((item) => item.AssignedTo?.some((assignee) => assignee.Email === currentUserEmail))
+      filtered = filtered.filter((item) =>
+        normalizeAssignedTo(item.AssignedTo).some((assignee) => assignee.Email === currentUserEmail),
+      )
     }
 
     if (!selectedServiceLines.includes("all")) {
-      filtered = filtered.filter((item) => selectedServiceLines.includes(item.ServiceLine))
+      filtered = filtered.filter((item) => selectedServiceLines.includes(item.WorkType))
     }
 
     if (!selectedPriorities.includes("all")) {
@@ -252,7 +338,7 @@ export function WorkItemsView() {
 
     if (dateRange.start || dateRange.end) {
       filtered = filtered.filter((item) => {
-        const itemDate = item.DueDate || item.StartDate || item.ModifiedDate
+        const itemDate = item.DueDate || item.StartDate || item.CompletedDate
         if (!itemDate) return false
         const date = new Date(itemDate)
         if (dateRange.start && date < new Date(dateRange.start)) return false
@@ -276,7 +362,7 @@ export function WorkItemsView() {
   const sortByActivity = (items: WorkItem[]) => {
     return [...items].sort((a, b) => {
       const getLatestDate = (item: WorkItem) => {
-        const dates = [item.ModifiedDate, item.CompletedDate, item.DueDate, item.StartDate]
+        const dates = [item.CompletedDate, item.DueDate, item.StartDate]
           .filter(Boolean)
           .map((d) => new Date(d!).getTime())
         return dates.length > 0 ? Math.max(...dates) : 0
@@ -351,6 +437,29 @@ export function WorkItemsView() {
     dateRange,
   })
 
+  const getActiveFilterCount = () => {
+    let count = 0
+    if (!selectedServiceLines.includes("all")) count++
+    if (selectedFiscalYear !== "all") count++
+    if (!selectedPriorities.includes("all")) count++
+    if (!selectedWorkTypes.includes("all")) count++
+    if (dateRange.start || dateRange.end) count++
+    if (showAssignedToMe) count++
+    if (searchQuery.trim()) count++
+    return count
+  }
+
+  const clearAllFilters = () => {
+    setSelectedServiceLines(["all"])
+    setSelectedFiscalYear("all")
+    setSelectedPriorities(["all"])
+    setSelectedWorkTypes(["all"])
+    setDateRange({})
+    setShowAssignedToMe(false)
+    setSearchQuery("")
+    setCurrentUserEmail("")
+  }
+
   if (error) {
     return (
       <div className="space-y-6">
@@ -397,50 +506,169 @@ export function WorkItemsView() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight" style={{ color: "#333333" }}>
+          <h1 className="text-2xl font-bold tracking-tight" style={{ color: "#333333" }}>
             Work Items
           </h1>
-          <p className="text-muted-foreground">Real-time data from Karbon</p>
+          <p className="text-sm text-muted-foreground">Real-time data from Karbon</p>
         </div>
         <div className="flex gap-2">
+          <Dialog open={showDataDialog} onOpenChange={setShowDataDialog}>
+            <DialogTrigger asChild>
+              <Button onClick={fetchKarbonData} disabled={fetchingKarbonData} variant="outline" size="sm">
+                <Database className={`h-4 w-4 mr-2 ${fetchingKarbonData ? "animate-pulse" : ""}`} />
+                {fetchingKarbonData ? "Fetching..." : "Fetch Latest Data"}
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Karbon Data Analysis</DialogTitle>
+                <DialogDescription>Overview of your Karbon work items data structure and values</DialogDescription>
+              </DialogHeader>
+              {karbonData && (
+                <div className="space-y-4 mt-4">
+                  <div className="text-sm font-medium">
+                    Total Work Items: <span className="text-primary">{karbonData.totalItems}</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* Work Types */}
+                    <Card>
+                      <CardHeader className="py-2 px-3">
+                        <CardTitle className="text-sm">Work Types</CardTitle>
+                      </CardHeader>
+                      <CardContent className="px-3 pb-3 pt-0">
+                        <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                          {Object.entries(karbonData.workTypes)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([type, count]) => (
+                              <div key={type} className="flex justify-between text-xs">
+                                <span className="truncate mr-2">{type}</span>
+                                <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+                                  {count}
+                                </Badge>
+                              </div>
+                            ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* Statuses */}
+                    <Card>
+                      <CardHeader className="py-2 px-3">
+                        <CardTitle className="text-sm">Statuses</CardTitle>
+                      </CardHeader>
+                      <CardContent className="px-3 pb-3 pt-0">
+                        <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                          {Object.entries(karbonData.statuses)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([status, count]) => (
+                              <div key={status} className="flex justify-between text-xs">
+                                <span className="truncate mr-2">{status}</span>
+                                <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+                                  {count}
+                                </Badge>
+                              </div>
+                            ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* Assignees */}
+                    <Card>
+                      <CardHeader className="py-2 px-3">
+                        <CardTitle className="text-sm">Assignees</CardTitle>
+                      </CardHeader>
+                      <CardContent className="px-3 pb-3 pt-0">
+                        <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                          {Object.entries(karbonData.assignees)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([assignee, count]) => (
+                              <div key={assignee} className="flex justify-between text-xs">
+                                <span className="truncate mr-2">{assignee}</span>
+                                <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+                                  {count}
+                                </Badge>
+                              </div>
+                            ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* Client Groups */}
+                    <Card>
+                      <CardHeader className="py-2 px-3">
+                        <CardTitle className="text-sm">Client Groups</CardTitle>
+                      </CardHeader>
+                      <CardContent className="px-3 pb-3 pt-0">
+                        <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                          {Object.entries(karbonData.clientGroups)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([group, count]) => (
+                              <div key={group} className="flex justify-between text-xs">
+                                <span className="truncate mr-2">{group}</span>
+                                <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+                                  {count}
+                                </Badge>
+                              </div>
+                            ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Sample Raw Item */}
+                  <Card>
+                    <CardHeader className="py-2 px-3">
+                      <CardTitle className="text-sm">Sample Work Item (Raw Data)</CardTitle>
+                    </CardHeader>
+                    <CardContent className="px-3 pb-3 pt-0">
+                      <pre className="text-[10px] bg-muted p-2 rounded overflow-x-auto max-h-[200px]">
+                        {JSON.stringify(karbonData.sampleItem, null, 2)}
+                      </pre>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
           <ViewManager type="workItems" currentFilters={getCurrentFilters()} onLoadView={handleLoadView} />
-          <Button onClick={fetchWorkItems} disabled={loading} variant="outline">
+          <Button onClick={fetchWorkItems} disabled={loading} variant="outline" size="sm">
             <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </Button>
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-4">
         <Card
-          className="cursor-pointer hover:shadow-lg transition-all hover:scale-105"
+          className="cursor-pointer hover:shadow-md transition-all hover:scale-[1.02]"
           onClick={() => handleCardClick("all")}
         >
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Work Items</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3">
+            <CardTitle className="text-xs font-medium">Total Work Items</CardTitle>
             <CheckSquare className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
-            {loading ? <Skeleton className="h-8 w-20" /> : <div className="text-2xl font-bold">{workItems.length}</div>}
+          <CardContent className="p-3 pt-0">
+            {loading ? <Skeleton className="h-6 w-16" /> : <div className="text-xl font-bold">{workItems.length}</div>}
           </CardContent>
         </Card>
 
         <Card
-          className="cursor-pointer hover:shadow-lg transition-all hover:scale-105"
+          className="cursor-pointer hover:shadow-md transition-all hover:scale-[1.02]"
           onClick={() => handleCardClick("active")}
         >
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Active Projects</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3">
+            <CardTitle className="text-xs font-medium">Active Projects</CardTitle>
             <Clock className="h-4 w-4 text-blue-600" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-3 pt-0">
             {loading ? (
-              <Skeleton className="h-8 w-20" />
+              <Skeleton className="h-6 w-16" />
             ) : (
-              <div className="text-2xl font-bold">
+              <div className="text-xl font-bold">
                 {workItems.filter((item) => determineStatus(item) === "active").length}
               </div>
             )}
@@ -448,18 +676,18 @@ export function WorkItemsView() {
         </Card>
 
         <Card
-          className="cursor-pointer hover:shadow-lg transition-all hover:scale-105"
+          className="cursor-pointer hover:shadow-md transition-all hover:scale-[1.02]"
           onClick={() => handleCardClick("completed")}
         >
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Completed</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3">
+            <CardTitle className="text-xs font-medium">Completed</CardTitle>
             <CheckCircle2 className="h-4 w-4 text-green-600" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-3 pt-0">
             {loading ? (
-              <Skeleton className="h-8 w-20" />
+              <Skeleton className="h-6 w-16" />
             ) : (
-              <div className="text-2xl font-bold">
+              <div className="text-xl font-bold">
                 {workItems.filter((item) => determineStatus(item) === "completed").length}
               </div>
             )}
@@ -467,18 +695,18 @@ export function WorkItemsView() {
         </Card>
 
         <Card
-          className="cursor-pointer hover:shadow-lg transition-all hover:scale-105"
+          className="cursor-pointer hover:shadow-md transition-all hover:scale-[1.02]"
           onClick={() => handleCardClick("cancelled")}
         >
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Cancelled & Lost</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3">
+            <CardTitle className="text-xs font-medium">Cancelled & Lost</CardTitle>
             <AlertCircle className="h-4 w-4 text-red-600" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-3 pt-0">
             {loading ? (
-              <Skeleton className="h-8 w-20" />
+              <Skeleton className="h-6 w-16" />
             ) : (
-              <div className="text-2xl font-bold">
+              <div className="text-xl font-bold">
                 {workItems.filter((item) => determineStatus(item) === "cancelled").length}
               </div>
             )}
@@ -487,114 +715,135 @@ export function WorkItemsView() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="active">Active Projects</TabsTrigger>
-          <TabsTrigger value="cancelled">Cancelled & Lost</TabsTrigger>
-          <TabsTrigger value="completed">Completed</TabsTrigger>
-          <TabsTrigger value="all">All Items</TabsTrigger>
+        <TabsList className="h-8">
+          <TabsTrigger value="active" className="text-xs px-3 h-7">
+            Active Projects
+          </TabsTrigger>
+          <TabsTrigger value="cancelled" className="text-xs px-3 h-7">
+            Cancelled & Lost
+          </TabsTrigger>
+          <TabsTrigger value="completed" className="text-xs px-3 h-7">
+            Completed
+          </TabsTrigger>
+          <TabsTrigger value="all" className="text-xs px-3 h-7">
+            All Items
+          </TabsTrigger>
         </TabsList>
 
-        <TabsContent value={activeTab} className="space-y-4 mt-4">
+        <TabsContent value={activeTab} className="space-y-3 mt-3">
           {!loading && workItems.length > 0 && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium">Filters</CardTitle>
-                <CardDescription className="text-xs">
-                  TAX • ACCOUNTING • BOOKKEEPING • ADVISORY • MWM • MOTTA (Internal) • ALFRED AI (Internal)
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  {getServiceLines().map((serviceLine) => {
-                    const count = getServiceLineCount(serviceLine)
-                    const isSelected =
-                      serviceLine === "all"
-                        ? selectedServiceLines.includes("all")
-                        : selectedServiceLines.includes(serviceLine)
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Search Input */}
+              <div className="relative flex-1 min-w-[180px] max-w-[280px]">
+                <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  type="text"
+                  placeholder="Search..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-7 h-8 text-xs"
+                />
+              </div>
 
-                    return (
-                      <Button
-                        key={serviceLine}
-                        variant={isSelected ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => toggleServiceLine(serviceLine)}
-                        className={`text-xs ${isSelected ? "" : getServiceLineColor(serviceLine as ServiceLine)}`}
-                      >
-                        {serviceLine === "all" ? "All Service Lines" : serviceLine}
-                        <Badge variant="secondary" className="ml-2 bg-white/80 text-black">
-                          {count}
-                        </Badge>
-                      </Button>
-                    )
-                  })}
-                </div>
-
-                <div className="flex flex-wrap gap-2 items-center">
-                  <div className="relative flex-1 min-w-[200px] max-w-md">
-                    <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                    <Input
-                      type="text"
-                      placeholder="Search clients or work items..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-8 h-9 text-sm"
-                    />
-                  </div>
-
-                  <Select value={currentUserEmail} onValueChange={setCurrentUserEmail}>
-                    <SelectTrigger className="w-[200px] h-9 text-sm">
-                      <SelectValue placeholder="Select your name" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {getAllAssignees().map((assignee) => (
-                        <SelectItem key={assignee.email} value={assignee.email}>
-                          {assignee.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  <Button
-                    variant={showAssignedToMe ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setShowAssignedToMe(!showAssignedToMe)}
-                    disabled={!currentUserEmail}
-                    className="h-9 text-sm"
-                  >
-                    <UserCheck className="h-4 w-4 mr-2" />
-                    Assigned to Me
+              {/* Service Lines Multi-Select Dropdown */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1 bg-transparent">
+                    Service Lines
+                    {!selectedServiceLines.includes("all") && (
+                      <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
+                        {selectedServiceLines.length}
+                      </Badge>
+                    )}
+                    <ChevronDown className="h-3 w-3 ml-1" />
                   </Button>
-                </div>
+                </PopoverTrigger>
+                <PopoverContent className="w-56 p-2" align="start">
+                  <div className="space-y-1">
+                    <div
+                      className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                      onClick={() => setSelectedServiceLines(["all"])}
+                    >
+                      <Checkbox checked={selectedServiceLines.includes("all")} />
+                      <span className="text-xs">All Service Lines</span>
+                    </div>
+                    {getServiceLines()
+                      .filter((s) => s !== "all")
+                      .map((serviceLine) => (
+                        <div
+                          key={serviceLine}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                          onClick={() => toggleServiceLine(serviceLine)}
+                        >
+                          <Checkbox checked={selectedServiceLines.includes(serviceLine)} />
+                          <span className="text-xs">{serviceLine}</span>
+                          <Badge variant="outline" className="ml-auto h-4 px-1 text-[10px]">
+                            {getServiceLineCount(serviceLine)}
+                          </Badge>
+                        </div>
+                      ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
 
-                <div className="pt-2 border-t">
-                  <p className="text-xs font-medium text-muted-foreground mb-2">Fiscal Year</p>
-                  <div className="flex flex-wrap gap-1.5">
+              {/* Fiscal Year Multi-Select Dropdown */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1 bg-transparent">
+                    Fiscal Year
+                    {selectedFiscalYear !== "all" && (
+                      <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
+                        {selectedFiscalYear}
+                      </Badge>
+                    )}
+                    <ChevronDown className="h-3 w-3 ml-1" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-40 p-2" align="start">
+                  <div className="space-y-1">
                     {getAvailableFiscalYears().map((fy) => (
-                      <Button
+                      <div
                         key={fy}
-                        variant={selectedFiscalYear === fy ? "default" : "outline"}
-                        size="sm"
+                        className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
                         onClick={() => setSelectedFiscalYear(fy)}
-                        className="text-xs h-7"
                       >
-                        {fy === "all" ? "All Years" : `FY ${fy}`}
-                      </Button>
+                        <Checkbox checked={selectedFiscalYear === fy} />
+                        <span className="text-xs">{fy === "all" ? "All Years" : `FY ${fy}`}</span>
+                      </div>
                     ))}
                   </div>
-                </div>
+                </PopoverContent>
+              </Popover>
 
-                <div className="pt-2 border-t">
-                  <p className="text-xs font-medium text-muted-foreground mb-2">Priority</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {getAllPriorities().map((priority) => (
-                      <Button
-                        key={priority}
-                        variant={selectedPriorities.includes(priority) ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => {
-                          if (priority === "all") {
-                            setSelectedPriorities(["all"])
-                          } else {
+              {/* Priority Multi-Select Dropdown */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1 bg-transparent">
+                    Priority
+                    {!selectedPriorities.includes("all") && (
+                      <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
+                        {selectedPriorities.length}
+                      </Badge>
+                    )}
+                    <ChevronDown className="h-3 w-3 ml-1" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-40 p-2" align="start">
+                  <div className="space-y-1">
+                    <div
+                      className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                      onClick={() => setSelectedPriorities(["all"])}
+                    >
+                      <Checkbox checked={selectedPriorities.includes("all")} />
+                      <span className="text-xs">All Priorities</span>
+                    </div>
+                    {getAllPriorities()
+                      .filter((p) => p !== "all")
+                      .map((priority) => (
+                        <div
+                          key={priority}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                          onClick={() => {
                             setSelectedPriorities((prev) => {
                               const filtered = prev.filter((p) => p !== "all")
                               if (filtered.includes(priority)) {
@@ -604,28 +853,45 @@ export function WorkItemsView() {
                                 return [...filtered, priority]
                               }
                             })
-                          }
-                        }}
-                        className="text-xs h-7"
-                      >
-                        {priority === "all" ? "All Priorities" : priority}
-                      </Button>
-                    ))}
+                          }}
+                        >
+                          <Checkbox checked={selectedPriorities.includes(priority)} />
+                          <span className="text-xs">{priority}</span>
+                        </div>
+                      ))}
                   </div>
-                </div>
+                </PopoverContent>
+              </Popover>
 
-                <div className="pt-2 border-t">
-                  <p className="text-xs font-medium text-muted-foreground mb-2">Work Type</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {getAllWorkTypes().map((workType) => (
-                      <Button
-                        key={workType}
-                        variant={selectedWorkTypes.includes(workType) ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => {
-                          if (workType === "all") {
-                            setSelectedWorkTypes(["all"])
-                          } else {
+              {/* Work Type Multi-Select Dropdown */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1 bg-transparent">
+                    Work Type
+                    {!selectedWorkTypes.includes("all") && (
+                      <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
+                        {selectedWorkTypes.length}
+                      </Badge>
+                    )}
+                    <ChevronDown className="h-3 w-3 ml-1" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-56 p-2" align="start">
+                  <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                    <div
+                      className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                      onClick={() => setSelectedWorkTypes(["all"])}
+                    >
+                      <Checkbox checked={selectedWorkTypes.includes("all")} />
+                      <span className="text-xs">All Types</span>
+                    </div>
+                    {getAllWorkTypes()
+                      .filter((t) => t !== "all")
+                      .map((workType) => (
+                        <div
+                          key={workType}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                          onClick={() => {
                             setSelectedWorkTypes((prev) => {
                               const filtered = prev.filter((t) => t !== "all")
                               if (filtered.includes(workType)) {
@@ -635,64 +901,133 @@ export function WorkItemsView() {
                                 return [...filtered, workType]
                               }
                             })
-                          }
-                        }}
-                        className="text-xs h-7"
-                      >
-                        {workType === "all" ? "All Types" : workType}
-                      </Button>
-                    ))}
+                          }}
+                        >
+                          <Checkbox checked={selectedWorkTypes.includes(workType)} />
+                          <span className="text-xs truncate">{workType}</span>
+                        </div>
+                      ))}
                   </div>
-                </div>
+                </PopoverContent>
+              </Popover>
 
-                <div className="pt-2 border-t">
-                  <p className="text-xs font-medium text-muted-foreground mb-2">Due Date Range</p>
-                  <div className="flex gap-2 items-center">
-                    <Input
-                      type="date"
-                      value={dateRange.start || ""}
-                      onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
-                      className="h-9 text-sm"
-                      placeholder="Start date"
-                    />
-                    <span className="text-sm text-muted-foreground">to</span>
-                    <Input
-                      type="date"
-                      value={dateRange.end || ""}
-                      onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
-                      className="h-9 text-sm"
-                      placeholder="End date"
-                    />
+              {/* Date Range Dropdown */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1 bg-transparent">
+                    Due Date
                     {(dateRange.start || dateRange.end) && (
-                      <Button variant="ghost" size="sm" onClick={() => setDateRange({})} className="h-9">
-                        Clear
+                      <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
+                        Set
+                      </Badge>
+                    )}
+                    <ChevronDown className="h-3 w-3 ml-1" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64 p-3" align="start">
+                  <div className="space-y-2">
+                    <div>
+                      <label className="text-xs text-muted-foreground">From</label>
+                      <Input
+                        type="date"
+                        value={dateRange.start || ""}
+                        onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
+                        className="h-8 text-xs mt-1"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">To</label>
+                      <Input
+                        type="date"
+                        value={dateRange.end || ""}
+                        onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
+                        className="h-8 text-xs mt-1"
+                      />
+                    </div>
+                    {(dateRange.start || dateRange.end) && (
+                      <Button variant="ghost" size="sm" onClick={() => setDateRange({})} className="h-7 text-xs w-full">
+                        Clear Dates
                       </Button>
                     )}
                   </div>
-                </div>
-              </CardContent>
-            </Card>
+                </PopoverContent>
+              </Popover>
+
+              {/* Assignee Dropdown */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1 bg-transparent">
+                    <User className="h-3 w-3" />
+                    Assignee
+                    {(currentUserEmail || showAssignedToMe) && (
+                      <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
+                        1
+                      </Badge>
+                    )}
+                    <ChevronDown className="h-3 w-3 ml-1" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-56 p-2" align="start">
+                  <div className="space-y-2">
+                    <Select value={currentUserEmail || "all"} onValueChange={setCurrentUserEmail}>
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue placeholder="Select assignee" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Assignees</SelectItem>
+                        {getAllAssignees().map((assignee) => (
+                          <SelectItem key={assignee.email} value={assignee.email}>
+                            {assignee.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <div
+                      className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                      onClick={() => setShowAssignedToMe(!showAssignedToMe)}
+                    >
+                      <Checkbox checked={showAssignedToMe} disabled={!currentUserEmail} />
+                      <span className="text-xs">Assigned to Me</span>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+
+              {/* Clear Filters Button */}
+              {getActiveFilterCount() > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearAllFilters}
+                  className="h-8 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-3 w-3 mr-1" />
+                  Clear ({getActiveFilterCount()})
+                </Button>
+              )}
+
+              {/* Results Count */}
+              <span className="text-xs text-muted-foreground ml-auto">{filteredItems.length} results</span>
+            </div>
           )}
 
           {loading ? (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {[1, 2, 3, 4, 5].map((i) => (
-                <Card key={i}>
-                  <CardHeader>
-                    <Skeleton className="h-6 w-3/4" />
-                    <Skeleton className="h-4 w-1/2 mt-2" />
-                  </CardHeader>
+                <Card key={i} className="p-3">
+                  <Skeleton className="h-5 w-3/4" />
+                  <Skeleton className="h-4 w-1/2 mt-2" />
                 </Card>
               ))}
             </div>
           ) : filteredItems.length === 0 ? (
             <Card>
-              <CardContent className="flex flex-col items-center justify-center py-12">
-                <CheckSquare className="h-12 w-12 text-muted-foreground mb-4" />
-                <p className="text-lg font-medium text-muted-foreground">No work items found</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {!selectedServiceLines.includes("all")
-                    ? `No ${activeTab} work items for selected service lines`
+              <CardContent className="flex flex-col items-center justify-center py-8">
+                <CheckSquare className="h-10 w-10 text-muted-foreground mb-3" />
+                <p className="text-sm font-medium text-muted-foreground">No work items found</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {getActiveFilterCount() > 0
+                    ? "Try adjusting your filters"
                     : activeTab === "all"
                       ? "Connect to Karbon to see your work items"
                       : `No ${activeTab} work items at the moment`}
@@ -700,115 +1035,67 @@ export function WorkItemsView() {
               </CardContent>
             </Card>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {filteredItems.map((item) => (
-                <Card key={item.WorkKey} className="hover:shadow-md transition-shadow">
-                  <CardHeader>
-                    <div className="flex items-start justify-between gap-4">
+                <Card key={item.WorkItemKey} className="hover:shadow-sm transition-shadow">
+                  <CardContent className="p-3">
+                    <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <a
-                            href={getKarbonWorkItemUrl(item.WorkKey)}
+                            href={getKarbonWorkItemUrl(item.WorkItemKey)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="hover:underline"
+                            className="hover:underline font-medium text-sm flex items-center gap-1"
                           >
-                            <CardTitle className="text-lg flex items-center gap-2">
-                              {item.Title}
-                              <ExternalLink className="h-4 w-4 text-gray-400" />
-                            </CardTitle>
+                            {item.Title}
+                            <ExternalLink className="h-3 w-3 text-gray-400" />
                           </a>
-                          <Badge variant="outline" className="text-xs font-mono">
-                            {item.WorkKey}
+                          <Badge variant="outline" className="text-[10px] font-mono h-5">
+                            {item.WorkItemKey}
                           </Badge>
-                          <Badge className={`text-xs ${getServiceLineColor(item.ServiceLine as ServiceLine)}`}>
-                            {item.ServiceLine}
-                          </Badge>
+                          {item.WorkType && (
+                            <Badge className={`text-[10px] h-5 ${getServiceLineColor(item.WorkType as ServiceLine)}`}>
+                              {item.WorkType}
+                            </Badge>
+                          )}
+                          {item.Priority && (
+                            <Badge className={`text-[10px] h-5 ${getPriorityColor(item.Priority)}`}>
+                              {item.Priority}
+                            </Badge>
+                          )}
                         </div>
-                        <CardDescription className="flex flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground flex-wrap">
                           {item.ClientName && (
                             <span className="flex items-center gap-1">
                               <Building2 className="h-3 w-3" />
                               {item.ClientName}
                             </span>
                           )}
-                          {item.ClientGroup && (
-                            <Badge variant="secondary" className="text-xs">
-                              {item.ClientGroup}
+                          {item.DueDate && (
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              Due: {formatDate(item.DueDate)}
+                            </span>
+                          )}
+                          {item.AssignedTo && normalizeAssignedTo(item.AssignedTo).length > 0 && (
+                            <span className="flex items-center gap-1">
+                              <User className="h-3 w-3" />
+                              {normalizeAssignedTo(item.AssignedTo)
+                                .map((a) => a.FullName)
+                                .join(", ")}
+                            </span>
+                          )}
+                          {item.WorkStatus && (
+                            <Badge variant="outline" className="text-[10px] h-5">
+                              {item.WorkStatus}
                             </Badge>
                           )}
-                          {item.WorkType && (
-                            <Badge variant="secondary" className="text-xs">
-                              {item.WorkType}
-                            </Badge>
-                          )}
-                          {item.PrimaryStatus && (
-                            <Badge variant="outline" className="text-xs">
-                              {item.PrimaryStatus}
-                            </Badge>
-                          )}
-                        </CardDescription>
+                        </div>
                       </div>
-                      <Badge className={`${getStatusColor(item)} border shrink-0`}>
+                      <Badge className={`${getStatusColor(item)} border shrink-0 text-[10px] h-5`}>
                         {determineStatus(item).charAt(0).toUpperCase() + determineStatus(item).slice(1)}
                       </Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-3">
-                      <div className="flex flex-wrap items-center gap-4 text-sm">
-                        {item.StartDate && (
-                          <div className="flex items-center gap-1.5 text-muted-foreground">
-                            <Calendar className="h-4 w-4" />
-                            <span>Started: {formatDate(item.StartDate)}</span>
-                          </div>
-                        )}
-                        {item.DueDate && (
-                          <div className="flex items-center gap-1.5 text-muted-foreground">
-                            <Clock className="h-4 w-4" />
-                            <span>Due: {formatDate(item.DueDate)}</span>
-                          </div>
-                        )}
-                        {item.CompletedDate && (
-                          <div className="flex items-center gap-1.5 text-green-600">
-                            <CheckCircle2 className="h-4 w-4" />
-                            <span>Completed: {formatDate(item.CompletedDate)}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2">
-                        {item.AssignedTo && item.AssignedTo.length > 0 && (
-                          <div className="flex items-center gap-2">
-                            <User className="h-4 w-4 text-muted-foreground" />
-                            <div className="flex flex-wrap gap-1">
-                              {item.AssignedTo.map((assignee, idx) => (
-                                <Badge key={idx} variant="outline" className="text-xs">
-                                  {assignee.FullName}
-                                </Badge>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {item.Priority && (
-                          <Badge className={getPriorityColor(item.Priority)} variant="secondary">
-                            {item.Priority} Priority
-                          </Badge>
-                        )}
-                      </div>
-
-                      {item.SecondaryStatus && determineStatus(item) === "cancelled" && (
-                        <div className="pt-2 border-t">
-                          <p className="text-sm font-medium text-muted-foreground mb-1">Reason:</p>
-                          <Badge variant="outline" className="text-xs bg-red-50 text-red-700 border-red-200">
-                            {item.SecondaryStatus}
-                          </Badge>
-                        </div>
-                      )}
-
-                      {item.Description && (
-                        <p className="text-sm text-muted-foreground pt-2 border-t line-clamp-2">{item.Description}</p>
-                      )}
                     </div>
                   </CardContent>
                 </Card>

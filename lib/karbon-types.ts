@@ -15,11 +15,12 @@ export interface KarbonWorkItem {
   StartDate?: string
   CompletedDate?: string
   ModifiedDate?: string
-  AssignedTo?: Array<{
+  CreatedDate?: string
+  AssignedTo?: {
     UserKey: string
     FullName: string
     Email: string
-  }>
+  } | null
   Priority?: string
   Description?: string
   UserRoleAssignments?: Array<{
@@ -37,6 +38,10 @@ export interface KarbonWorkItem {
   }
   Tags?: string[]
   CustomFields?: Record<string, any>
+  WorkItemTypeKey?: string
+  PermaKey?: string
+  EstimatedBudgetMinutes?: number
+  EstimatedCompletionDate?: string
 }
 
 export interface KarbonWorkItemsResponse {
@@ -87,6 +92,124 @@ export interface KarbonClientDetails {
     clientName: string
     workItemCount: number
   }>
+}
+
+export interface KarbonTask {
+  TaskKey: string
+  Title: string
+  Description?: string
+  Status: string
+  DueDate?: string
+  CompletedDate?: string
+  AssignedTo?: {
+    UserKey: string
+    FullName: string
+    Email?: string
+  } | null
+  Priority?: string
+  WorkItemKey?: string
+  ContactKey?: string
+  CreatedDate?: string
+  ModifiedDate?: string
+}
+
+export interface KarbonWorkItemTask {
+  TaskKey: string
+  WorkItemTaskKey: string
+  Title: string
+  Description?: string
+  Status: string
+  IsComplete: boolean
+  DueDate?: string
+  CompletedDate?: string
+  SortOrder: number
+  AssignedTo?: {
+    UserKey: string
+    FullName: string
+    Email?: string
+  } | null
+  EstimatedMinutes?: number
+  ActualMinutes?: number
+}
+
+export interface KarbonTimesheet {
+  TimesheetKey: string
+  Date: string
+  Minutes: number
+  Hours: string
+  Description?: string
+  IsBillable: boolean
+  BillingStatus?: string
+  HourlyRate?: number
+  BilledAmount?: number
+  User?: {
+    UserKey: string
+    FullName: string
+  } | null
+  WorkItem?: {
+    WorkItemKey: string
+    Title: string
+  } | null
+  Client?: {
+    ClientKey: string
+    ClientName: string
+  } | null
+  TaskKey?: string
+  CreatedDate?: string
+  ModifiedDate?: string
+}
+
+export interface KarbonTimesheetSummary {
+  totalMinutes: number
+  totalHours: string
+  billableMinutes: number
+  billableHours: string
+  nonBillableMinutes: number
+  nonBillableHours: string
+}
+
+export interface KarbonClientGroup {
+  ClientGroupKey: string
+  Name: string
+  Description?: string
+  GroupType?: string
+  Members: Array<{
+    ContactKey: string
+    ContactName: string
+    Role?: string
+  }>
+  PrimaryContact?: {
+    ContactKey: string
+    Name: string
+  } | null
+  CreatedDate?: string
+  ModifiedDate?: string
+}
+
+export interface KarbonNote {
+  NoteKey: string
+  Subject?: string
+  Body: string
+  NoteType?: string
+  Author?: {
+    UserKey: string
+    FullName: string
+  } | null
+  Contact?: {
+    ContactKey: string
+    Name: string
+  } | null
+  WorkItem?: {
+    WorkItemKey: string
+    Title: string
+  } | null
+  CreatedDate?: string
+  ModifiedDate?: string
+  IsPinned?: boolean
+}
+
+export interface KarbonWorkItemNote extends KarbonNote {
+  WorkItemNoteKey: string
 }
 
 export interface KarbonContact {
@@ -209,4 +332,29 @@ export interface KarbonUser {
   bio?: string
   skills?: string[]
   certifications?: string[]
+}
+
+export interface KarbonTasksResponse {
+  tasks: KarbonTask[]
+  count: number
+  totalCount?: number
+}
+
+export interface KarbonTimesheetsResponse {
+  timesheets: KarbonTimesheet[]
+  count: number
+  totalCount?: number
+  summary: KarbonTimesheetSummary
+}
+
+export interface KarbonClientGroupsResponse {
+  clientGroups: KarbonClientGroup[]
+  count: number
+  totalCount?: number
+}
+
+export interface KarbonNotesResponse {
+  notes: KarbonNote[]
+  count: number
+  totalCount?: number
 }

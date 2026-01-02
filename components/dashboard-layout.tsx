@@ -27,6 +27,10 @@ import {
   ClipboardList,
   Lightbulb,
   Mail,
+  Database,
+  NotebookPen,
+  ArrowRightLeft,
+  Trophy,
 } from "lucide-react"
 import Image from "next/image"
 
@@ -36,6 +40,7 @@ const navigation = [
   { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
   { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
+  { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
   { name: "Calendly", href: "/calendly", icon: CalendarClock },
   { name: "Zoom", href: "/zoom", icon: Video },
   { name: "Accounting", href: "/accounting", icon: Calculator },
@@ -48,6 +53,9 @@ const navigation = [
   { name: "Special Teams", href: "/special-teams", icon: Sparkles },
   { name: "Service Pipelines", href: "/pipelines", icon: GitBranch, alfredSuggestions: 15 },
   { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
+  { name: "Meeting Notes", href: "/meeting-notes", icon: NotebookPen },
+  { name: "Karbon Data", href: "/karbon-data", icon: Database },
+  { name: "Migration", href: "/migration", icon: ArrowRightLeft },
   { name: "Settings", href: "/settings", icon: Settings },
 ]
 
@@ -97,7 +105,7 @@ function Sidebar() {
     >
       <div className="flex h-20 shrink-0 items-center">
         <Image
-          src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/Motta_Logo_Tagline_Web_Color-COVqAa1Ft4stCCzr1ZvQcADNqm1109.png"
+          src="/images/motta-logo-tagline-web-color.png"
           alt="Motta Financial"
           width={180}
           height={60}
@@ -171,7 +179,7 @@ function Sidebar() {
         <div className="flex items-center justify-center">
           <div className="relative animate-pulse">
             <Image
-              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/ALFRED%20Ai_Logo_Icon%20%28No%20Back%29-wHHQbf3QCCdxOyaDuy8TUXXYerulGR.png"
+              src="/images/alfred-20ai-logo-icon-20-28no-20back-29.png"
               alt="ALFRED AI"
               width={48}
               height={48}
