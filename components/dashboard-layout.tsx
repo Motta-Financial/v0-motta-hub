@@ -57,6 +57,7 @@ const navigation = [
   { name: "Karbon Data", href: "/karbon-data", icon: Database },
   { name: "Migration", href: "/migration", icon: ArrowRightLeft },
   { name: "Settings", href: "/settings", icon: Settings },
+  { name: "Webhooks", href: "/settings/webhooks", icon: ArrowRightLeft, isSubItem: true },
 ]
 
 interface DashboardLayoutProps {
