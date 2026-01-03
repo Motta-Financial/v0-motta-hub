@@ -6,18 +6,64 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Mail, Phone, MapPin, Calendar, Search, Users, Filter, Briefcase, Shield, Clock } from "lucide-react"
-import type { KarbonUser } from "@/lib/karbon-types"
+import {
+  Mail,
+  Phone,
+  MapPin,
+  Calendar,
+  Search,
+  Users,
+  Filter,
+  Briefcase,
+  Shield,
+  RefreshCw,
+  CheckCircle,
+  AlertCircle,
+} from "lucide-react"
 import { ViewManager } from "@/components/view-manager"
 import type { FilterView } from "@/lib/view-types"
+import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+
+interface TeamMember {
+  id: string
+  first_name: string
+  last_name: string
+  full_name: string
+  email: string
+  title?: string
+  role?: string
+  department?: string
+  phone_number?: string
+  mobile_number?: string
+  avatar_url?: string
+  timezone?: string
+  start_date?: string
+  manager_id?: string
+  is_active: boolean
+  karbon_user_key?: string
+  created_at?: string
+  updated_at?: string
+}
+
+interface SyncResult {
+  success: boolean
+  synced: number
+  updated: number
+  created: number
+  errors: number
+  total: number
+  errorDetails?: string[]
+}
 
 export function Teammates() {
-  const [users, setUsers] = useState<KarbonUser[]>([])
+  const [users, setUsers] = useState<TeamMember[]>([])
   const [loading, setLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all")
   const [departmentFilter, setDepartmentFilter] = useState<string>("all")
-  const [officeFilter, setOfficeFilter] = useState<string>("all")
 
   useEffect(() => {
     fetchUsers()
@@ -25,36 +71,62 @@ export function Teammates() {
 
   const fetchUsers = async () => {
     try {
-      const response = await fetch("/api/karbon/users")
+      const response = await fetch("/api/team-members")
       if (!response.ok) throw new Error("Failed to fetch users")
       const data = await response.json()
-      setUsers(data)
+      const usersArray = data.team_members || data.teamMembers || []
+      setUsers(usersArray)
     } catch (error) {
       console.error("Error fetching users:", error)
+      setUsers([])
     } finally {
       setLoading(false)
     }
   }
 
-  // Get unique departments and offices for filters
+  const syncFromKarbon = async () => {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const response = await fetch("/api/karbon/users?import=true")
+      if (!response.ok) throw new Error("Failed to sync users")
+      const data = await response.json()
+      if (data.importResult) {
+        setSyncResult(data.importResult)
+      }
+      await fetchUsers() // Refresh the list after sync
+    } catch (error) {
+      console.error("Error syncing users:", error)
+      setSyncResult({
+        success: false,
+        synced: 0,
+        updated: 0,
+        created: 0,
+        errors: 1,
+        total: 0,
+        errorDetails: [error instanceof Error ? error.message : "Unknown error"],
+      })
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  // Get unique departments for filters
   const departments = Array.from(new Set(users.map((u) => u.department).filter(Boolean))) as string[]
-  const offices = Array.from(new Set(users.map((u) => u.officeLocation).filter(Boolean))) as string[]
 
   const filteredUsers = users.filter((user) => {
     const matchesSearch =
-      user.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      user.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      user.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      user.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       user.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       user.department?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      user.officeLocation?.toLowerCase().includes(searchQuery.toLowerCase())
+      user.role?.toLowerCase().includes(searchQuery.toLowerCase())
 
-    const matchesStatus = statusFilter === "all" || (statusFilter === "active" ? user.isActive : !user.isActive)
+    const matchesStatus = statusFilter === "all" || (statusFilter === "active" ? user.is_active : !user.is_active)
 
     const matchesDepartment = departmentFilter === "all" || user.department === departmentFilter
 
-    const matchesOffice = officeFilter === "all" || user.officeLocation === officeFilter
-
-    return matchesSearch && matchesStatus && matchesDepartment && matchesOffice
+    return matchesSearch && matchesStatus && matchesDepartment
   })
 
   const getInitials = (name: string) => {
@@ -70,15 +142,17 @@ export function Teammates() {
     if (view.filters.searchQuery) setSearchQuery(view.filters.searchQuery)
     if (view.filters.userStatus) setStatusFilter(view.filters.userStatus)
     if (view.filters.department) setDepartmentFilter(view.filters.department)
-    if (view.filters.officeLocation) setOfficeFilter(view.filters.officeLocation)
   }
 
   const getCurrentFilters = () => ({
     searchQuery,
     userStatus: statusFilter,
     department: departmentFilter,
-    officeLocation: officeFilter,
   })
+
+  // Count linked vs unlinked
+  const linkedCount = users.filter((u) => u.karbon_user_key).length
+  const unlinkedCount = users.filter((u) => !u.karbon_user_key).length
 
   if (loading) {
     return (
@@ -96,9 +170,76 @@ export function Teammates() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Team Members</h1>
-          <p className="text-gray-600 mt-2">All Karbon users in your organization</p>
+          <p className="text-gray-600 mt-2">Motta Financial team directory</p>
         </div>
-        <ViewManager type="teammates" currentFilters={getCurrentFilters()} onLoadView={handleLoadView} />
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={syncFromKarbon} disabled={syncing}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
+            {syncing ? "Syncing..." : "Sync from Karbon"}
+          </Button>
+          <ViewManager type="teammates" currentFilters={getCurrentFilters()} onLoadView={handleLoadView} />
+        </div>
+      </div>
+
+      {syncResult && (
+        <Alert variant={syncResult.success ? "default" : "destructive"}>
+          {syncResult.success ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+          <AlertTitle>{syncResult.success ? "Sync Complete" : "Sync Had Errors"}</AlertTitle>
+          <AlertDescription>
+            <div className="mt-2 space-y-1">
+              <p>Total from Karbon: {syncResult.total} users</p>
+              <p>
+                Updated: {syncResult.updated} | Created: {syncResult.created} | Errors: {syncResult.errors}
+              </p>
+              {syncResult.errorDetails && syncResult.errorDetails.length > 0 && (
+                <div className="mt-2 text-sm">
+                  <p className="font-medium">Error details:</p>
+                  <ul className="list-disc list-inside">
+                    {syncResult.errorDetails.slice(0, 5).map((err, i) => (
+                      <li key={i}>{err}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Total Members</p>
+                <p className="text-2xl font-bold">{users.length}</p>
+              </div>
+              <Users className="h-8 w-8 text-muted-foreground" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Karbon Linked</p>
+                <p className="text-2xl font-bold text-green-600">{linkedCount}</p>
+              </div>
+              <CheckCircle className="h-8 w-8 text-green-600" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Not Linked</p>
+                <p className="text-2xl font-bold text-amber-600">{unlinkedCount}</p>
+              </div>
+              <AlertCircle className="h-8 w-8 text-amber-600" />
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
@@ -121,13 +262,13 @@ export function Teammates() {
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="Search by name, email, title, department, or location..."
+                placeholder="Search by name, email, title, department, or role..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10"
               />
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Select value={statusFilter} onValueChange={(value: any) => setStatusFilter(value)}>
                 <SelectTrigger>
                   <Filter className="h-4 w-4 mr-2" />
@@ -156,43 +297,26 @@ export function Teammates() {
                   </SelectContent>
                 </Select>
               )}
-
-              {offices.length > 0 && (
-                <Select value={officeFilter} onValueChange={setOfficeFilter}>
-                  <SelectTrigger>
-                    <MapPin className="h-4 w-4 mr-2" />
-                    <SelectValue placeholder="Filter by office" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Offices</SelectItem>
-                    {offices.map((office) => (
-                      <SelectItem key={office} value={office}>
-                        {office}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
             </div>
           </div>
 
           {/* User Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredUsers.map((user) => (
-              <Card key={user.userKey} className="hover:shadow-md transition-shadow">
+              <Card key={user.id} className="hover:shadow-md transition-shadow">
                 <CardContent className="p-6">
                   <div className="flex items-start gap-4">
                     <Avatar className="h-14 w-14">
-                      <AvatarImage src={user.avatarUrl || "/placeholder.svg"} alt={user.fullName} />
+                      <AvatarImage src={user.avatar_url || "/placeholder.svg"} alt={user.full_name} />
                       <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white text-lg">
-                        {getInitials(user.fullName)}
+                        {getInitials(user.full_name)}
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-start justify-between gap-2">
-                        <h3 className="font-semibold text-gray-900 truncate">{user.fullName}</h3>
-                        <Badge variant={user.isActive ? "default" : "secondary"} className="flex-shrink-0">
-                          {user.isActive ? "Active" : "Inactive"}
+                        <h3 className="font-semibold text-gray-900 truncate">{user.full_name}</h3>
+                        <Badge variant={user.is_active ? "default" : "secondary"} className="flex-shrink-0">
+                          {user.is_active ? "Active" : "Inactive"}
                         </Badge>
                       </div>
                       {user.title && <p className="text-sm text-gray-600 truncate mt-1">{user.title}</p>}
@@ -216,45 +340,32 @@ export function Teammates() {
                           <Mail className="h-4 w-4 flex-shrink-0" />
                           <span className="truncate">{user.email}</span>
                         </a>
-                        {(user.phoneNumber || user.mobileNumber) && (
+                        {(user.phone_number || user.mobile_number) && (
                           <a
-                            href={`tel:${user.phoneNumber || user.mobileNumber}`}
+                            href={`tel:${user.phone_number || user.mobile_number}`}
                             className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
                           >
                             <Phone className="h-4 w-4 flex-shrink-0" />
-                            <span className="truncate">{user.phoneNumber || user.mobileNumber}</span>
+                            <span className="truncate">{user.phone_number || user.mobile_number}</span>
                           </a>
                         )}
-                        {user.officeLocation && (
+                        {user.timezone && (
                           <div className="flex items-center gap-2 text-sm text-gray-600">
                             <MapPin className="h-4 w-4 flex-shrink-0" />
-                            <span className="truncate">{user.officeLocation}</span>
+                            <span className="truncate">{user.timezone}</span>
                           </div>
                         )}
-                        {user.startDate && (
+                        {user.start_date && (
                           <div className="flex items-center gap-2 text-xs text-gray-500">
                             <Calendar className="h-3 w-3 flex-shrink-0" />
-                            <span className="truncate">Started {new Date(user.startDate).toLocaleDateString()}</span>
+                            <span className="truncate">Started {new Date(user.start_date).toLocaleDateString()}</span>
                           </div>
                         )}
-                        {user.teams && user.teams.length > 0 && (
+                        {user.karbon_user_key && (
                           <div className="mt-2 pt-2 border-t">
-                            <p className="text-xs font-semibold text-gray-700 mb-1">Teams:</p>
-                            <div className="flex flex-wrap gap-1">
-                              {user.teams.map((team) => (
-                                <Badge key={team.teamKey} variant="outline" className="text-xs">
-                                  {team.teamName}
-                                </Badge>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {user.lastLoginDate && (
-                          <div className="flex items-center gap-2 text-xs text-gray-500">
-                            <Clock className="h-3 w-3 flex-shrink-0" />
-                            <span className="truncate">
-                              Last login: {new Date(user.lastLoginDate).toLocaleDateString()}
-                            </span>
+                            <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200">
+                              Karbon Linked
+                            </Badge>
                           </div>
                         )}
                       </div>
@@ -269,6 +380,10 @@ export function Teammates() {
             <div className="text-center py-12">
               <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
               <p className="text-gray-600">No team members found matching your filters.</p>
+              <Button variant="outline" className="mt-4 bg-transparent" onClick={syncFromKarbon} disabled={syncing}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
+                Sync from Karbon
+              </Button>
             </div>
           )}
         </CardContent>

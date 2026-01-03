@@ -1,10 +1,43 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getKarbonCredentials, karbonFetchAll, karbonFetch } from "@/lib/karbon-api"
+import { createClient } from "@supabase/supabase-js"
 
-/**
- * GET /api/karbon/timesheets
- * Fetch timesheets from Karbon with optional filtering
- */
+function getSupabaseClient() {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+  if (!supabaseUrl || !supabaseKey) {
+    return null
+  }
+
+  return createClient(supabaseUrl, supabaseKey)
+}
+
+function mapKarbonTimesheetToSupabase(entry: any) {
+  return {
+    karbon_timesheet_key: entry.TimesheetKey,
+    date: entry.Date ? entry.Date.split("T")[0] : null,
+    minutes: entry.Minutes || 0,
+    description: entry.Description || null,
+    is_billable: entry.IsBillable ?? true,
+    billing_status: entry.BillingStatus || null,
+    hourly_rate: entry.HourlyRate || null,
+    billed_amount: entry.BilledAmount || null,
+    user_key: entry.UserKey || null,
+    user_name: entry.UserName || null,
+    karbon_work_item_key: entry.WorkItemKey || null,
+    work_item_title: entry.WorkItemTitle || null,
+    client_key: entry.ClientKey || null,
+    client_name: entry.ClientName || null,
+    task_key: entry.TaskKey || null,
+    karbon_url: entry.TimesheetKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/timesheets/${entry.TimesheetKey}` : null,
+    karbon_created_at: entry.CreatedDate || null,
+    karbon_modified_at: entry.LastModifiedDateTime || null,
+    last_synced_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
+}
+
 export async function GET(request: NextRequest) {
   const credentials = getKarbonCredentials()
 
@@ -20,6 +53,8 @@ export async function GET(request: NextRequest) {
     const dateFrom = searchParams.get("dateFrom")
     const dateTo = searchParams.get("dateTo")
     const top = searchParams.get("top")
+    const importToSupabase = searchParams.get("import") === "true"
+    const incrementalSync = searchParams.get("incremental") === "true"
 
     const filters: string[] = []
 
@@ -48,6 +83,26 @@ export async function GET(request: NextRequest) {
       orderby: "Date desc",
     }
 
+    // Get last sync timestamp for incremental sync
+    let lastSyncTimestamp: string | null = null
+    if (incrementalSync && importToSupabase) {
+      const supabase = getSupabaseClient()
+      if (supabase) {
+        const { data: lastSync } = await supabase
+          .from("karbon_timesheets")
+          .select("karbon_modified_at")
+          .not("karbon_modified_at", "is", null)
+          .order("karbon_modified_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (lastSync?.karbon_modified_at) {
+          lastSyncTimestamp = lastSync.karbon_modified_at
+          filters.push(`LastModifiedDateTime gt ${lastSyncTimestamp}`)
+        }
+      }
+    }
+
     if (filters.length > 0) {
       queryOptions.filter = filters.join(" and ")
     }
@@ -60,6 +115,48 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       return NextResponse.json({ error: `Karbon API error: ${error}` }, { status: 500 })
+    }
+
+    let importResult = null
+    if (importToSupabase) {
+      const supabase = getSupabaseClient()
+      if (!supabase) {
+        importResult = { error: "Supabase not configured" }
+      } else {
+        let synced = 0
+        let errors = 0
+        const errorDetails: string[] = []
+
+        const batchSize = 50
+        for (let i = 0; i < timesheets.length; i += batchSize) {
+          const batch = timesheets.slice(i, i + batchSize)
+          const mappedBatch = batch.map((entry: any) => ({
+            ...mapKarbonTimesheetToSupabase(entry),
+            created_at: new Date().toISOString(),
+          }))
+
+          const { error: upsertError } = await supabase.from("karbon_timesheets").upsert(mappedBatch, {
+            onConflict: "karbon_timesheet_key",
+            ignoreDuplicates: false,
+          })
+
+          if (upsertError) {
+            errors += batch.length
+            errorDetails.push(upsertError.message)
+          } else {
+            synced += batch.length
+          }
+        }
+
+        importResult = {
+          success: errors === 0,
+          synced,
+          errors,
+          incrementalSync,
+          lastSyncTimestamp,
+          errorDetails: errorDetails.length > 0 ? errorDetails.slice(0, 5) : undefined,
+        }
+      }
     }
 
     const mappedTimesheets = timesheets.map((entry: any) => ({
@@ -113,6 +210,7 @@ export async function GET(request: NextRequest) {
         nonBillableMinutes: totalMinutes - billableMinutes,
         nonBillableHours: ((totalMinutes - billableMinutes) / 60).toFixed(2),
       },
+      importResult,
     })
   } catch (error) {
     console.error("[v0] Error fetching Karbon timesheets:", error)
@@ -123,10 +221,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-/**
- * POST /api/karbon/timesheets
- * Create a new timesheet entry
- */
 export async function POST(request: NextRequest) {
   const credentials = getKarbonCredentials()
 

@@ -5,7 +5,7 @@ export async function GET(request: Request) {
   const supabase = await createClient()
   const { searchParams } = new URL(request.url)
 
-  const clientName = searchParams.get("client")
+  const clientName = searchParams.get("client") || searchParams.get("clientName")
   const startDate = searchParams.get("startDate")
   const endDate = searchParams.get("endDate")
   const limit = Number.parseInt(searchParams.get("limit") || "100")

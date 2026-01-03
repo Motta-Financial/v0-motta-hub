@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Trophy, Medal, Award, Star, Sparkles, CheckCircle2, Send, Users } from "lucide-react"
+import { Trophy, Medal, Award, Star, Sparkles, Send, Users, Info } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 
 interface TeamMember {
@@ -35,6 +35,7 @@ export function TommyVotingForm() {
   const [error, setError] = useState<string | null>(null)
   const [currentWeekId, setCurrentWeekId] = useState<string | null>(null)
   const [currentVoter, setCurrentVoter] = useState<string>("")
+  const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear())
 
   const [firstPlace, setFirstPlace] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
   const [secondPlace, setSecondPlace] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
@@ -42,6 +43,8 @@ export function TommyVotingForm() {
   const [honorableMention, setHonorableMention] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
   const [partnerVote, setPartnerVote] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
   const [isPartner, setIsPartner] = useState(false)
+
+  const is2026OrLater = currentYear >= 2026
 
   useEffect(() => {
     fetchData()
@@ -51,7 +54,6 @@ export function TommyVotingForm() {
     const supabase = createClient()
 
     try {
-      // Get team members
       const { data: members, error: membersError } = await supabase
         .from("team_members")
         .select("id, full_name, email, avatar_url, role")
@@ -61,8 +63,8 @@ export function TommyVotingForm() {
       if (membersError) throw membersError
       setTeamMembers(members || [])
 
-      // Get or create current week
       const today = new Date()
+      setCurrentYear(today.getFullYear())
       const friday = getFridayOfWeek(today)
       const fridayStr = friday.toISOString().split("T")[0]
 
@@ -73,7 +75,6 @@ export function TommyVotingForm() {
         .single()
 
       if (!currentWeek) {
-        // Create new week
         const { data: newWeek, error: createError } = await supabase
           .from("tommy_award_weeks")
           .insert({
@@ -119,13 +120,11 @@ export function TommyVotingForm() {
   }
 
   const getSelectedMembers = () => {
-    return [
-      firstPlace.memberId,
-      secondPlace.memberId,
-      thirdPlace.memberId,
-      honorableMention.memberId,
-      partnerVote.memberId,
-    ].filter(Boolean)
+    const selections = [firstPlace.memberId, secondPlace.memberId, thirdPlace.memberId]
+    if (!is2026OrLater) {
+      selections.push(honorableMention.memberId, partnerVote.memberId)
+    }
+    return selections.filter(Boolean)
   }
 
   const getAvailableMembers = (currentSelection: string | null) => {
@@ -153,7 +152,7 @@ export function TommyVotingForm() {
       const voter = teamMembers.find((m) => m.id === currentVoter)
       const friday = getFridayOfWeek(new Date())
 
-      const { error: submitError } = await supabase.from("tommy_award_ballots").insert({
+      const ballotData: Record<string, unknown> = {
         week_id: currentWeekId,
         week_date: friday.toISOString().split("T")[0],
         voter_id: currentVoter,
@@ -167,13 +166,25 @@ export function TommyVotingForm() {
         third_place_id: thirdPlace.memberId,
         third_place_name: thirdPlace.memberName,
         third_place_notes: thirdPlace.notes,
-        honorable_mention_id: honorableMention.memberId,
-        honorable_mention_name: honorableMention.memberName,
-        honorable_mention_notes: honorableMention.notes,
-        partner_vote_id: isPartner ? partnerVote.memberId : null,
-        partner_vote_name: isPartner ? partnerVote.memberName : null,
-        partner_vote_notes: isPartner ? partnerVote.notes : null,
-      })
+      }
+
+      if (!is2026OrLater) {
+        ballotData.honorable_mention_id = honorableMention.memberId
+        ballotData.honorable_mention_name = honorableMention.memberName
+        ballotData.honorable_mention_notes = honorableMention.notes
+        ballotData.partner_vote_id = isPartner ? partnerVote.memberId : null
+        ballotData.partner_vote_name = isPartner ? partnerVote.memberName : null
+        ballotData.partner_vote_notes = isPartner ? partnerVote.notes : null
+      } else {
+        ballotData.honorable_mention_id = null
+        ballotData.honorable_mention_name = null
+        ballotData.honorable_mention_notes = null
+        ballotData.partner_vote_id = null
+        ballotData.partner_vote_name = null
+        ballotData.partner_vote_notes = null
+      }
+
+      const { error: submitError } = await supabase.from("tommy_award_ballots").insert(ballotData)
 
       if (submitError) {
         if (submitError.code === "23505") {
@@ -205,16 +216,21 @@ export function TommyVotingForm() {
 
   if (submitted) {
     return (
-      <Card className="border-border bg-gradient-to-br from-emerald-50 to-teal-50">
+      <Card className="border-border bg-gradient-to-br from-[#0a1628] to-[#1a2744] text-white">
         <CardContent className="flex flex-col items-center justify-center py-16">
-          <div className="w-20 h-20 rounded-full bg-emerald-100 flex items-center justify-center mb-6">
-            <CheckCircle2 className="h-10 w-10 text-emerald-600" />
+          <div className="w-20 h-20 rounded-full bg-[#c62828]/20 flex items-center justify-center mb-6 border-2 border-[#c62828]">
+            <Trophy className="h-10 w-10 text-[#c62828]" />
           </div>
-          <h3 className="text-2xl font-bold text-foreground mb-2">Ballot Submitted!</h3>
-          <p className="text-muted-foreground text-center max-w-md">
-            Thank you for recognizing your teammates. Your votes have been recorded for this week's Tommy Awards.
+          <h3 className="text-2xl font-bold mb-2">Championship Ballot Submitted!</h3>
+          <p className="text-slate-300 text-center max-w-md">
+            Thank you for recognizing your teammates' championship-level performance. Your votes have been recorded for
+            this week's Tommy Awards.
           </p>
-          <Button variant="outline" className="mt-6 bg-transparent" onClick={() => window.location.reload()}>
+          <Button
+            variant="outline"
+            className="mt-6 bg-transparent border-slate-600 text-white hover:bg-white/10"
+            onClick={() => window.location.reload()}
+          >
             Submit Another Ballot
           </Button>
         </CardContent>
@@ -226,8 +242,8 @@ export function TommyVotingForm() {
     <Card className="border-border bg-card">
       <CardHeader className="pb-4">
         <CardTitle className="flex items-center gap-3 text-foreground">
-          <div className="p-2 bg-emerald-100 rounded-lg">
-            <Send className="h-5 w-5 text-emerald-600" />
+          <div className="p-2 bg-[#c62828]/10 rounded-lg">
+            <Send className="h-5 w-5 text-[#c62828]" />
           </div>
           Submit Your Tommy Award Ballot
         </CardTitle>
@@ -240,7 +256,16 @@ export function TommyVotingForm() {
           </Alert>
         )}
 
-        {/* Voter Selection */}
+        {is2026OrLater && (
+          <Alert className="bg-blue-50 border-blue-200">
+            <Info className="h-4 w-4 text-blue-600" />
+            <AlertDescription className="text-blue-800">
+              <strong>2026 Scoring Update:</strong> The Tommy Awards now uses simplified scoring with 1st, 2nd, and 3rd
+              place votes only. Honorable Mentions and Partner Votes have been retired.
+            </AlertDescription>
+          </Alert>
+        )}
+
         <div className="p-4 rounded-xl bg-muted/50 border border-border">
           <Label className="flex items-center gap-2 mb-3 text-foreground font-medium">
             <Users className="h-4 w-4" />
@@ -260,7 +285,6 @@ export function TommyVotingForm() {
           </Select>
         </div>
 
-        {/* First Place - 3 Points */}
         <VoteCard
           icon={<Trophy className="h-5 w-5 text-amber-600" />}
           title="First Place"
@@ -274,7 +298,6 @@ export function TommyVotingForm() {
           onNotesChange={(n) => handleNotesChange(n, setFirstPlace)}
         />
 
-        {/* Second Place - 2 Points */}
         <VoteCard
           icon={<Medal className="h-5 w-5 text-slate-500" />}
           title="Second Place"
@@ -288,7 +311,6 @@ export function TommyVotingForm() {
           onNotesChange={(n) => handleNotesChange(n, setSecondPlace)}
         />
 
-        {/* Third Place - 1 Point */}
         <VoteCard
           icon={<Award className="h-5 w-5 text-orange-600" />}
           title="Third Place"
@@ -302,55 +324,58 @@ export function TommyVotingForm() {
           onNotesChange={(n) => handleNotesChange(n, setThirdPlace)}
         />
 
-        {/* Honorable Mention - 0.5 Points */}
-        <VoteCard
-          icon={<Star className="h-5 w-5 text-blue-600" />}
-          title="Honorable Mention"
-          subtitle="0.5 Points"
-          bgColor="bg-gradient-to-r from-blue-50 to-indigo-50"
-          borderColor="border-blue-200"
-          badgeColor="bg-blue-100 text-blue-700"
-          members={getAvailableMembers(honorableMention.memberId)}
-          selection={honorableMention}
-          onMemberSelect={(v) => handleMemberSelect(v, setHonorableMention)}
-          onNotesChange={(n) => handleNotesChange(n, setHonorableMention)}
-          optional
-        />
-
-        {/* Partner Vote Toggle */}
-        <div className="flex items-center gap-3 p-4 rounded-xl bg-muted/30 border border-border">
-          <input
-            type="checkbox"
-            id="isPartner"
-            checked={isPartner}
-            onChange={(e) => setIsPartner(e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300"
-          />
-          <Label htmlFor="isPartner" className="cursor-pointer text-muted-foreground">
-            I am a Partner and want to award a Partner Vote (5 Points)
-          </Label>
-        </div>
-
-        {/* Partner Vote - 5 Points */}
-        {isPartner && (
+        {!is2026OrLater && (
           <VoteCard
-            icon={<Sparkles className="h-5 w-5 text-emerald-600" />}
-            title="Partner Vote"
-            subtitle="5 Points"
-            bgColor="bg-gradient-to-r from-emerald-50 to-teal-50"
-            borderColor="border-emerald-200"
-            badgeColor="bg-emerald-100 text-emerald-700"
-            members={getAvailableMembers(partnerVote.memberId)}
-            selection={partnerVote}
-            onMemberSelect={(v) => handleMemberSelect(v, setPartnerVote)}
-            onNotesChange={(n) => handleNotesChange(n, setPartnerVote)}
+            icon={<Star className="h-5 w-5 text-blue-600" />}
+            title="Honorable Mention"
+            subtitle="0.5 Points"
+            bgColor="bg-gradient-to-r from-blue-50 to-indigo-50"
+            borderColor="border-blue-200"
+            badgeColor="bg-blue-100 text-blue-700"
+            members={getAvailableMembers(honorableMention.memberId)}
+            selection={honorableMention}
+            onMemberSelect={(v) => handleMemberSelect(v, setHonorableMention)}
+            onNotesChange={(n) => handleNotesChange(n, setHonorableMention)}
+            optional
           />
+        )}
+
+        {!is2026OrLater && (
+          <>
+            <div className="flex items-center gap-3 p-4 rounded-xl bg-muted/30 border border-border">
+              <input
+                type="checkbox"
+                id="isPartner"
+                checked={isPartner}
+                onChange={(e) => setIsPartner(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              <Label htmlFor="isPartner" className="cursor-pointer text-muted-foreground">
+                I am a Partner and want to award a Partner Vote (5 Points)
+              </Label>
+            </div>
+
+            {isPartner && (
+              <VoteCard
+                icon={<Sparkles className="h-5 w-5 text-emerald-600" />}
+                title="Partner Vote"
+                subtitle="5 Points"
+                bgColor="bg-gradient-to-r from-emerald-50 to-teal-50"
+                borderColor="border-emerald-200"
+                badgeColor="bg-emerald-100 text-emerald-700"
+                members={getAvailableMembers(partnerVote.memberId)}
+                selection={partnerVote}
+                onMemberSelect={(v) => handleMemberSelect(v, setPartnerVote)}
+                onNotesChange={(n) => handleNotesChange(n, setPartnerVote)}
+              />
+            )}
+          </>
         )}
 
         <Button
           onClick={handleSubmit}
           disabled={submitting || !currentVoter || !firstPlace.memberId}
-          className="w-full h-12 text-lg font-semibold bg-emerald-600 hover:bg-emerald-700 text-white"
+          className="w-full h-12 text-lg font-semibold bg-[#c62828] hover:bg-[#b71c1c] text-white"
         >
           {submitting ? (
             <span className="flex items-center gap-2">
@@ -359,8 +384,8 @@ export function TommyVotingForm() {
             </span>
           ) : (
             <span className="flex items-center gap-2">
-              <Send className="h-5 w-5" />
-              Submit Ballot
+              <Trophy className="h-5 w-5" />
+              Submit Championship Ballot
             </span>
           )}
         </Button>

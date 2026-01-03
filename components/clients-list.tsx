@@ -1,110 +1,345 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Search, Users, TrendingUp, CheckCircle, Clock, ArrowRight, Briefcase, AlertCircle } from "lucide-react"
-import type { KarbonClient } from "@/lib/karbon-types"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Search,
+  Users,
+  TrendingUp,
+  CheckCircle,
+  ArrowRight,
+  AlertCircle,
+  Building2,
+  User,
+  ChevronDown,
+  X,
+} from "lucide-react"
 import Link from "next/link"
 import { ViewManager } from "@/components/view-manager"
 import type { FilterView } from "@/lib/view-types"
 import { Label } from "@/components/ui/label"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+
+interface Organization {
+  id: string
+  karbon_organization_key: string
+  name: string
+  entity_type: string | null
+  contact_type: string | null
+  industry: string | null
+  primary_email: string | null
+  phone: string | null
+  city: string | null
+  state: string | null
+}
+
+interface Contact {
+  id: string
+  karbon_contact_key: string
+  full_name: string
+  first_name: string | null
+  last_name: string | null
+  entity_type: string | null
+  contact_type: string | null
+  primary_email: string | null
+  phone_primary: string | null
+  city: string | null
+  state: string | null
+  is_prospect: boolean | null
+}
+
+interface ClientGroup {
+  id: string
+  karbon_client_group_key: string | null
+  name: string
+  group_type: string | null
+}
+
+interface ServiceLine {
+  id: string
+  name: string
+  code: string | null
+  category: string | null
+  is_active: boolean
+}
+
+// Combined client type for display
+interface Client {
+  id: string
+  clientKey: string
+  clientName: string
+  clientType: "individual" | "business"
+  clientGroup: string | null
+  entityType: string | null
+  contactType: string | null
+  email: string | null
+  phone: string | null
+  city: string | null
+  state: string | null
+  isProspect: boolean
+  workItemCount: number
+  activeWorkItems: number
+  lastActivity: string | null
+  serviceLinesUsed: string[]
+  avatarUrl: string | null
+}
+
+function MultiSelectDropdown({
+  label,
+  options,
+  selected,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  options: string[]
+  selected: string[]
+  onChange: (selected: string[]) => void
+  placeholder: string
+}) {
+  const [open, setOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [])
+
+  const toggleOption = (option: string) => {
+    if (selected.includes(option)) {
+      onChange(selected.filter((s) => s !== option))
+    } else {
+      onChange([...selected, option])
+    }
+  }
+
+  const clearAll = () => {
+    onChange([])
+  }
+
+  return (
+    <div className="space-y-2" ref={dropdownRef}>
+      <Label className="text-sm font-medium">{label}</Label>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="outline"
+            className="w-full justify-between h-auto min-h-9 py-2 bg-transparent"
+            onClick={() => setOpen(!open)}
+          >
+            <div className="flex flex-wrap gap-1 flex-1 text-left">
+              {selected.length === 0 ? (
+                <span className="text-muted-foreground">{placeholder}</span>
+              ) : selected.length <= 2 ? (
+                selected.map((s) => (
+                  <Badge key={s} variant="secondary" className="text-xs">
+                    {s}
+                  </Badge>
+                ))
+              ) : (
+                <Badge variant="secondary" className="text-xs">
+                  {selected.length} selected
+                </Badge>
+              )}
+            </div>
+            <div className="flex items-center gap-1 ml-2">
+              {selected.length > 0 && (
+                <X
+                  className="h-4 w-4 text-muted-foreground hover:text-foreground"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    clearAll()
+                  }}
+                />
+              )}
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="w-[300px] max-h-[300px] overflow-y-auto" align="start">
+          <div className="p-2 space-y-1">
+            {options.map((option) => (
+              <div
+                key={option}
+                className="flex items-center space-x-2 p-2 rounded hover:bg-muted cursor-pointer"
+                onClick={() => toggleOption(option)}
+              >
+                <Checkbox checked={selected.includes(option)} />
+                <span className="text-sm">{option}</span>
+              </div>
+            ))}
+            {options.length === 0 && <p className="text-sm text-muted-foreground p-2">No options available</p>}
+          </div>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  )
+}
 
 export function ClientsList() {
-  const [clients, setClients] = useState<KarbonClient[]>([])
+  const [organizations, setOrganizations] = useState<Organization[]>([])
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [clientGroups, setClientGroups] = useState<ClientGroup[]>([])
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>([])
+  const [workItemCounts, setWorkItemCounts] = useState<Map<string, { total: number; active: number }>>(new Map())
+
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
-  const [selectedServiceLine, setSelectedServiceLine] = useState<string>("all")
-  const [activeTab, setActiveTab] = useState<"active" | "prospects">("active")
-  const [clientGroup, setClientGroup] = useState<string>("all")
+  const [selectedServiceLines, setSelectedServiceLines] = useState<string[]>([])
+  const [selectedClientGroups, setSelectedClientGroups] = useState<string[]>([])
+  const [activeTab, setActiveTab] = useState<"individuals" | "businesses" | "prospects">("businesses")
   const [dateRange, setDateRange] = useState<{ start?: string; end?: string }>({})
 
   useEffect(() => {
-    fetchClients()
+    fetchData()
   }, [])
 
-  const fetchClients = async () => {
+  const fetchData = async () => {
     try {
       setLoading(true)
-      const response = await fetch("/api/karbon/clients")
 
-      if (!response.ok) {
-        throw new Error("Failed to fetch clients")
-      }
+      // Fetch from multiple Supabase tables in parallel
+      const [orgsRes, contactsRes, groupsRes, serviceLinesRes, workItemsRes] = await Promise.all([
+        fetch("/api/supabase/organizations"),
+        fetch("/api/supabase/contacts"),
+        fetch("/api/supabase/client-groups"),
+        fetch("/api/supabase/service-lines"),
+        fetch("/api/supabase/work-items/counts"),
+      ])
 
-      const data = await response.json()
-      setClients(data.clients || [])
+      const [orgsData, contactsData, groupsData, serviceLinesData, workItemsData] = await Promise.all([
+        orgsRes.ok ? orgsRes.json() : { organizations: [] },
+        contactsRes.ok ? contactsRes.json() : { contacts: [] },
+        groupsRes.ok ? groupsRes.json() : { clientGroups: [] },
+        serviceLinesRes.ok ? serviceLinesRes.json() : { serviceLines: [] },
+        workItemsRes.ok ? workItemsRes.json() : { counts: [] },
+      ])
+
+      setOrganizations(orgsData.organizations || [])
+      setContacts(contactsData.contacts || [])
+      setClientGroups(groupsData.clientGroups || [])
+      setServiceLines(serviceLinesData.serviceLines || [])
+
+      // Build work item counts map
+      const countsMap = new Map<string, { total: number; active: number }>()
+      ;(workItemsData.counts || []).forEach((count: any) => {
+        countsMap.set(count.clientKey, { total: count.total, active: count.active })
+      })
+      setWorkItemCounts(countsMap)
+
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch clients")
+      setError(err instanceof Error ? err.message : "Failed to fetch data")
     } finally {
       setLoading(false)
     }
   }
 
-  // Filter clients by search query, service line, client group, and date range
-  const filteredClients = clients.filter((client) => {
+  const allClients: Client[] = [
+    // Map organizations to clients (businesses)
+    ...organizations.map((org) => ({
+      id: org.id,
+      clientKey: org.karbon_organization_key,
+      clientName: org.name,
+      clientType: "business" as const,
+      clientGroup: null, // Would need to join with client_group_members
+      entityType: org.entity_type,
+      contactType: org.contact_type,
+      email: org.primary_email,
+      phone: org.phone,
+      city: org.city,
+      state: org.state,
+      isProspect: org.contact_type?.toLowerCase() === "prospect",
+      workItemCount: workItemCounts.get(org.karbon_organization_key)?.total || 0,
+      activeWorkItems: workItemCounts.get(org.karbon_organization_key)?.active || 0,
+      lastActivity: null,
+      serviceLinesUsed: [],
+      avatarUrl: null,
+    })),
+    // Map contacts to clients (individuals)
+    ...contacts.map((contact) => ({
+      id: contact.id,
+      clientKey: contact.karbon_contact_key,
+      clientName: contact.full_name || `${contact.first_name || ""} ${contact.last_name || ""}`.trim(),
+      clientType: "individual" as const,
+      clientGroup: null,
+      entityType: contact.entity_type,
+      contactType: contact.contact_type,
+      email: contact.primary_email,
+      phone: contact.phone_primary,
+      city: contact.city,
+      state: contact.state,
+      isProspect: contact.is_prospect || contact.contact_type?.toLowerCase() === "prospect",
+      workItemCount: workItemCounts.get(contact.karbon_contact_key)?.total || 0,
+      activeWorkItems: workItemCounts.get(contact.karbon_contact_key)?.active || 0,
+      lastActivity: null,
+      serviceLinesUsed: [],
+      avatarUrl: null,
+    })),
+  ]
+
+  // Filter clients
+  const filteredClients = allClients.filter((client) => {
     const matchesSearch =
       searchQuery === "" ||
       client.clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      client.clientGroup?.toLowerCase().includes(searchQuery.toLowerCase())
+      client.email?.toLowerCase().includes(searchQuery.toLowerCase())
 
-    const matchesServiceLine = selectedServiceLine === "all" || client.serviceLinesUsed.includes(selectedServiceLine)
+    const matchesServiceLine =
+      selectedServiceLines.length === 0 || client.serviceLinesUsed.some((sl) => selectedServiceLines.includes(sl))
 
-    const matchesClientGroup = clientGroup === "all" || client.clientGroup === clientGroup
+    const matchesClientGroup =
+      selectedClientGroups.length === 0 || (client.clientGroup && selectedClientGroups.includes(client.clientGroup))
 
-    const matchesDateRange = (() => {
-      if (!dateRange.start && !dateRange.end) return true
-      if (!client.lastActivity) return false
-      const activityDate = new Date(client.lastActivity)
-      if (dateRange.start && activityDate < new Date(dateRange.start)) return false
-      if (dateRange.end && activityDate > new Date(dateRange.end)) return false
-      return true
-    })()
-
-    return matchesSearch && matchesServiceLine && matchesClientGroup && matchesDateRange
+    return matchesSearch && matchesServiceLine && matchesClientGroup
   })
 
-  const sortedFilteredClients = [...filteredClients].sort((a, b) => {
-    if (!a.lastActivity && !b.lastActivity) return a.clientName.localeCompare(b.clientName)
-    if (!a.lastActivity) return 1
-    if (!b.lastActivity) return -1
-    return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime()
-  })
+  const individualClients = filteredClients.filter((c) => c.clientType === "individual" && !c.isProspect)
+  const businessClients = filteredClients.filter((c) => c.clientType === "business" && !c.isProspect)
+  const prospectClients = filteredClients.filter((c) => c.isProspect)
 
-  // Get unique service lines
-  const allServiceLines = Array.from(new Set(clients.flatMap((client) => client.serviceLinesUsed))).sort()
+  const displayedClients =
+    activeTab === "individuals" ? individualClients : activeTab === "businesses" ? businessClients : prospectClients
 
-  const allClientGroups = Array.from(new Set(clients.map((c) => c.clientGroup).filter(Boolean))).sort()
+  // Get unique values for filters
+  const allServiceLineNames = serviceLines
+    .filter((sl) => sl.is_active)
+    .map((sl) => sl.name)
+    .sort()
+  const allClientGroupNames = clientGroups.map((cg) => cg.name).sort()
 
-  // Calculate summary stats
-  const totalClients = clients.length
-  const activeClientsCount = clients.filter((c) => c.activeWorkItems > 0).length
-  const totalWorkItems = clients.reduce((sum, c) => sum + c.workItemCount, 0)
-
-  const activeClients = sortedFilteredClients.filter((client) => !client.isProspect)
-
-  const prospectClients = sortedFilteredClients.filter((client) => client.isProspect)
-
-  const displayedClients = activeTab === "active" ? activeClients : prospectClients
+  const totalClients = allClients.length
+  const activeIndividuals = individualClients.length
+  const activeBusinesses = businessClients.length
 
   const handleLoadView = (view: FilterView) => {
     if (view.filters.searchQuery !== undefined) setSearchQuery(view.filters.searchQuery)
-    if (view.filters.serviceLines) setSelectedServiceLine(view.filters.serviceLines[0] || "all")
-    if (view.filters.clientType) setActiveTab(view.filters.clientType === "prospects" ? "prospects" : "active")
-    if (view.filters.clientGroup) setClientGroup(view.filters.clientGroup[0] || "all")
+    if (view.filters.serviceLines) setSelectedServiceLines(view.filters.serviceLines)
+    if (view.filters.clientType) {
+      if (view.filters.clientType === "prospects") setActiveTab("prospects")
+      else if (view.filters.clientType === "individuals") setActiveTab("individuals")
+      else setActiveTab("businesses")
+    }
+    if (view.filters.clientGroup) setSelectedClientGroups(view.filters.clientGroup)
     if (view.filters.dateRange) setDateRange(view.filters.dateRange)
   }
 
   const getCurrentFilters = () => ({
     searchQuery,
-    serviceLines: [selectedServiceLine],
+    serviceLines: selectedServiceLines,
     clientType: activeTab,
-    clientGroup: [clientGroup],
+    clientGroup: selectedClientGroups,
     dateRange,
   })
 
@@ -112,10 +347,10 @@ export function ClientsList() {
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold text-gray-900">Clients</h1>
+          <h1 className="text-3xl font-bold text-foreground">Clients</h1>
         </div>
         <div className="text-center py-12">
-          <p className="text-gray-500">Loading clients...</p>
+          <p className="text-muted-foreground">Loading clients...</p>
         </div>
       </div>
     )
@@ -125,12 +360,12 @@ export function ClientsList() {
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold text-gray-900">Clients</h1>
+          <h1 className="text-3xl font-bold text-foreground">Clients</h1>
         </div>
-        <Card className="bg-red-50 border-red-200">
+        <Card className="bg-destructive/10 border-destructive/20">
           <CardContent className="p-6">
-            <p className="text-red-700">{error}</p>
-            <Button onClick={fetchClients} className="mt-4">
+            <p className="text-destructive">{error}</p>
+            <Button onClick={fetchData} className="mt-4">
               Retry
             </Button>
           </CardContent>
@@ -144,124 +379,88 @@ export function ClientsList() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Clients</h1>
-          <p className="text-gray-600 mt-1">Manage and view all client information</p>
+          <h1 className="text-3xl font-bold text-foreground">Clients</h1>
+          <p className="text-muted-foreground mt-1">Manage and view all client information</p>
         </div>
         <div className="flex gap-2">
           <ViewManager type="clients" currentFilters={getCurrentFilters()} onLoadView={handleLoadView} />
-          <Button onClick={fetchClients} variant="outline">
+          <Button onClick={fetchData} variant="outline">
             Refresh
           </Button>
         </div>
       </div>
 
-      {/* Summary Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Card className="bg-white shadow-sm border-gray-200">
+        <Card className="bg-card shadow-sm border">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Total Clients</p>
-                <p className="text-3xl font-bold text-gray-900">{totalClients}</p>
+                <p className="text-sm text-muted-foreground">Total Clients</p>
+                <p className="text-3xl font-bold text-foreground">{totalClients}</p>
               </div>
-              <Users className="h-10 w-10 text-blue-600" />
+              <Users className="h-10 w-10 text-primary" />
             </div>
           </CardContent>
         </Card>
 
-        <Card className="bg-white shadow-sm border-gray-200">
+        <Card className="bg-card shadow-sm border">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Active Clients</p>
-                <p className="text-3xl font-bold text-gray-900">{activeClientsCount}</p>
+                <p className="text-sm text-muted-foreground">Active Individuals</p>
+                <p className="text-3xl font-bold text-foreground">{activeIndividuals}</p>
               </div>
-              <TrendingUp className="h-10 w-10 text-green-600" />
+              <User className="h-10 w-10 text-blue-600" />
             </div>
           </CardContent>
         </Card>
 
-        <Card className="bg-white shadow-sm border-gray-200">
+        <Card className="bg-card shadow-sm border">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Total Work Items</p>
-                <p className="text-3xl font-bold text-gray-900">{totalWorkItems}</p>
+                <p className="text-sm text-muted-foreground">Active Businesses</p>
+                <p className="text-3xl font-bold text-foreground">{activeBusinesses}</p>
               </div>
-              <CheckCircle className="h-10 w-10 text-purple-600" />
+              <Building2 className="h-10 w-10 text-green-600" />
             </div>
           </CardContent>
         </Card>
       </div>
 
       {/* Filters */}
-      <Card className="bg-white shadow-sm border-gray-200">
+      <Card className="bg-card shadow-sm border">
         <CardContent className="p-4">
           <div className="space-y-4">
             {/* Search */}
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 type="text"
-                placeholder="Search clients by name or group..."
+                placeholder="Search clients by name or email..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10 h-9"
               />
             </div>
 
-            {/* Service Line Filter */}
-            {allServiceLines.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant={selectedServiceLine === "all" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setSelectedServiceLine("all")}
-                  className="h-7 text-xs"
-                >
-                  All Service Lines
-                </Button>
-                {allServiceLines.map((serviceLine) => (
-                  <Button
-                    key={serviceLine}
-                    variant={selectedServiceLine === serviceLine ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setSelectedServiceLine(serviceLine)}
-                    className="h-7 text-xs"
-                  >
-                    {serviceLine}
-                  </Button>
-                ))}
-              </div>
-            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <MultiSelectDropdown
+                label="Service Lines"
+                options={allServiceLineNames}
+                selected={selectedServiceLines}
+                onChange={setSelectedServiceLines}
+                placeholder="All Service Lines"
+              />
 
-            {/* Client Group Filter */}
-            {allClientGroups.length > 0 && (
-              <div>
-                <Label className="text-sm font-medium mb-2 block">Client Group</Label>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    variant={clientGroup === "all" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setClientGroup("all")}
-                    className="h-7 text-xs"
-                  >
-                    All Groups
-                  </Button>
-                  {allClientGroups.map((group) => (
-                    <Button
-                      key={group}
-                      variant={clientGroup === group ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setClientGroup(group!)}
-                      className="h-7 text-xs"
-                    >
-                      {group}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            )}
+              <MultiSelectDropdown
+                label="Client Groups"
+                options={allClientGroupNames}
+                selected={selectedClientGroups}
+                onChange={setSelectedClientGroups}
+                placeholder="All Client Groups"
+              />
+            </div>
 
             {/* Date Range Filter */}
             <div>
@@ -274,7 +473,7 @@ export function ClientsList() {
                   className="h-9 text-sm"
                   placeholder="Start date"
                 />
-                <span className="text-sm text-gray-500">to</span>
+                <span className="text-sm text-muted-foreground">to</span>
                 <Input
                   type="date"
                   value={dateRange.end || ""}
@@ -293,57 +492,79 @@ export function ClientsList() {
         </CardContent>
       </Card>
 
-      {/* Tabs for Active and Prospect clients */}
-      <div className="flex gap-2 border-b border-gray-200">
+      <div className="flex gap-2 border-b border-border">
         <button
-          onClick={() => setActiveTab("active")}
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === "active"
-              ? "border-blue-600 text-blue-600"
-              : "border-transparent text-gray-500 hover:text-gray-700"
+          onClick={() => setActiveTab("businesses")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
+            activeTab === "businesses"
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground"
           }`}
         >
-          Active Clients ({activeClients.length})
+          <Building2 className="h-4 w-4" />
+          Businesses ({businessClients.length})
+        </button>
+        <button
+          onClick={() => setActiveTab("individuals")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
+            activeTab === "individuals"
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <User className="h-4 w-4" />
+          Individuals ({individualClients.length})
         </button>
         <button
           onClick={() => setActiveTab("prospects")}
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
             activeTab === "prospects"
-              ? "border-blue-600 text-blue-600"
-              : "border-transparent text-gray-500 hover:text-gray-700"
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground"
           }`}
         >
-          Prospect Clients ({prospectClients.length})
+          <TrendingUp className="h-4 w-4" />
+          Prospects ({prospectClients.length})
         </button>
       </div>
 
       {/* Clients List */}
-      <Card className="bg-white shadow-sm border-gray-200">
+      <Card className="bg-card shadow-sm border">
         <CardHeader>
-          <CardTitle className="text-lg font-semibold text-gray-900">
-            {activeTab === "active" ? "Active Clients" : "Prospect Clients"} ({displayedClients.length})
+          <CardTitle className="text-lg font-semibold text-foreground">
+            {activeTab === "businesses"
+              ? "Business Clients"
+              : activeTab === "individuals"
+                ? "Individual Clients"
+                : "Prospect Clients"}{" "}
+            ({displayedClients.length})
           </CardTitle>
         </CardHeader>
         <CardContent>
           {displayedClients.length === 0 ? (
             <div className="text-center py-12">
-              {activeTab === "active" ? (
+              {activeTab === "businesses" ? (
                 <>
-                  <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                  <p className="text-gray-500">No active clients found matching your filters</p>
+                  <Building2 className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">No business clients found matching your filters</p>
+                </>
+              ) : activeTab === "individuals" ? (
+                <>
+                  <User className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">No individual clients found matching your filters</p>
                 </>
               ) : (
                 <>
-                  <AlertCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                  <p className="text-gray-500">No prospect clients found matching your filters</p>
+                  <AlertCircle className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">No prospect clients found matching your filters</p>
                 </>
               )}
             </div>
           ) : (
             <div className="space-y-3">
               {displayedClients.map((client) => (
-                <Link key={client.clientKey} href={`/clients/${client.clientKey}`} className="block">
-                  <div className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 hover:shadow-sm transition-all">
+                <Link key={client.id} href={`/clients/${client.clientKey}`} className="block">
+                  <div className="border rounded-lg p-4 hover:border-primary/50 hover:shadow-sm transition-all">
                     <div className="flex items-start justify-between">
                       <div className="flex items-start space-x-3 flex-1">
                         <Avatar className="h-10 w-10">
@@ -352,37 +573,48 @@ export function ClientsList() {
                           )}
                           <AvatarFallback
                             className={`${
-                              activeTab === "active" ? "bg-blue-100 text-blue-700" : "bg-yellow-100 text-yellow-700"
+                              client.clientType === "business"
+                                ? "bg-green-100 text-green-700"
+                                : "bg-blue-100 text-blue-700"
                             } text-sm font-semibold`}
                           >
-                            {client.clientName
-                              .split(" ")
-                              .map((n) => n[0])
-                              .join("")
-                              .slice(0, 2)
-                              .toUpperCase()}
+                            {client.clientType === "business" ? (
+                              <Building2 className="h-5 w-5" />
+                            ) : (
+                              client.clientName
+                                .split(" ")
+                                .map((n) => n[0])
+                                .join("")
+                                .slice(0, 2)
+                                .toUpperCase()
+                            )}
                           </AvatarFallback>
                         </Avatar>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
-                            <h3 className="font-semibold text-gray-900 truncate">{client.clientName}</h3>
-                            {activeTab === "active" && client.activeWorkItems > 0 && (
-                              <Badge variant="default" className="bg-green-100 text-green-700 text-xs">
-                                Active
-                              </Badge>
-                            )}
-                            {activeTab === "prospects" && (
+                            <h3 className="font-semibold text-foreground truncate">{client.clientName}</h3>
+                            <Badge
+                              variant="outline"
+                              className={`text-xs ${
+                                client.clientType === "business"
+                                  ? "border-green-200 text-green-700 bg-green-50"
+                                  : "border-blue-200 text-blue-700 bg-blue-50"
+                              }`}
+                            >
+                              {client.clientType === "business" ? "Business" : "Individual"}
+                            </Badge>
+                            {client.isProspect && (
                               <Badge variant="default" className="bg-yellow-100 text-yellow-700 text-xs">
                                 Prospect
                               </Badge>
                             )}
                           </div>
-                          {client.clientGroup && <p className="text-sm text-gray-500 mb-2">{client.clientGroup}</p>}
-                          {client.relatedClients && client.relatedClients.length > 0 && (
-                            <p className="text-xs text-blue-600 mb-2 flex items-center">
-                              <Briefcase className="h-3 w-3 mr-1" />
-                              {client.relatedClients.length} related{" "}
-                              {client.relatedClients.length === 1 ? "client" : "clients"}
+                          {client.entityType && (
+                            <p className="text-sm text-muted-foreground mb-1">{client.entityType}</p>
+                          )}
+                          {(client.city || client.state) && (
+                            <p className="text-sm text-muted-foreground mb-2">
+                              {[client.city, client.state].filter(Boolean).join(", ")}
                             </p>
                           )}
                           <div className="flex flex-wrap gap-2 mb-2">
@@ -392,27 +624,24 @@ export function ClientsList() {
                               </Badge>
                             ))}
                           </div>
-                          <div className="flex items-center gap-4 text-sm text-gray-500">
+                          <div className="flex items-center gap-4 text-sm text-muted-foreground">
                             <span className="flex items-center gap-1">
                               <CheckCircle className="h-4 w-4" />
                               {client.workItemCount} work items
                             </span>
-                            {activeTab === "active" && (
+                            {client.activeWorkItems > 0 && (
                               <span className="flex items-center gap-1">
                                 <TrendingUp className="h-4 w-4" />
                                 {client.activeWorkItems} active
                               </span>
                             )}
-                            {client.lastActivity && (
-                              <span className="flex items-center gap-1">
-                                <Clock className="h-4 w-4" />
-                                {new Date(client.lastActivity).toLocaleDateString()}
-                              </span>
+                            {client.email && (
+                              <span className="flex items-center gap-1 truncate max-w-[200px]">{client.email}</span>
                             )}
                           </div>
                         </div>
                       </div>
-                      <ArrowRight className="h-5 w-5 text-gray-400 flex-shrink-0 ml-4" />
+                      <ArrowRight className="h-5 w-5 text-muted-foreground flex-shrink-0 ml-4" />
                     </div>
                   </div>
                 </Link>

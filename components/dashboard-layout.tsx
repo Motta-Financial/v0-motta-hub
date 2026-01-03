@@ -17,8 +17,6 @@ import {
   Inbox,
   CheckSquare,
   UserCircle,
-  CalendarClock,
-  Video,
   Calculator,
   FileText,
   Sparkles,
@@ -28,9 +26,9 @@ import {
   Lightbulb,
   Mail,
   Database,
-  NotebookPen,
   ArrowRightLeft,
   Trophy,
+  Headphones,
 } from "lucide-react"
 import Image from "next/image"
 
@@ -41,8 +39,7 @@ const navigation = [
   { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
-  { name: "Calendly", href: "/calendly", icon: CalendarClock },
-  { name: "Zoom", href: "/zoom", icon: Video },
+  { name: "Client Services", href: "/client-services", icon: Headphones },
   { name: "Accounting", href: "/accounting", icon: Calculator },
   { name: "Tax", href: "/tax", icon: FileText },
   { name: "Tax Estimates", href: "/tax/estimates", icon: DollarSign, alfredSuggestions: 4, isSubItem: true },
@@ -53,10 +50,9 @@ const navigation = [
   { name: "Special Teams", href: "/special-teams", icon: Sparkles },
   { name: "Service Pipelines", href: "/pipelines", icon: GitBranch, alfredSuggestions: 15 },
   { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
-  { name: "Meeting Notes", href: "/meeting-notes", icon: NotebookPen },
   { name: "Karbon Data", href: "/karbon-data", icon: Database },
-  { name: "Migration", href: "/migration", icon: ArrowRightLeft },
   { name: "Settings", href: "/settings", icon: Settings },
+  { name: "Migration", href: "/settings/migration", icon: ArrowRightLeft, isSubItem: true },
   { name: "Webhooks", href: "/settings/webhooks", icon: ArrowRightLeft, isSubItem: true },
 ]
 

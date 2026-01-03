@@ -1,56 +1,72 @@
 import { NextResponse } from "next/server"
+import { createClient } from "@supabase/supabase-js"
 
-// In-memory storage for messages (replace with database in production)
-const messages: Array<{
-  id: string
-  author: string
-  authorInitials: string
-  content: string
-  timestamp: string
-  reactions: { emoji: string; count: number }[]
-  comments: Array<{
-    id: string
-    author: string
-    authorInitials: string
-    content: string
-    timestamp: string
-  }>
-  gifUrl?: string
-}> = [
-  {
-    id: "1",
-    author: "Sarah Johnson",
-    authorInitials: "SJ",
-    content: "Welcome to the team message board! Feel free to share updates, ask questions, or celebrate wins here.",
-    timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-    reactions: [{ emoji: "👍", count: 5 }],
-    comments: [],
-  },
-  {
-    id: "2",
-    author: "Mark Dwyer",
-    authorInitials: "MD",
-    content: "Great job everyone on closing out Q4! Let's keep the momentum going into the new year.",
-    timestamp: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
-    reactions: [
-      { emoji: "🎉", count: 3 },
-      { emoji: "💪", count: 2 },
-    ],
-    comments: [],
-  },
-]
+const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 
 export async function GET() {
   try {
-    const sortedMessages = [...messages].sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-    )
+    // Fetch messages with reactions and comments
+    const { data: messages, error } = await supabase
+      .from("messages")
+      .select(`
+        id,
+        author_name,
+        author_initials,
+        content,
+        gif_url,
+        is_pinned,
+        created_at,
+        message_reactions (
+          id,
+          emoji,
+          team_member_id
+        ),
+        message_comments (
+          id,
+          author_name,
+          author_initials,
+          content,
+          created_at
+        )
+      `)
+      .order("is_pinned", { ascending: false })
+      .order("created_at", { ascending: false })
 
-    return NextResponse.json(sortedMessages)
+    if (error) throw error
+
+    // Transform to match frontend expected format
+    const formattedMessages = (messages || []).map((msg) => ({
+      id: msg.id,
+      author: msg.author_name,
+      authorInitials: msg.author_initials,
+      content: msg.content,
+      timestamp: msg.created_at,
+      gifUrl: msg.gif_url,
+      isPinned: msg.is_pinned,
+      reactions: aggregateReactions(msg.message_reactions || []),
+      comments: (msg.message_comments || []).map((c: any) => ({
+        id: c.id,
+        author: c.author_name,
+        authorInitials: c.author_initials,
+        content: c.content,
+        timestamp: c.created_at,
+      })),
+    }))
+
+    return NextResponse.json(formattedMessages)
   } catch (error) {
     console.error("Error fetching messages:", error)
     return NextResponse.json({ error: "Failed to fetch messages" }, { status: 500 })
   }
+}
+
+// Helper to aggregate reactions by emoji
+function aggregateReactions(reactions: any[]) {
+  const counts: Record<string, number> = {}
+  reactions.forEach((r) => {
+    counts[r.emoji] = (counts[r.emoji] || 0) + 1
+  })
+  return Object.entries(counts).map(([emoji, count]) => ({ emoji, count }))
 }
 
 export async function POST(request: Request) {
@@ -62,24 +78,38 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Author and content or GIF are required" }, { status: 400 })
     }
 
-    const newMessage = {
-      id: Date.now().toString(),
-      author,
-      authorInitials: author
-        .split(" ")
-        .map((n) => n[0])
-        .join("")
-        .toUpperCase(),
-      content: content || "",
-      timestamp: new Date().toISOString(),
-      reactions: [],
-      comments: [],
-      ...(gifUrl && { gifUrl }),
-    }
+    const authorInitials = author
+      .split(" ")
+      .map((n: string) => n[0])
+      .join("")
+      .toUpperCase()
 
-    messages.unshift(newMessage)
+    const { data: newMessage, error } = await supabase
+      .from("messages")
+      .insert({
+        author_name: author,
+        author_initials: authorInitials,
+        content: content || "",
+        gif_url: gifUrl || null,
+      })
+      .select()
+      .single()
 
-    return NextResponse.json(newMessage, { status: 201 })
+    if (error) throw error
+
+    return NextResponse.json(
+      {
+        id: newMessage.id,
+        author: newMessage.author_name,
+        authorInitials: newMessage.author_initials,
+        content: newMessage.content,
+        timestamp: newMessage.created_at,
+        gifUrl: newMessage.gif_url,
+        reactions: [],
+        comments: [],
+      },
+      { status: 201 },
+    )
   } catch (error) {
     console.error("Error creating message:", error)
     return NextResponse.json({ error: "Failed to create message" }, { status: 500 })

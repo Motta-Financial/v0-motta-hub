@@ -5,8 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { FileText, ChevronDown, ChevronUp, Quote } from "lucide-react"
-import { createClient } from "@/lib/supabase/client"
+import { FileText, ChevronDown, ChevronUp, Quote, Calendar } from "lucide-react"
 
 interface Ballot {
   id: string
@@ -22,30 +21,45 @@ interface Ballot {
   honorable_mention_notes: string | null
   partner_vote_name: string | null
   partner_vote_notes: string | null
-  submitted_at: string
+  created_at: string
+  week?: {
+    id: string
+    week_date: string
+    week_name: string
+  }
 }
 
-export function TommyRecentBallots() {
+interface Filters {
+  year: string
+  weekId: string
+  teamMemberId: string
+}
+
+interface TommyRecentBallotsProps {
+  filters: Filters
+}
+
+export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
   const [ballots, setBallots] = useState<Ballot[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedBallot, setExpandedBallot] = useState<string | null>(null)
 
   useEffect(() => {
     fetchBallots()
-  }, [])
+  }, [filters])
 
   const fetchBallots = async () => {
-    const supabase = createClient()
-
+    setLoading(true)
     try {
-      const { data, error } = await supabase
-        .from("tommy_award_ballots")
-        .select("*")
-        .order("submitted_at", { ascending: false })
-        .limit(20)
+      const params = new URLSearchParams({ type: "ballots" })
+      if (filters.year && filters.year !== "all") params.append("year", filters.year)
+      if (filters.weekId && filters.weekId !== "all") params.append("week_id", filters.weekId)
+      if (filters.teamMemberId && filters.teamMemberId !== "all") params.append("team_member_id", filters.teamMemberId)
 
-      if (error) throw error
-      setBallots(data || [])
+      const res = await fetch(`/api/tommy-awards?${params}`)
+      const data = await res.json()
+
+      setBallots(data.ballots || [])
     } catch (err) {
       console.error("Error fetching ballots:", err)
     } finally {
@@ -66,9 +80,13 @@ export function TommyRecentBallots() {
     return new Date(dateString).toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
+      year: "numeric",
     })
+  }
+
+  const isBallot2026OrLater = (ballot: Ballot) => {
+    const year = Number.parseInt(ballot.week_date.substring(0, 4))
+    return year >= 2026
   }
 
   if (loading) {
@@ -84,25 +102,29 @@ export function TommyRecentBallots() {
   return (
     <Card className="border-border bg-card">
       <CardHeader className="pb-4">
-        <CardTitle className="flex items-center gap-3 text-foreground">
-          <div className="p-2 bg-blue-100 rounded-lg">
-            <FileText className="h-5 w-5 text-blue-600" />
-          </div>
-          Recent Ballots
-        </CardTitle>
-        <CardDescription>Latest Tommy Award submissions from the team</CardDescription>
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-3 text-foreground">
+            <div className="p-2 bg-blue-100 rounded-lg">
+              <FileText className="h-5 w-5 text-blue-600" />
+            </div>
+            Ballots
+          </CardTitle>
+          <Badge variant="outline">{ballots.length} ballots</Badge>
+        </div>
+        <CardDescription>Tommy Award submissions from the team</CardDescription>
       </CardHeader>
       <CardContent>
         <ScrollArea className="h-[500px] pr-4">
           {ballots.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
               <FileText className="h-12 w-12 mx-auto mb-3 opacity-30" />
-              <p>No ballots submitted yet</p>
+              <p>No ballots found for this filter</p>
             </div>
           ) : (
             <div className="space-y-3">
               {ballots.map((ballot) => {
                 const isExpanded = expandedBallot === ballot.id
+                const is2026Ballot = isBallot2026OrLater(ballot)
                 return (
                   <div
                     key={ballot.id}
@@ -116,18 +138,21 @@ export function TommyRecentBallots() {
                         <div className="flex items-center gap-3">
                           <Avatar className="h-10 w-10">
                             <AvatarImage src="/placeholder.svg" alt={ballot.voter_name} />
-                            <AvatarFallback className="bg-gradient-to-br from-blue-500 to-indigo-600 text-white font-semibold text-sm">
+                            <AvatarFallback className="bg-gradient-to-br from-[#0a1628] to-[#1a2744] text-white font-semibold text-sm">
                               {getInitials(ballot.voter_name)}
                             </AvatarFallback>
                           </Avatar>
                           <div>
                             <p className="font-medium text-foreground">{ballot.voter_name}</p>
-                            <p className="text-xs text-muted-foreground">{formatDate(ballot.submitted_at)}</p>
+                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                              <Calendar className="h-3 w-3" />
+                              {ballot.week?.week_name || formatDate(ballot.week_date)}
+                            </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
                           <Badge variant="outline" className="text-xs">
-                            1st: {ballot.first_place_name.split(" ")[0]}
+                            1st: {ballot.first_place_name?.split(" ")[0]}
                           </Badge>
                           {isExpanded ? (
                             <ChevronUp className="h-4 w-4 text-muted-foreground" />
@@ -140,6 +165,14 @@ export function TommyRecentBallots() {
 
                     {isExpanded && (
                       <div className="mt-4 pt-4 border-t border-border space-y-3">
+                        {!is2026Ballot && ballot.partner_vote_name && (
+                          <VoteDetail
+                            rank="Partner"
+                            name={ballot.partner_vote_name}
+                            notes={ballot.partner_vote_notes || ""}
+                            color="text-emerald-600"
+                          />
+                        )}
                         <VoteDetail
                           rank="1st"
                           name={ballot.first_place_name}
@@ -158,20 +191,12 @@ export function TommyRecentBallots() {
                           notes={ballot.third_place_notes}
                           color="text-orange-600"
                         />
-                        {ballot.honorable_mention_name && (
+                        {!is2026Ballot && ballot.honorable_mention_name && (
                           <VoteDetail
                             rank="HM"
                             name={ballot.honorable_mention_name}
                             notes={ballot.honorable_mention_notes || ""}
                             color="text-blue-600"
-                          />
-                        )}
-                        {ballot.partner_vote_name && (
-                          <VoteDetail
-                            rank="Partner"
-                            name={ballot.partner_vote_name}
-                            notes={ballot.partner_vote_notes || ""}
-                            color="text-emerald-600"
                           />
                         )}
                       </div>

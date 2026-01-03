@@ -17,7 +17,20 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Webhook, Plus, Trash2, CheckCircle2, Loader2, AlertCircle, Copy, Play, Zap, ExternalLink } from "lucide-react"
+import {
+  Webhook,
+  Plus,
+  Trash2,
+  CheckCircle2,
+  Loader2,
+  AlertCircle,
+  Copy,
+  Play,
+  Zap,
+  ExternalLink,
+  Database,
+  RefreshCw,
+} from "lucide-react"
 
 const SUPABASE_EDGE_FUNCTION_URL = "https://gylupzxitoebhqjnvzuw.supabase.co/functions/v1/karbon-work-sync"
 
@@ -54,12 +67,15 @@ export function WebhookManagement() {
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
-
-  // Dialog state
+  const [syncResult, setSyncResult] = useState<{
+    synced: number
+    errors: number
+    total: number
+    lastSyncTime: string
+  } | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [selectedWebhookType, setSelectedWebhookType] = useState("Work")
   const [customUrl, setCustomUrl] = useState("")
-
+  const [selectedWebhookType, setSelectedWebhookType] = useState("")
   const defaultWebhookUrl = SUPABASE_EDGE_FUNCTION_URL
 
   useEffect(() => {
@@ -148,6 +164,7 @@ export function WebhookManagement() {
     try {
       setSyncing(true)
       setError(null)
+      setSyncResult(null)
 
       const response = await fetch(SUPABASE_EDGE_FUNCTION_URL, {
         method: "GET",
@@ -155,10 +172,16 @@ export function WebhookManagement() {
 
       const data = await response.json()
 
-      if (response.ok && data.success) {
-        setSuccess(`Manual sync completed: ${data.synced || 0} synced, ${data.errors || 0} errors`)
+      if (response.ok && data.success !== false) {
+        setSyncResult({
+          synced: data.synced || 0,
+          errors: data.errors || 0,
+          total: data.total || 0,
+          lastSyncTime: new Date().toISOString(),
+        })
+        setSuccess(`Sync completed: ${data.synced || 0} work items synced to database`)
       } else {
-        setError(data.error || "Failed to sync work items")
+        setError(data.error || data.details || "Failed to sync work items")
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sync work items")
@@ -185,7 +208,6 @@ export function WebhookManagement() {
     }
   }
 
-  // Clear messages after 5 seconds
   useEffect(() => {
     if (success) {
       const timer = setTimeout(() => setSuccess(null), 5000)
@@ -230,6 +252,54 @@ export function WebhookManagement() {
           <AlertDescription className="text-green-700">{success}</AlertDescription>
         </Alert>
       )}
+
+      <Card className="border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50">
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Database className="h-5 w-5 text-blue-600" />
+            Sync Work Items
+          </CardTitle>
+          <CardDescription>Pull all work items from Karbon and sync to your Supabase database</CardDescription>
+          <CardAction>
+            <Button onClick={triggerManualSync} disabled={syncing} size="lg" className="bg-blue-600 hover:bg-blue-700">
+              {syncing ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Syncing...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Sync Now
+                </>
+              )}
+            </Button>
+          </CardAction>
+        </CardHeader>
+        {syncResult && (
+          <CardContent>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="text-center p-3 bg-white rounded-lg border">
+                <p className="text-2xl font-bold text-blue-600">{syncResult.total.toLocaleString()}</p>
+                <p className="text-xs text-muted-foreground">Total Items</p>
+              </div>
+              <div className="text-center p-3 bg-white rounded-lg border">
+                <p className="text-2xl font-bold text-green-600">{syncResult.synced.toLocaleString()}</p>
+                <p className="text-xs text-muted-foreground">Synced</p>
+              </div>
+              <div className="text-center p-3 bg-white rounded-lg border">
+                <p className={`text-2xl font-bold ${syncResult.errors > 0 ? "text-red-600" : "text-gray-400"}`}>
+                  {syncResult.errors.toLocaleString()}
+                </p>
+                <p className="text-xs text-muted-foreground">Errors</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground text-center mt-3">
+              Last synced: {new Date(syncResult.lastSyncTime).toLocaleString()}
+            </p>
+          </CardContent>
+        )}
+      </Card>
 
       <Alert>
         <Zap className="h-4 w-4" />

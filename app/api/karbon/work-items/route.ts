@@ -1,14 +1,175 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { categorizeServiceLine } from "@/lib/service-lines"
 import { getKarbonCredentials, karbonFetchAll } from "@/lib/karbon-api"
+import { createClient } from "@supabase/supabase-js"
+
+function getSupabaseClient() {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+  if (!supabaseUrl || !supabaseKey) {
+    return null
+  }
+
+  return createClient(supabaseUrl, supabaseKey)
+}
+
+function mapKarbonToSupabase(item: any) {
+  // Extract fee settings
+  const feeSettings = item.FeeSettings || {}
+
+  return {
+    // Core identifiers
+    karbon_work_item_key: item.WorkItemKey,
+    karbon_client_key: item.ClientKey || null,
+
+    // Client information
+    client_type: item.ClientType || null,
+
+    // Client group information (use correct column names)
+    client_group_key: item.RelatedClientGroupKey || item.ClientGroupKey || null,
+    client_group_name: item.RelatedClientGroupName || null,
+
+    // Assignee information (no email column exists)
+    assignee_key: item.AssigneeKey || null,
+    assignee_name: item.AssigneeName || null,
+
+    // Client manager information
+    client_manager_key: item.ClientManagerKey || null,
+    client_manager_name: item.ClientManagerName || null,
+
+    // Client partner information
+    client_partner_key: item.ClientPartnerKey || null,
+    client_partner_name: item.ClientPartnerName || null,
+
+    // Work item details
+    title: item.Title || null,
+    description: item.Description || null,
+    work_type: item.WorkType || null,
+
+    // Status fields (only columns that exist)
+    workflow_status: item.WorkStatus || null,
+    status: item.PrimaryStatus || null,
+    status_code: item.SecondaryStatus || null,
+    work_status_key: item.WorkStatusKey || null,
+
+    // Date fields (only columns that exist)
+    start_date: item.StartDate ? item.StartDate.split("T")[0] : null,
+    due_date: item.DueDate ? item.DueDate.split("T")[0] : null,
+    completed_date: item.CompletedDate ? item.CompletedDate.split("T")[0] : null,
+    year_end: item.YearEnd ? item.YearEnd.split("T")[0] : null,
+    period_start: item.PeriodStart ? item.PeriodStart.split("T")[0] : null,
+    period_end: item.PeriodEnd ? item.PeriodEnd.split("T")[0] : null,
+    internal_due_date: item.InternalDueDate ? item.InternalDueDate.split("T")[0] : null,
+    regulatory_deadline: item.RegulatoryDeadline ? item.RegulatoryDeadline.split("T")[0] : null,
+    client_deadline: item.ClientDeadline ? item.ClientDeadline.split("T")[0] : null,
+    extension_date: item.ExtensionDate ? item.ExtensionDate.split("T")[0] : null,
+
+    // Template information
+    work_template_key: item.WorkTemplateKey || null,
+    work_template_name: item.WorkTemplateTitle || item.WorkTemplateTile || null,
+
+    // Fee settings
+    fee_type: feeSettings.FeeType || null,
+    estimated_fee: feeSettings.FeeValue || null,
+    fixed_fee_amount: feeSettings.FeeType === "Fixed" ? feeSettings.FeeValue : null,
+    hourly_rate: feeSettings.FeeType === "Hourly" ? feeSettings.FeeValue : null,
+
+    // Time/budget tracking
+    estimated_minutes: item.EstimatedBudgetMinutes || null,
+    actual_minutes: item.ActualBudget || null,
+    billable_minutes: item.BillableTime || null,
+    budget_minutes: item.Budget?.BudgetedHours ? Math.round(item.Budget.BudgetedHours * 60) : null,
+    budget_hours: item.Budget?.BudgetedHours || null,
+    budget_amount: item.Budget?.BudgetedAmount || null,
+    actual_hours: item.ActualHours || null,
+    actual_amount: item.ActualAmount || null,
+    actual_fee: item.ActualFee || null,
+
+    // Todo tracking
+    todo_count: item.TodoCount || 0,
+    completed_todo_count: item.CompletedTodoCount || 0,
+    has_blocking_todos: item.HasBlockingTodos || false,
+
+    // Other fields
+    priority: item.Priority || "Normal",
+    tags: item.Tags || [],
+    is_recurring: item.IsRecurring ?? false,
+    is_billable: item.IsBillable ?? true,
+    is_internal: item.IsInternal ?? false,
+    notes: item.Notes || null,
+    custom_fields: item.CustomFields || {},
+    related_work_keys: item.RelatedWorkKeys || [],
+
+    // Karbon URL and sync timestamps
+    karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/work/${item.WorkItemKey}`,
+    karbon_created_at: item.CreatedDate || item.CreatedDateTime || null,
+    karbon_modified_at: item.LastModifiedDateTime || item.ModifiedDate || null,
+    last_synced_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
+}
+
+async function linkWorkItemsToClients(supabase: any) {
+  const results = { linked: 0, errors: 0 }
+
+  // Link work items where client_type is 'Contact'
+  const { data: workItemsWithContacts } = await supabase
+    .from("work_items")
+    .select("id, karbon_client_key")
+    .eq("client_type", "Contact")
+    .is("contact_id", null)
+    .not("karbon_client_key", "is", null)
+
+  if (workItemsWithContacts && workItemsWithContacts.length > 0) {
+    for (const workItem of workItemsWithContacts) {
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("id")
+        .eq("karbon_contact_key", workItem.karbon_client_key)
+        .single()
+
+      if (contact) {
+        const { error } = await supabase.from("work_items").update({ contact_id: contact.id }).eq("id", workItem.id)
+
+        if (!error) results.linked++
+        else results.errors++
+      }
+    }
+  }
+
+  // Link work items where client_type is 'Organization'
+  const { data: workItemsWithOrgs } = await supabase
+    .from("work_items")
+    .select("id, karbon_client_key")
+    .eq("client_type", "Organization")
+    .is("organization_id", null)
+    .not("karbon_client_key", "is", null)
+
+  if (workItemsWithOrgs && workItemsWithOrgs.length > 0) {
+    for (const workItem of workItemsWithOrgs) {
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("id")
+        .eq("karbon_organization_key", workItem.karbon_client_key)
+        .single()
+
+      if (org) {
+        const { error } = await supabase.from("work_items").update({ organization_id: org.id }).eq("id", workItem.id)
+
+        if (!error) results.linked++
+        else results.errors++
+      }
+    }
+  }
+
+  return results
+}
 
 export async function GET(request: NextRequest) {
-  console.log("[v0] Starting work items fetch...")
-
   const credentials = getKarbonCredentials()
 
   if (!credentials) {
-    console.log("[v0] Missing Karbon credentials")
     return NextResponse.json(
       {
         error:
@@ -36,9 +197,29 @@ export async function GET(request: NextRequest) {
     const orderby = searchParams.get("orderby")
     const expand = searchParams.get("expand")
     const debug = searchParams.get("debug")
+    const importToSupabase = searchParams.get("import") === "true"
+    const linkRecords = searchParams.get("link") === "true"
+    const incrementalSync = searchParams.get("incremental") === "true"
 
-    // Build OData filter
     const filters: string[] = []
+
+    let lastSyncTimestamp: string | null = null
+    if (incrementalSync && importToSupabase) {
+      const supabase = getSupabaseClient()
+      if (supabase) {
+        const { data: lastSync } = await supabase
+          .from("work_items")
+          .select("karbon_modified_at")
+          .not("karbon_modified_at", "is", null)
+          .order("karbon_modified_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (lastSync?.karbon_modified_at) {
+          lastSyncTimestamp = lastSync.karbon_modified_at
+        }
+      }
+    }
 
     if (workType) {
       const types = workType.split(",").map((t) => t.trim())
@@ -76,7 +257,9 @@ export async function GET(request: NextRequest) {
       filters.push(`DueDate ge ${dueAfter}`)
     }
 
-    if (modifiedAfter) {
+    if (lastSyncTimestamp) {
+      filters.push(`LastModifiedDateTime gt ${lastSyncTimestamp}`)
+    } else if (modifiedAfter) {
       filters.push(`LastModifiedDateTime ge ${modifiedAfter}`)
     }
 
@@ -102,15 +285,62 @@ export async function GET(request: NextRequest) {
       queryOptions.expand = expand.split(",")
     }
 
-    console.log("[v0] Fetching work items with query:", queryOptions)
-
     const { data: allWorkItems, error, totalCount } = await karbonFetchAll<any>("/WorkItems", credentials, queryOptions)
 
     if (error) {
       return NextResponse.json({ error: `Karbon API error: ${error}` }, { status: 500 })
     }
 
-    console.log(`[v0] Total work items fetched: ${allWorkItems.length}`)
+    let importResult = null
+    let linkResult = null
+
+    if (importToSupabase) {
+      const supabase = getSupabaseClient()
+      if (!supabase) {
+        importResult = { error: "Supabase not configured" }
+      } else {
+        let synced = 0
+        let errors = 0
+        const skipped = 0
+        const errorDetails: string[] = []
+
+        const batchSize = 50
+        for (let i = 0; i < allWorkItems.length; i += batchSize) {
+          const batch = allWorkItems.slice(i, i + batchSize)
+          const mappedBatch = batch.map((item: any) => ({
+            ...mapKarbonToSupabase(item),
+            created_at: new Date().toISOString(),
+          }))
+
+          const { error: upsertError } = await supabase.from("work_items").upsert(mappedBatch, {
+            onConflict: "karbon_work_item_key",
+            ignoreDuplicates: false,
+          })
+
+          if (upsertError) {
+            console.error("[v0] Batch upsert error:", upsertError)
+            errors += batch.length
+            errorDetails.push(upsertError.message)
+          } else {
+            synced += batch.length
+          }
+        }
+
+        importResult = {
+          success: errors === 0,
+          synced,
+          errors,
+          skipped,
+          incrementalSync,
+          lastSyncTimestamp,
+          errorDetails: errorDetails.length > 0 ? errorDetails.slice(0, 5) : undefined,
+        }
+
+        if (errors === 0) {
+          linkResult = await linkWorkItemsToClients(supabase)
+        }
+      }
+    }
 
     if (debug === "true") {
       const uniqueWorkTypes = [...new Set(allWorkItems.map((item: any) => item.WorkType).filter(Boolean))]
@@ -125,37 +355,22 @@ export async function GET(request: NextRequest) {
         ...new Set(allWorkItems.map((item: any) => item.RelatedClientGroupName).filter(Boolean)),
       ]
 
-      // Count by WorkType
       const workTypeBreakdown: Record<string, number> = {}
       allWorkItems.forEach((item: any) => {
         const wt = item.WorkType || "Unknown"
         workTypeBreakdown[wt] = (workTypeBreakdown[wt] || 0) + 1
       })
 
-      // Count by PrimaryStatus
       const statusBreakdown: Record<string, number> = {}
       allWorkItems.forEach((item: any) => {
         const ps = item.PrimaryStatus || "Unknown"
         statusBreakdown[ps] = (statusBreakdown[ps] || 0) + 1
       })
 
-      // Sample raw item for field inspection
       const sampleRawItems = allWorkItems.slice(0, 3).map((item: any) => ({
         ...item,
         _availableFields: Object.keys(item),
       }))
-
-      console.log("[v0] === KARBON DATA ANALYSIS ===")
-      console.log("[v0] Unique WorkTypes:", uniqueWorkTypes)
-      console.log("[v0] WorkType Breakdown:", workTypeBreakdown)
-      console.log("[v0] Unique PrimaryStatuses:", uniquePrimaryStatuses)
-      console.log("[v0] Status Breakdown:", statusBreakdown)
-      console.log("[v0] Unique SecondaryStatuses:", uniqueSecondaryStatuses)
-      console.log("[v0] Unique WorkStatuses:", uniqueWorkStatuses)
-      console.log("[v0] Unique Assignees:", uniqueAssignees)
-      console.log("[v0] Total Unique Clients:", uniqueClients.length)
-      console.log("[v0] Total Unique Client Groups:", uniqueClientGroups.length)
-      console.log("[v0] Sample raw item fields:", sampleRawItems[0]?._availableFields)
 
       return NextResponse.json({
         analysis: {
@@ -167,16 +382,22 @@ export async function GET(request: NextRequest) {
           uniqueSecondaryStatuses,
           uniqueWorkStatuses,
           uniqueAssignees,
-          uniqueClients: uniqueClients.slice(0, 50), // Limit for response size
+          uniqueClients: uniqueClients.slice(0, 50),
           totalUniqueClients: uniqueClients.length,
           uniqueClientGroups,
           totalUniqueClientGroups: uniqueClientGroups.length,
           sampleRawItems,
         },
+        importResult,
+        linkResult,
+        syncInfo: {
+          incrementalSync,
+          lastSyncTimestamp,
+          itemsFetched: allWorkItems.length,
+        },
       })
     }
 
-    // Map all work items to our format
     const workItems = allWorkItems.map((item: any) => ({
       WorkKey: item.WorkItemKey,
       Title: item.Title,
@@ -225,12 +446,12 @@ export async function GET(request: NextRequest) {
       EstimatedCompletionDate: item.EstimatedCompletionDate,
     }))
 
-    console.log(`[v0] Successfully processed ${workItems.length} work items`)
-
     return NextResponse.json({
       workItems: workItems,
       count: workItems.length,
       totalCount: totalCount || workItems.length,
+      importResult,
+      linkResult,
     })
   } catch (error) {
     console.error("[v0] Error fetching Karbon work items:", error)

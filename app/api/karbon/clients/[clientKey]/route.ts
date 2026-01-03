@@ -101,40 +101,77 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
     let organizationKey: string | null = null
     let avatarUrl: string | null = null
 
-    // Try fetching as Contact first
-    const contactUrl = `https://api.karbonhq.com/v3/Contacts/${clientKey}?$expand=BusinessCards`
-    const contactResponse = await fetch(contactUrl, {
-      headers: {
-        AccessKey: accessKey,
-        Authorization: `Bearer ${bearerToken}`,
-        "Content-Type": "application/json",
-      },
-    }).catch(() => null)
+    // - Contacts = Individual people (uses ContactKey)
+    // - Organizations = Companies/businesses (uses OrganizationKey)
+    // A clientKey could be either, so we try both endpoints
 
-    if (contactResponse?.ok) {
-      clientDetails = await contactResponse.json()
-      isOrganization = false
-      avatarUrl = clientDetails.AvatarUrl || null
-      const primaryCard = clientDetails.BusinessCards?.find((card: any) => card.IsPrimaryCard === true)
-      organizationKey = primaryCard?.OrganizationKey || null
-    }
+    // Try fetching as Organization first (business client)
+    console.log(`[v0] Attempting to fetch clientKey ${clientKey} as Organization (EntityKey)...`)
+    const orgUrl = `https://api.karbonhq.com/v3/Organizations/${clientKey}?$expand=BusinessCards`
 
-    // If not found as Contact, try as Organization
-    if (!clientDetails) {
-      const orgUrl = `https://api.karbonhq.com/v3/Organizations/${clientKey}?$expand=BusinessCards,Contacts`
-      const orgResponse = await fetch(orgUrl, {
+    let orgResponse: Response | null = null
+    try {
+      orgResponse = await fetch(orgUrl, {
         headers: {
           AccessKey: accessKey,
           Authorization: `Bearer ${bearerToken}`,
           "Content-Type": "application/json",
         },
-      }).catch(() => null)
+      })
+      console.log(`[v0] Organization endpoint returned status: ${orgResponse.status}`)
+    } catch (fetchError) {
+      console.log(`[v0] Network error fetching Organization, will try Contact`)
+    }
 
-      if (orgResponse?.ok) {
-        clientDetails = await orgResponse.json()
-        isOrganization = true
-        organizationKey = clientKey
+    if (orgResponse?.ok) {
+      clientDetails = await orgResponse.json()
+      isOrganization = true
+      organizationKey = clientKey // The clientKey IS the EntityKey for Organizations
+      avatarUrl = clientDetails.AvatarUrl || null
+      // Organization name can be in different fields
+      const orgName =
+        clientDetails.Name ||
+        clientDetails.OrganizationName ||
+        clientDetails.LegalName ||
+        clientDetails.TradingName ||
+        clientDetails.FullName
+      console.log("[v0] Found as Organization (Business Client):", orgName)
+      console.log("[v0] Organization response keys:", Object.keys(clientDetails))
+    } else {
+      // Organization endpoint returned 404 - try as Contact (individual person)
+      console.log(
+        `[v0] Not found as Organization (status: ${orgResponse?.status || "network error"}), trying Contact...`,
+      )
+
+      const contactUrl = `https://api.karbonhq.com/v3/Contacts/${clientKey}?$expand=BusinessCards`
+
+      let contactResponse: Response | null = null
+      try {
+        contactResponse = await fetch(contactUrl, {
+          headers: {
+            AccessKey: accessKey,
+            Authorization: `Bearer ${bearerToken}`,
+            "Content-Type": "application/json",
+          },
+        })
+        console.log(`[v0] Contact endpoint returned status: ${contactResponse.status}`)
+      } catch (fetchError) {
+        console.log(`[v0] Network error fetching Contact`)
+      }
+
+      if (contactResponse?.ok) {
+        clientDetails = await contactResponse.json()
+        isOrganization = false
         avatarUrl = clientDetails.AvatarUrl || null
+        // Get the OrganizationKey from the Contact's primary business card (if they work for a company)
+        const primaryCard = clientDetails.BusinessCards?.find((card: any) => card.IsPrimaryCard === true)
+        organizationKey = primaryCard?.OrganizationKey || null
+        const contactName =
+          clientDetails.FullName ||
+          clientDetails.Name ||
+          `${clientDetails.FirstName || ""} ${clientDetails.LastName || ""}`.trim() ||
+          "Unknown Contact"
+        console.log("[v0] Found as Contact (Individual):", contactName)
       }
     }
 
@@ -151,7 +188,19 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
 
     const { workItems: allWorkItems } = await workItemsResponse.json()
 
-    const clientName = clientDetails?.FullName || clientDetails?.OrganizationName || null
+    const clientName = isOrganization
+      ? clientDetails?.Name ||
+        clientDetails?.OrganizationName ||
+        clientDetails?.LegalName ||
+        clientDetails?.TradingName ||
+        clientDetails?.FullName ||
+        null
+      : clientDetails?.FullName ||
+        clientDetails?.Name ||
+        (clientDetails?.FirstName && clientDetails?.LastName
+          ? `${clientDetails.FirstName} ${clientDetails.LastName}`
+          : null) ||
+        null
 
     // Find initial work items for this client
     const directWorkItems = allWorkItems.filter(
@@ -159,7 +208,6 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
     )
 
     console.log(`[v0] Found ${directWorkItems.length} direct work items for client`)
-    console.log("[v0] Direct work items:", JSON.stringify(directWorkItems, null, 2))
 
     // Get the client group name from the first work item
     const clientGroupName = directWorkItems[0]?.ClientGroup || null
@@ -175,12 +223,15 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
     const uniqueWorkItems = Array.from(new Map(relatedWorkItems.map((item: any) => [item.WorkKey, item])).values())
 
     console.log(`[v0] Total unique work items: ${uniqueWorkItems.length}`)
-    uniqueWorkItems.forEach((item: any) => {
-      console.log(`[v0] Work item: ${item.Title} | Primary: ${item.PrimaryStatus} | Secondary: ${item.SecondaryStatus}`)
-    })
 
     if (uniqueWorkItems.length === 0 && !clientDetails) {
-      return NextResponse.json({ error: "Client not found" }, { status: 404 })
+      return NextResponse.json(
+        {
+          error: "Client not found",
+          details: `No Contact or Organization found for key ${clientKey}, and no work items associated`,
+        },
+        { status: 404 },
+      )
     }
 
     const detectedSpouses = detectJointClients(uniqueWorkItems, clientName || "")
@@ -211,7 +262,9 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
 
         const address =
           primaryCard.Addresses && primaryCard.Addresses.length > 0
-            ? `${primaryCard.Addresses[0].AddressLines}, ${primaryCard.Addresses[0].City}, ${primaryCard.Addresses[0].StateProvinceCounty} ${primaryCard.Addresses[0].ZipCode}`
+            ? `${primaryCard.Addresses[0].AddressLines || ""}, ${primaryCard.Addresses[0].City || ""}, ${primaryCard.Addresses[0].StateProvinceCounty || ""} ${primaryCard.Addresses[0].ZipCode || ""}`
+                .replace(/^, |, $/g, "")
+                .trim()
             : null
 
         contactInfo = {
@@ -236,6 +289,7 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
       organizationKey,
       avatarUrl,
       contactInfo,
+      entityType: isOrganization ? "Organization" : "Contact",
     }
 
     // Calculate stats

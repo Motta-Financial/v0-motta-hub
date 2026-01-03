@@ -4,87 +4,52 @@ import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Trophy, Medal, Award, Star, TrendingUp } from "lucide-react"
-import { createClient } from "@/lib/supabase/client"
+import { Trophy, Medal, Award } from "lucide-react"
 
-interface WeeklyPoints {
-  id: string
-  team_member_id: string
-  team_member_name: string
-  week_id: string
-  week_date: string
+interface LeaderboardEntry {
+  name: string
   first_place_votes: number
   second_place_votes: number
   third_place_votes: number
   honorable_mention_votes: number
   partner_votes: number
   total_points: number
+  rank: number
 }
 
-interface YearlyTotal {
-  id: string
-  team_member_id: string
-  team_member_name: string
-  year: number
-  total_first_place_votes: number
-  total_second_place_votes: number
-  total_third_place_votes: number
-  total_honorable_mention_votes: number
-  total_partner_votes: number
-  total_points: number
-  weeks_participated: number
-  current_rank: number
+interface Filters {
+  year: string
+  weekId: string
+  teamMemberId: string
 }
 
-export function TommyLeaderboard() {
-  const [weeklyPoints, setWeeklyPoints] = useState<WeeklyPoints[]>([])
-  const [yearlyTotals, setYearlyTotals] = useState<YearlyTotal[]>([])
+interface TommyLeaderboardProps {
+  filters: Filters
+}
+
+export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([])
+  const [totalBallots, setTotalBallots] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [currentWeekDate, setCurrentWeekDate] = useState<string | null>(null)
+
+  const is2026OrLater = filters.year !== "all" && Number.parseInt(filters.year) >= 2026
 
   useEffect(() => {
-    fetchLeaderboardData()
-  }, [])
+    fetchLeaderboard()
+  }, [filters])
 
-  const fetchLeaderboardData = async () => {
-    const supabase = createClient()
-
+  const fetchLeaderboard = async () => {
+    setLoading(true)
     try {
-      // Get current/latest week
-      const { data: latestWeek } = await supabase
-        .from("tommy_award_weeks")
-        .select("*")
-        .order("week_date", { ascending: false })
-        .limit(1)
-        .single()
+      const params = new URLSearchParams({ type: "leaderboard" })
+      if (filters.year && filters.year !== "all") params.append("year", filters.year)
+      if (filters.weekId && filters.weekId !== "all") params.append("week_id", filters.weekId)
 
-      if (latestWeek) {
-        setCurrentWeekDate(latestWeek.week_date)
+      const res = await fetch(`/api/tommy-awards?${params}`)
+      const data = await res.json()
 
-        // Get weekly points for current week
-        const { data: weeklyData } = await supabase
-          .from("tommy_award_points")
-          .select("*")
-          .eq("week_id", latestWeek.id)
-          .order("total_points", { ascending: false })
-
-        if (weeklyData) {
-          setWeeklyPoints(weeklyData)
-        }
-      }
-
-      // Get yearly totals
-      const currentYear = new Date().getFullYear()
-      const { data: yearlyData } = await supabase
-        .from("tommy_award_yearly_totals")
-        .select("*")
-        .eq("year", currentYear)
-        .order("total_points", { ascending: false })
-
-      if (yearlyData) {
-        setYearlyTotals(yearlyData)
-      }
+      setLeaderboard(data.leaderboard || [])
+      setTotalBallots(data.total_ballots || 0)
     } catch (error) {
       console.error("Error fetching leaderboard:", error)
     } finally {
@@ -127,6 +92,13 @@ export function TommyLeaderboard() {
     }
   }
 
+  const getFilterDescription = () => {
+    const parts: string[] = []
+    if (filters.year && filters.year !== "all") parts.push(filters.year)
+    if (filters.weekId && filters.weekId !== "all") parts.push("Selected Week")
+    return parts.length > 0 ? parts.join(" - ") : "All Time"
+  }
+
   if (loading) {
     return (
       <Card className="border-border">
@@ -140,141 +112,77 @@ export function TommyLeaderboard() {
   return (
     <Card className="border-border bg-card">
       <CardHeader className="pb-4">
-        <CardTitle className="flex items-center gap-3 text-foreground">
-          <div className="p-2 bg-amber-100 rounded-lg">
-            <Trophy className="h-5 w-5 text-amber-600" />
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-3 text-foreground">
+            <div className="p-2 bg-amber-100 rounded-lg">
+              <Trophy className="h-5 w-5 text-amber-600" />
+            </div>
+            Leaderboard
+          </CardTitle>
+          <div className="text-right">
+            <p className="text-sm font-medium text-foreground">{getFilterDescription()}</p>
+            <p className="text-xs text-muted-foreground">{totalBallots} ballots</p>
           </div>
-          Tommy Awards Leaderboard
-        </CardTitle>
+        </div>
       </CardHeader>
       <CardContent>
-        <Tabs defaultValue="yearly" className="w-full">
-          <TabsList className="grid w-full grid-cols-2 mb-6">
-            <TabsTrigger value="yearly" className="flex items-center gap-2">
-              <TrendingUp className="h-4 w-4" />
-              {new Date().getFullYear()} Season
-            </TabsTrigger>
-            <TabsTrigger value="weekly" className="flex items-center gap-2">
-              <Star className="h-4 w-4" />
-              This Week
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="yearly" className="space-y-3">
-            {yearlyTotals.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <Trophy className="h-12 w-12 mx-auto mb-3 opacity-30" />
-                <p>No votes recorded yet this year</p>
-              </div>
-            ) : (
-              yearlyTotals.map((entry, index) => (
-                <div
-                  key={entry.id}
-                  className={`flex items-center gap-4 p-4 rounded-xl border transition-all hover:shadow-md ${getRankBg(index + 1)}`}
-                >
-                  <div className="w-10 flex justify-center">{getRankIcon(index + 1)}</div>
-                  <Avatar className="h-12 w-12 border-2 border-white shadow-sm">
-                    <AvatarImage src="/placeholder.svg" alt={entry.team_member_name} />
-                    <AvatarFallback className="bg-gradient-to-br from-emerald-500 to-teal-600 text-white font-semibold">
-                      {getInitials(entry.team_member_name)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-foreground truncate">{entry.team_member_name}</p>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+        {leaderboard.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground">
+            <Trophy className="h-12 w-12 mx-auto mb-3 opacity-30" />
+            <p>No votes recorded for this period</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {leaderboard.map((entry) => (
+              <div
+                key={entry.name}
+                className={`flex items-center gap-4 p-4 rounded-xl border transition-all hover:shadow-md ${getRankBg(entry.rank)}`}
+              >
+                <div className="w-10 flex justify-center">{getRankIcon(entry.rank)}</div>
+                <Avatar className="h-12 w-12 border-2 border-white shadow-sm">
+                  <AvatarImage src="/placeholder.svg" alt={entry.name} />
+                  <AvatarFallback className="bg-gradient-to-br from-[#c62828] to-[#b71c1c] text-white font-semibold">
+                    {getInitials(entry.name)}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-foreground truncate">{entry.name}</p>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    {entry.first_place_votes > 0 && (
                       <Badge variant="outline" className="text-xs bg-amber-50 text-amber-700 border-amber-200">
-                        {entry.total_first_place_votes} First
+                        {entry.first_place_votes} First
                       </Badge>
+                    )}
+                    {entry.second_place_votes > 0 && (
                       <Badge variant="outline" className="text-xs bg-slate-50 text-slate-600 border-slate-200">
-                        {entry.total_second_place_votes} Second
+                        {entry.second_place_votes} Second
                       </Badge>
+                    )}
+                    {entry.third_place_votes > 0 && (
                       <Badge variant="outline" className="text-xs bg-orange-50 text-orange-600 border-orange-200">
-                        {entry.total_third_place_votes} Third
+                        {entry.third_place_votes} Third
                       </Badge>
-                      {entry.total_partner_votes > 0 && (
-                        <Badge variant="outline" className="text-xs bg-emerald-50 text-emerald-700 border-emerald-200">
-                          {entry.total_partner_votes} Partner
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold text-foreground">{entry.total_points}</p>
-                    <p className="text-xs text-muted-foreground">{entry.weeks_participated} weeks</p>
+                    )}
+                    {!is2026OrLater && entry.honorable_mention_votes > 0 && (
+                      <Badge variant="outline" className="text-xs">
+                        {entry.honorable_mention_votes} HM
+                      </Badge>
+                    )}
+                    {!is2026OrLater && entry.partner_votes > 0 && (
+                      <Badge variant="outline" className="text-xs bg-emerald-50 text-emerald-700 border-emerald-200">
+                        {entry.partner_votes} Partner
+                      </Badge>
+                    )}
                   </div>
                 </div>
-              ))
-            )}
-          </TabsContent>
-
-          <TabsContent value="weekly" className="space-y-3">
-            {currentWeekDate && (
-              <p className="text-sm text-muted-foreground mb-4">
-                Week of{" "}
-                {new Date(currentWeekDate).toLocaleDateString("en-US", {
-                  month: "long",
-                  day: "numeric",
-                  year: "numeric",
-                })}
-              </p>
-            )}
-            {weeklyPoints.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <Star className="h-12 w-12 mx-auto mb-3 opacity-30" />
-                <p>No votes this week yet</p>
+                <div className="text-right">
+                  <p className="text-2xl font-bold text-foreground">{entry.total_points}</p>
+                  <p className="text-xs text-muted-foreground">points</p>
+                </div>
               </div>
-            ) : (
-              weeklyPoints.map((entry, index) => (
-                <div
-                  key={entry.id}
-                  className={`flex items-center gap-4 p-4 rounded-xl border transition-all hover:shadow-md ${getRankBg(index + 1)}`}
-                >
-                  <div className="w-10 flex justify-center">{getRankIcon(index + 1)}</div>
-                  <Avatar className="h-12 w-12 border-2 border-white shadow-sm">
-                    <AvatarImage src="/placeholder.svg" alt={entry.team_member_name} />
-                    <AvatarFallback className="bg-gradient-to-br from-emerald-500 to-teal-600 text-white font-semibold">
-                      {getInitials(entry.team_member_name)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-foreground truncate">{entry.team_member_name}</p>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      {entry.first_place_votes > 0 && (
-                        <Badge variant="outline" className="text-xs bg-amber-50 text-amber-700 border-amber-200">
-                          {entry.first_place_votes}x 1st
-                        </Badge>
-                      )}
-                      {entry.second_place_votes > 0 && (
-                        <Badge variant="outline" className="text-xs bg-slate-50 text-slate-600 border-slate-200">
-                          {entry.second_place_votes}x 2nd
-                        </Badge>
-                      )}
-                      {entry.third_place_votes > 0 && (
-                        <Badge variant="outline" className="text-xs bg-orange-50 text-orange-600 border-orange-200">
-                          {entry.third_place_votes}x 3rd
-                        </Badge>
-                      )}
-                      {entry.honorable_mention_votes > 0 && (
-                        <Badge variant="outline" className="text-xs">
-                          {entry.honorable_mention_votes}x HM
-                        </Badge>
-                      )}
-                      {entry.partner_votes > 0 && (
-                        <Badge variant="outline" className="text-xs bg-emerald-50 text-emerald-700 border-emerald-200">
-                          {entry.partner_votes}x Partner
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold text-foreground">{entry.total_points}</p>
-                    <p className="text-xs text-muted-foreground">points</p>
-                  </div>
-                </div>
-              ))
-            )}
-          </TabsContent>
-        </Tabs>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
