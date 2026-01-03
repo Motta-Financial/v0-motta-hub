@@ -23,9 +23,10 @@ interface ViewManagerProps {
   currentFilters: any
   onLoadView: (view: FilterView) => void
   onSaveView?: (viewName: string, isShared: boolean) => void
+  currentUserId?: string | null
 }
 
-export function ViewManager({ type, currentFilters, onLoadView, onSaveView }: ViewManagerProps) {
+export function ViewManager({ type, currentFilters, onLoadView, onSaveView, currentUserId }: ViewManagerProps) {
   const [views, setViews] = useState<FilterView[]>([])
   const [loading, setLoading] = useState(false)
   const [saveDialogOpen, setSaveDialogOpen] = useState(false)
@@ -64,7 +65,7 @@ export function ViewManager({ type, currentFilters, onLoadView, onSaveView }: Vi
           type,
           filters: currentFilters,
           isShared,
-          createdBy: "current-user", // Replace with actual user
+          createdBy: currentUserId || null,
         }),
       })
 
@@ -121,8 +122,8 @@ export function ViewManager({ type, currentFilters, onLoadView, onSaveView }: Vi
     }
   }
 
-  const myViews = views.filter((v) => v.createdBy === "current-user")
-  const sharedViews = views.filter((v) => v.isShared && v.createdBy !== "current-user")
+  const myViews = views.filter((v) => (currentUserId ? v.createdBy === currentUserId : false))
+  const sharedViews = views.filter((v) => v.isShared && v.createdBy !== currentUserId)
 
   return (
     <div className="flex gap-2">

@@ -21,11 +21,13 @@ import {
   CheckCircle2,
   RefreshCw,
   Filter,
+  ExternalLink,
 } from "lucide-react"
 import { TAX_RETURN_WORK_TYPES } from "@/lib/karbon-api"
+import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
 
 interface KarbonWorkItem {
-  WorkItemKey: string
+  WorkKey: string
   Title: string
   Description?: string
   WorkType?: string
@@ -451,14 +453,23 @@ export function TaxBusySeason() {
 
                 return (
                   <div
-                    key={item.WorkItemKey}
+                    key={item.WorkKey}
                     className="px-4 py-3 hover:bg-muted/50 cursor-pointer transition-colors"
                     onClick={() => setSelectedItem(item)}
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="font-medium truncate">{item.ClientName || item.Title}</span>
+                          <a
+                            href={getKarbonWorkItemUrl(item.WorkKey)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-medium truncate hover:underline flex items-center gap-1"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {item.ClientName || item.Title}
+                            <ExternalLink className="h-3 w-3 text-muted-foreground" />
+                          </a>
                           <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">
                             {item.returnType}
                           </Badge>

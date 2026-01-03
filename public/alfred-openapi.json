@@ -1,0 +1,278 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Motta Hub ALFRED API",
+    "description": "API for ALFRED AI Assistant to access all Motta Hub Supabase data including work items, clients, contacts, debriefs, team members, and more.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://motta-hub.vercel.app",
+      "description": "Production Motta Hub"
+    }
+  ],
+  "paths": {
+    "/api/alfred/schema": {
+      "get": {
+        "operationId": "getSchema",
+        "summary": "Get Database Schema",
+        "description": "Returns complete documentation of all 50+ Supabase tables, their fields, relationships, and example queries. Use this first to understand what data is available.",
+        "responses": {
+          "200": {
+            "description": "Schema information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tables": {
+                      "type": "object",
+                      "description": "All available tables with their schemas"
+                    },
+                    "relationships": {
+                      "type": "array",
+                      "description": "Table relationships and foreign keys"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alfred/data": {
+      "get": {
+        "operationId": "queryData",
+        "summary": "Query Any Table",
+        "description": "Query any Supabase table with optional filters, search, and pagination. Use for simple queries.",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "query",
+            "required": true,
+            "description": "Table name to query. Options: work_items, contacts, organizations, team_members, debriefs, meeting_notes, invoices, tasks, services, tommy_award_ballots, tommy_award_points, karbon_notes, karbon_tasks, karbon_timesheets, client_groups, tax_returns, recurring_revenue, work_status, and more.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "required": false,
+            "description": "Search term to filter results across text fields",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "columns",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated list of columns to return. Use * for all.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filters",
+            "in": "query",
+            "required": false,
+            "description": "JSON-encoded filter object, e.g., {\"status\":\"completed\",\"assignee_name\":\"Dat Le\"}",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum results to return (default 100)",
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Pagination offset",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "orderBy",
+            "in": "query",
+            "required": false,
+            "description": "Column to sort by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "orderDirection",
+            "in": "query",
+            "required": false,
+            "description": "Sort direction",
+            "schema": {
+              "type": "string",
+              "enum": ["asc", "desc"],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Query results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "table": { "type": "string" },
+                    "data": { "type": "array" },
+                    "count": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "queryDataAdvanced",
+        "summary": "Advanced Query with Complex Filters",
+        "description": "Perform advanced queries with date ranges, comparisons, joins, and multiple conditions.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["table"],
+                "properties": {
+                  "table": {
+                    "type": "string",
+                    "description": "Table name to query"
+                  },
+                  "select": {
+                    "type": "string",
+                    "description": "Columns to select (default: *)"
+                  },
+                  "filters": {
+                    "type": "object",
+                    "description": "Filter conditions. Use operators: eq, neq, gt, gte, lt, lte, in, ilike. Example: {\"due_date\": {\"lte\": \"2026-01-15\"}, \"status\": \"in_progress\"}"
+                  },
+                  "search": {
+                    "type": "string",
+                    "description": "Text search term"
+                  },
+                  "joins": {
+                    "type": "array",
+                    "description": "Related tables to include",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "table": { "type": "string" },
+                        "columns": { "type": "string" }
+                      }
+                    }
+                  },
+                  "limit": { "type": "integer", "default": 100 },
+                  "offset": { "type": "integer", "default": 0 },
+                  "orderBy": { "type": "string" },
+                  "orderDirection": { "type": "string", "enum": ["asc", "desc"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Query results"
+          }
+        }
+      }
+    },
+    "/api/alfred/search": {
+      "get": {
+        "operationId": "searchAllData",
+        "summary": "Full-Text Search",
+        "description": "Search across contacts, organizations, work items, team members, debriefs, meeting notes, and services simultaneously.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "description": "Search query term",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tables",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated list of tables to search. Leave empty for all.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Results per table (default 10)",
+            "schema": {
+              "type": "integer",
+              "default": 10
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results grouped by table"
+          }
+        }
+      }
+    },
+    "/api/alfred/stats": {
+      "get": {
+        "operationId": "getDashboardStats",
+        "summary": "Get Dashboard Statistics",
+        "description": "Get aggregated statistics including work item counts by status, team workload by assignee, recent debriefs, upcoming deadlines, and Tommy Awards leaders.",
+        "responses": {
+          "200": {
+            "description": "Dashboard statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workItems": {
+                      "type": "object",
+                      "properties": {
+                        "total": { "type": "integer" },
+                        "inProgress": { "type": "integer" },
+                        "completed": { "type": "integer" },
+                        "overdue": { "type": "integer" }
+                      }
+                    },
+                    "teamWorkload": { "type": "array" },
+                    "recentDebriefs": { "type": "array" },
+                    "upcomingDeadlines": { "type": "array" },
+                    "tommyAwardsLeaders": { "type": "array" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

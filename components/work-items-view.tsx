@@ -38,7 +38,7 @@ import {
 } from "@/components/ui/dialog"
 
 interface WorkItem {
-  WorkItemKey: string
+  WorkKey: string
   Title: string
   ClientName?: string
   ClientKey?: string
@@ -314,7 +314,7 @@ export function WorkItemsView() {
         (item) =>
           item.Title?.toLowerCase().includes(query) ||
           item.ClientName?.toLowerCase().includes(query) ||
-          item.WorkItemKey?.toLowerCase().includes(query),
+          item.WorkKey?.toLowerCase().includes(query),
       )
     }
 
@@ -1037,13 +1037,13 @@ export function WorkItemsView() {
           ) : (
             <div className="space-y-2">
               {filteredItems.map((item) => (
-                <Card key={item.WorkItemKey} className="hover:shadow-sm transition-shadow">
+                <Card key={item.WorkKey} className="hover:shadow-sm transition-shadow">
                   <CardContent className="p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <a
-                            href={getKarbonWorkItemUrl(item.WorkItemKey)}
+                            href={getKarbonWorkItemUrl(item.WorkKey)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="hover:underline font-medium text-sm flex items-center gap-1"
@@ -1052,7 +1052,7 @@ export function WorkItemsView() {
                             <ExternalLink className="h-3 w-3 text-gray-400" />
                           </a>
                           <Badge variant="outline" className="text-[10px] font-mono h-5">
-                            {item.WorkItemKey}
+                            {item.WorkKey}
                           </Badge>
                           {item.WorkType && (
                             <Badge className={`text-[10px] h-5 ${getServiceLineColor(item.WorkType as ServiceLine)}`}>

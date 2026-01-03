@@ -19,6 +19,8 @@ import {
   RefreshCw,
   CheckCircle,
   AlertCircle,
+  UserCheck,
+  UserX,
 } from "lucide-react"
 import { ViewManager } from "@/components/view-manager"
 import type { FilterView } from "@/lib/view-types"
@@ -94,7 +96,7 @@ export function Teammates() {
       if (data.importResult) {
         setSyncResult(data.importResult)
       }
-      await fetchUsers() // Refresh the list after sync
+      await fetchUsers()
     } catch (error) {
       console.error("Error syncing users:", error)
       setSyncResult({
@@ -111,7 +113,6 @@ export function Teammates() {
     }
   }
 
-  // Get unique departments for filters
   const departments = Array.from(new Set(users.map((u) => u.department).filter(Boolean))) as string[]
 
   const filteredUsers = users.filter((user) => {
@@ -123,7 +124,6 @@ export function Teammates() {
       user.role?.toLowerCase().includes(searchQuery.toLowerCase())
 
     const matchesStatus = statusFilter === "all" || (statusFilter === "active" ? user.is_active : !user.is_active)
-
     const matchesDepartment = departmentFilter === "all" || user.department === departmentFilter
 
     return matchesSearch && matchesStatus && matchesDepartment
@@ -150,9 +150,8 @@ export function Teammates() {
     department: departmentFilter,
   })
 
-  // Count linked vs unlinked
-  const linkedCount = users.filter((u) => u.karbon_user_key).length
-  const unlinkedCount = users.filter((u) => !u.karbon_user_key).length
+  const activeCount = users.filter((u) => u.is_active).length
+  const inactiveCount = users.filter((u) => !u.is_active).length
 
   if (loading) {
     return (
@@ -222,10 +221,10 @@ export function Teammates() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Karbon Linked</p>
-                <p className="text-2xl font-bold text-green-600">{linkedCount}</p>
+                <p className="text-sm text-muted-foreground">Active</p>
+                <p className="text-2xl font-bold text-green-600">{activeCount}</p>
               </div>
-              <CheckCircle className="h-8 w-8 text-green-600" />
+              <UserCheck className="h-8 w-8 text-green-600" />
             </div>
           </CardContent>
         </Card>
@@ -233,10 +232,10 @@ export function Teammates() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Not Linked</p>
-                <p className="text-2xl font-bold text-amber-600">{unlinkedCount}</p>
+                <p className="text-sm text-muted-foreground">Inactive</p>
+                <p className="text-2xl font-bold text-gray-400">{inactiveCount}</p>
               </div>
-              <AlertCircle className="h-8 w-8 text-amber-600" />
+              <UserX className="h-8 w-8 text-gray-400" />
             </div>
           </CardContent>
         </Card>
@@ -359,13 +358,6 @@ export function Teammates() {
                           <div className="flex items-center gap-2 text-xs text-gray-500">
                             <Calendar className="h-3 w-3 flex-shrink-0" />
                             <span className="truncate">Started {new Date(user.start_date).toLocaleDateString()}</span>
-                          </div>
-                        )}
-                        {user.karbon_user_key && (
-                          <div className="mt-2 pt-2 border-t">
-                            <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200">
-                              Karbon Linked
-                            </Badge>
                           </div>
                         )}
                       </div>

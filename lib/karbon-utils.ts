@@ -2,13 +2,15 @@
  * Utility functions for Karbon integration
  */
 
+const KARBON_FIRM_ID = "4mTyp9lLRWTC"
+
 /**
  * Generate a direct link to a Karbon work item
  * @param workItemKey - The WorkItemKey from Karbon API
  * @returns URL to the work item in Karbon web app
  */
 export function getKarbonWorkItemUrl(workItemKey: string): string {
-  return `https://app.karbonhq.com/work/${workItemKey}`
+  return `https://app2.karbonhq.com/${KARBON_FIRM_ID}#/work/${workItemKey}`
 }
 
 /**
@@ -17,7 +19,7 @@ export function getKarbonWorkItemUrl(workItemKey: string): string {
  * @returns URL to the contact in Karbon web app
  */
 export function getKarbonContactUrl(contactKey: string): string {
-  return `https://app.karbonhq.com/contacts/${contactKey}`
+  return `https://app2.karbonhq.com/${KARBON_FIRM_ID}#/contacts/${contactKey}`
 }
 
 /**
@@ -26,28 +28,28 @@ export function getKarbonContactUrl(contactKey: string): string {
  * @returns URL to the client in Karbon web app
  */
 export function getKarbonClientUrl(clientKey: string): string {
-  return `https://app.karbonhq.com/clients/${clientKey}`
+  return `https://app2.karbonhq.com/${KARBON_FIRM_ID}#/clients/${clientKey}`
 }
 
 /**
  * Generate a direct link to a Karbon task
  */
 export function getKarbonTaskUrl(taskKey: string): string {
-  return `https://app.karbonhq.com/tasks/${taskKey}`
+  return `https://app2.karbonhq.com/${KARBON_FIRM_ID}#/tasks/${taskKey}`
 }
 
 /**
  * Generate a direct link to a Karbon client group
  */
 export function getKarbonClientGroupUrl(clientGroupKey: string): string {
-  return `https://app.karbonhq.com/client-groups/${clientGroupKey}`
+  return `https://app2.karbonhq.com/${KARBON_FIRM_ID}#/client-groups/${clientGroupKey}`
 }
 
 /**
  * Generate a direct link to a Karbon note
  */
 export function getKarbonNoteUrl(noteKey: string): string {
-  return `https://app.karbonhq.com/notes/${noteKey}`
+  return `https://app2.karbonhq.com/${KARBON_FIRM_ID}#/notes/${noteKey}`
 }
 
 /**
