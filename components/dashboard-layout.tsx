@@ -35,6 +35,7 @@ import {
   MessageSquare,
   ListChecks,
   ShieldCheck,
+  CreditCard,
 } from "lucide-react"
 
 const navigation = [
@@ -43,6 +44,7 @@ const navigation = [
   { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
   { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
   { name: "Debriefs", href: "/debriefs/new", icon: MessageSquare },
+  { name: "Payments", href: "/payments", icon: CreditCard }, // Added Payments navigation
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
   {
@@ -142,7 +144,11 @@ function Sidebar() {
       style={{ borderColor: "#8E9B79" }}
     >
       <div className="flex h-20 shrink-0 items-center">
-        <img src="/placeholder.svg?height=48&width=160" alt="Motta Financial" className="h-12 w-auto" />
+        <img
+          src="/images/motta-logo-tagline-web-color.png"
+          alt="Motta - Tax | Accounting | Advisory"
+          className="h-14 w-auto"
+        />
       </div>
 
       <nav className="flex flex-1 flex-col">
