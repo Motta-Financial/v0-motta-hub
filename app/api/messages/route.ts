@@ -12,6 +12,7 @@ export async function GET() {
         id,
         author_name,
         author_initials,
+        author_id,
         content,
         gif_url,
         is_pinned,
@@ -25,6 +26,7 @@ export async function GET() {
           id,
           author_name,
           author_initials,
+          author_id,
           content,
           created_at
         )
@@ -39,6 +41,7 @@ export async function GET() {
       id: msg.id,
       author: msg.author_name,
       authorInitials: msg.author_initials,
+      teamMemberId: msg.author_id,
       content: msg.content,
       timestamp: msg.created_at,
       gifUrl: msg.gif_url,
@@ -48,6 +51,7 @@ export async function GET() {
         id: c.id,
         author: c.author_name,
         authorInitials: c.author_initials,
+        teamMemberId: c.author_id,
         content: c.content,
         timestamp: c.created_at,
       })),
@@ -72,23 +76,26 @@ function aggregateReactions(reactions: any[]) {
 export async function POST(request: Request) {
   try {
     const body = await request.json()
-    const { author, content, gifUrl } = body
+    const { author, authorInitials, teamMemberId, content, gifUrl } = body
 
     if (!author || (!content && !gifUrl)) {
       return NextResponse.json({ error: "Author and content or GIF are required" }, { status: 400 })
     }
 
-    const authorInitials = author
-      .split(" ")
-      .map((n: string) => n[0])
-      .join("")
-      .toUpperCase()
+    const initials =
+      authorInitials ||
+      author
+        .split(" ")
+        .map((n: string) => n[0])
+        .join("")
+        .toUpperCase()
 
     const { data: newMessage, error } = await supabase
       .from("messages")
       .insert({
         author_name: author,
-        author_initials: authorInitials,
+        author_initials: initials,
+        author_id: teamMemberId || null,
         content: content || "",
         gif_url: gifUrl || null,
       })
@@ -102,6 +109,7 @@ export async function POST(request: Request) {
         id: newMessage.id,
         author: newMessage.author_name,
         authorInitials: newMessage.author_initials,
+        teamMemberId: newMessage.author_id,
         content: newMessage.content,
         timestamp: newMessage.created_at,
         gifUrl: newMessage.gif_url,

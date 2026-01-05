@@ -15,9 +15,9 @@ export async function GET(request: NextRequest) {
       .from("ignition_disbursals")
       .select(`
         *,
-        contact:contacts(id, full_name, email),
+        contact:contacts(id, full_name, primary_email),
         organization:organizations(id, name),
-        work_item:work_items(id, title, work_key)
+        work_item:work_items(id, title)
       `)
       .order("arrival_date", { ascending: false })
       .range(offset, offset + limit - 1)

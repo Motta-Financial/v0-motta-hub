@@ -7,7 +7,8 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Badge } from "@/components/ui/badge"
-import { DemoModeBanner } from "@/components/demo-mode-banner"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-context"
 import {
   LayoutDashboard,
   Users,
@@ -36,7 +37,18 @@ import {
   ListChecks,
   ShieldCheck,
   CreditCard,
+  LogOut,
 } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { createClient } from "@/lib/supabase/client"
+import { useRouter } from "next/navigation"
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard, alfredSuggestions: 3 },
@@ -44,7 +56,7 @@ const navigation = [
   { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
   { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
   { name: "Debriefs", href: "/debriefs/new", icon: MessageSquare },
-  { name: "Payments", href: "/payments", icon: CreditCard }, // Added Payments navigation
+  { name: "Payments", href: "/payments", icon: CreditCard },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
   {
@@ -91,29 +103,25 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: "#EAE6E1" }}>
-      <div className="fixed top-0 left-0 right-0 z-50">
-        <DemoModeBanner />
-      </div>
-
       {/* Mobile sidebar */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
         <SheetTrigger asChild>
-          <Button variant="ghost" size="icon" className="fixed top-14 left-4 z-40 md:hidden">
+          <Button variant="ghost" size="icon" className="fixed top-4 left-4 z-40 md:hidden">
             <Menu className="h-6 w-6" />
           </Button>
         </SheetTrigger>
-        <SheetContent side="left" className="w-64 p-0 pt-10">
+        <SheetContent side="left" className="w-64 p-0">
           <Sidebar />
         </SheetContent>
       </Sheet>
 
-      {/* Desktop sidebar - adjusted for banner */}
-      <div className="hidden md:fixed md:top-10 md:bottom-0 md:flex md:w-64 md:flex-col">
+      {/* Desktop sidebar */}
+      <div className="hidden md:fixed md:top-0 md:bottom-0 md:flex md:w-64 md:flex-col">
         <Sidebar />
       </div>
 
-      {/* Main content - adjusted for banner */}
-      <div className="md:pl-64 pt-10">
+      {/* Main content */}
+      <div className="md:pl-64">
         <main className="py-6">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">{children}</div>
         </main>
@@ -124,7 +132,12 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
 function Sidebar() {
   const pathname = usePathname()
+  const router = useRouter()
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({})
+
+  const { teamMember, user } = useUser()
+  const displayName = useDisplayName()
+  const initials = useUserInitials()
 
   const toggleSection = (name: string) => {
     setExpandedSections((prev) => ({
@@ -138,18 +151,66 @@ function Sidebar() {
     return children.some((child) => pathname === child.href || pathname.startsWith(child.href + "/"))
   }
 
+  const handleLogout = async () => {
+    const supabase = createClient()
+    await supabase.auth.signOut()
+    router.push("/login")
+  }
+
   return (
     <div
       className="flex grow flex-col gap-y-5 overflow-y-auto bg-white px-6 pb-4 shadow-sm border-r"
       style={{ borderColor: "#8E9B79" }}
     >
-      <div className="flex h-20 shrink-0 items-center">
-        <img
-          src="/images/motta-logo-tagline-web-color.png"
-          alt="Motta - Tax | Accounting | Advisory"
-          className="h-14 w-auto"
-        />
+      <div className="flex h-20 shrink-0 items-center gap-3">
+        <img src="/images/alfred-20ai-logo-icon-20-28no-20back-29.png" alt="ALFRED AI" className="h-14 w-auto" />
+        <div className="flex flex-col">
+          <span className="text-lg font-bold text-gray-900">ALFRED AI</span>
+          <span className="text-xs text-gray-500">Motta Hub</span>
+        </div>
       </div>
+
+      {user && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="flex items-center gap-3 w-full p-2 rounded-lg hover:bg-gray-50 transition-colors text-left">
+              <Avatar className="h-10 w-10">
+                <AvatarImage src={teamMember?.avatar_url || undefined} alt={displayName} />
+                <AvatarFallback className="bg-[#6B745D] text-white">{initials}</AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900 truncate">{displayName}</p>
+                <p className="text-xs text-gray-500 truncate">
+                  {teamMember?.title || teamMember?.role || "Team Member"}
+                </p>
+              </div>
+              <ChevronDown className="h-4 w-4 text-gray-400" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuLabel>
+              <div className="flex flex-col">
+                <span>{displayName}</span>
+                <span className="text-xs font-normal text-gray-500">{user.email}</span>
+              </div>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => router.push("/settings/profile")}>
+              <UserCircle className="mr-2 h-4 w-4" />
+              My Profile
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push("/settings")}>
+              <Settings className="mr-2 h-4 w-4" />
+              Settings
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={handleLogout} className="text-red-600">
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign Out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
       <nav className="flex flex-1 flex-col">
         <ul role="list" className="flex flex-1 flex-col gap-y-7">
@@ -289,9 +350,7 @@ function Sidebar() {
       >
         <div className="flex items-center justify-center gap-3">
           <div className="relative">
-            <div className="h-12 w-12 rounded-full bg-gradient-to-br from-orange-400 to-amber-500 flex items-center justify-center shadow-lg">
-              <Sparkles className="h-6 w-6 text-white" />
-            </div>
+            <img src="/images/alfred-20ai-logo-icon-20-28no-20back-29.png" alt="ALFRED AI" className="h-12 w-auto" />
             <div className="absolute -top-1 -right-1 h-3 w-3 bg-green-400 rounded-full border-2 border-white animate-pulse" />
           </div>
           <div className="text-left">

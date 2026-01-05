@@ -2,74 +2,201 @@
 
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Users, CheckSquare, Clock, FileText, TrendingUp, Bell } from "lucide-react"
+import { Users, CheckSquare, Clock, FileText, TrendingUp, Loader2 } from "lucide-react"
 import { TriageSummary } from "@/components/triage-summary"
 import { TeamsChat } from "@/components/teams-chat"
 import { MessageBoard } from "@/components/message-board"
 import { WorldClocks } from "@/components/world-clocks"
 import { ExpandableCard } from "@/components/ui/expandable-card"
-import { useDemoMode } from "@/contexts/demo-mode-context"
+import { useUser, useDisplayName } from "@/contexts/user-context"
+import { useEffect, useState } from "react"
+import { createClient } from "@/lib/supabase/client"
+
+interface DashboardStats {
+  activeClients: number
+  openTasks: number
+  tasksToday: number
+  upcomingDeadlines: number
+  criticalDeadlines: number
+  pendingDocuments: number
+}
+
+interface ActivityItem {
+  type: string
+  message: string
+  time: string
+  user: string
+  avatar: string | null
+}
 
 export function DashboardHome() {
-  const { isDemoMode, selectedUser, demoStats, demoTasks, demoNotifications, demoActivity } = useDemoMode()
+  const { teamMember, isLoading: userLoading } = useUser()
+  const displayName = useDisplayName()
 
-  // Use demo data when in demo mode
-  const userName = isDemoMode && selectedUser ? selectedUser.name.split(" ")[0] : "Sarah"
-  const stats = isDemoMode
-    ? demoStats
-    : {
-        activeClients: 247,
-        openTasks: 18,
-        tasksToday: 3,
-        upcomingDeadlines: 7,
-        criticalDeadlines: 2,
-        pendingDocuments: 12,
+  const [stats, setStats] = useState<DashboardStats>({
+    activeClients: 0,
+    openTasks: 0,
+    tasksToday: 0,
+    upcomingDeadlines: 0,
+    criticalDeadlines: 0,
+    pendingDocuments: 0,
+  })
+  const [activity, setActivity] = useState<ActivityItem[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+
+  useEffect(() => {
+    async function fetchDashboardData() {
+      try {
+        const supabase = createClient()
+        const today = new Date().toISOString().split("T")[0]
+        const weekFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+
+        const teamMemberId = teamMember?.id
+
+        // Fetch active clients (contacts with status = active)
+        const { count: clientCount } = await supabase
+          .from("contacts")
+          .select("*", { count: "exact", head: true })
+          .eq("status", "Active")
+
+        // Fetch open tasks assigned to this team member
+        let tasksQuery = supabase.from("tasks").select("*", { count: "exact", head: true }).eq("is_completed", false)
+
+        if (teamMemberId) {
+          tasksQuery = tasksQuery.eq("assignee_id", teamMemberId)
+        }
+        const { count: taskCount } = await tasksQuery
+
+        // Fetch tasks due today for this team member
+        let tasksTodayQuery = supabase
+          .from("tasks")
+          .select("*", { count: "exact", head: true })
+          .eq("is_completed", false)
+          .eq("due_date", today)
+
+        if (teamMemberId) {
+          tasksTodayQuery = tasksTodayQuery.eq("assignee_id", teamMemberId)
+        }
+        const { count: tasksTodayCount } = await tasksTodayQuery
+
+        // Fetch upcoming deadlines (work items) for this team member
+        let deadlinesQuery = supabase
+          .from("work_items")
+          .select("*", { count: "exact", head: true })
+          .gte("due_date", today)
+          .lte("due_date", weekFromNow)
+          .not("status", "eq", "Completed")
+
+        if (teamMemberId) {
+          deadlinesQuery = deadlinesQuery.or(`assignee_id.eq.${teamMemberId},client_manager_id.eq.${teamMemberId}`)
+        }
+        const { count: deadlineCount } = await deadlinesQuery
+
+        // Fetch critical deadlines (due within 3 days)
+        const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+        let criticalQuery = supabase
+          .from("work_items")
+          .select("*", { count: "exact", head: true })
+          .gte("due_date", today)
+          .lte("due_date", threeDaysFromNow)
+          .not("status", "eq", "Completed")
+
+        if (teamMemberId) {
+          criticalQuery = criticalQuery.or(`assignee_id.eq.${teamMemberId},client_manager_id.eq.${teamMemberId}`)
+        }
+        const { count: criticalCount } = await criticalQuery
+
+        // Fetch pending documents
+        const { count: docCount } = await supabase
+          .from("documents")
+          .select("*", { count: "exact", head: true })
+          .eq("status", "Pending")
+
+        setStats({
+          activeClients: clientCount || 0,
+          openTasks: taskCount || 0,
+          tasksToday: tasksTodayCount || 0,
+          upcomingDeadlines: deadlineCount || 0,
+          criticalDeadlines: criticalCount || 0,
+          pendingDocuments: docCount || 0,
+        })
+
+        // Fetch recent activity for this team member
+        let activityQuery = supabase
+          .from("activity_log")
+          .select(`
+            *,
+            team_member:team_members(full_name, avatar_url)
+          `)
+          .order("created_at", { ascending: false })
+          .limit(5)
+
+        if (teamMemberId) {
+          activityQuery = activityQuery.eq("team_member_id", teamMemberId)
+        }
+
+        const { data: activityData } = await activityQuery
+
+        if (activityData && activityData.length > 0) {
+          setActivity(
+            activityData.map((item) => ({
+              type: item.action || "update",
+              message: item.description || "Activity logged",
+              time: formatTimeAgo(new Date(item.created_at)),
+              user: item.team_member?.full_name || "Team Member",
+              avatar: item.team_member?.avatar_url || null,
+            })),
+          )
+        } else {
+          // Show placeholder activity if none exists
+          setActivity([
+            {
+              type: "system",
+              message: "Welcome to Motta Hub! Your activity will appear here.",
+              time: "Just now",
+              user: displayName,
+              avatar: teamMember?.avatar_url || null,
+            },
+          ])
+        }
+      } catch (error) {
+        console.error("[v0] Error fetching dashboard data:", error)
+      } finally {
+        setIsLoading(false)
       }
-  const tasks = isDemoMode ? demoTasks : []
-  const notifications = isDemoMode ? demoNotifications : []
-  const activity = isDemoMode
-    ? demoActivity
-    : [
-        {
-          type: "client_added",
-          message: "New client Johnson & Associates added to portfolio",
-          time: "2 hours ago",
-          user: "Mark Dwyer",
-          avatar: "/professional-man-beard.png",
-        },
-        {
-          type: "deliverable_sent",
-          message: "Q4 tax planning report sent to Acme Corp",
-          time: "4 hours ago",
-          user: "Nick Roccuia",
-          avatar: "/professional-man-beard.png",
-        },
-        {
-          type: "feedback_received",
-          message: "Client feedback received for financial advisory proposal",
-          time: "6 hours ago",
-          user: "Dai Le",
-          avatar: "/professional-asian-man.png",
-        },
-        {
-          type: "task_completed",
-          message: "Bookkeeping reconciliation completed for Tech Startup LLC",
-          time: "1 day ago",
-          user: "Matt Pereria",
-          avatar: "/professional-man-glasses.png",
-        },
-      ]
+    }
 
-  const unreadNotifications = notifications.filter((n) => !n.isRead).length
-  const pendingTasks = tasks.filter((t) => t.status !== "completed").length
+    if (!userLoading) {
+      fetchDashboardData()
+    }
+  }, [teamMember, userLoading, displayName])
+
+  function formatTimeAgo(date: Date): string {
+    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000)
+    if (seconds < 60) return "Just now"
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes} minute${minutes > 1 ? "s" : ""} ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours} hour${hours > 1 ? "s" : ""} ago`
+    const days = Math.floor(hours / 24)
+    return `${days} day${days > 1 ? "s" : ""} ago`
+  }
+
+  if (userLoading || isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
       <ExpandableCard
-        title={`Welcome back, ${userName}`}
+        title={`Welcome back, ${displayName}`}
         description={
-          isDemoMode && selectedUser
-            ? `Viewing as ${selectedUser.role}`
+          teamMember?.title
+            ? `${teamMember.title} at Motta Financial`
             : "Here's what's happening with your clients today."
         }
         defaultExpanded={true}
@@ -90,27 +217,6 @@ export function DashboardHome() {
         }
       >
         <div className="space-y-6">
-          {isDemoMode && unreadNotifications > 0 && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Bell className="h-4 w-4 text-amber-600" />
-                <span className="font-medium text-amber-900">
-                  You have {unreadNotifications} unread notification{unreadNotifications > 1 ? "s" : ""}
-                </span>
-              </div>
-              <ul className="space-y-1">
-                {notifications
-                  .filter((n) => !n.isRead)
-                  .slice(0, 3)
-                  .map((n, i) => (
-                    <li key={i} className="text-sm text-amber-800">
-                      • {n.message}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
-
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Global Time Zones</p>
             <WorldClocks />
@@ -138,23 +244,23 @@ export function DashboardHome() {
           <div className="text-2xl font-bold text-gray-900">{stats.activeClients}</div>
           <p className="text-xs text-emerald-600 flex items-center mt-1">
             <TrendingUp className="h-3 w-3 mr-1" />
-            +12% from last month
+            Total active
           </p>
         </ExpandableCard>
 
         <ExpandableCard
-          title="Open Tasks"
+          title={teamMember ? "My Open Tasks" : "Open Tasks"}
           icon={<CheckSquare className="h-4 w-4 text-blue-600" />}
           defaultExpanded={true}
           collapsible={false}
           headerClassName="pb-2"
         >
-          <div className="text-2xl font-bold text-gray-900">{isDemoMode ? pendingTasks : stats.openTasks}</div>
+          <div className="text-2xl font-bold text-gray-900">{stats.openTasks}</div>
           <p className="text-xs text-gray-500 mt-1">{stats.tasksToday} due today</p>
         </ExpandableCard>
 
         <ExpandableCard
-          title="Upcoming Deadlines"
+          title={teamMember ? "My Deadlines" : "Upcoming Deadlines"}
           icon={<Clock className="h-4 w-4 text-orange-600" />}
           defaultExpanded={true}
           collapsible={false}
@@ -176,55 +282,12 @@ export function DashboardHome() {
         </ExpandableCard>
       </div>
 
-      {isDemoMode && tasks.length > 0 && (
-        <ExpandableCard
-          title="Your Tasks"
-          description={`${pendingTasks} pending task${pendingTasks !== 1 ? "s" : ""}`}
-          defaultExpanded={true}
-        >
-          <div className="space-y-3">
-            {tasks.map((task) => (
-              <div key={task.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                <div className="flex-1">
-                  <p className="font-medium text-gray-900">{task.title}</p>
-                  <p className="text-sm text-gray-500">
-                    {task.client} • Due {new Date(task.dueDate).toLocaleDateString()}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge
-                    variant={
-                      task.priority === "high" ? "destructive" : task.priority === "medium" ? "default" : "secondary"
-                    }
-                    className="text-xs"
-                  >
-                    {task.priority}
-                  </Badge>
-                  <Badge
-                    variant="outline"
-                    className={
-                      task.status === "completed"
-                        ? "bg-green-50 text-green-700"
-                        : task.status === "in_progress"
-                          ? "bg-blue-50 text-blue-700"
-                          : "bg-gray-50"
-                    }
-                  >
-                    {task.status.replace("_", " ")}
-                  </Badge>
-                </div>
-              </div>
-            ))}
-          </div>
-        </ExpandableCard>
-      )}
-
       {/* Karbon Triage section */}
       <TriageSummary />
 
       {/* Recent Activity */}
       <ExpandableCard
-        title="Recent Activity"
+        title={teamMember ? "My Recent Activity" : "Recent Activity"}
         description="Latest updates from your team and clients"
         defaultExpanded={true}
       >

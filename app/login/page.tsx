@@ -104,16 +104,20 @@ export default function LoginPage() {
                 className="absolute inset-0 w-32 h-32 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-full blur-xl opacity-30"
                 style={{ animation: "pulse 4s ease-in-out infinite" }}
               />
-              <img src="/images/motta-logo-stacked-web-white.png" alt="Motta" className="relative h-28 w-auto" />
+              <img
+                src="/images/alfred-20ai-logo-icon-20-28no-20back-29.png"
+                alt="ALFRED AI"
+                className="relative h-28 w-auto"
+              />
             </div>
 
-            {/* Title */}
+            {/* Title - updated branding */}
             <h1 className="text-2xl font-bold text-white mb-2">
               <span className="bg-gradient-to-r from-[#8E9B79] via-white to-[#8E9B79] bg-clip-text text-transparent">
-                Motta Hub
+                ALFRED AI
               </span>
             </h1>
-            <p className="text-gray-400 text-sm">TAX | ACCOUNTING | ADVISORY</p>
+            <p className="text-gray-400 text-sm">Motta Hub Portal</p>
           </div>
 
           {/* Login form */}
@@ -183,7 +187,7 @@ export default function LoginPage() {
           {/* Footer */}
           <div className="mt-8 pt-6 border-t border-white/10 text-center">
             <p className="text-gray-500 text-xs">Motta Financial Group &copy; {new Date().getFullYear()}</p>
-            <p className="text-gray-600 text-xs mt-1">Powered by ALFRED AI Assistant</p>
+            <p className="text-gray-600 text-xs mt-1">Powered by ALFRED AI</p>
           </div>
         </div>
       </div>

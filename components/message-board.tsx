@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { MessageSquare, Send, Smile, ImageIcon, MessageCircle } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-context"
 
 interface Comment {
   id: string
@@ -46,6 +47,10 @@ export function MessageBoard() {
   const [commentingOnMessage, setCommentingOnMessage] = useState<string | null>(null)
   const [commentText, setCommentText] = useState("")
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const { teamMember } = useUser()
+  const displayName = useDisplayName()
+  const userInitials = useUserInitials()
 
   useEffect(() => {
     fetchMessages()
@@ -94,7 +99,9 @@ export function MessageBoard() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          author: "Current User",
+          author: displayName,
+          authorInitials: userInitials,
+          teamMemberId: teamMember?.id,
           content: newMessage.trim(),
           gifUrl,
         }),
@@ -145,7 +152,9 @@ export function MessageBoard() {
         },
         body: JSON.stringify({
           messageId,
-          author: "Current User",
+          author: displayName,
+          authorInitials: userInitials,
+          teamMemberId: teamMember?.id,
           content: commentText.trim(),
         }),
       })

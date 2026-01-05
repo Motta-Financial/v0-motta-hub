@@ -2,8 +2,8 @@ import type React from "react"
 import type { Metadata } from "next"
 import { Inter, Source_Code_Pro } from "next/font/google"
 import "./globals.css"
-import { DemoModeProvider } from "@/contexts/demo-mode-context"
 import { AlfredChatTrigger } from "@/components/alfred-chat-trigger"
+import { UserProvider } from "@/contexts/user-context"
 
 const inter = Inter({
   subsets: ["latin"],
@@ -31,10 +31,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${sourceCodePro.variable} antialiased`}>
       <body>
-        <DemoModeProvider>
+        <UserProvider>
           {children}
           <AlfredChatTrigger />
-        </DemoModeProvider>
+        </UserProvider>
       </body>
     </html>
   )
