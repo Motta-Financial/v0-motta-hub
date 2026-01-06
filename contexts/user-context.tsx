@@ -1,7 +1,6 @@
 "use client"
 
-import { createContext, useContext, useEffect, useState, useRef, type ReactNode } from "react"
-import { createClient } from "@/lib/supabase/client"
+import { createContext, useContext, useState, useEffect, useRef, useCallback, type ReactNode } from "react"
 import type { User } from "@supabase/supabase-js"
 
 // Team member type based on Supabase schema
@@ -43,163 +42,67 @@ const UserContext = createContext<UserContextType>({
   refetch: async () => {},
 })
 
+// Module-level cache
 let cachedUser: User | null = null
 let cachedTeamMember: TeamMember | null = null
-let lastFetchTime = 0
-const CACHE_DURATION = 30000 // 30 seconds cache
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(cachedUser)
   const [teamMember, setTeamMember] = useState<TeamMember | null>(cachedTeamMember)
-  const [isLoading, setIsLoading] = useState(!cachedUser)
+  const [isLoading, setIsLoading] = useState(!cachedUser && !cachedTeamMember)
   const [error, setError] = useState<string | null>(null)
   const isFetchingRef = useRef(false)
-  const mountedRef = useRef(true)
-  const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null)
+  const hasFetchedRef = useRef(false)
 
-  const getSupabase = () => {
-    if (!supabaseRef.current) {
-      supabaseRef.current = createClient()
-    }
-    return supabaseRef.current
-  }
+  const fetchUserData = useCallback(async () => {
+    if (isFetchingRef.current) return
 
-  const fetchUserData = async (force = false) => {
-    const now = Date.now()
-    if (!force && cachedUser && now - lastFetchTime < CACHE_DURATION) {
+    // Return cached data if already fetched
+    if (hasFetchedRef.current && cachedUser) {
       setUser(cachedUser)
       setTeamMember(cachedTeamMember)
       setIsLoading(false)
       return
     }
 
-    if (isFetchingRef.current) return
     isFetchingRef.current = true
+    setIsLoading(true)
+    setError(null)
 
     try {
-      setIsLoading(true)
-      setError(null)
+      // Use API route for server-side auth (avoids client-side Supabase auth issues)
+      const response = await fetch("/api/auth/user")
 
-      const supabase = getSupabase()
-
-      // Get authenticated user
-      let authUser: User | null = null
-      try {
-        const { data, error: authError } = await supabase.auth.getUser()
-        if (authError) {
-          // Don't treat "not authenticated" as an error
-          if (!authError.message.includes("session") && !authError.message.includes("Auth")) {
-            console.error("[v0] Auth error:", authError.message)
-          }
-        } else {
-          authUser = data.user
-        }
-      } catch (authErr: unknown) {
-        const errorMessage = authErr instanceof Error ? authErr.message : String(authErr)
-        if (errorMessage.includes("Too Many") || errorMessage.includes("rate")) {
-          console.warn("[v0] Rate limited, using cached data")
-          setIsLoading(false)
-          isFetchingRef.current = false
-          return
-        }
-        console.error("[v0] Auth fetch failed:", authErr)
+      if (!response.ok) {
+        throw new Error("Failed to fetch user data")
       }
 
-      if (!mountedRef.current) return
+      const data = await response.json()
 
-      if (!authUser) {
-        cachedUser = null
-        cachedTeamMember = null
-        setUser(null)
-        setTeamMember(null)
-        setIsLoading(false)
-        isFetchingRef.current = false
-        return
-      }
+      cachedUser = data.user
+      cachedTeamMember = data.teamMember
+      hasFetchedRef.current = true
 
-      cachedUser = authUser
-      lastFetchTime = Date.now()
-      setUser(authUser)
-
-      // Fetch team member
-      try {
-        const { data: teamMemberData } = await supabase
-          .from("team_members")
-          .select("*")
-          .or(`auth_user_id.eq.${authUser.id},email.eq.${authUser.email}`)
-          .single()
-
-        if (!mountedRef.current) return
-
-        if (teamMemberData) {
-          cachedTeamMember = teamMemberData
-          setTeamMember(teamMemberData)
-
-          // Link auth_user_id if not already linked
-          if (!teamMemberData.auth_user_id && teamMemberData.email === authUser.email) {
-            supabase.from("team_members").update({ auth_user_id: authUser.id }).eq("id", teamMemberData.id)
-          }
-        }
-      } catch (teamErr) {
-        console.warn("[v0] Team member fetch skipped:", teamErr)
-      }
+      setUser(data.user)
+      setTeamMember(data.teamMember)
     } catch (err) {
-      if (!mountedRef.current) return
-      console.error("[v0] Error fetching user data:", err)
+      console.error("[v0] Error fetching user:", err)
       setError(err instanceof Error ? err.message : "Failed to load user data")
+      // Set defaults on error
+      setUser(null)
+      setTeamMember(null)
     } finally {
-      if (mountedRef.current) {
-        setIsLoading(false)
-      }
-      isFetchingRef.current = false
-    }
-  }
-
-  useEffect(() => {
-    mountedRef.current = true
-
-    const now = Date.now()
-    if (!cachedUser || now - lastFetchTime >= CACHE_DURATION) {
-      const timer = setTimeout(() => {
-        if (mountedRef.current) {
-          fetchUserData()
-        }
-      }, 100)
-      return () => {
-        clearTimeout(timer)
-        mountedRef.current = false
-      }
-    } else {
       setIsLoading(false)
-    }
-
-    // Listen for auth state changes
-    const supabase = getSupabase()
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        if (cachedUser?.id !== session.user.id) {
-          cachedUser = null
-          cachedTeamMember = null
-          fetchUserData(true)
-        }
-      } else {
-        cachedUser = null
-        cachedTeamMember = null
-        setUser(null)
-        setTeamMember(null)
-      }
-    })
-
-    return () => {
-      mountedRef.current = false
-      subscription.unsubscribe()
+      isFetchingRef.current = false
     }
   }, [])
 
+  useEffect(() => {
+    fetchUserData()
+  }, [fetchUserData])
+
   return (
-    <UserContext.Provider value={{ user, teamMember, isLoading, error, refetch: () => fetchUserData(true) }}>
+    <UserContext.Provider value={{ user, teamMember, isLoading, error, refetch: fetchUserData }}>
       {children}
     </UserContext.Provider>
   )
@@ -225,7 +128,7 @@ export function useDisplayName() {
     return user.email?.split("@")[0] || "User"
   }
 
-  return "Team"
+  return "Team Member"
 }
 
 // Helper hook to get user initials
@@ -234,7 +137,7 @@ export function useUserInitials() {
 
   if (teamMember) {
     if (teamMember.first_name && teamMember.last_name) {
-      return `${teamMember.first_name[0]}${teamMember.last_name[0]}`
+      return `${teamMember.first_name[0]}${teamMember.last_name[0]}`.toUpperCase()
     }
     if (teamMember.full_name) {
       const parts = teamMember.full_name.split(" ")
@@ -242,6 +145,7 @@ export function useUserInitials() {
         .map((p) => p[0])
         .join("")
         .slice(0, 2)
+        .toUpperCase()
     }
   }
 

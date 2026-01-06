@@ -163,7 +163,7 @@ function Sidebar() {
       style={{ borderColor: "#8E9B79" }}
     >
       <div className="flex h-20 shrink-0 items-center gap-3">
-        <img src="/images/alfred-20ai-logo-icon-20-28no-20back-29.png" alt="ALFRED AI" className="h-14 w-auto" />
+        <img src="/images/alfred-logo.png" alt="ALFRED AI" className="h-14 w-auto" />
         <div className="flex flex-col">
           <span className="text-lg font-bold text-gray-900">ALFRED AI</span>
           <span className="text-xs text-gray-500">Motta Hub</span>
@@ -350,7 +350,7 @@ function Sidebar() {
       >
         <div className="flex items-center justify-center gap-3">
           <div className="relative">
-            <img src="/images/alfred-20ai-logo-icon-20-28no-20back-29.png" alt="ALFRED AI" className="h-12 w-auto" />
+            <img src="/images/alfred-logo.png" alt="ALFRED AI" className="h-12 w-auto" />
             <div className="absolute -top-1 -right-1 h-3 w-3 bg-green-400 rounded-full border-2 border-white animate-pulse" />
           </div>
           <div className="text-left">

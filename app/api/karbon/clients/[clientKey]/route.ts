@@ -106,7 +106,6 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
     // A clientKey could be either, so we try both endpoints
 
     // Try fetching as Organization first (business client)
-    console.log(`[v0] Attempting to fetch clientKey ${clientKey} as Organization (EntityKey)...`)
     const orgUrl = `https://api.karbonhq.com/v3/Organizations/${clientKey}?$expand=BusinessCards`
 
     let orgResponse: Response | null = null
@@ -118,31 +117,16 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
           "Content-Type": "application/json",
         },
       })
-      console.log(`[v0] Organization endpoint returned status: ${orgResponse.status}`)
     } catch (fetchError) {
-      console.log(`[v0] Network error fetching Organization, will try Contact`)
+      // Network error - silently continue to Contact endpoint
     }
 
     if (orgResponse?.ok) {
       clientDetails = await orgResponse.json()
       isOrganization = true
-      organizationKey = clientKey // The clientKey IS the EntityKey for Organizations
+      organizationKey = clientKey
       avatarUrl = clientDetails.AvatarUrl || null
-      // Organization name can be in different fields
-      const orgName =
-        clientDetails.Name ||
-        clientDetails.OrganizationName ||
-        clientDetails.LegalName ||
-        clientDetails.TradingName ||
-        clientDetails.FullName
-      console.log("[v0] Found as Organization (Business Client):", orgName)
-      console.log("[v0] Organization response keys:", Object.keys(clientDetails))
     } else {
-      // Organization endpoint returned 404 - try as Contact (individual person)
-      console.log(
-        `[v0] Not found as Organization (status: ${orgResponse?.status || "network error"}), trying Contact...`,
-      )
-
       const contactUrl = `https://api.karbonhq.com/v3/Contacts/${clientKey}?$expand=BusinessCards`
 
       let contactResponse: Response | null = null
@@ -154,24 +138,16 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
             "Content-Type": "application/json",
           },
         })
-        console.log(`[v0] Contact endpoint returned status: ${contactResponse.status}`)
       } catch (fetchError) {
-        console.log(`[v0] Network error fetching Contact`)
+        // Network error - will be handled below
       }
 
       if (contactResponse?.ok) {
         clientDetails = await contactResponse.json()
         isOrganization = false
         avatarUrl = clientDetails.AvatarUrl || null
-        // Get the OrganizationKey from the Contact's primary business card (if they work for a company)
         const primaryCard = clientDetails.BusinessCards?.find((card: any) => card.IsPrimaryCard === true)
         organizationKey = primaryCard?.OrganizationKey || null
-        const contactName =
-          clientDetails.FullName ||
-          clientDetails.Name ||
-          `${clientDetails.FirstName || ""} ${clientDetails.LastName || ""}`.trim() ||
-          "Unknown Contact"
-        console.log("[v0] Found as Contact (Individual):", contactName)
       }
     }
 

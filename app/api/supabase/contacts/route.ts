@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     let query = supabase
       .from("contacts")
       .select(
-        "id, karbon_contact_key, full_name, first_name, last_name, entity_type, contact_type, primary_email, phone_primary, city, state, is_prospect",
+        "id, karbon_contact_key, full_name, first_name, last_name, entity_type, contact_type, primary_email, phone_primary, city, state, is_prospect, avatar_url",
       )
       .order("full_name", { ascending: true })
       .limit(limit)

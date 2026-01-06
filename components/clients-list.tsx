@@ -51,6 +51,7 @@ interface Contact {
   city: string | null
   state: string | null
   is_prospect: boolean | null
+  avatar_url: string | null // Added avatar_url to Contact interface
 }
 
 interface ClientGroup {
@@ -265,7 +266,7 @@ export function ClientsList() {
       activeWorkItems: workItemCounts.get(org.karbon_organization_key)?.active || 0,
       lastActivity: null,
       serviceLinesUsed: [],
-      avatarUrl: null,
+      avatarUrl: null, // Organizations don't have avatars in the database
     })),
     // Map contacts to clients (individuals)
     ...contacts.map((contact) => ({
@@ -285,7 +286,7 @@ export function ClientsList() {
       activeWorkItems: workItemCounts.get(contact.karbon_contact_key)?.active || 0,
       lastActivity: null,
       serviceLinesUsed: [],
-      avatarUrl: null,
+      avatarUrl: contact.avatar_url, // Use actual avatar from database
     })),
   ]
 

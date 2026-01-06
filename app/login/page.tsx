@@ -104,11 +104,7 @@ export default function LoginPage() {
                 className="absolute inset-0 w-32 h-32 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-full blur-xl opacity-30"
                 style={{ animation: "pulse 4s ease-in-out infinite" }}
               />
-              <img
-                src="/images/alfred-20ai-logo-icon-20-28no-20back-29.png"
-                alt="ALFRED AI"
-                className="relative h-28 w-auto"
-              />
+              <img src="/images/alfred-logo.png" alt="ALFRED AI" className="relative h-28 w-auto" />
             </div>
 
             {/* Title - updated branding */}
