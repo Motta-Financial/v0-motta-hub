@@ -7,6 +7,7 @@ import { TriageSummary } from "@/components/triage-summary"
 import { TeamsChat } from "@/components/teams-chat"
 import { MessageBoard } from "@/components/message-board"
 import { WorldClocks } from "@/components/world-clocks"
+import { ClientServiceDebriefs } from "@/components/client-service-debriefs"
 import { ExpandableCard } from "@/components/ui/expandable-card"
 import { useUser, useDisplayName } from "@/contexts/user-context"
 import { useEffect, useState } from "react"
@@ -192,6 +193,9 @@ export function DashboardHome() {
 
   return (
     <div className="space-y-6">
+      {/* Client Service Debriefs section */}
+      <ClientServiceDebriefs />
+
       <ExpandableCard
         title={`Welcome back, ${displayName}`}
         description={

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -18,11 +18,7 @@ import {
   Search,
   Archive,
   UserPlus,
-  Calendar,
-  Flag,
   Star,
-  Reply,
-  Forward,
   Trash2,
   Inbox,
 } from "lucide-react"
@@ -41,76 +37,91 @@ interface TriageItem {
   assignee?: string
 }
 
-const mockTriageItems: TriageItem[] = [
-  {
-    id: "1",
-    type: "email",
-    subject: "Q4 Tax Planning Documents Required",
-    from: "sarah.johnson@techcorp.com",
-    client: "TechCorp Solutions",
-    timestamp: "2 hours ago",
-    priority: "high",
-    isRead: false,
-    isStarred: true,
-    content: "Hi team, we need to finalize the Q4 tax planning documents for our review meeting next week...",
-    assignee: "Michael Chen",
-  },
-  {
-    id: "2",
-    type: "notification",
-    subject: "New client onboarding started",
-    from: "Karbon System",
-    client: "Green Valley Enterprises",
-    timestamp: "4 hours ago",
-    priority: "medium",
-    isRead: false,
-    isStarred: false,
-    content: "Green Valley Enterprises has been added to the onboarding pipeline. Initial documents received.",
-  },
-  {
-    id: "3",
-    type: "work_item",
-    subject: "Monthly bookkeeping review due",
-    from: "Lisa Rodriguez",
-    client: "Coastal Retail Group",
-    timestamp: "6 hours ago",
-    priority: "medium",
-    isRead: true,
-    isStarred: false,
-    content: "Monthly reconciliation and financial statements need review before client meeting.",
-    assignee: "David Park",
-  },
-  {
-    id: "4",
-    type: "email",
-    subject: "Urgent: Payroll processing question",
-    from: "hr@manufacturingplus.com",
-    client: "Manufacturing Plus Inc",
-    timestamp: "1 day ago",
-    priority: "high",
-    isRead: false,
-    isStarred: false,
-    content: "We have a question about the new employee payroll setup that needs immediate attention...",
-  },
-  {
-    id: "5",
-    type: "comment",
-    subject: "Comment on Financial Advisory Project",
-    from: "Jennifer Walsh",
-    client: "Riverside Investments",
-    timestamp: "1 day ago",
-    priority: "low",
-    isRead: true,
-    isStarred: false,
-    content: "Added notes to the investment portfolio analysis. Please review when convenient.",
-    assignee: "Sarah Kim",
-  },
-]
-
 export function Triage() {
+  const [items, setItems] = useState<TriageItem[]>([])
+  const [loading, setLoading] = useState(true)
   const [selectedItems, setSelectedItems] = useState<string[]>([])
   const [filter, setFilter] = useState<string>("all")
   const [searchQuery, setSearchQuery] = useState("")
+
+  useEffect(() => {
+    fetchTriageItems()
+  }, [])
+
+  const fetchTriageItems = async () => {
+    try {
+      const [notificationsRes, workItemsRes] = await Promise.all([
+        fetch("/api/notifications"),
+        fetch("/api/supabase/work-items?status=active&limit=20"),
+      ])
+
+      const notifications = notificationsRes.ok ? await notificationsRes.json() : []
+      const workItems = workItemsRes.ok ? await workItemsRes.json() : { workItems: [] }
+
+      // Map notifications to triage items
+      const notificationItems: TriageItem[] =
+        notifications.notifications?.map((n: any) => ({
+          id: n.id,
+          type: "notification" as const,
+          subject: n.title,
+          from: n.created_by || "System",
+          timestamp: formatTimestamp(n.created_at),
+          priority: n.priority || "medium",
+          isRead: n.is_read,
+          isStarred: false,
+          content: n.message,
+        })) || []
+
+      // Map work items to triage items
+      const workItemItems: TriageItem[] =
+        workItems.workItems?.map((w: any) => ({
+          id: w.id,
+          type: "work_item" as const,
+          subject: w.title,
+          from: w.assigned_to_name || "Unassigned",
+          client: w.client_name || w.organization_name,
+          timestamp: formatTimestamp(w.created_at),
+          priority: determinePriority(w.due_date, w.status),
+          isRead: true,
+          isStarred: false,
+          content: w.description || w.notes || "",
+          assignee: w.assigned_to_name,
+        })) || []
+
+      setItems([...notificationItems, ...workItemItems])
+    } catch (error) {
+      console.error("Error fetching triage items:", error)
+      setItems([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const formatTimestamp = (dateString: string) => {
+    const date = new Date(dateString)
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+
+    if (diffHours < 1) return "Just now"
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`
+    if (diffDays === 1) return "1 day ago"
+    if (diffDays < 7) return `${diffDays} days ago`
+    return date.toLocaleDateString()
+  }
+
+  const determinePriority = (dueDate: string | null, status: string): "high" | "medium" | "low" => {
+    if (!dueDate) return "medium"
+    const due = new Date(dueDate)
+    const now = new Date()
+    const daysUntilDue = Math.floor((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+
+    if (daysUntilDue < 0) return "high"
+    if (daysUntilDue <= 3) return "high"
+    if (daysUntilDue <= 7) return "medium"
+    return "low"
+  }
 
   const getTypeIcon = (type: string) => {
     switch (type) {
@@ -142,7 +153,7 @@ export function Triage() {
     }
   }
 
-  const filteredItems = mockTriageItems.filter((item) => {
+  const filteredItems = items.filter((item) => {
     const matchesSearch =
       item.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
       item.from.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -166,19 +177,32 @@ export function Triage() {
     setSelectedItems(selectedItems.length === filteredItems.length ? [] : filteredItems.map((item) => item.id))
   }
 
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Triage</h1>
+            <p className="text-gray-600">Loading...</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Triage</h1>
-          <p className="text-gray-600">Centralized inbox for emails, notifications, and work items</p>
+          <p className="text-gray-600">Centralized inbox for notifications and work items</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" disabled={selectedItems.length === 0}>
             <Archive className="h-4 w-4 mr-2" />
             Archive Selected
           </Button>
-          <Button size="sm">
+          <Button size="sm" disabled={selectedItems.length === 0}>
             <UserPlus className="h-4 w-4 mr-2" />
             Assign
           </Button>
@@ -192,17 +216,16 @@ export function Triage() {
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="Search emails, notifications, and work items..."
+                placeholder="Search notifications and work items..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10"
               />
             </div>
-            <Tabs value={filter} onValueChange={setFilter} className="w-auto">
+            <Tabs value={filter} onValueChange={setFilter}>
               <TabsList>
                 <TabsTrigger value="all">All</TabsTrigger>
                 <TabsTrigger value="unread">Unread</TabsTrigger>
-                <TabsTrigger value="emails">Emails</TabsTrigger>
                 <TabsTrigger value="notifications">Notifications</TabsTrigger>
                 <TabsTrigger value="starred">Starred</TabsTrigger>
               </TabsList>
@@ -211,134 +234,73 @@ export function Triage() {
         </CardContent>
       </Card>
 
-      {/* Bulk Actions */}
-      {selectedItems.length > 0 && (
-        <Card className="border-emerald-200 bg-emerald-50">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium text-emerald-800">
-                {selectedItems.length} item{selectedItems.length > 1 ? "s" : ""} selected
-              </span>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm">
-                  <Archive className="h-4 w-4 mr-2" />
-                  Archive
-                </Button>
-                <Button variant="outline" size="sm">
-                  <UserPlus className="h-4 w-4 mr-2" />
-                  Assign
-                </Button>
-                <Button variant="outline" size="sm">
-                  <Flag className="h-4 w-4 mr-2" />
-                  Set Priority
-                </Button>
-                <Button variant="outline" size="sm">
-                  <Calendar className="h-4 w-4 mr-2" />
-                  Schedule
-                </Button>
-              </div>
+      {/* Triage List */}
+      <Card>
+        <CardContent className="p-0">
+          {filteredItems.length === 0 ? (
+            <div className="text-center py-12">
+              <Inbox className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+              <p className="text-gray-600">No items found</p>
             </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Triage Items */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 px-4">
-          <Checkbox
-            checked={selectedItems.length === filteredItems.length && filteredItems.length > 0}
-            onCheckedChange={handleSelectAll}
-          />
-          <span className="text-sm text-gray-600">
-            {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
-          </span>
-        </div>
-
-        {filteredItems.map((item) => (
-          <Card
-            key={item.id}
-            className={`transition-all hover:shadow-md ${!item.isRead ? "border-l-4 border-l-emerald-500 bg-emerald-50/30" : ""}`}
-          >
-            <CardContent className="p-4">
-              <div className="flex items-start gap-3">
-                <Checkbox checked={selectedItems.includes(item.id)} onCheckedChange={() => handleSelectItem(item.id)} />
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="flex items-center gap-2">
+          ) : (
+            <div className="divide-y divide-gray-200">
+              {filteredItems.map((item) => (
+                <div
+                  key={item.id}
+                  className={`p-4 hover:bg-gray-50 transition-colors ${!item.isRead ? "bg-blue-50/30" : ""}`}
+                >
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      checked={selectedItems.includes(item.id)}
+                      onCheckedChange={() => handleSelectItem(item.id)}
+                      className="mt-1"
+                    />
+                    <div className="flex items-center justify-center w-8 h-8 rounded-full bg-gray-100">
                       {getTypeIcon(item.type)}
-                      <Badge variant="outline" className={getPriorityColor(item.priority)}>
-                        {item.priority}
-                      </Badge>
-                      <Badge variant="secondary" className="capitalize">
-                        {item.type.replace("_", " ")}
-                      </Badge>
-                      {item.isStarred && <Star className="h-4 w-4 text-yellow-500 fill-current" />}
                     </div>
-                    <span className="text-sm text-gray-500 ml-auto">{item.timestamp}</span>
-                  </div>
-
-                  <div className="space-y-1">
-                    <h3 className={`font-medium ${!item.isRead ? "font-semibold" : ""}`}>{item.subject}</h3>
-                    <div className="flex items-center gap-4 text-sm text-gray-600">
-                      <span>From: {item.from}</span>
-                      {item.client && <span>Client: {item.client}</span>}
-                      {item.assignee && <span>Assigned to: {item.assignee}</span>}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <h4 className={`font-medium text-sm ${!item.isRead ? "font-semibold" : ""}`}>{item.subject}</h4>
+                        <Badge variant="outline" className={getPriorityColor(item.priority)}>
+                          {item.priority}
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-gray-600 mb-1">
+                        From: {item.from}
+                        {item.client && ` • Client: ${item.client}`}
+                        {item.assignee && ` • Assigned: ${item.assignee}`}
+                      </p>
+                      <p className="text-sm text-gray-500 line-clamp-1">{item.content}</p>
+                      <p className="text-xs text-gray-400 mt-1">{item.timestamp}</p>
                     </div>
-                    <p className="text-sm text-gray-700 line-clamp-2">{item.content}</p>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="sm">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem>
+                          <Star className="h-4 w-4 mr-2" />
+                          Star
+                        </DropdownMenuItem>
+                        <DropdownMenuItem>
+                          <Archive className="h-4 w-4 mr-2" />
+                          Archive
+                        </DropdownMenuItem>
+                        <DropdownMenuItem>
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
-
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm">
-                      <MoreHorizontal className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem>
-                      <Reply className="h-4 w-4 mr-2" />
-                      Reply
-                    </DropdownMenuItem>
-                    <DropdownMenuItem>
-                      <Forward className="h-4 w-4 mr-2" />
-                      Forward
-                    </DropdownMenuItem>
-                    <DropdownMenuItem>
-                      <UserPlus className="h-4 w-4 mr-2" />
-                      Assign
-                    </DropdownMenuItem>
-                    <DropdownMenuItem>
-                      <Calendar className="h-4 w-4 mr-2" />
-                      Add to Timeline
-                    </DropdownMenuItem>
-                    <DropdownMenuItem>
-                      <Archive className="h-4 w-4 mr-2" />
-                      Archive
-                    </DropdownMenuItem>
-                    <DropdownMenuItem className="text-red-600">
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {filteredItems.length === 0 && (
-        <Card>
-          <CardContent className="p-8 text-center">
-            <Inbox className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">No items found</h3>
-            <p className="text-gray-600">
-              {searchQuery ? "Try adjusting your search terms" : "Your triage inbox is empty"}
-            </p>
-          </CardContent>
-        </Card>
-      )}
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }

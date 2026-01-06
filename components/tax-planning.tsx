@@ -28,7 +28,6 @@ export function TaxPlanning() {
   const [planningItems, setPlanningItems] = useState<PlanningItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [isPreview, setIsPreview] = useState(false)
   const [currentClientsOpen, setCurrentClientsOpen] = useState(false)
   const [prospectsOpen, setProspectsOpen] = useState(false)
   const [showAllCurrentClients, setShowAllCurrentClients] = useState(false)
@@ -46,9 +45,10 @@ export function TaxPlanning() {
       const response = await fetch("/api/karbon/work-items")
 
       if (response.status === 401) {
-        console.log("[v0] Karbon credentials missing, using mock data")
-        setIsPreview(true)
-        setPlanningItems(getMockPlanningItems())
+        console.log("[v0] Karbon credentials missing, showing error")
+        setError(
+          "Karbon API credentials not configured. Please add KARBON_BEARER_TOKEN and KARBON_ACCESS_KEY environment variables.",
+        )
         setLoading(false)
         return
       }
@@ -92,8 +92,6 @@ export function TaxPlanning() {
     } catch (err) {
       console.error("[v0] Error fetching planning items:", err)
       setError(err instanceof Error ? err.message : "Failed to fetch planning items")
-      setIsPreview(true)
-      setPlanningItems(getMockPlanningItems())
       setLoading(false)
     }
   }
@@ -111,45 +109,6 @@ export function TaxPlanning() {
 
     return "General Planning"
   }
-
-  const getMockPlanningItems = (): PlanningItem[] => [
-    {
-      Key: "mock-1",
-      Title: "2025 Tax Planning - Elmira 1460 LLC",
-      WorkType: "Tax Planning",
-      ClientName: "Elmira 1460 LLC",
-      PrimaryStatus: "In Progress",
-      SecondaryStatus: "Awaiting Client Response",
-      AssignedTo: { FullName: "Sarah Johnson", Email: "sarah@motta.com", UserKey: "mock-user-1" },
-      DueDate: "2025-12-15",
-      Priority: "High",
-      planningType: "Strategy",
-    },
-    {
-      Key: "mock-2",
-      Title: "Year-End Tax Projection - Matt Coleman",
-      WorkType: "Tax Projection",
-      ClientName: "Matt Coleman",
-      PrimaryStatus: "Not Started",
-      SecondaryStatus: null,
-      AssignedTo: { FullName: "Michael Chen", Email: "michael@motta.com", UserKey: "mock-user-2" },
-      DueDate: "2025-11-30",
-      Priority: "Medium",
-      planningType: "Projection",
-    },
-    {
-      Key: "mock-3",
-      Title: "Tax Strategy Consultation - Halifax Nails and Spa",
-      WorkType: "Tax Consultation",
-      ClientName: "Halifax Nails and Spa",
-      PrimaryStatus: "Complete",
-      SecondaryStatus: "Delivered",
-      AssignedTo: { FullName: "Sarah Johnson", Email: "sarah@motta.com", UserKey: "mock-user-1" },
-      DueDate: "2025-10-20",
-      Priority: "Low",
-      planningType: "Consultation",
-    },
-  ]
 
   const getStatusColor = (status: string) => {
     const statusLower = status?.toLowerCase() || ""
@@ -305,6 +264,23 @@ export function TaxPlanning() {
     )
   }
 
+  if (error) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Tax Planning</h1>
+            <p className="text-muted-foreground">Strategic tax planning and projections for clients</p>
+          </div>
+        </div>
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -318,16 +294,6 @@ export function TaxPlanning() {
           New Planning Session
         </Button>
       </div>
-
-      {/* Preview Mode Alert */}
-      {isPreview && (
-        <Alert>
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>
-            <strong>Preview Mode:</strong> Showing sample data. Configure Karbon API credentials to see real work items.
-          </AlertDescription>
-        </Alert>
-      )}
 
       <div className="grid gap-3 md:grid-cols-2">
         {/* Current Clients - Compact Preview */}

@@ -1,26 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import {
-  Calendar,
-  Clock,
-  User,
-  Building,
-  Plus,
-  Filter,
-  MoreHorizontal,
-  AlertTriangle,
-  CheckCircle,
-  DollarSign,
-  Calculator,
-  BookOpen,
-  TrendingUp,
-} from "lucide-react"
+import { Calendar, Clock, User, Building, Plus, Filter, MoreHorizontal, AlertTriangle, CheckCircle, DollarSign, Calculator, BookOpen, TrendingUp } from "lucide-react"
+import { createClient } from "@/lib/supabase/client"
 
 interface PipelineTask {
   id: string
@@ -33,7 +20,7 @@ interface PipelineTask {
     name: string
     avatar: string
   }
-  service: "Tax Planning" | "Financial Planning" | "Bookkeeping" | "Business Advisory"
+  service: "Tax Planning" | "Financial Planning" | "Bookkeeping" | "Business Advisory" | string
   status: "Not Started" | "In Progress" | "Review" | "Completed"
   priority: "Low" | "Medium" | "High" | "Critical"
   dueDate: string
@@ -42,131 +29,118 @@ interface PipelineTask {
   tags: string[]
 }
 
-const serviceIcons = {
+const serviceIcons: Record<string, any> = {
   "Tax Planning": Calculator,
+  "Tax": Calculator,
   "Financial Planning": TrendingUp,
-  Bookkeeping: BookOpen,
+  "Bookkeeping": BookOpen,
+  "ACCT": BookOpen,
   "Business Advisory": DollarSign,
 }
 
-const serviceColors = {
+const serviceColors: Record<string, string> = {
   "Tax Planning": "bg-blue-50 border-blue-200 text-blue-700",
+  "Tax": "bg-blue-50 border-blue-200 text-blue-700",
   "Financial Planning": "bg-emerald-50 border-emerald-200 text-emerald-700",
-  Bookkeeping: "bg-purple-50 border-purple-200 text-purple-700",
+  "Bookkeeping": "bg-purple-50 border-purple-200 text-purple-700",
+  "ACCT": "bg-purple-50 border-purple-200 text-purple-700",
   "Business Advisory": "bg-orange-50 border-orange-200 text-orange-700",
 }
 
 export function ServicePipeline() {
   const [selectedService, setSelectedService] = useState("all")
   const [selectedAssignee, setSelectedAssignee] = useState("all")
+  const [pipelineTasks, setPipelineTasks] = useState<PipelineTask[]>([])
+  const [loading, setLoading] = useState(true)
+  const [assignees, setAssignees] = useState<string[]>([])
 
-  // Mock pipeline data
-  const pipelineTasks: PipelineTask[] = [
-    {
-      id: "1",
-      title: "Q4 2024 Tax Return Preparation",
-      client: { name: "Johnson & Associates LLC", type: "Business" },
-      assignee: { name: "Mark Dwyer", avatar: "/professional-man.png" },
-      service: "Tax Planning",
-      status: "In Progress",
-      priority: "High",
-      dueDate: "2024-01-15",
-      value: "$8,500",
-      progress: 75,
-      tags: ["Corporate", "Quarterly"],
-    },
-    {
-      id: "2",
-      title: "Individual Tax Planning Review",
-      client: { name: "Robert Chen", type: "Individual" },
-      assignee: { name: "Nick Roccuia", avatar: "/professional-man-beard.png" },
-      service: "Tax Planning",
-      status: "Review",
-      priority: "Medium",
-      dueDate: "2024-01-12",
-      value: "$2,200",
-      progress: 90,
-      tags: ["Individual", "Review"],
-    },
-    {
-      id: "3",
-      title: "Retirement Portfolio Analysis",
-      client: { name: "Sarah Williams", type: "Individual" },
-      assignee: { name: "Sarah Chen", avatar: "/professional-woman.png" },
-      service: "Financial Planning",
-      status: "In Progress",
-      priority: "Medium",
-      dueDate: "2024-01-20",
-      value: "$5,000",
-      progress: 45,
-      tags: ["Retirement", "Investment"],
-    },
-    {
-      id: "4",
-      title: "Monthly Bookkeeping Reconciliation",
-      client: { name: "TechStart Solutions LLC", type: "Business" },
-      assignee: { name: "Matt Pereria", avatar: "/professional-man-glasses.png" },
-      service: "Bookkeeping",
-      status: "In Progress",
-      priority: "Medium",
-      dueDate: "2024-01-10",
-      value: "$1,800",
-      progress: 60,
-      tags: ["Monthly", "Reconciliation"],
-    },
-    {
-      id: "5",
-      title: "Business Expansion Strategy",
-      client: { name: "Green Valley Consulting", type: "Business" },
-      assignee: { name: "Mark Dwyer", avatar: "/professional-man.png" },
-      service: "Business Advisory",
-      status: "Not Started",
-      priority: "High",
-      dueDate: "2024-01-25",
-      value: "$12,000",
-      progress: 0,
-      tags: ["Strategy", "Expansion"],
-    },
-    {
-      id: "6",
-      title: "Estate Planning Review",
-      client: { name: "Michael Thompson", type: "Individual" },
-      assignee: { name: "Sarah Chen", avatar: "/professional-woman.png" },
-      service: "Financial Planning",
-      status: "Review",
-      priority: "Low",
-      dueDate: "2024-01-30",
-      value: "$3,500",
-      progress: 85,
-      tags: ["Estate", "Planning"],
-    },
-    {
-      id: "7",
-      title: "Payroll Setup & Processing",
-      client: { name: "Local Restaurant Group", type: "Business" },
-      assignee: { name: "Matt Pereria", avatar: "/professional-man-glasses.png" },
-      service: "Bookkeeping",
-      status: "Completed",
-      priority: "Medium",
-      dueDate: "2024-01-05",
-      value: "$2,400",
-      progress: 100,
-      tags: ["Payroll", "Setup"],
-    },
-    {
-      id: "8",
-      title: "Tax Optimization Consultation",
-      client: { name: "Innovation Labs Inc", type: "Business" },
-      assignee: { name: "Nick Roccuia", avatar: "/professional-man-beard.png" },
-      service: "Tax Planning",
-      status: "Not Started",
-      priority: "Critical",
-      dueDate: "2024-01-08",
-      value: "$6,800",
-      progress: 0,
-      tags: ["Optimization", "Consultation"],
-    },
-  ]
+  // <CHANGE> Fetch from Supabase work_items table
+  useEffect(() => {
+    async function fetchPipelineTasks() {
+      try {
+        const supabase = createClient()
+
+        const { data: workItems, error } = await supabase
+          .from("work_items")
+          .select("*")
+          .in("work_status", ["Active", "In Progress", "Pending", "Review"])
+          .order("due_date", { ascending: true })
+          .limit(100)
+
+        if (error) {
+          console.error("Error fetching pipeline tasks:", error)
+          setPipelineTasks([])
+          setLoading(false)
+          return
+        }
+
+        // Extract unique assignees
+        const uniqueAssignees = [...new Set((workItems || []).map((item: any) => item.assigned_to_name).filter(Boolean))]
+        setAssignees(uniqueAssignees as string[])
+
+        // Map work items to pipeline task format
+        const tasks: PipelineTask[] = (workItems || []).map((item: any) => {
+          const serviceLine = item.service_line || item.work_type || "General"
+          const status = mapStatus(item.primary_status)
+          const progress = calculateProgress(status)
+
+          return {
+            id: item.id,
+            title: item.title || "Untitled Work Item",
+            client: {
+              name: item.client_name || "Unknown Client",
+              type: item.organization_id ? "Business" : "Individual",
+            },
+            assignee: {
+              name: item.assigned_to_name || "Unassigned",
+              avatar: "",
+            },
+            service: serviceLine,
+            status: status,
+            priority: mapPriority(item.priority),
+            dueDate: item.due_date || new Date().toISOString(),
+            value: "$0",
+            progress: progress,
+            tags: [item.work_type || "General"].filter(Boolean),
+          }
+        })
+
+        setPipelineTasks(tasks)
+      } catch (error) {
+        console.error("Error fetching pipeline tasks:", error)
+        setPipelineTasks([])
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchPipelineTasks()
+  }, [])
+
+  const mapStatus = (primaryStatus: string): PipelineTask["status"] => {
+    const status = primaryStatus?.toLowerCase() || ""
+    if (status.includes("complete")) return "Completed"
+    if (status.includes("review")) return "Review"
+    if (status.includes("progress") || status.includes("active")) return "In Progress"
+    return "Not Started"
+  }
+
+  const mapPriority = (priority: string): PipelineTask["priority"] => {
+    const p = priority?.toLowerCase() || ""
+    if (p.includes("critical")) return "Critical"
+    if (p.includes("high")) return "High"
+    if (p.includes("low")) return "Low"
+    return "Medium"
+  }
+
+  const calculateProgress = (status: PipelineTask["status"]): number => {
+    switch (status) {
+      case "Completed": return 100
+      case "Review": return 85
+      case "In Progress": return 50
+      default: return 0
+    }
+  }
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {
@@ -203,7 +177,7 @@ export function ServicePipeline() {
   }
 
   const filteredTasks = pipelineTasks.filter((task) => {
-    const matchesService = selectedService === "all" || task.service === selectedService
+    const matchesService = selectedService === "all" || task.service.includes(selectedService)
     const matchesAssignee = selectedAssignee === "all" || task.assignee.name === selectedAssignee
     return matchesService && matchesAssignee
   })
@@ -215,10 +189,30 @@ export function ServicePipeline() {
     Completed: filteredTasks.filter((task) => task.status === "Completed"),
   }
 
-  const totalValue = filteredTasks.reduce(
-    (sum, task) => sum + Number.parseFloat(task.value.replace("$", "").replace(",", "")),
-    0,
-  )
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-gray-900">Service Pipeline</h1>
+            <p className="text-gray-600 mt-1">Loading pipeline data...</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="animate-pulse">
+              <div className="h-24 bg-gray-100 rounded-lg mb-4"></div>
+              <div className="space-y-3">
+                {[1, 2].map((j) => (
+                  <div key={j} className="h-32 bg-gray-100 rounded-lg"></div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -284,10 +278,10 @@ export function ServicePipeline() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Pipeline Value</p>
-                <p className="text-2xl font-semibold text-gray-900">${totalValue.toLocaleString()}</p>
+                <p className="text-sm text-gray-600">Not Started</p>
+                <p className="text-2xl font-semibold text-gray-900">{tasksByStatus["Not Started"].length}</p>
               </div>
-              <DollarSign className="h-8 w-8 text-emerald-600" />
+              <DollarSign className="h-8 w-8 text-gray-600" />
             </div>
           </CardContent>
         </Card>
@@ -304,10 +298,10 @@ export function ServicePipeline() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Services</SelectItem>
-                <SelectItem value="Tax Planning">Tax Planning</SelectItem>
-                <SelectItem value="Financial Planning">Financial Planning</SelectItem>
+                <SelectItem value="Tax">Tax</SelectItem>
+                <SelectItem value="ACCT">Accounting</SelectItem>
                 <SelectItem value="Bookkeeping">Bookkeeping</SelectItem>
-                <SelectItem value="Business Advisory">Business Advisory</SelectItem>
+                <SelectItem value="Advisory">Advisory</SelectItem>
               </SelectContent>
             </Select>
             <Select value={selectedAssignee} onValueChange={setSelectedAssignee}>
@@ -317,10 +311,11 @@ export function ServicePipeline() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Team Members</SelectItem>
-                <SelectItem value="Mark Dwyer">Mark Dwyer</SelectItem>
-                <SelectItem value="Nick Roccuia">Nick Roccuia</SelectItem>
-                <SelectItem value="Sarah Chen">Sarah Chen</SelectItem>
-                <SelectItem value="Matt Pereria">Matt Pereria</SelectItem>
+                {assignees.map((assignee) => (
+                  <SelectItem key={assignee} value={assignee}>
+                    {assignee}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -343,8 +338,9 @@ export function ServicePipeline() {
             </Card>
 
             <div className="space-y-3">
-              {tasks.map((task) => {
-                const ServiceIcon = serviceIcons[task.service]
+              {tasks.slice(0, 10).map((task) => {
+                const ServiceIcon = serviceIcons[task.service] || Calculator
+                const serviceColor = serviceColors[task.service] || "bg-gray-50 border-gray-200 text-gray-700"
                 return (
                   <Card key={task.id} className="bg-white shadow-sm border-gray-200 hover:shadow-md transition-shadow">
                     <CardContent className="p-4">
@@ -352,11 +348,11 @@ export function ServicePipeline() {
                         {/* Header */}
                         <div className="flex items-start justify-between">
                           <div className="flex items-start space-x-2">
-                            <div className={`p-1.5 rounded-lg ${serviceColors[task.service]}`}>
+                            <div className={`p-1.5 rounded-lg ${serviceColor}`}>
                               <ServiceIcon className="h-4 w-4" />
                             </div>
                             <div className="flex-1">
-                              <h4 className="font-medium text-gray-900 text-sm leading-tight">{task.title}</h4>
+                              <h4 className="font-medium text-gray-900 text-sm leading-tight line-clamp-2">{task.title}</h4>
                               <p className="text-xs text-gray-500 mt-1">{task.service}</p>
                             </div>
                           </div>
@@ -373,7 +369,7 @@ export function ServicePipeline() {
                             ) : (
                               <User className="h-3 w-3 text-gray-400" />
                             )}
-                            <span className="text-xs text-gray-600">{task.client.name}</span>
+                            <span className="text-xs text-gray-600 line-clamp-1">{task.client.name}</span>
                           </div>
                         </div>
 
@@ -393,15 +389,6 @@ export function ServicePipeline() {
                           </div>
                         )}
 
-                        {/* Tags */}
-                        <div className="flex flex-wrap gap-1">
-                          {task.tags.slice(0, 2).map((tag, index) => (
-                            <Badge key={index} variant="secondary" className="text-xs px-2 py-0">
-                              {tag}
-                            </Badge>
-                          ))}
-                        </div>
-
                         {/* Footer */}
                         <div className="flex items-center justify-between pt-2 border-t border-gray-100">
                           <div className="flex items-center space-x-2">
@@ -414,16 +401,14 @@ export function ServicePipeline() {
                                   .join("")}
                               </AvatarFallback>
                             </Avatar>
-                            <span className="text-xs text-gray-600">{task.assignee.name}</span>
+                            <span className="text-xs text-gray-600 line-clamp-1">{task.assignee.name}</span>
                           </div>
-                          <div className="flex items-center space-x-2">
-                            <Badge className={getPriorityColor(task.priority)} variant="outline">
-                              {task.priority}
-                            </Badge>
-                          </div>
+                          <Badge className={getPriorityColor(task.priority)} variant="outline">
+                            {task.priority}
+                          </Badge>
                         </div>
 
-                        {/* Due Date & Value */}
+                        {/* Due Date */}
                         <div className="flex items-center justify-between text-xs">
                           <div className="flex items-center space-x-1">
                             <Calendar className="h-3 w-3 text-gray-400" />
@@ -432,7 +417,6 @@ export function ServicePipeline() {
                             </span>
                             {isOverdue(task.dueDate) && <AlertTriangle className="h-3 w-3 text-red-500" />}
                           </div>
-                          <span className="font-medium text-emerald-600">{task.value}</span>
                         </div>
                       </div>
                     </CardContent>
@@ -444,6 +428,10 @@ export function ServicePipeline() {
                 <div className="text-center py-8 text-gray-500">
                   <p className="text-sm">No tasks in this status</p>
                 </div>
+              )}
+
+              {tasks.length > 10 && (
+                <p className="text-xs text-center text-gray-500">+{tasks.length - 10} more</p>
               )}
             </div>
           </div>

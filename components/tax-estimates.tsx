@@ -81,7 +81,6 @@ export function TaxEstimates() {
   const [estimates, setEstimates] = useState<TaxEstimateItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [isPreview, setIsPreview] = useState(false)
   const [selectedQuarter, setSelectedQuarter] = useState<string>("all")
 
   useEffect(() => {
@@ -122,8 +121,9 @@ export function TaxEstimates() {
       const response = await fetch("/api/karbon/work-items")
 
       if (response.status === 401) {
-        setIsPreview(true)
-        setEstimates(getMockEstimates())
+        setError(
+          "Karbon API credentials not configured. Please add KARBON_BEARER_TOKEN and KARBON_ACCESS_KEY environment variables.",
+        )
         setLoading(false)
         return
       }
@@ -164,67 +164,6 @@ export function TaxEstimates() {
       setLoading(false)
     }
   }
-
-  const getMockEstimates = (): TaxEstimateItem[] => [
-    {
-      WorkKey: "mock-1",
-      Title: "TAX | Q1 2025 Estimated Tax Payment",
-      ServiceLine: "TAX",
-      WorkStatus: "Active",
-      PrimaryStatus: "In Progress",
-      SecondaryStatus: "Calculating",
-      WorkType: "Tax Estimate",
-      ClientName: "Acme Corporation",
-      ClientKey: "client-1",
-      DueDate: "2025-04-15T00:00:00Z",
-      AssignedTo: [{ UserKey: "user-1", FullName: "Sarah Johnson", Email: "sarah@motta.com" }],
-      Priority: "High",
-      quarter: "Q1",
-    },
-    {
-      WorkKey: "mock-2",
-      Title: "TAX | Q2 2025 Estimated Tax Payment",
-      ServiceLine: "TAX",
-      WorkStatus: "Active",
-      PrimaryStatus: "Not Started",
-      WorkType: "Tax Estimate",
-      ClientName: "Tech Startup LLC",
-      ClientKey: "client-2",
-      DueDate: "2025-06-15T00:00:00Z",
-      AssignedTo: [{ UserKey: "user-2", FullName: "Michael Chen", Email: "michael@motta.com" }],
-      Priority: "Normal",
-      quarter: "Q2",
-    },
-    {
-      WorkKey: "mock-3",
-      Title: "TAX | Q3 2025 Estimated Tax Payment",
-      ServiceLine: "TAX",
-      WorkStatus: "Active",
-      PrimaryStatus: "In Progress",
-      SecondaryStatus: "Client Review",
-      WorkType: "Tax Estimate",
-      ClientName: "John & Jane Smith",
-      ClientKey: "client-3",
-      DueDate: "2025-09-15T00:00:00Z",
-      AssignedTo: [{ UserKey: "user-3", FullName: "Emily Rodriguez", Email: "emily@motta.com" }],
-      Priority: "High",
-      quarter: "Q3",
-    },
-    {
-      WorkKey: "mock-4",
-      Title: "TAX | Q4 2025 Estimated Tax Payment",
-      ServiceLine: "TAX",
-      WorkStatus: "Active",
-      PrimaryStatus: "Not Started",
-      WorkType: "Tax Estimate",
-      ClientName: "Global Industries Inc",
-      ClientKey: "client-4",
-      DueDate: "2025-12-15T00:00:00Z",
-      AssignedTo: [{ UserKey: "user-1", FullName: "Sarah Johnson", Email: "sarah@motta.com" }],
-      Priority: "Normal",
-      quarter: "Q4",
-    },
-  ]
 
   const groupByQuarter = () => {
     const quarters = {
@@ -340,15 +279,6 @@ export function TaxEstimates() {
           Add Estimate
         </Button>
       </div>
-
-      {isPreview && (
-        <Alert>
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>
-            Preview mode: Showing sample data. Configure Karbon API credentials to see real data.
-          </AlertDescription>
-        </Alert>
-      )}
 
       {upcomingQuarter && daysUntilUpcomingDeadline !== null && daysUntilUpcomingDeadline <= 30 && (
         <Alert className="border-orange-200 bg-orange-50">

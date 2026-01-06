@@ -7,14 +7,13 @@ import { Button } from "@/components/ui/button"
 import { ChevronDown, ChevronUp, ExternalLink } from "lucide-react"
 
 interface OnboardingClient {
+  id: string
   name: string
-  proposalCreated: boolean
-  proposalAccepted: boolean
   status: string
   projectType: string
   phase: string
   notes: string
-  expirationDate?: string
+  dueDate?: string
 }
 
 export function AccountingOnboardingTracker() {
@@ -29,69 +28,31 @@ export function AccountingOnboardingTracker() {
 
   const fetchOnboardingClients = async () => {
     try {
-      // Mock data based on the spreadsheet images
-      // In production, this would fetch from Karbon API filtered by onboarding status
-      const mockClients: OnboardingClient[] = [
-        {
-          name: "Ola Loa Swim Academy",
-          proposalCreated: true,
-          proposalAccepted: true,
-          status: "Accepted",
-          projectType: "Bookkeeping",
-          phase: "Phase 1: Discovery",
-          notes: "Finalizing 2024 & 2025 YTD Financials",
-        },
-        {
-          name: "Buffaloes Tires",
-          proposalCreated: true,
-          proposalAccepted: true,
-          status: "Accepted",
-          projectType: "Bookkeeping",
-          phase: "Phase 1: Discovery",
-          notes: "Working w/ P24 to Categorize 2025",
-        },
-        {
-          name: "VerEstate Title",
-          proposalCreated: true,
-          proposalAccepted: true,
-          status: "Accepted",
-          projectType: "Payroll",
-          phase: "Proposal Stage",
-          notes: "On hold for payroll",
-        },
-        {
-          name: "Cultivate Code",
-          proposalCreated: false,
-          proposalAccepted: false,
-          status: "N/A",
-          projectType: "Bookkeeping",
-          phase: "Proposal Stage",
-          notes: "Waiting on Caroline and Dat",
-        },
-        {
-          name: "Melon Marketing",
-          proposalCreated: false,
-          proposalAccepted: false,
-          status: "N/A",
-          projectType: "Bookkeeping",
-          phase: "Proposal Stage",
-          notes: "Waiting on Caroline and Dat",
-        },
-        {
-          name: "Giang Enterprise",
-          proposalCreated: false,
-          proposalAccepted: false,
-          status: "Awaiting client",
-          projectType: "Bookkeeping",
-          phase: "Proposal Stage",
-          notes: "Andrew To Follow Up",
-          expirationDate: "10/3/2025",
-        },
-      ]
+      const response = await fetch("/api/supabase/work-items?titleFilter=onboarding&status=active")
 
-      setClients(mockClients)
+      if (!response.ok) {
+        console.error("Failed to fetch onboarding clients")
+        setClients([])
+        return
+      }
+
+      const data = await response.json()
+
+      // Map work items to onboarding client format
+      const onboardingClients = data.workItems.map((item: any) => ({
+        id: item.id,
+        name: item.client_name || item.organization_name || "Unknown Client",
+        status: item.status || "N/A",
+        projectType: item.work_type || "Bookkeeping",
+        phase: item.category || "Onboarding",
+        notes: item.notes || "",
+        dueDate: item.due_date,
+      }))
+
+      setClients(onboardingClients)
     } catch (error) {
       console.error("Error fetching onboarding clients:", error)
+      setClients([])
     } finally {
       setLoading(false)
     }
@@ -114,7 +75,7 @@ export function AccountingOnboardingTracker() {
 
   const getPhaseColor = (phase: string) => {
     if (phase.includes("Discovery")) return "bg-green-50 text-green-700"
-    if (phase.includes("Proposal")) return "bg-orange-50 text-orange-700"
+    if (phase.includes("Proposal") || phase.includes("Onboarding")) return "bg-orange-50 text-orange-700"
     return "bg-gray-50 text-gray-700"
   }
 
@@ -152,42 +113,50 @@ export function AccountingOnboardingTracker() {
 
       {isExpanded && (
         <CardContent>
-          <div className="space-y-2">
-            {displayedClients.map((client, index) => (
-              <div
-                key={index}
-                className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <p className="font-medium text-sm truncate">{client.name}</p>
-                    <Badge variant="outline" className="text-xs">
-                      {client.projectType}
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Badge className={`text-xs ${getStatusColor(client.status)}`}>{client.status}</Badge>
-                    <Badge variant="outline" className={`text-xs ${getPhaseColor(client.phase)}`}>
-                      {client.phase}
-                    </Badge>
-                    {client.expirationDate && (
-                      <span className="text-xs text-muted-foreground">Exp: {client.expirationDate}</span>
-                    )}
-                  </div>
-                  {client.notes && <p className="text-xs text-muted-foreground mt-1 truncate">{client.notes}</p>}
-                </div>
+          {clients.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No onboarding clients found</p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                {displayedClients.map((client) => (
+                  <div
+                    key={client.id}
+                    className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <p className="font-medium text-sm truncate">{client.name}</p>
+                        <Badge variant="outline" className="text-xs">
+                          {client.projectType}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge className={`text-xs ${getStatusColor(client.status)}`}>{client.status}</Badge>
+                        <Badge variant="outline" className={`text-xs ${getPhaseColor(client.phase)}`}>
+                          {client.phase}
+                        </Badge>
+                        {client.dueDate && (
+                          <span className="text-xs text-muted-foreground">
+                            Due: {new Date(client.dueDate).toLocaleDateString()}
+                          </span>
+                        )}
+                      </div>
+                      {client.notes && <p className="text-xs text-muted-foreground mt-1 truncate">{client.notes}</p>}
+                    </div>
 
-                <Button variant="ghost" size="sm" className="ml-2 shrink-0">
-                  <ExternalLink className="h-4 w-4" />
-                </Button>
+                    <Button variant="ghost" size="sm" className="ml-2 shrink-0">
+                      <ExternalLink className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
 
-          {clients.length > 5 && (
-            <Button variant="outline" size="sm" onClick={() => setShowAll(!showAll)} className="w-full mt-4">
-              {showAll ? "Show Less" : `Show All (${clients.length - 5} more)`}
-            </Button>
+              {clients.length > 5 && (
+                <Button variant="outline" size="sm" onClick={() => setShowAll(!showAll)} className="w-full mt-4">
+                  {showAll ? "Show Less" : `Show All (${clients.length - 5} more)`}
+                </Button>
+              )}
+            </>
           )}
         </CardContent>
       )}

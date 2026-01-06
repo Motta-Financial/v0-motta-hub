@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Inbox, FileText, Clock, ArrowRight, ExternalLink } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Inbox, FileText, Clock, ArrowRight, ExternalLink, AlertCircle } from "lucide-react"
 import Link from "next/link"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
 import { ExpandableCard } from "@/components/ui/expandable-card"
@@ -19,43 +20,10 @@ interface WorkItem {
   ModifiedDate: string
 }
 
-const mockTriageItems: WorkItem[] = [
-  {
-    WorkKey: "MOCK-001",
-    Title: "Q4 2024 Tax Return Preparation",
-    ClientName: "Acme Corporation",
-    DueDate: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString(),
-    Priority: "High",
-    PrimaryStatus: "In Progress",
-    AssignedTo: [{ FullName: "Sarah Johnson" }],
-    ModifiedDate: new Date().toISOString(),
-  },
-  {
-    WorkKey: "MOCK-002",
-    Title: "Annual Financial Statement Review",
-    ClientName: "Tech Innovations LLC",
-    DueDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
-    Priority: "Critical",
-    PrimaryStatus: "Ready To Start",
-    AssignedTo: [{ FullName: "Michael Chen" }],
-    ModifiedDate: new Date().toISOString(),
-  },
-  {
-    WorkKey: "MOCK-003",
-    Title: "Payroll Processing - December",
-    ClientName: "Global Services Inc",
-    DueDate: new Date().toISOString(),
-    Priority: "High",
-    PrimaryStatus: "In Progress",
-    AssignedTo: [{ FullName: "Emily Rodriguez" }],
-    ModifiedDate: new Date().toISOString(),
-  },
-]
-
 export function TriageSummary() {
   const [triageItems, setTriageItems] = useState<WorkItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [usingMockData, setUsingMockData] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     async function fetchTriageItems() {
@@ -63,8 +31,7 @@ export function TriageSummary() {
         const response = await fetch("/api/karbon/work-items")
 
         if (response.status === 401) {
-          setTriageItems(mockTriageItems)
-          setUsingMockData(true)
+          setError("Karbon API credentials not configured")
           setLoading(false)
           return
         }
@@ -98,10 +65,9 @@ export function TriageSummary() {
           .slice(0, 5)
 
         setTriageItems(sorted)
-      } catch (error) {
-        console.error("Error fetching triage items:", error)
-        setTriageItems(mockTriageItems)
-        setUsingMockData(true)
+      } catch (err) {
+        console.error("Error fetching triage items:", err)
+        setError(err instanceof Error ? err.message : "Failed to fetch triage items")
       } finally {
         setLoading(false)
       }
@@ -159,17 +125,26 @@ export function TriageSummary() {
     )
   }
 
+  if (error) {
+    return (
+      <ExpandableCard
+        title="Karbon Triage"
+        icon={<Inbox className="h-5 w-5 text-emerald-600" />}
+        description="Items that need your attention"
+        defaultExpanded={true}
+      >
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      </ExpandableCard>
+    )
+  }
+
   return (
     <ExpandableCard
       title="Karbon Triage"
       icon={<Inbox className="h-5 w-5 text-emerald-600" />}
-      badge={
-        usingMockData ? (
-          <Badge variant="secondary" className="text-xs">
-            Preview
-          </Badge>
-        ) : undefined
-      }
       description="Items that need your attention"
       defaultExpanded={true}
       actions={

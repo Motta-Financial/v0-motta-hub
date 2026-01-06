@@ -6,7 +6,6 @@ const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
   const clientKey = searchParams.get("clientKey")
-  const clientName = searchParams.get("clientName")
   const contactId = searchParams.get("contactId")
   const organizationId = searchParams.get("organizationId")
   const limit = Number.parseInt(searchParams.get("limit") || "50")
@@ -19,8 +18,7 @@ export async function GET(request: NextRequest) {
   } else if (organizationId) {
     query = query.eq("organization_id", organizationId)
   } else if (clientKey) {
-    // Filter by Karbon client key or client name
-    query = query.or(`karbon_client_key.eq.${clientKey},contact_name.ilike.%${clientName || ""}%`)
+    query = query.or(`karbon_client_key.eq.${clientKey},organization_name.ilike.%${clientKey}%`)
   }
 
   const { data, error } = await query
@@ -107,9 +105,78 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    return NextResponse.json({ debrief: data[0] })
+    const createdDebrief = data[0]
+
+    await createDebriefNotifications(createdDebrief, body.team_member)
+
+    return NextResponse.json({ debrief: createdDebrief })
   } catch (error) {
     console.error("Error in POST /api/debriefs:", error)
     return NextResponse.json({ error: "Failed to create debrief" }, { status: 500 })
+  }
+}
+
+async function createDebriefNotifications(debrief: any, authorName: string) {
+  try {
+    // Fetch all active team members
+    const { data: teamMembers } = await supabase
+      .from("team_members")
+      .select("id, full_name, email")
+      .eq("is_active", true)
+
+    if (!teamMembers || teamMembers.length === 0) return
+
+    // Get client name for notification message
+    let clientName = debrief.organization_name || "a client"
+    if (debrief.contact_id) {
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("full_name")
+        .eq("id", debrief.contact_id)
+        .single()
+      if (contact) clientName = contact.full_name
+    }
+
+    // Create notification for all team members (except the author)
+    const notifications = teamMembers
+      .filter((tm) => tm.id !== debrief.created_by_id)
+      .map((tm) => ({
+        team_member_id: tm.id,
+        notification_type: "debrief",
+        entity_type: "debrief",
+        entity_id: debrief.id,
+        title: "New Client Debrief",
+        message: `${authorName || "A team member"} submitted a debrief for ${clientName}`,
+        action_url: `/?tab=debriefs&id=${debrief.id}`,
+        is_read: false,
+      }))
+
+    if (notifications.length > 0) {
+      await supabase.from("notifications").insert(notifications)
+    }
+
+    const actionItems = debrief.action_items?.items || []
+    const actionNotifications: any[] = []
+
+    for (const item of actionItems) {
+      if (item.assignee_id && item.assignee_id !== debrief.created_by_id) {
+        actionNotifications.push({
+          team_member_id: item.assignee_id,
+          notification_type: "action_item",
+          entity_type: "debrief",
+          entity_id: debrief.id,
+          title: "New Action Item Assigned",
+          message: `${authorName || "A team member"} assigned you an action item: "${item.description}"`,
+          action_url: `/?tab=debriefs&id=${debrief.id}`,
+          is_read: false,
+        })
+      }
+    }
+
+    if (actionNotifications.length > 0) {
+      await supabase.from("notifications").insert(actionNotifications)
+    }
+  } catch (error) {
+    console.error("Error creating debrief notifications:", error)
   }
 }
