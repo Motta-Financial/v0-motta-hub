@@ -1,8 +1,7 @@
 "use client"
 
 import type React from "react"
-
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
@@ -10,7 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Eye, EyeOff, Lock, CheckCircle2, AlertCircle } from "lucide-react"
+import { Eye, EyeOff, Lock, CheckCircle2, AlertCircle, Loader2 } from "lucide-react"
 import Image from "next/image"
 
 export default function ResetPasswordPage() {
@@ -22,6 +21,59 @@ export default function ResetPasswordPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
+  const [isVerifying, setIsVerifying] = useState(true)
+  const [sessionReady, setSessionReady] = useState(false)
+
+  useEffect(() => {
+    async function handleRecoveryToken() {
+      const supabase = createClient()
+
+      if (typeof window !== "undefined" && window.location.hash) {
+        const hashParams = new URLSearchParams(window.location.hash.substring(1))
+        const accessToken = hashParams.get("access_token")
+        const refreshToken = hashParams.get("refresh_token")
+        const type = hashParams.get("type")
+
+        if (accessToken && type === "recovery") {
+          try {
+            const { error } = await supabase.auth.setSession({
+              access_token: accessToken,
+              refresh_token: refreshToken || "",
+            })
+
+            if (error) {
+              setError("Invalid or expired reset link. Please request a new password reset.")
+              setIsVerifying(false)
+              return
+            }
+
+            window.history.replaceState(null, "", window.location.pathname)
+            setSessionReady(true)
+            setIsVerifying(false)
+            return
+          } catch (err) {
+            setError("Failed to verify reset link. Please try again.")
+            setIsVerifying(false)
+            return
+          }
+        }
+      }
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      if (session) {
+        setSessionReady(true)
+        setIsVerifying(false)
+        return
+      }
+
+      setError("Invalid or expired reset link. Please request a new password reset.")
+      setIsVerifying(false)
+    }
+
+    handleRecoveryToken()
+  }, [])
 
   const passwordRequirements = [
     { label: "At least 8 characters", met: password.length >= 8 },
@@ -57,7 +109,6 @@ export default function ResetPasswordPage() {
         setError(error.message)
       } else {
         setSuccess(true)
-        // Redirect to login after 2 seconds
         setTimeout(() => {
           router.push("/login?message=password_reset_success")
         }, 2000)
@@ -67,6 +118,42 @@ export default function ResetPasswordPage() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  if (isVerifying) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6">
+            <div className="flex flex-col items-center text-center space-y-4">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              <p className="text-muted-foreground">Verifying your reset link...</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (!sessionReady && error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6">
+            <div className="flex flex-col items-center text-center space-y-4">
+              <div className="h-16 w-16 rounded-full bg-red-100 flex items-center justify-center">
+                <AlertCircle className="h-8 w-8 text-red-600" />
+              </div>
+              <h2 className="text-2xl font-semibold">Reset Link Invalid</h2>
+              <p className="text-muted-foreground">{error}</p>
+              <Button onClick={() => router.push("/login")} className="mt-4">
+                Back to Login
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
   if (success) {
@@ -160,7 +247,6 @@ export default function ResetPasswordPage() {
               </div>
             </div>
 
-            {/* Password Requirements */}
             <div className="space-y-2 p-3 bg-muted/50 rounded-lg">
               <p className="text-sm font-medium">Password Requirements:</p>
               <ul className="space-y-1">
