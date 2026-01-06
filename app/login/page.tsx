@@ -2,13 +2,13 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { createClient } from "@/lib/supabase/client"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Eye, EyeOff, Loader2, AlertCircle } from "lucide-react"
+import { Eye, EyeOff, Loader2, AlertCircle, CheckCircle2, ArrowLeft } from "lucide-react"
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
@@ -16,7 +16,18 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [showForgotPassword, setShowForgotPassword] = useState(false)
+  const [resetEmailSent, setResetEmailSent] = useState(false)
   const router = useRouter()
+  const searchParams = useSearchParams()
+
+  useEffect(() => {
+    const message = searchParams.get("message")
+    if (message === "password_reset_success") {
+      setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
+    }
+  }, [searchParams])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -69,6 +80,168 @@ export default function LoginPage() {
     }
   }
 
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setIsLoading(true)
+    setError(null)
+
+    if (!email) {
+      setError("Please enter your email address")
+      setIsLoading(false)
+      return
+    }
+
+    try {
+      const supabase = createClient()
+      const redirectUrl = process.env.NEXT_PUBLIC_APP_URL
+        ? `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?type=recovery`
+        : `${window.location.origin}/auth/callback?type=recovery`
+
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: redirectUrl,
+      })
+
+      if (error) {
+        setError(error.message)
+      } else {
+        setResetEmailSent(true)
+      }
+    } catch (err) {
+      setError("An unexpected error occurred. Please try again.")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  if (resetEmailSent) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center relative overflow-hidden">
+        {/* Background gradients */}
+        <div className="absolute inset-0 overflow-hidden">
+          <div
+            className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/30 via-[#8E9B79]/20 to-[#6B745D]/30 rounded-full blur-3xl opacity-50"
+            style={{ animation: "pulse 8s ease-in-out infinite" }}
+          />
+          <div
+            className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/20 via-[#6B745D]/15 to-[#8E9B79]/20 rounded-full blur-3xl opacity-50"
+            style={{ animation: "pulse 8s ease-in-out infinite 2s" }}
+          />
+        </div>
+
+        <div className="relative z-10 w-full max-w-md mx-4">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-20" />
+          <div className="relative bg-[#12121a]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl text-center">
+            <div className="h-16 w-16 rounded-full bg-[#8E9B79]/20 flex items-center justify-center mx-auto mb-6">
+              <CheckCircle2 className="h-8 w-8 text-[#8E9B79]" />
+            </div>
+            <h2 className="text-xl font-semibold text-white mb-2">Check Your Email</h2>
+            <p className="text-gray-400 mb-6">
+              We've sent a password reset link to <span className="text-white font-medium">{email}</span>
+            </p>
+            <p className="text-gray-500 text-sm mb-6">
+              Click the link in the email to reset your password. If you don't see it, check your spam folder.
+            </p>
+            <Button
+              onClick={() => {
+                setShowForgotPassword(false)
+                setResetEmailSent(false)
+                setEmail("")
+              }}
+              variant="outline"
+              className="w-full bg-white/5 border-white/10 text-white hover:bg-white/10"
+            >
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back to Sign In
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (showForgotPassword) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center relative overflow-hidden">
+        {/* Background gradients */}
+        <div className="absolute inset-0 overflow-hidden">
+          <div
+            className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/30 via-[#8E9B79]/20 to-[#6B745D]/30 rounded-full blur-3xl opacity-50"
+            style={{ animation: "pulse 8s ease-in-out infinite" }}
+          />
+          <div
+            className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/20 via-[#6B745D]/15 to-[#8E9B79]/20 rounded-full blur-3xl opacity-50"
+            style={{ animation: "pulse 8s ease-in-out infinite 2s" }}
+          />
+        </div>
+
+        <div className="relative z-10 w-full max-w-md mx-4">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-20" />
+          <div className="relative bg-[#12121a]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
+            <div className="text-center mb-8">
+              <div className="relative inline-flex items-center justify-center mb-6">
+                <img src="/images/alfred-logo.png" alt="ALFRED AI" className="relative h-20 w-auto" />
+              </div>
+              <h1 className="text-xl font-bold text-white mb-2">Reset Password</h1>
+              <p className="text-gray-400 text-sm">Enter your email to receive a reset link</p>
+            </div>
+
+            <form onSubmit={handleForgotPassword} className="space-y-5">
+              {error && (
+                <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="reset-email" className="text-gray-300 text-sm font-medium">
+                  Email Address
+                </Label>
+                <Input
+                  id="reset-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@motta.cpa"
+                  required
+                  className="bg-white/5 border-white/10 text-white placeholder:text-gray-500 focus:border-[#8E9B79]/50 focus:ring-[#8E9B79]/20 h-11"
+                />
+              </div>
+
+              <Button
+                type="submit"
+                disabled={isLoading}
+                className="w-full h-11 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] hover:from-[#5a6350] hover:via-[#7d8a6a] hover:to-[#5a6350] text-white font-medium rounded-lg transition-all duration-300"
+              >
+                {isLoading ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Sending...
+                  </span>
+                ) : (
+                  "Send Reset Link"
+                )}
+              </Button>
+
+              <Button
+                type="button"
+                onClick={() => {
+                  setShowForgotPassword(false)
+                  setError(null)
+                }}
+                variant="ghost"
+                className="w-full text-gray-400 hover:text-white hover:bg-white/5"
+              >
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back to Sign In
+              </Button>
+            </form>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center relative overflow-hidden">
       {/* Animated background gradients - reduced animation intensity */}
@@ -118,6 +291,13 @@ export default function LoginPage() {
 
           {/* Login form */}
           <form onSubmit={handleLogin} className="space-y-5">
+            {successMessage && (
+              <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-green-400 text-sm">
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                <span>{successMessage}</span>
+              </div>
+            )}
+
             {error && (
               <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
                 <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -141,9 +321,18 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password" className="text-gray-300 text-sm font-medium">
-                Password
-              </Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password" className="text-gray-300 text-sm font-medium">
+                  Password
+                </Label>
+                <button
+                  type="button"
+                  onClick={() => setShowForgotPassword(true)}
+                  className="text-xs text-[#8E9B79] hover:text-[#a8b596] transition-colors"
+                >
+                  Forgot password?
+                </button>
+              </div>
               <div className="relative">
                 <Input
                   id="password"
