@@ -18,6 +18,7 @@ import {
   User,
   ChevronDown,
   X,
+  RefreshCw,
 } from "lucide-react"
 import Link from "next/link"
 import { ViewManager } from "@/components/view-manager"
@@ -29,6 +30,7 @@ interface Organization {
   id: string
   karbon_organization_key: string
   name: string
+  full_name: string | null
   entity_type: string | null
   contact_type: string | null
   industry: string | null
@@ -41,7 +43,7 @@ interface Organization {
 interface Contact {
   id: string
   karbon_contact_key: string
-  full_name: string
+  full_name: string | null
   first_name: string | null
   last_name: string | null
   entity_type: string | null
@@ -201,6 +203,7 @@ export function ClientsList() {
   const [selectedClientGroups, setSelectedClientGroups] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState<"individuals" | "businesses" | "prospects">("businesses")
   const [dateRange, setDateRange] = useState<{ start?: string; end?: string }>({})
+  const [syncing, setSyncing] = useState(false)
 
   useEffect(() => {
     fetchData()
@@ -247,14 +250,38 @@ export function ClientsList() {
     }
   }
 
+  const syncFromKarbon = async () => {
+    try {
+      setSyncing(true)
+      const response = await fetch("/api/karbon/sync-fullnames", {
+        method: "POST",
+      })
+      const result = await response.json()
+
+      if (result.success) {
+        // Refresh data after sync
+        await fetchData()
+        alert(
+          `Sync complete! Updated ${result.summary.contactsUpdated} contacts and ${result.summary.organizationsUpdated} organizations.`,
+        )
+      } else {
+        alert(`Sync failed: ${result.error || "Unknown error"}`)
+      }
+    } catch (err) {
+      alert(`Sync error: ${err instanceof Error ? err.message : "Unknown error"}`)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   const allClients: Client[] = [
     // Map organizations to clients (businesses)
     ...organizations.map((org) => ({
       id: org.id,
       clientKey: org.karbon_organization_key,
-      clientName: org.name,
+      clientName: org.full_name || org.name || "Unknown Organization",
       clientType: "business" as const,
-      clientGroup: null, // Would need to join with client_group_members
+      clientGroup: null,
       entityType: org.entity_type,
       contactType: org.contact_type,
       email: org.primary_email,
@@ -266,13 +293,14 @@ export function ClientsList() {
       activeWorkItems: workItemCounts.get(org.karbon_organization_key)?.active || 0,
       lastActivity: null,
       serviceLinesUsed: [],
-      avatarUrl: null, // Organizations don't have avatars in the database
+      avatarUrl: null,
     })),
     // Map contacts to clients (individuals)
     ...contacts.map((contact) => ({
       id: contact.id,
       clientKey: contact.karbon_contact_key,
-      clientName: contact.full_name || `${contact.first_name || ""} ${contact.last_name || ""}`.trim(),
+      clientName:
+        contact.full_name || `${contact.first_name || ""} ${contact.last_name || ""}`.trim() || "Unknown Contact",
       clientType: "individual" as const,
       clientGroup: null,
       entityType: contact.entity_type,
@@ -286,7 +314,7 @@ export function ClientsList() {
       activeWorkItems: workItemCounts.get(contact.karbon_contact_key)?.active || 0,
       lastActivity: null,
       serviceLinesUsed: [],
-      avatarUrl: contact.avatar_url, // Use actual avatar from database
+      avatarUrl: contact.avatar_url,
     })),
   ]
 
@@ -385,6 +413,10 @@ export function ClientsList() {
         </div>
         <div className="flex gap-2">
           <ViewManager type="clients" currentFilters={getCurrentFilters()} onLoadView={handleLoadView} />
+          <Button onClick={syncFromKarbon} variant="outline" disabled={syncing}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
+            {syncing ? "Syncing..." : "Sync Names"}
+          </Button>
           <Button onClick={fetchData} variant="outline">
             Refresh
           </Button>
