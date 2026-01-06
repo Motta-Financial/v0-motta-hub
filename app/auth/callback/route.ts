@@ -9,30 +9,45 @@ export async function GET(request: Request) {
   const error = searchParams.get("error")
   const errorDescription = searchParams.get("error_description")
 
+  console.log("[v0] Auth callback received:", { code: !!code, type, error, origin })
+
   // Handle error from Supabase
   if (error) {
+    console.log("[v0] Auth callback error:", errorDescription || error)
     return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(errorDescription || error)}`)
   }
 
-  // If this is a recovery/reset password link (comes with hash fragment, not code)
-  // Supabase sends: /auth/callback#access_token=...&type=recovery
-  // The hash is not accessible server-side, so we redirect to reset-password page
-  // which will handle it client-side
-  if (!code) {
-    // No code means this might be a hash-based redirect (recovery, etc.)
-    // Redirect to reset-password page which will check for hash fragments
+  // Supabase sends type=recovery in the query params for password reset
+  if (type === "recovery") {
+    console.log("[v0] Recovery type detected, redirecting to reset-password")
+    if (code) {
+      // Exchange the code first to establish session
+      const supabase = await createClient()
+      const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+      if (exchangeError) {
+        console.log("[v0] Code exchange error:", exchangeError.message)
+        return NextResponse.redirect(`${origin}/auth/reset-password?error=invalid_link`)
+      }
+      console.log("[v0] Code exchanged successfully, redirecting to reset-password")
+    }
     return NextResponse.redirect(`${origin}/auth/reset-password`)
   }
 
+  // If no code, redirect to reset-password page for hash-based handling
+  if (!code) {
+    console.log("[v0] No code present, redirecting to reset-password for hash handling")
+    return NextResponse.redirect(`${origin}/auth/reset-password`)
+  }
+
+  // Normal auth flow - exchange code for session
   if (code) {
     const supabase = await createClient()
-    const { error } = await supabase.auth.exchangeCodeForSession(code)
-    if (!error) {
-      if (type === "recovery") {
-        return NextResponse.redirect(`${origin}/auth/reset-password`)
-      }
+    const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+    if (!exchangeError) {
+      console.log("[v0] Code exchanged, redirecting to:", next)
       return NextResponse.redirect(`${origin}${next}`)
     }
+    console.log("[v0] Code exchange failed:", exchangeError.message)
   }
 
   // Return the user to an error page with instructions

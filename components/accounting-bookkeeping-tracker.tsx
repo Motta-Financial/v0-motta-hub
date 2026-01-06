@@ -24,8 +24,6 @@ import {
   ChevronLeft,
   Calendar,
 } from "lucide-react"
-import type { KarbonClient } from "@/lib/karbon-types"
-import { getKarbonClientUrl } from "@/lib/karbon-utils"
 
 const BOOKKEEPING_TASKS = [
   { id: "A", label: "Review work item", assignee: "P24" },
@@ -40,15 +38,52 @@ const BOOKKEEPING_TASKS = [
   { id: "J", label: "Complete meeting", assignee: "Andrew" },
 ]
 
+interface SupabaseWorkItem {
+  id: string
+  karbon_work_item_key: string
+  title: string
+  description: string | null
+  status: string | null
+  workflow_status: string | null
+  work_type: string | null
+  priority: string | null
+  due_date: string | null
+  start_date: string | null
+  completed_date: string | null
+  period_start: string | null
+  period_end: string | null
+  tax_year: number | null
+  client_type: string | null
+  karbon_client_key: string | null
+  client_group_name: string | null
+  client_manager_name: string | null
+  client_partner_name: string | null
+  assignee_name: string | null
+  karbon_url: string | null
+  clientName: string | null
+  client: {
+    id: string
+    full_name?: string
+    name?: string
+    karbon_contact_key?: string
+    karbon_organization_key?: string
+  } | null
+}
+
 interface BookkeepingClient {
-  clientKey: string
+  workItemId: string
+  karbonWorkItemKey: string
   clientName: string
   lead: string
   clientType: "MONTHLY" | "QUARTERLY"
   meetingDate?: string
   status: keyof typeof STATUS_TYPES
+  periodStart?: string
+  periodEnd?: string
+  dueDate?: string
+  karbonUrl?: string
   tasks: {
-    [key: string]: boolean // A-J task completion
+    [key: string]: boolean
   }
 }
 
@@ -75,12 +110,11 @@ export function AccountingBookkeepingTracker() {
     const now = new Date()
     return new Date(now.getFullYear(), now.getMonth(), 1)
   })
-  const [clients, setClients] = useState<KarbonClient[]>([])
+  const [workItems, setWorkItems] = useState<SupabaseWorkItem[]>([])
   const [bookkeepingClients, setBookkeepingClients] = useState<BookkeepingClient[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
   const [filterLead, setFilterLead] = useState<string>("all")
-  const [filterType, setFilterType] = useState<string>("all")
   const [filterStatus, setFilterStatus] = useState<string>("all")
   const [checklistExpanded, setChecklistExpanded] = useState(false)
   const [selectedClient, setSelectedClient] = useState<BookkeepingClient | null>(null)
@@ -94,76 +128,106 @@ export function AccountingBookkeepingTracker() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const monthKey = `${selectedMonth.getFullYear()}-${selectedMonth.getMonth()}`
-      console.log("[v0] Fetching bookkeeping data for:", formatMonthYear(selectedMonth), "- Month key:", monthKey)
+      const monthKey = `${selectedMonth.getFullYear()}-${selectedMonth.getMonth() + 1}`
+      const monthNum = selectedMonth.getMonth() + 1
+      const yearNum = selectedMonth.getFullYear()
 
-      const response = await fetch("/api/karbon/clients")
-      if (!response.ok) throw new Error("Failed to fetch clients")
+      console.log("[v0] Fetching bookkeeping data from Supabase for:", formatMonthYear(selectedMonth))
 
-      const data = await response.json()
-      const accountingClients = (data.clients || []).filter((client: KarbonClient) =>
-        (client.serviceLinesUsed || []).some((sl) => ["ACCOUNTING", "ACCT", "ACCTG"].includes(sl)),
+      // Fetch ACCT | Bookkeeping work items from Supabase for active clients
+      const response = await fetch(
+        `/api/supabase/work-items?titleFilter=ACCT | Bookkeeping&status=active&periodMonth=${monthNum}&periodYear=${yearNum}`,
       )
 
-      setClients(accountingClients)
+      if (!response.ok) {
+        throw new Error("Failed to fetch work items from Supabase")
+      }
 
-      const savedDataKey = `bookkeeping-data-${monthKey}`
-      const savedData = localStorage.getItem(savedDataKey)
+      const data = await response.json()
+      const fetchedWorkItems: SupabaseWorkItem[] = data.workItems || []
 
-      if (savedData) {
-        console.log("[v0] Loading saved bookkeeping data for", formatMonthYear(selectedMonth))
-        const parsed = JSON.parse(savedData)
-        setBookkeepingClients(parsed)
-      } else {
-        console.log("[v0] No saved data found, initializing bookkeeping data for", formatMonthYear(selectedMonth))
-        const monthlyClients = accountingClients.filter((client: KarbonClient) => {
-          return true
-        })
+      console.log("[v0] Fetched", fetchedWorkItems.length, "ACCT | Bookkeeping work items from Supabase")
+      setWorkItems(fetchedWorkItems)
 
-        const transformed = monthlyClients.map((client: KarbonClient) => ({
-          clientKey: client.clientKey,
-          clientName: client.clientName,
-          lead: "",
+      // Load saved task progress from localStorage
+      const savedDataKey = `bookkeeping-tasks-${monthKey}`
+      const savedTasks = localStorage.getItem(savedDataKey)
+      const savedTasksMap = savedTasks ? JSON.parse(savedTasks) : {}
+
+      // Transform Supabase work items to BookkeepingClient format
+      const transformed: BookkeepingClient[] = fetchedWorkItems.map((item) => {
+        const existingTasks = savedTasksMap[item.id] || {
+          A: false,
+          B: false,
+          C: false,
+          D: false,
+          E: false,
+          F: false,
+          G: false,
+          H: false,
+          I: false,
+          J: false,
+        }
+
+        // Determine status based on workflow_status or saved status
+        let status: keyof typeof STATUS_TYPES = "NOT_READY"
+        const workflowStatus = item.workflow_status?.toLowerCase() || ""
+        if (workflowStatus.includes("complete")) {
+          status = "COMPLETE"
+        } else if (workflowStatus.includes("hold") || workflowStatus.includes("waiting")) {
+          status = "ON_HOLD"
+        } else if (workflowStatus.includes("review")) {
+          status = "REVIEW"
+        } else if (workflowStatus.includes("info") || workflowStatus.includes("pending")) {
+          status = "NEED_INFO"
+        }
+
+        return {
+          workItemId: item.id,
+          karbonWorkItemKey: item.karbon_work_item_key,
+          clientName: item.clientName || item.client_group_name || "Unknown Client",
+          lead: item.assignee_name || item.client_manager_name || "",
           clientType: "MONTHLY" as const,
           meetingDate: undefined,
-          status: "NOT_READY" as keyof typeof STATUS_TYPES,
-          tasks: {
-            A: false,
-            B: false,
-            C: false,
-            D: false,
-            E: false,
-            F: false,
-            G: false,
-            H: false,
-            I: false,
-            J: false,
-          },
-        }))
+          status: savedTasksMap[item.id]?.status || status,
+          periodStart: item.period_start || undefined,
+          periodEnd: item.period_end || undefined,
+          dueDate: item.due_date || undefined,
+          karbonUrl: item.karbon_url || undefined,
+          tasks: existingTasks.tasks || existingTasks,
+        }
+      })
 
-        setBookkeepingClients(transformed)
-        localStorage.setItem(savedDataKey, JSON.stringify(transformed))
-      }
+      setBookkeepingClients(transformed)
     } catch (error) {
-      console.error("Error fetching data:", error)
+      console.error("[v0] Error fetching bookkeeping data:", error)
     } finally {
       setLoading(false)
     }
   }
 
+  // Save task progress to localStorage when it changes
   useEffect(() => {
     if (bookkeepingClients.length > 0) {
-      const monthKey = `${selectedMonth.getFullYear()}-${selectedMonth.getMonth()}`
-      const savedDataKey = `bookkeeping-data-${monthKey}`
-      localStorage.setItem(savedDataKey, JSON.stringify(bookkeepingClients))
-      console.log("[v0] Saved bookkeeping data for", formatMonthYear(selectedMonth))
+      const monthKey = `${selectedMonth.getFullYear()}-${selectedMonth.getMonth() + 1}`
+      const savedDataKey = `bookkeeping-tasks-${monthKey}`
+
+      const tasksMap: Record<string, { tasks: Record<string, boolean>; status: string }> = {}
+      bookkeepingClients.forEach((client) => {
+        tasksMap[client.workItemId] = {
+          tasks: client.tasks,
+          status: client.status,
+        }
+      })
+
+      localStorage.setItem(savedDataKey, JSON.stringify(tasksMap))
     }
   }, [bookkeepingClients, selectedMonth])
 
-  const toggleTask = (clientKey: string, taskId: string) => {
+  const toggleTask = (workItemId: string, taskId: string) => {
     setBookkeepingClients((prev) =>
       prev.map((client) =>
-        client.clientKey === clientKey
+        client.workItemId === workItemId
           ? {
               ...client,
               tasks: {
@@ -176,15 +240,9 @@ export function AccountingBookkeepingTracker() {
     )
   }
 
-  const updateClientStatus = (clientKey: string, status: keyof typeof STATUS_TYPES) => {
+  const updateClientStatus = (workItemId: string, status: keyof typeof STATUS_TYPES) => {
     setBookkeepingClients((prev) =>
-      prev.map((client) => (client.clientKey === clientKey ? { ...client, status } : client)),
-    )
-  }
-
-  const updateClientLead = (clientKey: string, lead: string) => {
-    setBookkeepingClients((prev) =>
-      prev.map((client) => (client.clientKey === clientKey ? { ...client, lead } : client)),
+      prev.map((client) => (client.workItemId === workItemId ? { ...client, status } : client)),
     )
   }
 
@@ -193,10 +251,9 @@ export function AccountingBookkeepingTracker() {
   const allFilteredClients = bookkeepingClients.filter((client) => {
     const matchesSearch = client.clientName.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesLead = filterLead === "all" || client.lead === filterLead
-    const matchesType = filterType === "all" || client.clientType === filterType
     const matchesStatus = filterStatus === "all" || client.status === filterStatus
 
-    return matchesSearch && matchesLead && matchesType && matchesStatus
+    return matchesSearch && matchesLead && matchesStatus
   })
 
   const activeClients = allFilteredClients.filter((client) => {
@@ -229,7 +286,6 @@ export function AccountingBookkeepingTracker() {
     setSelectedMonth((prev) => {
       const newDate = new Date(prev)
       newDate.setMonth(newDate.getMonth() - 1)
-      console.log("[v0] Navigating to previous month:", formatMonthYear(newDate))
       return newDate
     })
   }
@@ -238,16 +294,13 @@ export function AccountingBookkeepingTracker() {
     setSelectedMonth((prev) => {
       const newDate = new Date(prev)
       newDate.setMonth(newDate.getMonth() + 1)
-      console.log("[v0] Navigating to next month:", formatMonthYear(newDate))
       return newDate
     })
   }
 
   const goToCurrentMonth = () => {
     const now = new Date()
-    const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-    console.log("[v0] Navigating to current month:", formatMonthYear(currentMonth))
-    setSelectedMonth(currentMonth)
+    setSelectedMonth(new Date(now.getFullYear(), now.getMonth(), 1))
   }
 
   const formatMonthYear = (date: Date) => {
@@ -263,7 +316,8 @@ export function AccountingBookkeepingTracker() {
     return (
       <Card>
         <CardContent className="text-center py-12">
-          <p className="text-gray-500">Loading bookkeeping tracker...</p>
+          <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-4 text-muted-foreground" />
+          <p className="text-muted-foreground">Loading bookkeeping tracker from Supabase...</p>
         </CardContent>
       </Card>
     )
@@ -275,7 +329,9 @@ export function AccountingBookkeepingTracker() {
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="text-xl">Monthly Bookkeeping Tracker</CardTitle>
-            <CardDescription>Tracking progress for {formatMonthYear(selectedMonth)}</CardDescription>
+            <CardDescription>
+              Tracking ACCT | Bookkeeping work items for {formatMonthYear(selectedMonth)}
+            </CardDescription>
           </div>
           <Button onClick={fetchData} variant="outline" size="sm">
             <RefreshCw className="h-4 w-4 mr-2" />
@@ -283,14 +339,15 @@ export function AccountingBookkeepingTracker() {
           </Button>
         </div>
 
-        <div className="flex items-center justify-between mt-4 p-3 bg-gray-50 rounded-lg">
+        {/* Month Navigation */}
+        <div className="flex items-center justify-between mt-4 p-3 bg-muted/50 rounded-lg">
           <Button variant="outline" size="sm" onClick={goToPreviousMonth}>
             <ChevronLeft className="h-4 w-4" />
           </Button>
 
           <div className="flex items-center gap-3">
-            <Calendar className="h-5 w-5 text-gray-600" />
-            <span className="text-lg font-semibold text-gray-900">{formatMonthYear(selectedMonth)}</span>
+            <Calendar className="h-5 w-5 text-muted-foreground" />
+            <span className="text-lg font-semibold">{formatMonthYear(selectedMonth)}</span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -306,27 +363,29 @@ export function AccountingBookkeepingTracker() {
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Stats */}
         <div className="grid grid-cols-3 gap-4">
-          <div className="text-center">
-            <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
-            <p className="text-xs text-gray-600">Total Clients</p>
+          <div className="text-center p-3 bg-muted/50 rounded-lg">
+            <p className="text-2xl font-bold">{stats.total}</p>
+            <p className="text-xs text-muted-foreground">Total Clients</p>
           </div>
-          <div className="text-center">
+          <div className="text-center p-3 bg-green-50 rounded-lg">
             <p className="text-2xl font-bold text-green-600">{stats.complete}</p>
-            <p className="text-xs text-gray-600">Complete</p>
+            <p className="text-xs text-muted-foreground">Complete</p>
           </div>
-          <div className="text-center">
+          <div className="text-center p-3 bg-blue-50 rounded-lg">
             <p className="text-2xl font-bold text-blue-600">{stats.avgCompletion}%</p>
-            <p className="text-xs text-gray-600">Avg Progress</p>
+            <p className="text-xs text-muted-foreground">Avg Progress</p>
           </div>
         </div>
 
+        {/* Checklist Reference */}
         <div className="border rounded-lg">
           <button
-            className="w-full px-4 py-2 flex items-center justify-between hover:bg-gray-50 transition-colors"
+            className="w-full px-4 py-2 flex items-center justify-between hover:bg-muted/50 transition-colors"
             onClick={() => setChecklistExpanded(!checklistExpanded)}
           >
-            <p className="text-sm font-medium text-gray-900">View Bookkeeping Checklist (A-J)</p>
+            <p className="text-sm font-medium">View Bookkeeping Checklist (A-J)</p>
             {checklistExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>
           {checklistExpanded && (
@@ -337,8 +396,8 @@ export function AccountingBookkeepingTracker() {
                     <Badge variant="outline" className="font-mono text-xs">
                       {task.id}
                     </Badge>
-                    <span className="text-gray-900">{task.label}</span>
-                    <span className="text-gray-500 text-xs ml-auto">{task.assignee}</span>
+                    <span>{task.label}</span>
+                    <span className="text-muted-foreground text-xs ml-auto">{task.assignee}</span>
                   </div>
                 ))}
               </div>
@@ -346,9 +405,10 @@ export function AccountingBookkeepingTracker() {
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {/* Filters */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder="Search clients..."
               value={searchQuery}
@@ -386,60 +446,81 @@ export function AccountingBookkeepingTracker() {
           </Select>
         </div>
 
-        <div className="border rounded-lg divide-y">
-          {displayedClients.map((client) => {
-            const completedTasks = Object.values(client.tasks).filter(Boolean).length
-            const totalTasks = Object.keys(client.tasks).length
-            const completionRate = Math.round((completedTasks / totalTasks) * 100)
-            const StatusIcon = STATUS_TYPES[client.status].icon
+        {/* Client List */}
+        {displayedClients.length === 0 ? (
+          <div className="text-center py-12 border rounded-lg">
+            <Calendar className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+            <p className="text-muted-foreground">
+              No ACCT | Bookkeeping work items found for {formatMonthYear(selectedMonth)}
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Work items are filtered by "ACCT | Bookkeeping" title pattern
+            </p>
+          </div>
+        ) : (
+          <div className="border rounded-lg divide-y">
+            {displayedClients.map((client) => {
+              const completedTasks = Object.values(client.tasks).filter(Boolean).length
+              const totalTasks = Object.keys(client.tasks).length
+              const completionRate = Math.round((completedTasks / totalTasks) * 100)
+              const StatusIcon = STATUS_TYPES[client.status].icon
 
-            return (
-              <div
-                key={client.clientKey}
-                className="p-4 hover:bg-gray-50 transition-colors cursor-pointer group"
-                onClick={() => setSelectedClient(client)}
-              >
-                <div className="flex items-center gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <h4 className="font-medium text-gray-900 truncate">{client.clientName}</h4>
-                      <a
-                        href={getKarbonClientUrl(client.clientKey)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                      </a>
+              return (
+                <div
+                  key={client.workItemId}
+                  className="p-4 hover:bg-muted/50 transition-colors cursor-pointer group"
+                  onClick={() => setSelectedClient(client)}
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <h4 className="font-medium truncate">{client.clientName}</h4>
+                        {client.karbonUrl && (
+                          <a
+                            href={client.karbonUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                          </a>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <User className="h-3 w-3" />
+                        <span>{client.lead || "Unassigned"}</span>
+                        {client.dueDate && (
+                          <>
+                            <span>•</span>
+                            <span>Due: {new Date(client.dueDate).toLocaleDateString()}</span>
+                          </>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 text-sm text-gray-600">
-                      <User className="h-3 w-3" />
-                      <span>{client.lead}</span>
+
+                    <div className="flex items-center gap-2">
+                      <StatusIcon className="h-4 w-4" />
+                      <Badge className={STATUS_TYPES[client.status].color} variant="secondary">
+                        {STATUS_TYPES[client.status].label}
+                      </Badge>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-2">
-                    <StatusIcon className="h-4 w-4" />
-                    <Badge className={STATUS_TYPES[client.status].color} variant="secondary">
-                      {STATUS_TYPES[client.status].label}
-                    </Badge>
-                  </div>
-
-                  <div className="w-48 hidden md:block">
-                    <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
-                      <span>Progress</span>
-                      <span className="font-semibold">{completionRate}%</span>
+                    <div className="w-48 hidden md:block">
+                      <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                        <span>Progress</span>
+                        <span className="font-semibold">{completionRate}%</span>
+                      </div>
+                      <Progress value={completionRate} className="h-2" />
                     </div>
-                    <Progress value={completionRate} className="h-2" />
-                  </div>
 
-                  <ChevronRight className="h-5 w-5 text-gray-400 group-hover:text-gray-600 transition-colors" />
+                    <ChevronRight className="h-5 w-5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                  </div>
                 </div>
-              </div>
-            )
-          })}
-        </div>
+              )
+            })}
+          </div>
+        )}
 
         {hasMore && (
           <div className="text-center">
@@ -459,6 +540,7 @@ export function AccountingBookkeepingTracker() {
           </div>
         )}
 
+        {/* Completed Section */}
         {completedClients.length > 0 && (
           <div className="border rounded-lg bg-green-50">
             <button
@@ -467,27 +549,25 @@ export function AccountingBookkeepingTracker() {
             >
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="h-5 w-5 text-green-600" />
-                <p className="text-sm font-medium text-gray-900">Completed ({completedClients.length})</p>
+                <p className="text-sm font-medium">Completed ({completedClients.length})</p>
               </div>
               {showCompleted ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </button>
             {showCompleted && (
-              <div className="border-t divide-y bg-white">
-                {completedClients.map((client) => {
-                  const StatusIcon = STATUS_TYPES[client.status].icon
-
-                  return (
-                    <div
-                      key={client.clientKey}
-                      className="p-4 hover:bg-gray-50 transition-colors cursor-pointer group"
-                      onClick={() => setSelectedClient(client)}
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h4 className="font-medium text-gray-900 truncate">{client.clientName}</h4>
+              <div className="border-t divide-y bg-background">
+                {completedClients.map((client) => (
+                  <div
+                    key={client.workItemId}
+                    className="p-4 hover:bg-muted/50 transition-colors cursor-pointer group"
+                    onClick={() => setSelectedClient(client)}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <h4 className="font-medium truncate">{client.clientName}</h4>
+                          {client.karbonUrl && (
                             <a
-                              href={getKarbonClientUrl(client.clientKey)}
+                              href={client.karbonUrl}
                               target="_blank"
                               rel="noopener noreferrer"
                               onClick={(e) => e.stopPropagation()}
@@ -495,161 +575,104 @@ export function AccountingBookkeepingTracker() {
                             >
                               <ExternalLink className="h-4 w-4" />
                             </a>
-                          </div>
-                          <div className="flex items-center gap-2 text-sm text-gray-600">
-                            <User className="h-3 w-3" />
-                            <span>{client.lead}</span>
-                          </div>
+                          )}
                         </div>
-
-                        <div className="flex items-center gap-2">
-                          <StatusIcon className="h-4 w-4" />
-                          <Badge className={STATUS_TYPES[client.status].color} variant="secondary">
-                            {STATUS_TYPES[client.status].label}
-                          </Badge>
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <User className="h-3 w-3" />
+                          <span>{client.lead || "Unassigned"}</span>
                         </div>
-
-                        <div className="flex items-center gap-2 text-green-600">
-                          <CheckCircle2 className="h-5 w-5" />
-                          <span className="text-sm font-semibold">100%</span>
-                        </div>
-
-                        <ChevronRight className="h-5 w-5 text-gray-400 group-hover:text-gray-600 transition-colors" />
                       </div>
+                      <Badge className="bg-green-500 text-white">Complete</Badge>
                     </div>
-                  )
-                })}
+                  </div>
+                ))}
               </div>
             )}
           </div>
         )}
       </CardContent>
 
-      <Dialog open={!!selectedClient} onOpenChange={(open) => !open && setSelectedClient(null)}>
-        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
-          {selectedClient && (
-            <>
-              <DialogHeader>
-                <DialogTitle className="flex items-center justify-between">
-                  <span>{selectedClient.clientName}</span>
-                  <a
-                    href={getKarbonClientUrl(selectedClient.clientKey)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 hover:text-blue-800"
-                  >
-                    <ExternalLink className="h-5 w-5" />
-                  </a>
-                </DialogTitle>
-                <DialogDescription>Manage bookkeeping tasks and status</DialogDescription>
-              </DialogHeader>
+      {/* Client Detail Dialog */}
+      <Dialog open={!!selectedClient} onOpenChange={() => setSelectedClient(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{selectedClient?.clientName}</DialogTitle>
+            <DialogDescription>
+              {selectedClient?.lead && `Lead: ${selectedClient.lead}`}
+              {selectedClient?.periodStart && selectedClient?.periodEnd && (
+                <span className="ml-2">
+                  | Period: {new Date(selectedClient.periodStart).toLocaleDateString()} -{" "}
+                  {new Date(selectedClient.periodEnd).toLocaleDateString()}
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
 
-              <div className="space-y-6 mt-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium text-gray-700 block mb-2">Lead</label>
-                    <Select
-                      value={selectedClient.lead || "unassigned"}
-                      onValueChange={(value) => {
-                        const newLead = value === "unassigned" ? "" : value
-                        updateClientLead(selectedClient.clientKey, newLead)
-                        setSelectedClient({ ...selectedClient, lead: newLead })
+          {selectedClient && (
+            <div className="space-y-4">
+              {/* Status Selector */}
+              <div>
+                <label className="text-sm font-medium mb-2 block">Status</label>
+                <Select
+                  value={selectedClient.status}
+                  onValueChange={(value) => {
+                    updateClientStatus(selectedClient.workItemId, value as keyof typeof STATUS_TYPES)
+                    setSelectedClient({ ...selectedClient, status: value as keyof typeof STATUS_TYPES })
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(STATUS_TYPES).map(([key, status]) => (
+                      <SelectItem key={key} value={key}>
+                        {status.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Task Checklist */}
+              <div>
+                <label className="text-sm font-medium mb-2 block">Tasks</label>
+                <div className="space-y-2">
+                  {BOOKKEEPING_TASKS.map((task) => (
+                    <div
+                      key={task.id}
+                      className="flex items-center gap-3 p-2 rounded hover:bg-muted/50 cursor-pointer"
+                      onClick={() => {
+                        toggleTask(selectedClient.workItemId, task.id)
+                        setSelectedClient({
+                          ...selectedClient,
+                          tasks: {
+                            ...selectedClient.tasks,
+                            [task.id]: !selectedClient.tasks[task.id],
+                          },
+                        })
                       }}
                     >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="unassigned">Unassigned</SelectItem>
-                        <SelectItem value="Andrew">Andrew</SelectItem>
-                        <SelectItem value="Ganesh">Ganesh</SelectItem>
-                        <SelectItem value="Thameem">Thameem</SelectItem>
-                        <SelectItem value="Angie">Angie</SelectItem>
-                        <SelectItem value="Matt">Matt</SelectItem>
-                        <SelectItem value="P24">P24</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-700">Type</label>
-                    <div className="mt-1">
-                      <Badge variant="outline">{selectedClient.clientType}</Badge>
+                      <Checkbox checked={selectedClient.tasks[task.id]} />
+                      <Badge variant="outline" className="font-mono text-xs">
+                        {task.id}
+                      </Badge>
+                      <span className="flex-1 text-sm">{task.label}</span>
+                      <span className="text-xs text-muted-foreground">{task.assignee}</span>
                     </div>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium text-gray-700 block mb-3">Status</label>
-                  <Select
-                    value={selectedClient.status}
-                    onValueChange={(value) => {
-                      updateClientStatus(selectedClient.clientKey, value as keyof typeof STATUS_TYPES)
-                      setSelectedClient({ ...selectedClient, status: value as keyof typeof STATUS_TYPES })
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(STATUS_TYPES).map(([key, status]) => (
-                        <SelectItem key={key} value={key}>
-                          <span className={status.textColor}>{status.label}</span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium text-gray-700 block mb-3">Tasks</label>
-                  <div className="space-y-3">
-                    {BOOKKEEPING_TASKS.map((task) => (
-                      <div
-                        key={task.id}
-                        className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
-                      >
-                        <Checkbox
-                          id={`task-${task.id}`}
-                          checked={selectedClient.tasks[task.id]}
-                          onCheckedChange={() => {
-                            toggleTask(selectedClient.clientKey, task.id)
-                            setSelectedClient({
-                              ...selectedClient,
-                              tasks: {
-                                ...selectedClient.tasks,
-                                [task.id]: !selectedClient.tasks[task.id],
-                              },
-                            })
-                          }}
-                        />
-                        <label htmlFor={`task-${task.id}`} className="flex-1 cursor-pointer">
-                          <div className="flex items-center gap-2">
-                            <Badge variant="outline" className="font-mono text-xs">
-                              {task.id}
-                            </Badge>
-                            <span className="text-sm text-gray-900">{task.label}</span>
-                          </div>
-                          <p className="text-xs text-gray-500 mt-1">Assigned to: {task.assignee}</p>
-                        </label>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="bg-blue-50 p-4 rounded-lg">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-gray-700">Overall Progress</span>
-                    <span className="text-lg font-bold text-blue-600">
-                      {Math.round((Object.values(selectedClient.tasks).filter(Boolean).length / 10) * 100)}%
-                    </span>
-                  </div>
-                  <Progress
-                    value={(Object.values(selectedClient.tasks).filter(Boolean).length / 10) * 100}
-                    className="h-3"
-                  />
+                  ))}
                 </div>
               </div>
-            </>
+
+              {/* Karbon Link */}
+              {selectedClient.karbonUrl && (
+                <Button variant="outline" className="w-full bg-transparent" asChild>
+                  <a href={selectedClient.karbonUrl} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    Open in Karbon
+                  </a>
+                </Button>
+              )}
+            </div>
           )}
         </DialogContent>
       </Dialog>
