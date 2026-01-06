@@ -34,7 +34,6 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { useUser } from "@/contexts/user-context"
-import { createClient } from "@/lib/supabase/client"
 import { formatDistanceToNow } from "date-fns"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
@@ -121,27 +120,20 @@ export function ClientServiceDebriefs() {
     setError(null)
     setIsLoading(true)
     try {
-      const supabase = createClient()
+      const response = await fetch("/api/supabase/debriefs?limit=20")
 
-      // Fetch recent debriefs with related data
-      const { data, error: fetchError } = await supabase
-        .from("debriefs")
-        .select(`
-          *,
-          contact:contacts(full_name),
-          organization:organizations(name),
-          work_item:work_items(title)
-        `)
-        .order("created_at", { ascending: false })
-        .limit(20)
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "Failed to fetch debriefs")
+      }
 
-      if (fetchError) throw fetchError
+      const { debriefs: data } = await response.json()
 
-      // Comments will be enabled after running: scripts/create-debrief-comments-table.sql
+      // Add empty comments array (comments will be enabled after running migration)
       const debrifsWithComments =
-        data?.map((d) => ({
+        data?.map((d: Debrief) => ({
           ...d,
-          comments: [], // Empty comments until table is created
+          comments: [],
         })) || []
 
       setDebriefs(debrifsWithComments)
@@ -155,33 +147,12 @@ export function ClientServiceDebriefs() {
 
   async function fetchClientsAndWorkItems() {
     try {
-      const supabase = createClient()
-
-      // Fetch contacts
-      const { data: contacts } = await supabase
-        .from("contacts")
-        .select("id, full_name")
-        .eq("status", "Active")
-        .order("full_name")
-        .limit(100)
-
-      // Fetch organizations
-      const { data: orgs } = await supabase.from("organizations").select("id, name").order("name").limit(100)
-
-      // Fetch active work items
-      const { data: items } = await supabase
-        .from("work_items")
-        .select("id, title, karbon_work_item_key")
-        .not("status", "eq", "Completed")
-        .order("title")
-        .limit(100)
-
-      const clientList: Client[] = [
-        ...(contacts?.map((c) => ({ id: c.id, name: c.full_name || "Unknown", type: "contact" as const })) || []),
-        ...(orgs?.map((o) => ({ id: o.id, name: o.name || "Unknown", type: "organization" as const })) || []),
-      ].sort((a, b) => a.name.localeCompare(b.name))
-
-      setClients(clientList)
+      const response = await fetch("/api/supabase/clients")
+      if (!response.ok) {
+        throw new Error("Failed to fetch clients and work items")
+      }
+      const { clients: clientList, workItems: items } = await response.json()
+      setClients(clientList || [])
       setWorkItems(items || [])
     } catch (error) {
       console.error("Error fetching clients/work items:", error)
@@ -243,26 +214,23 @@ export function ClientServiceDebriefs() {
 
     setIsTagging(true)
     try {
-      const supabase = createClient()
       const client = clients.find((c) => c.id === selectedClient)
 
-      const updateData: Record<string, any> = {}
+      const response = await fetch("/api/supabase/debriefs/tag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          debriefId,
+          contactId: client?.type === "contact" ? selectedClient : null,
+          organizationId: client?.type === "organization" ? selectedClient : null,
+          workItemId: selectedWorkItem || null,
+        }),
+      })
 
-      if (selectedClient && client) {
-        if (client.type === "contact") {
-          updateData.contact_id = selectedClient
-        } else {
-          updateData.organization_id = selectedClient
-        }
+      if (!response.ok) {
+        const data = await response.json()
+        throw new Error(data.error || "Failed to tag debrief")
       }
-
-      if (selectedWorkItem) {
-        updateData.work_item_id = selectedWorkItem
-      }
-
-      const { error } = await supabase.from("debriefs").update(updateData).eq("id", debriefId)
-
-      if (error) throw error
 
       // Refresh debriefs
       await fetchDebriefs()
