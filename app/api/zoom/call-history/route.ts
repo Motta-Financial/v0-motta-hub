@@ -1,13 +1,5 @@
 import { NextResponse } from "next/server"
-
-async function getAccessToken() {
-  const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/zoom/token`)
-  if (!response.ok) {
-    throw new Error("Failed to get access token")
-  }
-  const data = await response.json()
-  return data.access_token
-}
+import { getZoomAccessToken } from "@/lib/zoom-auth"
 
 export async function GET(request: Request) {
   try {
@@ -17,7 +9,7 @@ export async function GET(request: Request) {
 
     console.log("[v0] Fetching Zoom call history from:", from, "to:", to)
 
-    const accessToken = await getAccessToken()
+    const accessToken = await getZoomAccessToken()
 
     const response = await fetch(`https://api.zoom.us/v2/phone/call_history?from=${from}&to=${to}&page_size=100`, {
       headers: {
@@ -28,7 +20,7 @@ export async function GET(request: Request) {
 
     if (!response.ok) {
       const errorText = await response.text()
-      console.error("[v0] Zoom call history API error:", errorText)
+      console.error("[v0] Zoom call history API error:", response.status, errorText)
 
       // If it's a 403, the account might not have Zoom Phone
       if (response.status === 403) {
