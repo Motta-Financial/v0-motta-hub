@@ -43,9 +43,9 @@ export default function LoginPage() {
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
     }
-    // In preview mode, show a message that login requires Supabase
+    // In preview mode, show a helpful info message (not as error)
     if (preview) {
-      setError("Preview mode: Login requires Supabase configuration. Connect Supabase integration to test authentication.")
+      setSuccessMessage("Preview mode: Connect the Supabase integration to enable authentication.")
     }
   }, [searchParams])
 
@@ -114,8 +114,6 @@ export default function LoginPage() {
     try {
       const supabase = createClient()
       const redirectUrl = `${window.location.origin}/auth/callback?type=recovery`
-
-      console.log("[v0] Password reset redirect URL:", redirectUrl)
 
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: redirectUrl,
