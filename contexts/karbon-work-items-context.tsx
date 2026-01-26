@@ -33,18 +33,30 @@ interface KarbonWorkItemsContextValue {
 const KarbonWorkItemsContext = createContext<KarbonWorkItemsContextValue | null>(null)
 
 const fetcher = async (url: string) => {
-  const res = await fetch(url)
-  if (!res.ok) {
-    let errorMessage = res.statusText
-    try {
-      const errorData = await res.json()
-      errorMessage = errorData.error || errorMessage
-    } catch {
-      // Response wasn't JSON
+  console.log("[v0] KarbonWorkItemsProvider: Fetching", url)
+  try {
+    const res = await fetch(url)
+    console.log("[v0] KarbonWorkItemsProvider: Response status", res.status)
+    if (!res.ok) {
+      let errorMessage = res.statusText
+      try {
+        const errorData = await res.json()
+        errorMessage = errorData.error || errorMessage
+      } catch {
+        // Response wasn't JSON
+      }
+      console.error("[v0] KarbonWorkItemsProvider: Error", errorMessage)
+      // Return empty data instead of throwing to prevent app from breaking
+      return { workItems: [] }
     }
-    throw new Error(errorMessage)
+    const data = await res.json()
+    console.log("[v0] KarbonWorkItemsProvider: Loaded", data?.workItems?.length || 0, "work items")
+    return data
+  } catch (error) {
+    console.error("[v0] KarbonWorkItemsProvider: Fetch error", error)
+    // Return empty data instead of throwing to prevent app from breaking
+    return { workItems: [] }
   }
-  return res.json()
 }
 
 // Helper to check if a work item is a tax work item

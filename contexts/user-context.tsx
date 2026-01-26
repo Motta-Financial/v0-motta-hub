@@ -70,11 +70,14 @@ export function UserProvider({ children }: { children: ReactNode }) {
     setError(null)
 
     try {
+      console.log("[v0] UserProvider: Fetching user data")
       // Use API route for server-side auth (avoids client-side Supabase auth issues)
       const response = await fetch("/api/auth/user")
+      console.log("[v0] UserProvider: Response status", response.status)
 
       if (!response.ok) {
         // Not authenticated - this is normal for login page
+        console.log("[v0] UserProvider: Not authenticated")
         hasFetchedRef.current = true
         setUser(null)
         setTeamMember(null)
@@ -82,6 +85,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
 
       const data = await response.json()
+      console.log("[v0] UserProvider: Got user data", data?.user?.email || "no user")
 
       cachedUser = data.user
       cachedTeamMember = data.teamMember
@@ -89,8 +93,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
       setUser(data.user)
       setTeamMember(data.teamMember)
-    } catch {
+    } catch (error) {
       // Fetch failed (network error) - silently set to null, don't block app
+      console.error("[v0] UserProvider: Fetch error", error)
       hasFetchedRef.current = true
       setUser(null)
       setTeamMember(null)

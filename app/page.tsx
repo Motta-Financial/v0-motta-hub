@@ -15,6 +15,8 @@ export default function Page() {
   const [activeTab, setActiveTab] = useState("dashboard")
   const [accountingSubTab, setAccountingSubTab] = useState("overview")
 
+  console.log("[v0] Page: Rendering main page")
+
   return (
     <DashboardLayout>
       <div className="space-y-6">

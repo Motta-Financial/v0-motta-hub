@@ -46,11 +46,14 @@ export function DashboardHome() {
 
   useEffect(() => {
     async function fetchDashboardData() {
+      console.log("[v0] DashboardHome: Fetching dashboard data")
       try {
         const teamMemberId = teamMember?.id
         const url = teamMemberId ? `/api/dashboard/stats?teamMemberId=${teamMemberId}` : "/api/dashboard/stats"
+        console.log("[v0] DashboardHome: URL", url)
 
         const response = await fetch(url)
+        console.log("[v0] DashboardHome: Response status", response.status)
 
         if (!response.ok) {
           throw new Error("Failed to fetch dashboard data")
