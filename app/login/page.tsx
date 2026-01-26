@@ -43,10 +43,6 @@ export default function LoginPage() {
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
     }
-    // In preview mode, show a helpful info message (not as error)
-    if (preview) {
-      setSuccessMessage("Preview mode: Connect the Supabase integration to enable authentication.")
-    }
   }, [searchParams])
 
   const handleLogin = async (e: React.FormEvent) => {
