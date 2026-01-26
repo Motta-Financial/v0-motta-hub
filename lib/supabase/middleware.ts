@@ -9,11 +9,8 @@ export async function updateSession(request: NextRequest) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-  console.log('[middleware] Path:', request.nextUrl.pathname, '| Has env vars:', !!supabaseUrl && !!supabaseAnonKey)
-
   // If Supabase env vars are missing, allow access to login page only
   if (!supabaseUrl || !supabaseAnonKey) {
-    console.log('[middleware] Missing env vars, redirecting to login')
     if (request.nextUrl.pathname === '/login') {
       return supabaseResponse
     }
@@ -53,9 +50,7 @@ export async function updateSession(request: NextRequest) {
   try {
     const { data } = await supabase.auth.getUser()
     user = data?.user
-    console.log('[middleware] User check:', user ? `authenticated (${user.email})` : 'not authenticated', '| isPublicPath:', isPublicPath)
   } catch (error) {
-    console.log('[middleware] Auth error:', error, '| isPublicPath:', isPublicPath)
     // Auth failed - allow public paths, redirect others to login
     if (isPublicPath) {
       return supabaseResponse
@@ -66,7 +61,6 @@ export async function updateSession(request: NextRequest) {
   }
 
   if (!user && !isPublicPath) {
-    console.log('[middleware] No user, redirecting to login')
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
@@ -74,12 +68,10 @@ export async function updateSession(request: NextRequest) {
 
   // Redirect logged in users away from login
   if (user && request.nextUrl.pathname === '/login') {
-    console.log('[middleware] User logged in, redirecting away from login')
     const url = request.nextUrl.clone()
     url.pathname = '/'
     return NextResponse.redirect(url)
   }
 
-  console.log('[middleware] Allowing request through')
   return supabaseResponse
 }
