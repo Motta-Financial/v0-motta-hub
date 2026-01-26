@@ -3,63 +3,107 @@ import { createClient } from "@supabase/supabase-js"
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    // Get counts from various tables
-    const [
-      { count: totalContacts },
-      { count: totalOrganizations },
-      { count: totalWorkItems },
-      { count: activeWorkItems },
-      { count: overdueWorkItems },
-      { count: teamMembers },
-      { count: meetingNotes },
-    ] = await Promise.all([
-      supabase.from("contacts").select("*", { count: "exact", head: true }),
-      supabase.from("organizations").select("*", { count: "exact", head: true }),
-      supabase.from("work_items").select("*", { count: "exact", head: true }),
-      supabase.from("work_items").select("*", { count: "exact", head: true }).neq("workflow_status", "Completed"),
-      supabase
-        .from("work_items")
-        .select("*", { count: "exact", head: true })
-        .lt("due_date", new Date().toISOString().split("T")[0])
-        .neq("workflow_status", "Completed"),
-      supabase.from("team_members").select("*", { count: "exact", head: true }),
-      supabase.from("meeting_notes").select("*", { count: "exact", head: true }),
-    ])
+    const { searchParams } = new URL(request.url)
+    const teamMemberId = searchParams.get("teamMemberId")
 
-    // Get work items by status
-    const { data: statusCounts } = await supabase.from("work_items").select("workflow_status")
+    const today = new Date().toISOString().split("T")[0]
+    const weekFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+    const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
 
-    const statusBreakdown: Record<string, number> = {}
-    ;(statusCounts || []).forEach((item) => {
-      const status = item.workflow_status || "Unknown"
-      statusBreakdown[status] = (statusBreakdown[status] || 0) + 1
-    })
+    // Active clients
+    const { count: activeClients } = await supabase
+      .from("contacts")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "Active")
 
-    // Get recent activity
-    const { data: recentWorkItems } = await supabase
+    // Open tasks (optionally filtered by team member)
+    let tasksQuery = supabase.from("tasks").select("*", { count: "exact", head: true }).eq("is_completed", false)
+    if (teamMemberId) {
+      tasksQuery = tasksQuery.eq("assignee_id", teamMemberId)
+    }
+    const { count: openTasks } = await tasksQuery
+
+    // Tasks due today
+    let tasksTodayQuery = supabase
+      .from("tasks")
+      .select("*", { count: "exact", head: true })
+      .eq("is_completed", false)
+      .eq("due_date", today)
+    if (teamMemberId) {
+      tasksTodayQuery = tasksTodayQuery.eq("assignee_id", teamMemberId)
+    }
+    const { count: tasksToday } = await tasksTodayQuery
+
+    // Upcoming deadlines (work items due within a week)
+    let deadlinesQuery = supabase
       .from("work_items")
-      .select("id, title, workflow_status, updated_at, karbon_url")
-      .order("updated_at", { ascending: false })
-      .limit(10)
+      .select("*", { count: "exact", head: true })
+      .gte("due_date", today)
+      .lte("due_date", weekFromNow)
+      .not("status", "eq", "Completed")
+    if (teamMemberId) {
+      deadlinesQuery = deadlinesQuery.or(`assignee_id.eq.${teamMemberId},client_manager_id.eq.${teamMemberId}`)
+    }
+    const { count: upcomingDeadlines } = await deadlinesQuery
+
+    // Critical deadlines (due within 3 days)
+    let criticalQuery = supabase
+      .from("work_items")
+      .select("*", { count: "exact", head: true })
+      .gte("due_date", today)
+      .lte("due_date", threeDaysFromNow)
+      .not("status", "eq", "Completed")
+    if (teamMemberId) {
+      criticalQuery = criticalQuery.or(`assignee_id.eq.${teamMemberId},client_manager_id.eq.${teamMemberId}`)
+    }
+    const { count: criticalDeadlines } = await criticalQuery
+
+    // Pending documents
+    const { count: pendingDocuments } = await supabase
+      .from("documents")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "Pending")
+
+    let activityQuery = supabase
+      .from("activity_log")
+      .select(`
+        *,
+        team_member:team_members(full_name, avatar_url)
+      `)
+      .order("created_at", { ascending: false })
+      .limit(5)
+
+    if (teamMemberId) {
+      activityQuery = activityQuery.eq("team_member_id", teamMemberId)
+    }
+
+    const { data: activityData } = await activityQuery
 
     return NextResponse.json({
       stats: {
-        totalClients: (totalContacts || 0) + (totalOrganizations || 0),
-        totalContacts: totalContacts || 0,
-        totalOrganizations: totalOrganizations || 0,
-        totalWorkItems: totalWorkItems || 0,
-        activeWorkItems: activeWorkItems || 0,
-        overdueWorkItems: overdueWorkItems || 0,
-        teamMembers: teamMembers || 0,
-        meetingNotes: meetingNotes || 0,
+        activeClients: activeClients || 0,
+        openTasks: openTasks || 0,
+        tasksToday: tasksToday || 0,
+        upcomingDeadlines: upcomingDeadlines || 0,
+        criticalDeadlines: criticalDeadlines || 0,
+        pendingDocuments: pendingDocuments || 0,
       },
-      statusBreakdown,
-      recentActivity: recentWorkItems || [],
+      activity: activityData || [],
     })
   } catch (error) {
     console.error("Error fetching dashboard stats:", error)
-    return NextResponse.json({ error: "Failed to fetch dashboard stats" }, { status: 500 })
+    return NextResponse.json({
+      stats: {
+        activeClients: 0,
+        openTasks: 0,
+        tasksToday: 0,
+        upcomingDeadlines: 0,
+        criticalDeadlines: 0,
+        pendingDocuments: 0,
+      },
+      activity: [],
+    })
   }
 }

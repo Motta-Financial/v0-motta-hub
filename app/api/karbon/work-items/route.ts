@@ -221,24 +221,17 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    if (workType) {
-      const types = workType.split(",").map((t) => t.trim())
-      if (types.length === 1) {
-        filters.push(`WorkType eq '${types[0]}'`)
-      } else {
-        const typeFilters = types.map((t) => `WorkType eq '${t}'`).join(" or ")
-        filters.push(`(${typeFilters})`)
-      }
+    // Note: Karbon API doesn't support 'Or' operator, so we handle multiple values client-side
+    const workTypeFilters = workType ? workType.split(",").map((t) => t.trim().toLowerCase()) : null
+    const statusFilters = status ? status.split(",").map((s) => s.trim().toLowerCase()) : null
+
+    // Only add single-value filters to the query
+    if (workType && !workType.includes(",")) {
+      filters.push(`WorkType eq '${workType.trim()}'`)
     }
 
-    if (status) {
-      const statuses = status.split(",").map((s) => s.trim())
-      if (statuses.length === 1) {
-        filters.push(`PrimaryStatus eq '${statuses[0]}'`)
-      } else {
-        const statusFilters = statuses.map((s) => `PrimaryStatus eq '${s}'`).join(" or ")
-        filters.push(`(${statusFilters})`)
-      }
+    if (status && !status.includes(",")) {
+      filters.push(`PrimaryStatus eq '${status.trim()}'`)
     }
 
     if (clientKey) {
@@ -285,10 +278,27 @@ export async function GET(request: NextRequest) {
       queryOptions.expand = expand.split(",")
     }
 
-    const { data: allWorkItems, error, totalCount } = await karbonFetchAll<any>("/WorkItems", credentials, queryOptions)
+    const { data: rawWorkItems, error, totalCount } = await karbonFetchAll<any>("/WorkItems", credentials, queryOptions)
 
     if (error) {
       return NextResponse.json({ error: `Karbon API error: ${error}` }, { status: 500 })
+    }
+
+    // Apply client-side filtering for multiple values (since Karbon API doesn't support 'Or')
+    let allWorkItems = rawWorkItems
+    
+    if (workTypeFilters && workTypeFilters.length > 1) {
+      allWorkItems = allWorkItems.filter((item: any) => {
+        const itemWorkType = (item.WorkType || "").toLowerCase()
+        return workTypeFilters.some(filter => itemWorkType.includes(filter) || filter.includes(itemWorkType))
+      })
+    }
+    
+    if (statusFilters && statusFilters.length > 1) {
+      allWorkItems = allWorkItems.filter((item: any) => {
+        const itemStatus = (item.PrimaryStatus || "").toLowerCase()
+        return statusFilters.some(filter => itemStatus.includes(filter) || filter.includes(itemStatus))
+      })
     }
 
     let importResult = null

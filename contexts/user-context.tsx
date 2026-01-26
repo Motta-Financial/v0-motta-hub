@@ -74,7 +74,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
       const response = await fetch("/api/auth/user")
 
       if (!response.ok) {
-        throw new Error("Failed to fetch user data")
+        // Not authenticated - this is normal for login page
+        hasFetchedRef.current = true
+        setUser(null)
+        setTeamMember(null)
+        return
       }
 
       const data = await response.json()
@@ -85,10 +89,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
       setUser(data.user)
       setTeamMember(data.teamMember)
-    } catch (err) {
-      console.error("[v0] Error fetching user:", err)
-      setError(err instanceof Error ? err.message : "Failed to load user data")
-      // Set defaults on error
+    } catch {
+      // Fetch failed (network error) - silently set to null, don't block app
+      hasFetchedRef.current = true
       setUser(null)
       setTeamMember(null)
     } finally {

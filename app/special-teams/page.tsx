@@ -1,10 +1,10 @@
 import { DashboardLayout } from "@/components/dashboard-layout"
-import { DevTeamDashboard } from "@/components/dev-team-dashboard"
+import { SpecialTeamsDashboard } from "@/components/special-teams-dashboard"
 
 export default function SpecialTeamsPage() {
   return (
     <DashboardLayout>
-      <DevTeamDashboard />
+      <SpecialTeamsDashboard />
     </DashboardLayout>
   )
 }

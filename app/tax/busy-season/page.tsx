@@ -1,10 +1,10 @@
 import { DashboardLayout } from "@/components/dashboard-layout"
-import { TaxBusySeason } from "@/components/tax-busy-season"
+import { BusySeasonTracker } from "@/components/busy-season-tracker"
 
 export default function BusySeasonPage() {
   return (
     <DashboardLayout>
-      <TaxBusySeason />
+      <BusySeasonTracker />
     </DashboardLayout>
   )
 }

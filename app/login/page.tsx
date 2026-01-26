@@ -10,6 +10,17 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Eye, EyeOff, Loader2, AlertCircle, CheckCircle2, ArrowLeft } from "lucide-react"
 
+// Detect v0 preview environment - check multiple patterns
+const isV0Preview = () => {
+  if (typeof window === 'undefined') return false
+  const hostname = window.location.hostname
+  return hostname.includes('vusercontent.net') || 
+         hostname.includes('v0.dev') ||
+         hostname.includes('vercel.app') ||
+         hostname === 'localhost' ||
+         hostname.includes('lite.local')
+}
+
 export default function LoginPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -19,10 +30,12 @@ export default function LoginPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [showForgotPassword, setShowForgotPassword] = useState(false)
   const [resetEmailSent, setResetEmailSent] = useState(false)
+  const [isPreview, setIsPreview] = useState(false)
   const router = useRouter()
   const searchParams = useSearchParams()
 
   useEffect(() => {
+    setIsPreview(isV0Preview())
     const message = searchParams.get("message")
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
