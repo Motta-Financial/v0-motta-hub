@@ -9,18 +9,14 @@ export async function updateSession(request: NextRequest) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   const isLoginPath = request.nextUrl.pathname === '/login'
+  const pathname = request.nextUrl.pathname
 
-  // If Supabase env vars are missing, just show login page for everything
-  // This prevents redirect loops when Supabase isn't configured
+  console.log("[v0] Middleware running for:", pathname, "| hasSupabaseEnv:", !!supabaseUrl && !!supabaseAnonKey)
+
+  // If Supabase env vars are missing, just pass through - let pages handle auth state
   if (!supabaseUrl || !supabaseAnonKey) {
-    // Always allow the login page
-    if (isLoginPath) {
-      return response
-    }
-    // For all other paths, redirect to login once
-    const url = request.nextUrl.clone()
-    url.pathname = '/login'
-    return NextResponse.redirect(url)
+    console.log("[v0] Supabase env vars missing, passing through")
+    return response
   }
 
   // Paths that don't require auth
@@ -29,6 +25,7 @@ export async function updateSession(request: NextRequest) {
 
   // Always allow public paths without checking auth
   if (isPublicPath) {
+    console.log("[v0] Public path, passing through:", pathname)
     return response
   }
 
@@ -61,8 +58,10 @@ export async function updateSession(request: NextRequest) {
   try {
     const { data } = await supabase.auth.getUser()
     user = data?.user
-  } catch {
+    console.log("[v0] Auth check result - hasUser:", !!user, "path:", pathname)
+  } catch (err) {
     // Auth failed - redirect to login
+    console.log("[v0] Auth error, redirecting to login:", err)
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
@@ -70,10 +69,12 @@ export async function updateSession(request: NextRequest) {
 
   // If no user, redirect to login
   if (!user) {
+    console.log("[v0] No user, redirecting to login from:", pathname)
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
   }
 
+  console.log("[v0] User authenticated, allowing access to:", pathname)
   return supabaseResponse
 }

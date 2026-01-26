@@ -38,6 +38,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     const preview = isV0Preview()
+    console.log("[v0] Login page mounted, isPreview:", preview, "hostname:", typeof window !== 'undefined' ? window.location.hostname : 'server')
     setIsPreview(preview)
     const message = searchParams.get("message")
     if (message === "password_reset_success") {
