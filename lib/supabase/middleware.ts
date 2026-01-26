@@ -45,6 +45,9 @@ export async function updateSession(request: NextRequest) {
   // Paths that don't require auth
   const publicPaths = ['/login', '/auth', '/api/alfred', '/api/dashboard']
   const isPublicPath = publicPaths.some(path => request.nextUrl.pathname.startsWith(path))
+  
+  // Root path requires auth - redirect to login if not authenticated
+  const isRootPath = request.nextUrl.pathname === '/'
 
   let user = null
   try {
@@ -60,7 +63,7 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  if (!user && !isPublicPath) {
+  if (!user && (!isPublicPath || isRootPath)) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
