@@ -3,7 +3,7 @@
 import type React from "react"
 
 import { useState, useEffect } from "react"
-import { createClient } from "@/lib/supabase/client"
+import { createClient, isSupabaseConfigured } from "@/lib/supabase/client"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -31,11 +31,13 @@ export default function LoginPage() {
   const [showForgotPassword, setShowForgotPassword] = useState(false)
   const [resetEmailSent, setResetEmailSent] = useState(false)
   const [isPreview, setIsPreview] = useState(false)
+  const [isConfigured, setIsConfigured] = useState(true)
   const router = useRouter()
   const searchParams = useSearchParams()
 
   useEffect(() => {
     setIsPreview(isV0Preview())
+    setIsConfigured(isSupabaseConfigured())
     const message = searchParams.get("message")
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
@@ -249,6 +251,68 @@ export default function LoginPage() {
                 Back to Sign In
               </Button>
             </form>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Show configuration required message when Supabase is not set up
+  if (!isConfigured) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center relative overflow-hidden">
+        {/* Background gradients */}
+        <div className="absolute inset-0 overflow-hidden">
+          <div
+            className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/30 via-[#8E9B79]/20 to-[#6B745D]/30 rounded-full blur-3xl opacity-50"
+            style={{ animation: "pulse 8s ease-in-out infinite" }}
+          />
+          <div
+            className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/20 via-[#6B745D]/15 to-[#8E9B79]/20 rounded-full blur-3xl opacity-50"
+            style={{ animation: "pulse 8s ease-in-out infinite 2s" }}
+          />
+        </div>
+
+        <div className="relative z-10 w-full max-w-md mx-4">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-20" />
+          <div className="relative bg-[#12121a]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
+            <div className="text-center mb-6">
+              <div className="relative inline-flex items-center justify-center mb-6">
+                <img src="/images/alfred-logo.png" alt="ALFRED AI" className="relative h-20 w-auto" />
+              </div>
+              <h1 className="text-2xl font-bold text-white mb-2">
+                <span className="bg-gradient-to-r from-[#8E9B79] via-white to-[#8E9B79] bg-clip-text text-transparent">
+                  ALFRED AI
+                </span>
+              </h1>
+              <p className="text-gray-400 text-sm">Motta Hub Portal</p>
+            </div>
+
+            <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg mb-6">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <h3 className="text-amber-400 font-medium mb-1">Configuration Required</h3>
+                  <p className="text-gray-400 text-sm">
+                    Supabase environment variables are not configured. Please add the following to your environment:
+                  </p>
+                  <ul className="mt-2 text-xs text-gray-500 space-y-1 font-mono">
+                    <li>NEXT_PUBLIC_SUPABASE_URL</li>
+                    <li>NEXT_PUBLIC_SUPABASE_ANON_KEY</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div className="text-center text-gray-500 text-sm">
+              <p>Connect Supabase from the sidebar to enable authentication and data features.</p>
+            </div>
+
+            {/* Footer */}
+            <div className="mt-8 pt-6 border-t border-white/10 text-center">
+              <p className="text-gray-500 text-xs">Motta Financial Group &copy; {new Date().getFullYear()}</p>
+              <p className="text-gray-600 text-xs mt-1">Powered by ALFRED AI</p>
+            </div>
           </div>
         </div>
       </div>

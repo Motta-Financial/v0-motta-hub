@@ -29,9 +29,9 @@ All API endpoints are available at your Motta Hub deployment URL:
 
 Returns complete documentation of all 50+ Supabase tables, their fields, relationships, and example queries.
 
-```bash
+\`\`\`bash
 curl https://your-motta-hub.vercel.app/api/alfred/schema
-```
+\`\`\`
 
 **Response includes:**
 - All table names and descriptions
@@ -59,21 +59,21 @@ Query any table with optional filters, search, and pagination.
 | `orderDir` | string | Sort direction: `asc` or `desc` |
 
 **Example - Get all active work items:**
-```bash
+\`\`\`bash
 curl "https://your-motta-hub.vercel.app/api/alfred/data?table=work_items&limit=20"
-```
+\`\`\`
 
 **Example - Search contacts:**
-```bash
+\`\`\`bash
 curl "https://your-motta-hub.vercel.app/api/alfred/data?table=contacts&search=Johnson"
-```
+\`\`\`
 
 **POST `/api/alfred/data`**
 
 For complex queries with advanced filters.
 
 **Request Body:**
-```json
+\`\`\`json
 {
   "table": "work_items",
   "select": "id,Title,ClientName,AssigneeName,DueDate",
@@ -85,7 +85,7 @@ For complex queries with advanced filters.
   "orderBy": "DueDate",
   "orderDir": "asc"
 }
-```
+\`\`\`
 
 **Available Filter Operators:**
 - `eq` - Equals
@@ -115,14 +115,14 @@ Full-text search across multiple tables simultaneously.
 | `limit` | number | Results per table (default: 10) |
 
 **Example - Search everything for "Martinez":**
-```bash
+\`\`\`bash
 curl "https://your-motta-hub.vercel.app/api/alfred/search?q=Martinez"
-```
+\`\`\`
 
 **Example - Search only contacts and organizations:**
-```bash
+\`\`\`bash
 curl "https://your-motta-hub.vercel.app/api/alfred/search?q=Martinez&tables=contacts,organizations"
-```
+\`\`\`
 
 **Searchable Tables:**
 - `contacts` - Client contacts
@@ -141,12 +141,12 @@ curl "https://your-motta-hub.vercel.app/api/alfred/search?q=Martinez&tables=cont
 
 Get aggregated dashboard statistics.
 
-```bash
+\`\`\`bash
 curl https://your-motta-hub.vercel.app/api/alfred/stats
-```
+\`\`\`
 
 **Response:**
-```json
+\`\`\`json
 {
   "workItems": {
     "total": 1250,
@@ -162,7 +162,7 @@ curl https://your-motta-hub.vercel.app/api/alfred/stats
   "upcomingDeadlines": [...],
   "tommyAwardsLeaders": [...]
 }
-```
+\`\`\`
 
 ---
 
@@ -173,7 +173,7 @@ curl https://your-motta-hub.vercel.app/api/alfred/stats
 In your Vercel AI Assistant dashboard for ALFRED, add these tools:
 
 #### Tool 1: Get Schema
-```json
+\`\`\`json
 {
   "name": "get_database_schema",
   "description": "Get the complete database schema including all tables, fields, relationships, and example queries. Use this first to understand what data is available.",
@@ -183,12 +183,12 @@ In your Vercel AI Assistant dashboard for ALFRED, add these tools:
     "required": []
   }
 }
-```
+\`\`\`
 
 **Function URL:** `GET https://your-motta-hub.vercel.app/api/alfred/schema`
 
 #### Tool 2: Query Data
-```json
+\`\`\`json
 {
   "name": "query_database",
   "description": "Query any Supabase table with filters. Available tables include: work_items, contacts, organizations, team_members, debriefs, meeting_notes, invoices, tasks, services, tommy_ballots, and more. Use get_database_schema first to see all tables.",
@@ -224,12 +224,12 @@ In your Vercel AI Assistant dashboard for ALFRED, add these tools:
     "required": ["table"]
   }
 }
-```
+\`\`\`
 
 **Function URL:** `GET https://your-motta-hub.vercel.app/api/alfred/data`
 
 #### Tool 3: Advanced Query
-```json
+\`\`\`json
 {
   "name": "query_database_advanced",
   "description": "Perform advanced database queries with complex filters like date ranges, comparisons, and multiple conditions.",
@@ -262,12 +262,12 @@ In your Vercel AI Assistant dashboard for ALFRED, add these tools:
     "required": ["table"]
   }
 }
-```
+\`\`\`
 
 **Function URL:** `POST https://your-motta-hub.vercel.app/api/alfred/data`
 
 #### Tool 4: Search
-```json
+\`\`\`json
 {
   "name": "search_all_data",
   "description": "Full-text search across contacts, organizations, work items, team members, debriefs, meeting notes, and services. Use this when looking for a specific client, project, or topic.",
@@ -290,12 +290,12 @@ In your Vercel AI Assistant dashboard for ALFRED, add these tools:
     "required": ["query"]
   }
 }
-```
+\`\`\`
 
 **Function URL:** `GET https://your-motta-hub.vercel.app/api/alfred/search?q={query}&tables={tables}&limit={limit}`
 
 #### Tool 5: Get Stats
-```json
+\`\`\`json
 {
   "name": "get_dashboard_stats",
   "description": "Get aggregated statistics including work item counts, team workload, recent debriefs, upcoming deadlines, and Tommy Awards leaders.",
@@ -305,7 +305,7 @@ In your Vercel AI Assistant dashboard for ALFRED, add these tools:
     "required": []
   }
 }
-```
+\`\`\`
 
 **Function URL:** `GET https://your-motta-hub.vercel.app/api/alfred/stats`
 
@@ -315,7 +315,7 @@ In your Vercel AI Assistant dashboard for ALFRED, add these tools:
 
 Add this system prompt to ALFRED:
 
-```
+\`\`\`
 You are ALFRED, the AI assistant for Motta Financial. You help Motta professionals by accessing and analyzing data from the Motta Hub.
 
 ## Your Capabilities:
@@ -351,7 +351,7 @@ You are ALFRED, the AI assistant for Motta Financial. You help Motta professiona
 - Format dates as Month Day, Year
 - Include relevant context when presenting data
 - Offer to dig deeper if the user needs more details
-```
+\`\`\`
 
 ---
 
@@ -391,13 +391,13 @@ For production, consider adding:
    - Log all ALFRED queries for compliance
 
 Example API key implementation:
-```typescript
+\`\`\`typescript
 // In each route.ts
 const apiKey = request.headers.get('x-api-key')
 if (apiKey !== process.env.ALFRED_API_KEY) {
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 }
-```
+\`\`\`
 
 ---
 
@@ -416,6 +416,6 @@ if (apiKey !== process.env.ALFRED_API_KEY) {
 **Missing tables:**
 - Run `/api/alfred/schema` to see all available tables
 - Check Supabase dashboard for table permissions
-```
+\`\`\`
 
-```ts file="" isHidden
+\`\`\`ts file="" isHidden
