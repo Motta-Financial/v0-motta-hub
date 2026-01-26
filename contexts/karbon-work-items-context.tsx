@@ -72,11 +72,11 @@ function isTaxWorkItem(title: string, workType?: string): boolean {
 export function KarbonWorkItemsProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   
-  // Don't fetch on login or auth pages
-  const shouldFetch = pathname !== '/login' && !pathname?.startsWith('/auth')
+  // Don't fetch on login or auth pages (pathname can be null on initial render)
+  const isAuthPage = !pathname || pathname === '/login' || pathname.startsWith('/auth')
   
   const { data, error, isLoading, mutate } = useSWR(
-    shouldFetch ? "/api/karbon/work-items" : null,
+    isAuthPage ? null : "/api/karbon/work-items",
     fetcher,
     {
       revalidateOnFocus: false,
