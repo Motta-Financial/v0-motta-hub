@@ -19,8 +19,26 @@ export async function GET(request: NextRequest, { params }: { params: { workItem
       orderby: "CreatedDate desc",
     })
 
+    // If notes endpoint returns 404 or error, return empty array (not all work items have notes)
     if (error) {
+      const errorLower = error.toLowerCase()
+      if (errorLower.includes("404") || errorLower.includes("not found") || errorLower.includes("resource")) {
+        return NextResponse.json({
+          notes: [],
+          count: 0,
+          workItemKey,
+        })
+      }
       return NextResponse.json({ error: `Failed to fetch work item notes: ${error}` }, { status: 500 })
+    }
+    
+    // Handle case where notes is undefined or null
+    if (!notes) {
+      return NextResponse.json({
+        notes: [],
+        count: 0,
+        workItemKey,
+      })
     }
 
     const mappedNotes = notes.map((note: any) => ({
@@ -46,9 +64,20 @@ export async function GET(request: NextRequest, { params }: { params: { workItem
       workItemKey,
     })
   } catch (error) {
+    // Handle 404 errors gracefully - not all work items have notes
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorLower = errorMessage.toLowerCase()
+    if (errorLower.includes("404") || errorLower.includes("not found") || errorLower.includes("resource")) {
+      return NextResponse.json({
+        notes: [],
+        count: 0,
+        workItemKey: params.workItemKey,
+      })
+    }
+    
     console.error("[v0] Error fetching work item notes:", error)
     return NextResponse.json(
-      { error: "Failed to fetch work item notes", details: error instanceof Error ? error.message : "Unknown error" },
+      { error: "Failed to fetch work item notes", details: errorMessage },
       { status: 500 },
     )
   }

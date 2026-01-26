@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import {
   Loader2,
   ChevronDown,
@@ -22,6 +23,7 @@ import {
   RefreshCw,
   Filter,
   ExternalLink,
+  Search,
 } from "lucide-react"
 import { TAX_RETURN_WORK_TYPES } from "@/lib/karbon-api"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
@@ -196,6 +198,7 @@ export function TaxBusySeason() {
   const [selectedYears, setSelectedYears] = useState<string[]>([])
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([])
   const [selectedAssignees, setSelectedAssignees] = useState<string[]>([])
+  const [searchQuery, setSearchQuery] = useState("")
 
   const fetchWorkItems = async () => {
     setLoading(true)
@@ -278,9 +281,36 @@ export function TaxBusySeason() {
     }
   }, [workItems])
 
+  // Helper to format relative time for last updated
+  const formatLastUpdated = (dateString?: string) => {
+    if (!dateString) return null
+    const date = new Date(dateString)
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    const diffHours = Math.floor(diffMs / 3600000)
+    const diffDays = Math.floor(diffMs / 86400000)
+
+    if (diffMins < 60) return `${diffMins}m ago`
+    if (diffHours < 24) return `${diffHours}h ago`
+    if (diffDays < 7) return `${diffDays}d ago`
+    return date.toLocaleDateString()
+  }
+
   // Filtered work items
   const filteredItems = useMemo(() => {
-    return workItems.filter((item) => {
+    let filtered = workItems.filter((item) => {
+      // Search filter
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase()
+        const clientName = (item.ClientName || "").toLowerCase()
+        const title = (item.Title || "").toLowerCase()
+        const assignees = normalizeAssignedTo(item.AssignedTo).map(a => a.FullName.toLowerCase()).join(" ")
+        if (!clientName.includes(query) && !title.includes(query) && !assignees.includes(query)) {
+          return false
+        }
+      }
+
       // Return type filter
       if (selectedReturnTypes.length > 0 && !selectedReturnTypes.includes(item.returnType)) {
         return false
@@ -307,7 +337,14 @@ export function TaxBusySeason() {
 
       return true
     })
-  }, [workItems, selectedReturnTypes, selectedYears, selectedStatuses, selectedAssignees])
+
+    // Sort by ModifiedDate (most recent first)
+    return filtered.sort((a, b) => {
+      const dateA = a.ModifiedDate ? new Date(a.ModifiedDate).getTime() : 0
+      const dateB = b.ModifiedDate ? new Date(b.ModifiedDate).getTime() : 0
+      return dateB - dateA
+    })
+  }, [workItems, selectedReturnTypes, selectedYears, selectedStatuses, selectedAssignees, searchQuery])
 
   // Stats
   const stats = useMemo(() => {
@@ -367,10 +404,21 @@ export function TaxBusySeason() {
           <h1 className="text-2xl font-bold tracking-tight">Tax Returns - Busy Season</h1>
           <p className="text-sm text-muted-foreground">{workItems.length} tax returns from Karbon</p>
         </div>
-        <Button onClick={fetchWorkItems} variant="outline" size="sm">
-          <RefreshCw className="h-4 w-4 mr-2" />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search clients, titles..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 w-[280px]"
+            />
+          </div>
+          <Button onClick={fetchWorkItems} variant="outline" size="sm">
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Stats Cards */}
@@ -477,7 +525,7 @@ export function TaxBusySeason() {
                             {item.taxYear}
                           </Badge>
                         </div>
-                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
                           {dueDate && (
                             <span className={`flex items-center gap-1 ${isOverdue ? "text-red-600" : ""}`}>
                               <Calendar className="h-3 w-3" />
@@ -488,6 +536,12 @@ export function TaxBusySeason() {
                             <span className="flex items-center gap-1">
                               <User className="h-3 w-3" />
                               {assigned.map((a) => a.FullName).join(", ")}
+                            </span>
+                          )}
+                          {item.ModifiedDate && (
+                            <span className="flex items-center gap-1 text-muted-foreground/70">
+                              <Clock className="h-3 w-3" />
+                              Updated {formatLastUpdated(item.ModifiedDate)}
                             </span>
                           )}
                         </div>
@@ -535,6 +589,14 @@ export function TaxBusySeason() {
                   <div className="text-muted-foreground text-xs mb-1">Due Date</div>
                   <div className="font-medium">
                     {selectedItem.DueDate ? new Date(selectedItem.DueDate).toLocaleDateString() : "Not set"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground text-xs mb-1">Last Updated</div>
+                  <div className="font-medium">
+                    {selectedItem.ModifiedDate 
+                      ? `${formatLastUpdated(selectedItem.ModifiedDate)} (${new Date(selectedItem.ModifiedDate).toLocaleDateString()})`
+                      : "Not available"}
                   </div>
                 </div>
                 <div className="col-span-2">

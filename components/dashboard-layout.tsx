@@ -30,6 +30,15 @@ import {
   ShieldCheck,
   CreditCard,
   LogOut,
+  FileText,
+  DollarSign,
+  ClipboardList,
+  Flame,
+  Lightbulb,
+  Mail,
+  Code2,
+  Calculator,
+  Video,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -39,7 +48,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 
 const navigation = [
@@ -47,20 +55,29 @@ const navigation = [
   { name: "Triage", href: "/triage", icon: Inbox, alfredSuggestions: 12 },
   { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
   { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
-  { name: "Debriefs", href: "/debriefs/new", icon: MessageSquare },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
-  { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
+  { name: "Calendly", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
+  { name: "Zoom", href: "/zoom", icon: Video },
+  { name: "Accounting", href: "/accounting", icon: Calculator },
   {
-    name: "Client Services",
-    href: "/client-services",
-    icon: Headphones,
+    name: "Tax",
+    href: "/tax",
+    icon: FileText,
     children: [
-      { name: "Service Pipelines", href: "/pipelines", icon: GitBranch, alfredSuggestions: 15 },
-      { name: "Payments", href: "/payments", icon: CreditCard },
+      { name: "Tax Estimates", href: "/tax/estimates", icon: DollarSign, alfredSuggestions: 4 },
+      { name: "Planning", href: "/tax/planning", icon: ClipboardList, alfredSuggestions: 6 },
+      { name: "Busy Season", href: "/tax/busy-season", icon: Flame, alfredSuggestions: 8 },
+      { name: "Advisory", href: "/tax/advisory", icon: Lightbulb, alfredSuggestions: 5 },
+      { name: "IRS Notices", href: "/tax/irs-notices", icon: Mail, alfredSuggestions: 3 },
     ],
   },
-  { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
-  { name: "Karbon Data", href: "/karbon-data", icon: Database },
+  { name: "Special Teams", href: "/special-teams", icon: Code2 },
+  {
+    name: "Service Pipelines",
+    href: "/pipelines",
+    icon: GitBranch,
+    alfredSuggestions: 15,
+  },
   {
     name: "Settings",
     href: "/settings",
@@ -132,9 +149,12 @@ function Sidebar() {
   }
 
   const handleLogout = async () => {
-    const supabase = createClient()
-    await supabase.auth.signOut()
-    router.push("/login")
+    const response = await fetch("/api/auth/logout", {
+      method: "POST",
+    })
+    if (response.ok) {
+      router.push("/login")
+    }
   }
 
   return (

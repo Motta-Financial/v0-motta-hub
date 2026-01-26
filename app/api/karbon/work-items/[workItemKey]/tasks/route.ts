@@ -19,8 +19,26 @@ export async function GET(request: NextRequest, { params }: { params: { workItem
       orderby: "SortOrder asc",
     })
 
+    // If tasks endpoint returns 404 or error, return empty array (not all work items have tasks)
     if (error) {
+      const errorLower = error.toLowerCase()
+      if (errorLower.includes("404") || errorLower.includes("not found") || errorLower.includes("resource")) {
+        return NextResponse.json({
+          tasks: [],
+          count: 0,
+          workItemKey,
+        })
+      }
       return NextResponse.json({ error: `Failed to fetch work item tasks: ${error}` }, { status: 500 })
+    }
+    
+    // Handle case where tasks is undefined or null
+    if (!tasks) {
+      return NextResponse.json({
+        tasks: [],
+        count: 0,
+        workItemKey,
+      })
     }
 
     const mappedTasks = tasks.map((task: any) => ({
@@ -50,9 +68,20 @@ export async function GET(request: NextRequest, { params }: { params: { workItem
       workItemKey,
     })
   } catch (error) {
+    // Handle 404 errors gracefully - not all work items have tasks
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorLower = errorMessage.toLowerCase()
+    if (errorLower.includes("404") || errorLower.includes("not found") || errorLower.includes("resource")) {
+      return NextResponse.json({
+        tasks: [],
+        count: 0,
+        workItemKey: params.workItemKey,
+      })
+    }
+    
     console.error("[v0] Error fetching work item tasks:", error)
     return NextResponse.json(
-      { error: "Failed to fetch work item tasks", details: error instanceof Error ? error.message : "Unknown error" },
+      { error: "Failed to fetch work item tasks", details: errorMessage },
       { status: 500 },
     )
   }
