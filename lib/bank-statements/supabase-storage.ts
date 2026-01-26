@@ -1,6 +1,6 @@
 // Supabase Storage for Bank Statement data persistence
 
-import { createClient } from '@supabase/supabase-js'
+import { createClient } from '@/lib/supabase/server'
 import type {
   BankProfile,
   TransactionPattern,
@@ -10,17 +10,10 @@ import type {
   AccuracyMetrics,
 } from './types'
 
-// Initialize Supabase client for server-side operations
-function getSupabaseClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
-  return createClient(supabaseUrl, supabaseServiceKey)
-}
-
 // ============ Bank Profiles ============
 
 export async function getBankProfiles(): Promise<BankProfile[]> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('bank_profiles')
     .select('*')
@@ -35,7 +28,7 @@ export async function getBankProfiles(): Promise<BankProfile[]> {
 }
 
 export async function getBankProfileById(id: string): Promise<BankProfile | null> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('bank_profiles')
     .select('*')
@@ -51,7 +44,7 @@ export async function getBankProfileById(id: string): Promise<BankProfile | null
 }
 
 export async function upsertBankProfile(profile: Partial<BankProfile> & { id: string }): Promise<BankProfile | null> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('bank_profiles')
     .upsert({
@@ -72,7 +65,7 @@ export async function upsertBankProfile(profile: Partial<BankProfile> & { id: st
 // ============ Transaction Patterns ============
 
 export async function getTransactionPatterns(bankProfileId?: string): Promise<TransactionPattern[]> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   let query = supabase
     .from('transaction_patterns')
     .select('*')
@@ -93,7 +86,7 @@ export async function getTransactionPatterns(bankProfileId?: string): Promise<Tr
 }
 
 export async function addTransactionPattern(pattern: Omit<TransactionPattern, 'id' | 'createdAt'>): Promise<TransactionPattern | null> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('transaction_patterns')
     .insert({
@@ -118,7 +111,7 @@ export async function addTransactionPattern(pattern: Omit<TransactionPattern, 'i
 // ============ User Feedback ============
 
 export async function saveUserFeedback(feedback: Omit<UserFeedback, 'id' | 'createdAt'>): Promise<UserFeedback | null> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('user_feedback')
     .insert({
@@ -141,7 +134,7 @@ export async function saveUserFeedback(feedback: Omit<UserFeedback, 'id' | 'crea
 }
 
 export async function getUserFeedback(statementId: string): Promise<UserFeedback[]> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('user_feedback')
     .select('*')
@@ -162,7 +155,7 @@ export async function getFeedbackStats(): Promise<{
   verifications: number
   byBank: Record<string, number>
 }> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('user_feedback')
     .select('feedback_type, statement_id')
@@ -187,7 +180,7 @@ export async function saveAccuracyMetrics(
   statementId: string,
   metrics: AccuracyMetrics
 ): Promise<boolean> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { error } = await supabase
     .from('accuracy_metrics')
     .upsert({
@@ -211,7 +204,7 @@ export async function saveAccuracyMetrics(
 }
 
 export async function getAccuracyMetrics(statementId: string): Promise<AccuracyMetrics | null> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('accuracy_metrics')
     .select('*')
@@ -237,7 +230,7 @@ export async function getAccuracyMetrics(statementId: string): Promise<AccuracyM
 // ============ Learning Log ============
 
 export async function addLearningLog(log: Omit<LearningLog, 'id' | 'createdAt'>): Promise<LearningLog | null> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('learning_log')
     .insert({
@@ -261,7 +254,7 @@ export async function addLearningLog(log: Omit<LearningLog, 'id' | 'createdAt'>)
 }
 
 export async function getLearningLogs(bankProfileId?: string): Promise<LearningLog[]> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   let query = supabase
     .from('learning_log')
     .select('*')
@@ -282,7 +275,7 @@ export async function getLearningLogs(bankProfileId?: string): Promise<LearningL
 }
 
 export async function incrementPatternUsage(logId: string): Promise<boolean> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { error } = await supabase.rpc('increment_pattern_usage', { log_id: logId })
 
   if (error) {
@@ -307,7 +300,7 @@ export async function incrementPatternUsage(logId: string): Promise<boolean> {
 // ============ Parsed Statements (for history/caching) ============
 
 export async function saveParsedStatement(statement: ParsedStatement): Promise<boolean> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { error } = await supabase
     .from('parsed_statements')
     .upsert({
@@ -337,7 +330,7 @@ export async function saveParsedStatement(statement: ParsedStatement): Promise<b
 }
 
 export async function getParsedStatement(id: string): Promise<ParsedStatement | null> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('parsed_statements')
     .select('*')
@@ -379,7 +372,7 @@ export async function getParsedStatement(id: string): Promise<ParsedStatement | 
 }
 
 export async function getRecentStatements(limit: number = 10): Promise<ParsedStatement[]> {
-  const supabase = getSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('parsed_statements')
     .select('*')
