@@ -18,7 +18,9 @@ const isV0Preview = () => {
          hostname.includes('v0.dev') ||
          hostname.includes('vercel.app') ||
          hostname === 'localhost' ||
-         hostname.includes('lite.local')
+         hostname.includes('lite.local') ||
+         hostname.includes('lite.vusercontent') ||
+         hostname.includes('preview')
 }
 
 export default function LoginPage() {
@@ -35,10 +37,15 @@ export default function LoginPage() {
   const searchParams = useSearchParams()
 
   useEffect(() => {
-    setIsPreview(isV0Preview())
+    const preview = isV0Preview()
+    setIsPreview(preview)
     const message = searchParams.get("message")
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
+    }
+    // In preview mode, show a message that login requires Supabase
+    if (preview) {
+      setError("Preview mode: Login requires Supabase configuration. Connect Supabase integration to test authentication.")
     }
   }, [searchParams])
 

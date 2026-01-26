@@ -9,9 +9,14 @@ export async function updateSession(request: NextRequest) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-  // If Supabase env vars are missing, allow access to login page only
+  // Paths that don't require auth
+  const publicPaths = ['/login', '/auth', '/api/alfred', '/api/dashboard']
+  const isPublicPath = publicPaths.some(path => request.nextUrl.pathname.startsWith(path))
+  const isLoginPath = request.nextUrl.pathname === '/login'
+
+  // If Supabase env vars are missing, redirect to login (but don't redirect if already on login)
   if (!supabaseUrl || !supabaseAnonKey) {
-    if (request.nextUrl.pathname === '/login') {
+    if (isLoginPath) {
       return supabaseResponse
     }
     const url = request.nextUrl.clone()
@@ -42,19 +47,15 @@ export async function updateSession(request: NextRequest) {
     },
   )
 
-  // Paths that don't require auth
-  const publicPaths = ['/login', '/auth', '/api/alfred', '/api/dashboard']
-  const isPublicPath = publicPaths.some(path => request.nextUrl.pathname.startsWith(path))
-  
-  // Root path requires auth - redirect to login if not authenticated
-  const isRootPath = request.nextUrl.pathname === '/'
-
   let user = null
   try {
     const { data } = await supabase.auth.getUser()
     user = data?.user
-  } catch (error) {
-    // Auth failed - allow public paths, redirect others to login
+  } catch {
+    // Auth failed - allow login page, redirect others to login
+    if (isLoginPath) {
+      return supabaseResponse
+    }
     if (isPublicPath) {
       return supabaseResponse
     }
@@ -63,14 +64,15 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  if (!user && (!isPublicPath || isRootPath)) {
+  // If no user and not on login page, redirect to login
+  if (!user && !isLoginPath) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
   }
 
   // Redirect logged in users away from login
-  if (user && request.nextUrl.pathname === '/login') {
+  if (user && isLoginPath) {
     const url = request.nextUrl.clone()
     url.pathname = '/'
     return NextResponse.redirect(url)
