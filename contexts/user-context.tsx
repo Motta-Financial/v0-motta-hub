@@ -3,6 +3,8 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback, type ReactNode } from "react"
 import type { User } from "@supabase/supabase-js"
 
+console.log("[v0] user-context.tsx module loaded")
+
 // Team member type based on Supabase schema
 export interface TeamMember {
   id: string
