@@ -3,6 +3,15 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback, type ReactNode } from "react"
 import type { User } from "@supabase/supabase-js"
 
+// Detect v0 preview environment
+const isV0Preview = () => {
+  if (typeof window === 'undefined') return false
+  const hostname = window.location.hostname
+  return hostname.includes('vusercontent.net') || 
+         hostname.includes('v0.dev') ||
+         hostname.includes('lite.local')
+}
+
 // Team member type based on Supabase schema
 export interface TeamMember {
   id: string
@@ -55,6 +64,14 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const hasFetchedRef = useRef(false)
 
   const fetchUserData = useCallback(async () => {
+    // Skip auth fetch entirely in v0 preview - it hangs the preview
+    if (isV0Preview()) {
+      setUser(null)
+      setTeamMember(null)
+      setIsLoading(false)
+      return
+    }
+
     if (isFetchingRef.current) return
 
     // Return cached data if already fetched
@@ -71,7 +88,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     try {
       // Use API route for server-side auth (avoids client-side Supabase auth issues)
-      // Add timeout to prevent hanging in preview environments
+      // Add timeout to prevent hanging
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 5000)
       
