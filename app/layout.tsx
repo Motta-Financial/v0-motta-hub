@@ -2,7 +2,9 @@ import type React from "react"
 import type { Metadata } from "next"
 import { Inter, Source_Code_Pro } from "next/font/google"
 import "./globals.css"
+import { AlfredChatTrigger } from "@/components/alfred-chat-trigger"
 import { UserProvider } from "@/contexts/user-context"
+import { KarbonWorkItemsProvider } from "@/contexts/karbon-work-items-context"
 
 const inter = Inter({
   subsets: ["latin"],
@@ -31,7 +33,10 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} ${sourceCodePro.variable} antialiased`}>
       <body>
         <UserProvider>
-          {children}
+          <KarbonWorkItemsProvider>
+            {children}
+            <AlfredChatTrigger />
+          </KarbonWorkItemsProvider>
         </UserProvider>
       </body>
     </html>

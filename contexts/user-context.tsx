@@ -71,7 +71,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     try {
       // Use API route for server-side auth (avoids client-side Supabase auth issues)
-      const response = await fetch("/api/auth/user")
+      // Add timeout to prevent hanging in preview environments
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+      
+      const response = await fetch("/api/auth/user", {
+        signal: controller.signal,
+      })
+      
+      clearTimeout(timeoutId)
 
       if (!response.ok) {
         // Not authenticated - this is normal for login page
@@ -90,7 +98,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       setUser(data.user)
       setTeamMember(data.teamMember)
     } catch {
-      // Fetch failed (network error) - silently set to null, don't block app
+      // Fetch failed (network error or timeout) - silently set to null, don't block app
       hasFetchedRef.current = true
       setUser(null)
       setTeamMember(null)
