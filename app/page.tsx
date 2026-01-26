@@ -1,9 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
-
-// Debug log to check if page is rendering
-console.log("[v0] page.tsx module loaded")
+import { useState } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { DashboardHome } from "@/components/dashboard-home"
 import { ServiceLineDashboard } from "@/components/service-line-dashboard"
@@ -17,10 +14,6 @@ import { Home, Calculator, FileText, Users2 } from "lucide-react"
 export default function Page() {
   const [activeTab, setActiveTab] = useState("dashboard")
   const [accountingSubTab, setAccountingSubTab] = useState("overview")
-
-  useEffect(() => {
-    console.log("[v0] Page component mounted")
-  }, [])
 
   return (
     <DashboardLayout>

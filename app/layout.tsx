@@ -6,8 +6,6 @@ import { AlfredChatTrigger } from "@/components/alfred-chat-trigger"
 import { UserProvider } from "@/contexts/user-context"
 import { KarbonWorkItemsProvider } from "@/contexts/karbon-work-items-context"
 
-console.log("[v0] layout.tsx module loaded")
-
 const inter = Inter({
   subsets: ["latin"],
   display: "swap",

@@ -3,7 +3,7 @@
 import type React from "react"
 
 import { useState, useEffect } from "react"
-import { createClient, isSupabaseConfigured } from "@/lib/supabase/client"
+import { createClient } from "@/lib/supabase/client"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -31,13 +31,11 @@ export default function LoginPage() {
   const [showForgotPassword, setShowForgotPassword] = useState(false)
   const [resetEmailSent, setResetEmailSent] = useState(false)
   const [isPreview, setIsPreview] = useState(false)
-  const [isConfigured, setIsConfigured] = useState(true)
   const router = useRouter()
   const searchParams = useSearchParams()
 
   useEffect(() => {
     setIsPreview(isV0Preview())
-    setIsConfigured(isSupabaseConfigured())
     const message = searchParams.get("message")
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
@@ -109,8 +107,6 @@ export default function LoginPage() {
     try {
       const supabase = createClient()
       const redirectUrl = `${window.location.origin}/auth/callback?type=recovery`
-
-      console.log("[v0] Password reset redirect URL:", redirectUrl)
 
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: redirectUrl,
