@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { DashboardHome } from "@/components/dashboard-home"
 import { ServiceLineDashboard } from "@/components/service-line-dashboard"
@@ -14,10 +14,6 @@ import { Home, Calculator, FileText, Users2 } from "lucide-react"
 export default function Page() {
   const [activeTab, setActiveTab] = useState("dashboard")
   const [accountingSubTab, setAccountingSubTab] = useState("overview")
-
-  useEffect(() => {
-    console.log("[v0] Main page (/) mounted")
-  }, [])
 
   return (
     <DashboardLayout>

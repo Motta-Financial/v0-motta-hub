@@ -1,6 +1,7 @@
 "use client"
 
-import { createContext, useContext, useMemo, type ReactNode } from "react"
+import { createContext, useContext, useMemo, useState, useEffect, type ReactNode } from "react"
+import { usePathname } from "next/navigation"
 import useSWR from "swr"
 
 // Karbon work item type
@@ -69,8 +70,13 @@ function isTaxWorkItem(title: string, workType?: string): boolean {
 }
 
 export function KarbonWorkItemsProvider({ children }: { children: ReactNode }) {
+  const pathname = usePathname()
+  
+  // Don't fetch on login or auth pages
+  const shouldFetch = pathname !== '/login' && !pathname?.startsWith('/auth')
+  
   const { data, error, isLoading, mutate } = useSWR(
-    "/api/karbon/work-items",
+    shouldFetch ? "/api/karbon/work-items" : null,
     fetcher,
     {
       revalidateOnFocus: false,

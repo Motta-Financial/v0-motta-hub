@@ -11,21 +11,17 @@ export async function updateSession(request: NextRequest) {
   const isLoginPath = request.nextUrl.pathname === '/login'
   const pathname = request.nextUrl.pathname
 
-  console.log("[v0] Middleware running for:", pathname, "| hasSupabaseEnv:", !!supabaseUrl && !!supabaseAnonKey)
-
   // If Supabase env vars are missing, just pass through - let pages handle auth state
   if (!supabaseUrl || !supabaseAnonKey) {
-    console.log("[v0] Supabase env vars missing, passing through")
     return response
   }
 
-  // Paths that don't require auth
-  const publicPaths = ['/login', '/auth', '/api/alfred', '/api/dashboard']
+  // Paths that don't require auth (API routes should return 401, not redirect)
+  const publicPaths = ['/login', '/auth', '/api/alfred', '/api/dashboard', '/api/auth']
   const isPublicPath = publicPaths.some(path => request.nextUrl.pathname.startsWith(path))
 
   // Always allow public paths without checking auth
   if (isPublicPath) {
-    console.log("[v0] Public path, passing through:", pathname)
     return response
   }
 
@@ -58,10 +54,8 @@ export async function updateSession(request: NextRequest) {
   try {
     const { data } = await supabase.auth.getUser()
     user = data?.user
-    console.log("[v0] Auth check result - hasUser:", !!user, "path:", pathname)
-  } catch (err) {
+  } catch {
     // Auth failed - redirect to login
-    console.log("[v0] Auth error, redirecting to login:", err)
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
@@ -69,12 +63,10 @@ export async function updateSession(request: NextRequest) {
 
   // If no user, redirect to login
   if (!user) {
-    console.log("[v0] No user, redirecting to login from:", pathname)
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
   }
 
-  console.log("[v0] User authenticated, allowing access to:", pathname)
   return supabaseResponse
 }

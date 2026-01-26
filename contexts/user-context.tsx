@@ -1,6 +1,7 @@
 "use client"
 
 import { createContext, useContext, useState, useEffect, useRef, useCallback, type ReactNode } from "react"
+import { usePathname } from "next/navigation"
 import type { User } from "@supabase/supabase-js"
 
 // Team member type based on Supabase schema
@@ -47,14 +48,24 @@ let cachedUser: User | null = null
 let cachedTeamMember: TeamMember | null = null
 
 export function UserProvider({ children }: { children: ReactNode }) {
+  const pathname = usePathname()
   const [user, setUser] = useState<User | null>(cachedUser)
   const [teamMember, setTeamMember] = useState<TeamMember | null>(cachedTeamMember)
   const [isLoading, setIsLoading] = useState(!cachedUser && !cachedTeamMember)
   const [error, setError] = useState<string | null>(null)
   const isFetchingRef = useRef(false)
   const hasFetchedRef = useRef(false)
+  
+  // Don't fetch on login or auth pages
+  const isAuthPage = pathname === '/login' || pathname?.startsWith('/auth')
 
   const fetchUserData = useCallback(async () => {
+    // Skip fetching on auth pages
+    if (isAuthPage) {
+      setIsLoading(false)
+      return
+    }
+    
     if (isFetchingRef.current) return
 
     // Return cached data if already fetched
@@ -98,7 +109,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       setIsLoading(false)
       isFetchingRef.current = false
     }
-  }, [])
+  }, [isAuthPage])
 
   useEffect(() => {
     fetchUserData()
