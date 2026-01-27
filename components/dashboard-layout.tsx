@@ -55,11 +55,11 @@ const navigation = [
   { name: "Debriefs", href: "/debriefs/new", icon: MessageSquare },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
-  { name: "Service Pipelines", href: "/pipelines", icon: ClipboardList, alfredSuggestions: 15 },
   {
-    name: "Client Services",
-    href: "/client-services",
-    icon: Headphones,
+    name: "Service Pipelines",
+    href: "/pipelines",
+    icon: ClipboardList,
+    alfredSuggestions: 15,
     children: [
       {
         name: "Accounting",
@@ -80,7 +80,14 @@ const navigation = [
       { name: "Special Teams", href: "/special-teams", icon: Flame },
     ],
   },
-  { name: "Payments", href: "/payments", icon: CreditCard },
+  {
+    name: "Client Services",
+    href: "/client-services",
+    icon: Headphones,
+    children: [
+      { name: "Payments", href: "/payments", icon: CreditCard },
+    ],
+  },
   { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
   { name: "Karbon Data", href: "/karbon-data", icon: Database },
   {
