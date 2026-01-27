@@ -418,7 +418,7 @@ export function BusySeasonTracker() {
   const [workflowFilter, setWorkflowFilter] = useState<"all" | "leads" | "requesting-docs" | "ready-for-prep" | "in-progress" | "completed">("all")
   const [searchQuery, setSearchQuery] = useState("")
   const [karbonStatusFilter, setKarbonStatusFilter] = useState<string>("all")
-  const [internalStatusFilter, setInternalStatusFilter] = useState<"all" | "Unassigned" | "Ready for Prep" | "Actively Preparing" | "Waiting for Client" | "In Review" | "Finalizing" | "Completed">("all")
+  const [internalStatusFilter, setInternalStatusFilter] = useState<"all" | "Unassigned" | "Assigned">("all")
   
   // Track which status sections are expanded (default: all expanded)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(BUSY_SEASON_2025_STATUSES))
@@ -909,54 +909,31 @@ export function BusySeasonTracker() {
     return allReturns.filter((r) => r.primaryStatus === status)
   }
 
-  // Internal MottaHub statuses for filtering (based on what we assign internally)
+  // Internal MottaHub statuses for filtering (simple: Unassigned vs Assigned)
   const INTERNAL_STATUSES = [
     "Unassigned",
-    "Ready for Prep", 
-    "Actively Preparing",
-    "Waiting for Client",
-    "In Review",
-    "Finalizing",
-    "Completed",
+    "Assigned",
   ] as const
   type InternalStatus = typeof INTERNAL_STATUSES[number]
 
-  // Get internal status based on internal MottaHub tracking
-  // "Unassigned" = no internal record yet (not assigned to anyone, not in queue)
-  // Once assigned OR in queue, show the actual internal primaryStatus
+  // Get internal status based on team member assignment
+  // "Unassigned" = no team member assigned yet
+  // "Assigned" = assigned to a team member
   const getInternalStatus = (r: TaxReturn): InternalStatus => {
-    // Check if this item has been internally tracked (has preparer assigned or is in queue)
-    const hasInternalTracking = r.preparer && r.preparer !== "Unassigned"
-    const isInQueue = r.inQueue === true
+    // Check if assigned to an actual team member (not just "Unassigned" or empty)
+    const isAssignedToTeamMember = r.preparer && r.preparer !== "Unassigned" && r.preparer !== ""
     
-    // If no internal tracking and not in queue, it's unassigned
-    if (!hasInternalTracking && !isInQueue) {
-      return "Unassigned"
+    if (isAssignedToTeamMember) {
+      return "Assigned"
     }
-    
-    // Item is tracked internally - show its actual internal status
-    // Check if completed
-    if (r.primaryStatus === "E-filed/Manually Filed") {
-      return "Completed"
-    }
-    // Map primaryStatus to internal status
-    if (r.primaryStatus === "Waiting for Client") return "Waiting for Client"
-    if (r.primaryStatus === "In Review") return "In Review"
-    if (r.primaryStatus === "Finalizing") return "Finalizing"
-    if (r.primaryStatus === "Ready for Prep") return "Ready for Prep"
-    return "Actively Preparing"
+    return "Unassigned"
   }
 
   // Calculate counts for internal status overview
   const internalStatusCounts = useMemo(() => {
     const counts: Record<InternalStatus, TaxReturn[]> = {
       "Unassigned": [],
-      "Ready for Prep": [],
-      "Actively Preparing": [],
-      "Waiting for Client": [],
-      "In Review": [],
-      "Finalizing": [],
-      "Completed": [],
+      "Assigned": [],
     }
     allReturns.forEach(r => {
       const status = getInternalStatus(r)
@@ -1117,12 +1094,7 @@ export function BusySeasonTracker() {
             const getInternalStatusColor = (s: InternalStatus) => {
               switch (s) {
                 case "Unassigned": return "bg-gray-100 text-gray-700 border-gray-300"
-                case "Ready for Prep": return "bg-blue-100 text-blue-700 border-blue-300"
-                case "Actively Preparing": return "bg-yellow-100 text-yellow-700 border-yellow-300"
-                case "Waiting for Client": return "bg-orange-100 text-orange-700 border-orange-300"
-                case "In Review": return "bg-purple-100 text-purple-700 border-purple-300"
-                case "Finalizing": return "bg-indigo-100 text-indigo-700 border-indigo-300"
-                case "Completed": return "bg-green-100 text-green-700 border-green-300"
+                case "Assigned": return "bg-green-100 text-green-700 border-green-300"
                 default: return "bg-gray-100 text-gray-700 border-gray-300"
               }
             }
