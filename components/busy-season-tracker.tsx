@@ -595,11 +595,16 @@ export function BusySeasonTracker() {
     // Add "Other" for statuses not in our list
     groups["Other"] = []
     
+    // Debug: log unique karbonStatus values
+    const uniqueStatuses = new Set(allReturns.map(r => r.karbonStatus))
+    console.log("[v0] Unique karbonStatus values:", Array.from(uniqueStatuses))
+    
     allReturns.forEach((r) => {
       const status = r.karbonStatus || "Unknown"
       if (BUSY_SEASON_2025_STATUSES.includes(status)) {
         groups[status].push(r)
       } else {
+        console.log("[v0] Status not in list:", JSON.stringify(status), "for", r.clientName)
         groups["Other"].push(r)
       }
     })
