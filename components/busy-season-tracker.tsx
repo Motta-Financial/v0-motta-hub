@@ -17,7 +17,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Calendar, FileText, AlertCircle, CheckCircle2, Clock, Plus, Building2, User, Flag, Search, Loader2, RefreshCw, ExternalLink } from "lucide-react"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Calendar, FileText, AlertCircle, CheckCircle2, Clock, Plus, Building2, User, Flag, Search, Loader2, RefreshCw, ExternalLink, ChevronDown, ChevronRight } from "lucide-react"
 
 // Karbon workflow statuses for 2025 Busy Season (in order)
 const BUSY_SEASON_2025_STATUSES = [
@@ -362,6 +363,32 @@ export function BusySeasonTracker() {
   const [workflowFilter, setWorkflowFilter] = useState<"all" | "leads" | "requesting-docs" | "ready-for-prep" | "in-progress" | "completed">("all")
   const [searchQuery, setSearchQuery] = useState("")
   const [karbonStatusFilter, setKarbonStatusFilter] = useState<string>("all")
+  
+  // Track which status sections are expanded (default: all expanded)
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(BUSY_SEASON_2025_STATUSES))
+  
+  // Toggle section expansion
+  const toggleSection = (status: string) => {
+    setExpandedSections(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(status)) {
+        newSet.delete(status)
+      } else {
+        newSet.add(status)
+      }
+      return newSet
+    })
+  }
+  
+  // Expand all sections
+  const expandAll = () => {
+    setExpandedSections(new Set([...BUSY_SEASON_2025_STATUSES, "Other"]))
+  }
+  
+  // Collapse all sections
+  const collapseAll = () => {
+    setExpandedSections(new Set())
+  }
   
   // Tasks and notes for selected work item
   const [selectedTasks, setSelectedTasks] = useState<KarbonTask[]>([])
@@ -1063,39 +1090,18 @@ export function BusySeasonTracker() {
             </Button>
           </div>
 
-          {/* Karbon Status Filter */}
-          <div className="border rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Karbon Status</span>
-              {karbonStatusFilter !== "all" && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setKarbonStatusFilter("all")}
-                  className="h-5 px-2 text-xs"
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <Badge
-                variant={karbonStatusFilter === "all" ? "default" : "outline"}
-                className="cursor-pointer hover:bg-muted transition-colors"
-                onClick={() => setKarbonStatusFilter("all")}
-              >
-                All ({businessReturns.length})
-              </Badge>
-              {businessKarbonStatusGroups.map(({ status, count }) => (
-                <Badge
-                  key={status}
-                  variant={karbonStatusFilter === status ? "default" : "outline"}
-                  className="cursor-pointer hover:bg-muted transition-colors"
-                  onClick={() => setKarbonStatusFilter(status)}
-                >
-                  {status} ({count})
-                </Badge>
-              ))}
+          {/* Expand/Collapse All Controls */}
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-muted-foreground">
+              Grouped by Karbon Status ({businessKarbonStatusGroups.length} stages with work items)
+            </span>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={expandAll} className="h-7 text-xs">
+                Expand All
+              </Button>
+              <Button variant="ghost" size="sm" onClick={collapseAll} className="h-7 text-xs">
+                Collapse All
+              </Button>
             </div>
           </div>
 
@@ -1111,7 +1117,7 @@ export function BusySeasonTracker() {
                 Try Again
               </Button>
             </div>
-          ) : filteredBusinessReturns.length === 0 ? (
+          ) : businessKarbonStatusGroups.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
               <FileText className="h-12 w-12 mx-auto mb-4 opacity-50" />
               <p>No business returns found</p>
@@ -1121,192 +1127,223 @@ export function BusySeasonTracker() {
             </div>
           ) : (
             <div className="space-y-3">
-              {filteredBusinessReturns.map((taxReturn) => (
-                <div
-                  key={taxReturn.id}
-                  className="p-4 rounded-lg border bg-card hover:shadow-md transition-shadow cursor-pointer"
-                  onClick={() => handleRowClick(taxReturn)}
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2">
-                        {taxReturn.isPriority && <Flag className="h-4 w-4 text-red-600 fill-red-600 shrink-0" />}
-                        <h3 className="font-semibold truncate">{taxReturn.clientName}</h3>
-                        <Badge variant="outline" className="text-xs shrink-0">
-                          {taxReturn.entityType}
-                        </Badge>
-                        {taxReturn.karbonUrl && (
-                          <a 
-                            href={taxReturn.karbonUrl} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-muted-foreground hover:text-foreground"
-                          >
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
-                      </div>
-<div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
-  <div className="flex items-center gap-1">
-  <Calendar className="h-3 w-3" />
-  <span>Due: {taxReturn.dueDate ? new Date(taxReturn.dueDate).toLocaleDateString() : "Not set"}</span>
-  </div>
-  {taxReturn.totalTasks !== undefined && taxReturn.totalTasks > 0 && (
-  <div className="flex items-center gap-1">
-  <CheckCircle2 className="h-3 w-3" />
-  <span>Tasks: {taxReturn.completedTasks}/{taxReturn.totalTasks}</span>
-  </div>
-  )}
-  <div className="flex items-center gap-2">
-  <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden min-w-[100px]">
-  <div
-  className="h-full bg-primary transition-all"
-  style={{ width: `${taxReturn.progress}%` }}
-  />
-  </div>
-  <span className="text-xs font-medium">{taxReturn.progress}%</span>
-  </div>
-  <div className="flex items-center gap-1">
-  <Clock className="h-3 w-3" />
-  <span className={taxReturn.lastUpdatedByType === "client" ? "text-amber-600" : ""}>
-  Updated {formatLastUpdated(taxReturn.lastUpdated)} by {taxReturn.lastUpdatedByType === "client" ? "Client" : taxReturn.lastUpdatedBy}
-  </span>
-  </div>
-  </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-2 shrink-0">
-                      {taxReturn.inQueue ? (
-                        <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300">
-                          In Queue
-                        </Badge>
-                      ) : taxReturn.assignedTo ? (
-                        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-50 text-blue-700 text-xs">
-                          <User className="h-3 w-3" />
-                          <span>{taxReturn.assignedTo}</span>
+              {businessKarbonStatusGroups.map(({ status, items, count }) => {
+                // Apply filters to items in this status group
+                const filteredItems = items.filter(r => {
+                  const matchesSearch = searchQuery === "" || 
+                    r.clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                    r.preparer?.toLowerCase().includes(searchQuery.toLowerCase())
+                  const matchesEntityFilter = businessEntityFilter === "all" ||
+                    (businessEntityFilter === "partnership" && r.entityType === "1065 - Partnership") ||
+                    (businessEntityFilter === "s-corp" && r.entityType === "1120-S - S-Corp") ||
+                    (businessEntityFilter === "c-corp" && r.entityType === "1120 - C-Corp")
+                  return matchesSearch && matchesEntityFilter
+                })
+                
+                if (filteredItems.length === 0) return null
+                
+                return (
+                  <Collapsible
+                    key={status}
+                    open={expandedSections.has(status)}
+                    onOpenChange={() => toggleSection(status)}
+                  >
+                    <CollapsibleTrigger className="w-full">
+                      <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/50 hover:bg-muted transition-colors cursor-pointer">
+                        <div className="flex items-center gap-3">
+                          {expandedSections.has(status) ? (
+                            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                          )}
+                          <span className="font-semibold">{status}</span>
+                          <Badge variant="secondary" className="text-xs">
+                            {filteredItems.length} {filteredItems.length === 1 ? "return" : "returns"}
+                          </Badge>
                         </div>
-                      ) : null}
-                      <Badge variant="outline" className={getStatusColor(taxReturn.primaryStatus)}>
-                        {taxReturn.primaryStatus}
-                      </Badge>
-                      {taxReturn.karbonStatus && (
-                        <Badge variant="secondary" className="text-xs">
-                          Karbon: {taxReturn.karbonStatus}
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                      </div>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <div className="space-y-2 mt-2 ml-4 border-l-2 border-muted pl-4">
+                        {filteredItems.map((taxReturn) => (
+                          <div
+                            key={taxReturn.id}
+                            className="p-3 rounded-lg border bg-card hover:shadow-md transition-shadow cursor-pointer"
+                            onClick={() => handleRowClick(taxReturn)}
+                          >
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  {taxReturn.isPriority && <Flag className="h-4 w-4 text-red-600 fill-red-600 shrink-0" />}
+                                  <h3 className="font-semibold truncate">{taxReturn.clientName}</h3>
+                                  <Badge variant="outline" className="text-xs shrink-0">
+                                    {taxReturn.entityType}
+                                  </Badge>
+                                  {taxReturn.karbonUrl && (
+                                    <a 
+                                      href={taxReturn.karbonUrl} 
+                                      target="_blank" 
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-muted-foreground hover:text-foreground"
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
+                                  <div className="flex items-center gap-1">
+                                    <Calendar className="h-3 w-3" />
+                                    <span>Due: {taxReturn.dueDate ? new Date(taxReturn.dueDate).toLocaleDateString() : "Not set"}</span>
+                                  </div>
+                                  {taxReturn.assignedTo && (
+                                    <div className="flex items-center gap-1">
+                                      <User className="h-3 w-3" />
+                                      <span>{taxReturn.assignedTo}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex flex-col items-end gap-1 shrink-0">
+                                {taxReturn.inQueue && (
+                                  <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300 text-xs">
+                                    In Queue
+                                  </Badge>
+                                )}
+                                <Badge variant="outline" className={`text-xs ${getStatusColor(taxReturn.primaryStatus)}`}>
+                                  {taxReturn.primaryStatus}
+                                </Badge>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )
+              })}
             </div>
           )}
         </TabsContent>
 
         <TabsContent value="individual" className="space-y-6">
-          {/* Karbon Status Filter for Individual */}
-          <div className="border rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Karbon Status</span>
-              {karbonStatusFilter !== "all" && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setKarbonStatusFilter("all")}
-                  className="h-5 px-2 text-xs bg-transparent"
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <Badge
-                variant={karbonStatusFilter === "all" ? "default" : "outline"}
-                className="cursor-pointer hover:bg-muted transition-colors"
-                onClick={() => setKarbonStatusFilter("all")}
-              >
-                All ({individualReturns.length})
-              </Badge>
-              {individualKarbonStatusGroups.map(({ status, count }) => (
-                <Badge
-                  key={status}
-                  variant={karbonStatusFilter === status ? "default" : "outline"}
-                  className="cursor-pointer hover:bg-muted transition-colors"
-                  onClick={() => setKarbonStatusFilter(status)}
-                >
-                  {status} ({count})
-                </Badge>
-              ))}
+          {/* Expand/Collapse All Controls */}
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-muted-foreground">
+              Grouped by Karbon Status ({individualKarbonStatusGroups.length} stages with work items)
+            </span>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={expandAll} className="h-7 text-xs">
+                Expand All
+              </Button>
+              <Button variant="ghost" size="sm" onClick={collapseAll} className="h-7 text-xs">
+                Collapse All
+              </Button>
             </div>
           </div>
 
-          <div className="space-y-3">
-            {filteredIndividualReturns.map((taxReturn) => (
-              <div
-                key={taxReturn.id}
-                className="p-4 rounded-lg border bg-card hover:shadow-md transition-shadow cursor-pointer"
-                onClick={() => handleRowClick(taxReturn)}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-2">
-                      {taxReturn.isPriority && <Flag className="h-4 w-4 text-red-600 fill-red-600 shrink-0" />}
-                      <h3 className="font-semibold truncate">{taxReturn.clientName}</h3>
-                      <Badge variant="outline" className="text-xs shrink-0">
-                        {taxReturn.entityType}
-                      </Badge>
-                    </div>
-                    <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
-                      <div className="flex items-center gap-1">
-                        <Calendar className="h-3 w-3" />
-                        <span>Due: {new Date(taxReturn.dueDate).toLocaleDateString()}</span>
-                      </div>
-                      {taxReturn.totalTasks !== undefined && taxReturn.totalTasks > 0 && (
-                        <div className="flex items-center gap-1">
-                          <CheckCircle2 className="h-3 w-3" />
-                          <span>Tasks: {taxReturn.completedTasks}/{taxReturn.totalTasks}</span>
+          {individualKarbonStatusGroups.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <FileText className="h-12 w-12 mx-auto mb-4 opacity-50" />
+              <p>No individual returns found</p>
+              <p className="text-sm mt-2">
+                {searchQuery ? `No results for "${searchQuery}"` : "Try adjusting your filters"}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {individualKarbonStatusGroups.map(({ status, items }) => {
+                // Apply search filter
+                const filteredItems = items.filter(r => {
+                  return searchQuery === "" || 
+                    r.clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                    r.preparer?.toLowerCase().includes(searchQuery.toLowerCase())
+                })
+                
+                if (filteredItems.length === 0) return null
+                
+                return (
+                  <Collapsible
+                    key={status}
+                    open={expandedSections.has(status)}
+                    onOpenChange={() => toggleSection(status)}
+                  >
+                    <CollapsibleTrigger className="w-full">
+                      <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/50 hover:bg-muted transition-colors cursor-pointer">
+                        <div className="flex items-center gap-3">
+                          {expandedSections.has(status) ? (
+                            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                          )}
+                          <span className="font-semibold">{status}</span>
+                          <Badge variant="secondary" className="text-xs">
+                            {filteredItems.length} {filteredItems.length === 1 ? "return" : "returns"}
+                          </Badge>
                         </div>
-                      )}
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden min-w-[100px]">
+                      </div>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <div className="space-y-2 mt-2 ml-4 border-l-2 border-muted pl-4">
+                        {filteredItems.map((taxReturn) => (
                           <div
-                            className="h-full bg-primary transition-all"
-                            style={{ width: `${taxReturn.progress}%` }}
-                          />
-                        </div>
-                        <span className="text-xs font-medium">{taxReturn.progress}%</span>
+                            key={taxReturn.id}
+                            className="p-3 rounded-lg border bg-card hover:shadow-md transition-shadow cursor-pointer"
+                            onClick={() => handleRowClick(taxReturn)}
+                          >
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  {taxReturn.isPriority && <Flag className="h-4 w-4 text-red-600 fill-red-600 shrink-0" />}
+                                  <h3 className="font-semibold truncate">{taxReturn.clientName}</h3>
+                                  <Badge variant="outline" className="text-xs shrink-0">
+                                    {taxReturn.entityType}
+                                  </Badge>
+                                  {taxReturn.karbonUrl && (
+                                    <a 
+                                      href={taxReturn.karbonUrl} 
+                                      target="_blank" 
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-muted-foreground hover:text-foreground"
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
+                                  <div className="flex items-center gap-1">
+                                    <Calendar className="h-3 w-3" />
+                                    <span>Due: {taxReturn.dueDate ? new Date(taxReturn.dueDate).toLocaleDateString() : "Not set"}</span>
+                                  </div>
+                                  {taxReturn.assignedTo && (
+                                    <div className="flex items-center gap-1">
+                                      <User className="h-3 w-3" />
+                                      <span>{taxReturn.assignedTo}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex flex-col items-end gap-1 shrink-0">
+                                {taxReturn.inQueue && (
+                                  <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300 text-xs">
+                                    In Queue
+                                  </Badge>
+                                )}
+                                <Badge variant="outline" className={`text-xs ${getStatusColor(taxReturn.primaryStatus)}`}>
+                                  {taxReturn.primaryStatus}
+                                </Badge>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <div className="flex items-center gap-1">
-                        <Clock className="h-3 w-3" />
-                        <span className={taxReturn.lastUpdatedByType === "client" ? "text-amber-600" : ""}>
-                          Updated {formatLastUpdated(taxReturn.lastUpdated)} by {taxReturn.lastUpdatedByType === "client" ? "Client" : taxReturn.lastUpdatedBy}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-end gap-2 shrink-0">
-                    {taxReturn.inQueue ? (
-                      <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300">
-                        In Queue
-                      </Badge>
-                    ) : taxReturn.assignedTo ? (
-                      <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-50 text-blue-700 text-xs">
-                        <User className="h-3 w-3" />
-                        <span>{taxReturn.assignedTo}</span>
-                      </div>
-                    ) : null}
-                    <Badge variant="outline" className={getStatusColor(taxReturn.primaryStatus)}>
-                      {taxReturn.primaryStatus}
-                    </Badge>
-                    {taxReturn.karbonStatus && (
-                      <Badge variant="secondary" className="text-xs">
-                        Karbon: {taxReturn.karbonStatus}
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )
+              })}
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="queue" className="space-y-6">
