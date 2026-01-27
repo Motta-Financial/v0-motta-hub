@@ -19,6 +19,29 @@ import {
 } from "@/components/ui/dialog"
 import { Calendar, FileText, AlertCircle, CheckCircle2, Clock, Plus, Building2, User, Flag, Search, Loader2, RefreshCw, ExternalLink } from "lucide-react"
 
+// Karbon workflow statuses for 2025 Busy Season (in order)
+const BUSY_SEASON_2025_STATUSES = [
+  "SEND PROPOSAL TO CLIENT",
+  "Proposal | Sent",
+  "Proposal | Signed",
+  "Client Requests | Sent",
+  "Client Requests | Rec'd",
+  "Actively Preparing",
+  "Preparing | Follow Ups",
+  "Internal Review | Prelim",
+  "Prepared | Client Review",
+  "Client Reviewed | Updates",
+  "Internal Review | Final",
+  "Motta Review'd | Fllw Ups",
+  "Motta | Final Reviewed",
+  "Client Aprvd | Finalizing",
+  "Invoice (Requested)",
+  "E-Filed & Ready to Bill",
+]
+
+// Tax year for this busy season
+const BUSY_SEASON_TAX_YEAR = 2025
+
 type PrimaryStatus =
   | "Prospect"
   | "Proposal Sent"
@@ -375,10 +398,17 @@ export function BusySeasonTracker() {
   }, [internalData])
 
   // Transform tax work items and merge with internal Supabase data
+  // Filter for 2025 tax year only
   const allReturns = useMemo(() => {
     if (!taxWorkItems || taxWorkItems.length === 0) return []
     
-    return taxWorkItems.map((item: KarbonWorkItem): TaxReturn => {
+    return taxWorkItems
+      .filter((item: KarbonWorkItem) => {
+        // Extract tax year from title and filter for 2025 only
+        const taxYear = extractTaxYear(item.Title)
+        return taxYear === BUSY_SEASON_TAX_YEAR
+      })
+      .map((item: KarbonWorkItem): TaxReturn => {
       // Get internal data if exists
       const internal = internalDataMap.get(item.WorkKey)
       
@@ -526,50 +556,80 @@ export function BusySeasonTracker() {
     [allReturns]
   )
 
-  // Get unique Karbon statuses and their counts
+  // Get unique Karbon statuses and their counts - only show the defined 2025 busy season statuses
   const karbonStatusGroups = useMemo(() => {
     const groups: Record<string, TaxReturn[]> = {}
+    
+    // Initialize with all defined statuses (to maintain order)
+    BUSY_SEASON_2025_STATUSES.forEach(status => {
+      groups[status] = []
+    })
+    
+    // Add "Other" for statuses not in our list
+    groups["Other"] = []
+    
     allReturns.forEach((r) => {
       const status = r.karbonStatus || "Unknown"
-      if (!groups[status]) {
-        groups[status] = []
+      if (BUSY_SEASON_2025_STATUSES.includes(status)) {
+        groups[status].push(r)
+      } else {
+        groups["Other"].push(r)
       }
-      groups[status].push(r)
     })
-    // Sort by count descending
-    return Object.entries(groups)
-      .sort(([, a], [, b]) => b.length - a.length)
-      .map(([status, items]) => ({ status, items, count: items.length }))
+    
+    // Return in the defined order, filtering out empty groups
+    return BUSY_SEASON_2025_STATUSES
+      .filter(status => groups[status].length > 0)
+      .map(status => ({ status, items: groups[status], count: groups[status].length }))
+      .concat(groups["Other"].length > 0 ? [{ status: "Other", items: groups["Other"], count: groups["Other"].length }] : [])
   }, [allReturns])
 
-  // Get Karbon statuses for business returns
+  // Get Karbon statuses for business returns - only show the defined 2025 busy season statuses
   const businessKarbonStatusGroups = useMemo(() => {
     const groups: Record<string, TaxReturn[]> = {}
+    
+    BUSY_SEASON_2025_STATUSES.forEach(status => {
+      groups[status] = []
+    })
+    groups["Other"] = []
+    
     businessReturns.forEach((r) => {
       const status = r.karbonStatus || "Unknown"
-      if (!groups[status]) {
-        groups[status] = []
+      if (BUSY_SEASON_2025_STATUSES.includes(status)) {
+        groups[status].push(r)
+      } else {
+        groups["Other"].push(r)
       }
-      groups[status].push(r)
     })
-    return Object.entries(groups)
-      .sort(([, a], [, b]) => b.length - a.length)
-      .map(([status, items]) => ({ status, items, count: items.length }))
+    
+    return BUSY_SEASON_2025_STATUSES
+      .filter(status => groups[status].length > 0)
+      .map(status => ({ status, items: groups[status], count: groups[status].length }))
+      .concat(groups["Other"].length > 0 ? [{ status: "Other", items: groups["Other"], count: groups["Other"].length }] : [])
   }, [businessReturns])
 
-  // Get Karbon statuses for individual returns
+  // Get Karbon statuses for individual returns - only show the defined 2025 busy season statuses
   const individualKarbonStatusGroups = useMemo(() => {
     const groups: Record<string, TaxReturn[]> = {}
+    
+    BUSY_SEASON_2025_STATUSES.forEach(status => {
+      groups[status] = []
+    })
+    groups["Other"] = []
+    
     individualReturns.forEach((r) => {
       const status = r.karbonStatus || "Unknown"
-      if (!groups[status]) {
-        groups[status] = []
+      if (BUSY_SEASON_2025_STATUSES.includes(status)) {
+        groups[status].push(r)
+      } else {
+        groups["Other"].push(r)
       }
-      groups[status].push(r)
     })
-    return Object.entries(groups)
-      .sort(([, a], [, b]) => b.length - a.length)
-      .map(([status, items]) => ({ status, items, count: items.length }))
+    
+    return BUSY_SEASON_2025_STATUSES
+      .filter(status => groups[status].length > 0)
+      .map(status => ({ status, items: groups[status], count: groups[status].length }))
+      .concat(groups["Other"].length > 0 ? [{ status: "Other", items: groups["Other"], count: groups["Other"].length }] : [])
   }, [individualReturns])
 
   // Fetch tasks and notes for a specific work item
@@ -595,7 +655,7 @@ export function BusySeasonTracker() {
         setSelectedNotes(notesData.notes || [])
       }
     } catch (err) {
-      console.error("[v0] Error fetching work item details:", err)
+      // Error fetching work item details - silent fail
     } finally {
       setIsLoadingDetails(false)
     }
@@ -863,9 +923,9 @@ export function BusySeasonTracker() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Busy Season Tracker</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Busy Season {BUSY_SEASON_TAX_YEAR}</h1>
           <p className="text-muted-foreground">
-            {isLoading ? "Loading work items..." : `${allReturns.length} tax returns`}
+            {isLoading ? "Loading work items..." : `${allReturns.length} tax returns for ${BUSY_SEASON_TAX_YEAR} tax year`}
           </p>
         </div>
         <div className="flex items-center gap-3">
