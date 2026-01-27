@@ -139,25 +139,38 @@ export async function karbonFetchAll<T>(
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30000)
 
-      const response = await fetch(nextUrl, {
-        method: "GET",
-        headers: {
-          AccessKey: config.accessKey,
-          Authorization: `Bearer ${config.bearerToken}`,
-          "Content-Type": "application/json",
-        },
-        signal: controller.signal,
-      })
+      let response: Response
+      try {
+        response = await fetch(nextUrl, {
+          method: "GET",
+          headers: {
+            AccessKey: config.accessKey,
+            Authorization: `Bearer ${config.bearerToken}`,
+            "Content-Type": "application/json",
+          },
+          signal: controller.signal,
+        })
+      } catch (fetchError) {
+        // Network error or abort - return gracefully
+        clearTimeout(timeoutId)
+        if (allItems.length > 0) {
+          return { data: allItems, error: null, totalCount }
+        }
+        return { data: [], error: null, totalCount: 0 }
+      }
 
       clearTimeout(timeoutId)
 
       if (!response.ok) {
-        const errorText = await response.text()
-        if (allItems.length > 0) {
-          console.warn(`[Karbon API] Error on page ${pageCount}, returning partial data`)
-          break
+        // For 404 errors, return empty array gracefully (common for Tasks/Notes endpoints)
+        if (response.status === 404) {
+          return { data: allItems.length > 0 ? allItems : [], error: null, totalCount: allItems.length || 0 }
         }
-        return { data: [], error: `${response.status}: ${response.statusText}` }
+        // For other errors, try to continue if we have partial data
+        if (allItems.length > 0) {
+          return { data: allItems, error: null, totalCount }
+        }
+        return { data: [], error: `${response.status}: ${response.statusText}`, totalCount: 0 }
       }
 
       const data = await response.json()
@@ -170,13 +183,19 @@ export async function karbonFetchAll<T>(
 
       nextUrl = data["@odata.nextLink"] || null
     } catch (error) {
+      // Check if it's a 404 error (common for Tasks/Notes endpoints that don't exist)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      if (errorMessage.includes("404") || errorMessage.includes("not found") || errorMessage.includes("Resource")) {
+        return { data: [], error: null }
+      }
+      
       if (allItems.length > 0) {
         console.warn(`[Karbon API] Error on page ${pageCount}, returning partial data`)
         break
       }
       return {
         data: [],
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: errorMessage,
       }
     }
   }

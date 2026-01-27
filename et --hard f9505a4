@@ -1,0 +1,32 @@
+[33m771e56b[m[33m ([m[1;31morigin/v0/main-b6925b73[m[33m)[m fix: correct React hooks ordering in component
+[33md6e275c[m feat: update STATUS OVERVIEW with internal MottaHub statuses
+[33m14db959[m fix: remove non-existent column update from request
+[33m279aa0a[m fix: handle non-existent record with maybeSingle()
+[33m96a986c[m feat: update busy season tracker to fetch and assign team members
+[33m3dc8826[m feat: enhance Busy Season Tracker with entity type badges and sorting
+[33m827be53[m refactor: disable automatic fetching of tasks/notes on row click
+[33m7cfd083[m fix: improve error handling for 404 in karbonFetchAll
+[33m78e7f76[m fix: enhance error handling and clean imports
+[33md74fe14[m fix: resolve white screen issue on initial render
+[33m1d0d1cd[m feat: fix status extraction and filtering for busy season tracker
+[33m0631d40[m feat: add debug logging for karbonStatus values
+[33m849fa01[m feat: update tracker with collapsible sections by Karbon status
+[33m69fba7d[m feat: update Busy Season Tracker for 2025 tax year
+[33m8d30b0a[m fix: fix middleware redirect loop for auth API
+[33me2f9838[m refactor: remove unused preview state and function
+[33m4eaf07a[m fix: remove v0 preview message in useEffect
+[33m5ccb760[m fix: resolve redirect loop on login page
+[33m0fa621e[m feat: add debug logs for authentication flow
+[33m6026178[m fix: simplify middleware and remove debug logs
+[33m9489e8c[m fix: resolve redirect loop in middleware and login page
+[33m0440c91[m fix: redirect unauthenticated users to login on root path
+[33m5193428[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m chore: remove debug logging from middleware
+[33maebfe63[m debug: add logging to auth middleware
+[33md27692d[m Revert "fix: add singleton pattern to Supabase browser client"
+[33m20056ab[m fix: add singleton pattern to Supabase browser client
+[33mb1f802d[m refactor: use existing Supabase client in bank-statements storage
+[33mbbae803[m Update pnpm lockfile
+[33mbb7c2ca[m Merge remote-tracking branch 'origin/v0/main-5b3aa229'
+[33md3c72a5[m feat: add Bank Statement PDF Converter feature
+[33me61692b[m[33m ([m[1;31morigin/v0/main-5b3aa229[m[33m)[m fix: handle fetch failures in user context silently
+[33m18e2eda[m fix: handle supabase auth errors with try-catch

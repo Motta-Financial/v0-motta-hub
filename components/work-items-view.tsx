@@ -1,7 +1,8 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { useKarbonWorkItems } from "@/contexts/karbon-work-items-context"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -65,9 +66,13 @@ interface WorkItem {
 }
 
 export function WorkItemsView() {
-  const [workItems, setWorkItems] = useState<WorkItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  // Use shared context for Karbon work items
+  const { allWorkItems, isLoading: loading, error: contextError, refresh } = useKarbonWorkItems()
+  
+  // Cast to WorkItem type for this component
+  const workItems = useMemo(() => allWorkItems as unknown as WorkItem[], [allWorkItems])
+  const error = contextError
+  
   const [activeTab, setActiveTab] = useState("active")
   const [selectedServiceLines, setSelectedServiceLines] = useState<string[]>(["all"])
   const [searchQuery, setSearchQuery] = useState("")
@@ -89,25 +94,9 @@ export function WorkItemsView() {
   const [fetchingKarbonData, setFetchingKarbonData] = useState(false)
   const [showDataDialog, setShowDataDialog] = useState(false)
 
-  const fetchWorkItems = async () => {
-    setLoading(true)
-    setError(null)
-
-    try {
-      const response = await fetch("/api/karbon/work-items")
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || "Failed to fetch work items")
-      }
-
-      const data = await response.json()
-      setWorkItems(data.workItems || [])
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load work items")
-    } finally {
-      setLoading(false)
-    }
+  // Refresh function that uses the context
+  const fetchWorkItems = () => {
+    refresh()
   }
 
   const fetchKarbonData = async () => {
@@ -163,9 +152,7 @@ export function WorkItemsView() {
     }
   }
 
-  useEffect(() => {
-    fetchWorkItems()
-  }, [])
+  // Context handles initial data fetch automatically
 
   const determineStatus = (item: WorkItem): "completed" | "active" | "cancelled" => {
     const primaryStatus = item.WorkStatus?.toLowerCase() || ""
