@@ -706,33 +706,13 @@ export function BusySeasonTracker() {
       .concat(groups["Other"].length > 0 ? [{ status: "Other", items: groups["Other"], count: groups["Other"].length }] : [])
   }, [individualReturns])
 
-  // Fetch tasks and notes for a specific work item
-  const fetchWorkItemDetails = useCallback(async (workKey: string) => {
-    setIsLoadingDetails(true)
+  // Clear tasks and notes when selecting a work item (don't auto-fetch to avoid 404 errors)
+  const fetchWorkItemDetails = useCallback(async (_workKey: string) => {
+    // Reset state - we no longer auto-fetch tasks/notes to reduce API calls
+    // Many work items in Karbon don't have tasks/notes resources
     setSelectedTasks([])
     setSelectedNotes([])
-    
-    try {
-      // Fetch tasks and notes in parallel
-      const [tasksRes, notesRes] = await Promise.all([
-        fetch(`/api/karbon/work-items/${workKey}/tasks`),
-        fetch(`/api/karbon/work-items/${workKey}/notes`)
-      ])
-      
-      if (tasksRes.ok) {
-        const tasksData = await tasksRes.json()
-        setSelectedTasks(tasksData.tasks || [])
-      }
-      
-      if (notesRes.ok) {
-        const notesData = await notesRes.json()
-        setSelectedNotes(notesData.notes || [])
-      }
-    } catch (err) {
-      // Error fetching work item details - silent fail
-    } finally {
-      setIsLoadingDetails(false)
-    }
+    setIsLoadingDetails(false)
   }, [])
 
   const [assignmentForm, setAssignmentForm] = useState({
