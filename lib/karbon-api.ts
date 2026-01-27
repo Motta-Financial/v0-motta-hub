@@ -154,9 +154,15 @@ export async function karbonFetchAll<T>(
       if (!response.ok) {
         // For 404 errors, return empty array gracefully (common for Tasks/Notes endpoints)
         if (response.status === 404) {
-          return { data: [], error: null }
+          return { data: [], error: null, totalCount: 0 }
         }
-        const errorText = await response.text()
+        // Try to get error text but don't throw
+        let errorText = ""
+        try {
+          errorText = await response.text()
+        } catch {
+          // Ignore error reading body
+        }
         if (allItems.length > 0) {
           console.warn(`[Karbon API] Error on page ${pageCount}, returning partial data`)
           break
