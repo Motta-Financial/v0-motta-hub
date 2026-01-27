@@ -40,8 +40,43 @@ const BUSY_SEASON_2025_STATUSES = [
   "E-Filed & Ready to Bill",
 ]
 
+// Work types to include for 2025 Busy Season
+const BUSY_SEASON_2025_WORK_TYPES = [
+  "TAX | C-Corp (1120)",
+  "TAX | Individual (1040)",
+  "TAX | Individual (1040c)",
+  "TAX | Non-Profit & Exempt (990)",
+  "TAX | Partnership (1065)",
+  "Tax | S-Corp (1120S)",
+]
+
 // Tax year for this busy season
 const BUSY_SEASON_TAX_YEAR = 2025
+
+// Helper to extract the actual status from Karbon's prefixed status format
+// e.g., "In Progress - Actively Preparing" -> "Actively Preparing"
+// e.g., "Ready To Start - Send Client Requests" -> "Send Client Requests"
+function extractKarbonStatusSuffix(fullStatus: string): string {
+  if (!fullStatus) return "Unknown"
+  
+  // Common prefixes in Karbon statuses
+  const prefixes = [
+    "In Progress - ",
+    "Ready To Start - ",
+    "Completed - ",
+    "Planned - ",
+    "On Hold - ",
+  ]
+  
+  for (const prefix of prefixes) {
+    if (fullStatus.startsWith(prefix)) {
+      return fullStatus.substring(prefix.length)
+    }
+  }
+  
+  // If no prefix found, return as-is
+  return fullStatus
+}
 
 type PrimaryStatus =
   | "Prospect"
@@ -424,8 +459,17 @@ export function BusySeasonTracker() {
     return map
   }, [internalData])
 
+  // Helper to check if work type matches 2025 busy season work types
+  const isBusySeasonWorkType = (title: string): boolean => {
+    const titleLower = title.toLowerCase()
+    return BUSY_SEASON_2025_WORK_TYPES.some(workType => 
+      titleLower.includes(workType.toLowerCase().split(" | ")[1]?.split(" ")[0] || "") ||
+      titleLower.startsWith(workType.toLowerCase())
+    )
+  }
+
   // Transform tax work items and merge with internal Supabase data
-  // Filter for 2025 tax year only
+  // Filter for 2025 tax year AND matching work types only
   const allReturns = useMemo(() => {
     if (!taxWorkItems || taxWorkItems.length === 0) return []
     
@@ -433,7 +477,18 @@ export function BusySeasonTracker() {
       .filter((item: KarbonWorkItem) => {
         // Extract tax year from title and filter for 2025 only
         const taxYear = extractTaxYear(item.Title)
-        return taxYear === BUSY_SEASON_TAX_YEAR
+        if (taxYear !== BUSY_SEASON_TAX_YEAR) return false
+        
+        // Filter by work type - check if title matches any of the 2025 busy season work types
+        const titleLower = item.Title.toLowerCase()
+        const matchesWorkType = 
+          titleLower.includes("c-corp") || titleLower.includes("1120)") ||
+          titleLower.includes("individual") || titleLower.includes("1040") ||
+          titleLower.includes("non-profit") || titleLower.includes("990") ||
+          titleLower.includes("partnership") || titleLower.includes("1065") ||
+          titleLower.includes("s-corp") || titleLower.includes("1120s")
+        
+        return matchesWorkType
       })
       .map((item: KarbonWorkItem): TaxReturn => {
       // Get internal data if exists
@@ -595,16 +650,13 @@ export function BusySeasonTracker() {
     // Add "Other" for statuses not in our list
     groups["Other"] = []
     
-    // Debug: log unique karbonStatus values
-    const uniqueStatuses = new Set(allReturns.map(r => r.karbonStatus))
-    console.log("[v0] Unique karbonStatus values:", Array.from(uniqueStatuses))
-    
     allReturns.forEach((r) => {
-      const status = r.karbonStatus || "Unknown"
-      if (BUSY_SEASON_2025_STATUSES.includes(status)) {
-        groups[status].push(r)
+      // Extract the actual status suffix from Karbon's prefixed format
+      const extractedStatus = extractKarbonStatusSuffix(r.karbonStatus || "Unknown")
+      
+      if (BUSY_SEASON_2025_STATUSES.includes(extractedStatus)) {
+        groups[extractedStatus].push(r)
       } else {
-        console.log("[v0] Status not in list:", JSON.stringify(status), "for", r.clientName)
         groups["Other"].push(r)
       }
     })
@@ -626,9 +678,9 @@ export function BusySeasonTracker() {
     groups["Other"] = []
     
     businessReturns.forEach((r) => {
-      const status = r.karbonStatus || "Unknown"
-      if (BUSY_SEASON_2025_STATUSES.includes(status)) {
-        groups[status].push(r)
+      const extractedStatus = extractKarbonStatusSuffix(r.karbonStatus || "Unknown")
+      if (BUSY_SEASON_2025_STATUSES.includes(extractedStatus)) {
+        groups[extractedStatus].push(r)
       } else {
         groups["Other"].push(r)
       }
@@ -650,9 +702,9 @@ export function BusySeasonTracker() {
     groups["Other"] = []
     
     individualReturns.forEach((r) => {
-      const status = r.karbonStatus || "Unknown"
-      if (BUSY_SEASON_2025_STATUSES.includes(status)) {
-        groups[status].push(r)
+      const extractedStatus = extractKarbonStatusSuffix(r.karbonStatus || "Unknown")
+      if (BUSY_SEASON_2025_STATUSES.includes(extractedStatus)) {
+        groups[extractedStatus].push(r)
       } else {
         groups["Other"].push(r)
       }
