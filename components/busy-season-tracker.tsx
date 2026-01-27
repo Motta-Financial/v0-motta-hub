@@ -921,12 +921,20 @@ export function BusySeasonTracker() {
   ] as const
   type InternalStatus = typeof INTERNAL_STATUSES[number]
 
-  // Get internal status based on assignment and internal primary_status
+  // Get internal status based on internal MottaHub tracking
+  // "Unassigned" = no internal record yet (not assigned to anyone, not in queue)
+  // Once assigned OR in queue, show the actual internal primaryStatus
   const getInternalStatus = (r: TaxReturn): InternalStatus => {
-    // If no internal assignment, it's unassigned
-    if (!r.assignedTo || r.assignedTo === "Tax Prep Queue" || r.preparer === "Unassigned") {
+    // Check if this item has been internally tracked (has preparer assigned or is in queue)
+    const hasInternalTracking = r.preparer && r.preparer !== "Unassigned"
+    const isInQueue = r.inQueue === true
+    
+    // If no internal tracking and not in queue, it's unassigned
+    if (!hasInternalTracking && !isInQueue) {
       return "Unassigned"
     }
+    
+    // Item is tracked internally - show its actual internal status
     // Check if completed
     if (r.primaryStatus === "E-filed/Manually Filed") {
       return "Completed"
