@@ -41,12 +41,12 @@ export async function PATCH(
     
     if (isKarbonKey) {
       // This is a karbon_work_key - need to upsert
-      // First, check if the record exists
+      // First, check if the record exists (use maybeSingle to handle 0 rows gracefully)
       const { data: existing } = await supabase
         .from("busy_season_work_items")
         .select("id")
         .eq("karbon_work_key", id)
-        .single()
+        .maybeSingle()
       
       if (existing) {
         // Update existing record
