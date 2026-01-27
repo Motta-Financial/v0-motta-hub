@@ -418,7 +418,7 @@ export function BusySeasonTracker() {
   const [workflowFilter, setWorkflowFilter] = useState<"all" | "leads" | "requesting-docs" | "ready-for-prep" | "in-progress" | "completed">("all")
   const [searchQuery, setSearchQuery] = useState("")
   const [karbonStatusFilter, setKarbonStatusFilter] = useState<string>("all")
-  const [internalStatusFilter, setInternalStatusFilter] = useState<"all" | "Unassigned" | "Assigned">("all")
+  const [internalStatusFilter, setInternalStatusFilter] = useState<"all" | InternalStatus>("all")
   
   // Track which status sections are expanded (default: all expanded)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(BUSY_SEASON_2025_STATUSES))
@@ -909,31 +909,50 @@ export function BusySeasonTracker() {
     return allReturns.filter((r) => r.primaryStatus === status)
   }
 
-  // Internal MottaHub statuses for filtering (simple: Unassigned vs Assigned)
+  // Internal MottaHub statuses for filtering (based on internal assignment status)
   const INTERNAL_STATUSES = [
     "Unassigned",
-    "Assigned",
+    "Ready for Prep",
+    "Waiting for Client", 
+    "Actively Preparing",
+    "In Review",
+    "Finalizing",
+    "Sent to Client",
+    "E-filed/Manually Filed",
   ] as const
   type InternalStatus = typeof INTERNAL_STATUSES[number]
 
-  // Get internal status based on team member assignment
-  // "Unassigned" = no team member assigned yet
-  // "Assigned" = assigned to a team member
+  // Get internal MottaHub status
+  // "Unassigned" = no internal assignment/status yet (not in queue, no preparer)
+  // Otherwise show the internal primaryStatus that was set when assigning
   const getInternalStatus = (r: TaxReturn): InternalStatus => {
-    // Check if assigned to an actual team member (not just "Unassigned" or empty)
-    const isAssignedToTeamMember = r.preparer && r.preparer !== "Unassigned" && r.preparer !== ""
+    // Check if this work item has been internally tracked (has preparer or is in queue)
+    const hasInternalTracking = (r.preparer && r.preparer !== "Unassigned" && r.preparer !== "") || r.inQueue
     
-    if (isAssignedToTeamMember) {
-      return "Assigned"
+    if (!hasInternalTracking) {
+      return "Unassigned"
     }
-    return "Unassigned"
+    
+    // Return the internal primaryStatus if it matches one of our internal statuses
+    if (r.primaryStatus && INTERNAL_STATUSES.includes(r.primaryStatus as InternalStatus)) {
+      return r.primaryStatus as InternalStatus
+    }
+    
+    // Default to Ready for Prep for tracked items without a specific status
+    return "Ready for Prep"
   }
 
   // Calculate counts for internal status overview
   const internalStatusCounts = useMemo(() => {
     const counts: Record<InternalStatus, TaxReturn[]> = {
       "Unassigned": [],
-      "Assigned": [],
+      "Ready for Prep": [],
+      "Waiting for Client": [],
+      "Actively Preparing": [],
+      "In Review": [],
+      "Finalizing": [],
+      "Sent to Client": [],
+      "E-filed/Manually Filed": [],
     }
     allReturns.forEach(r => {
       const status = getInternalStatus(r)
@@ -1090,11 +1109,17 @@ export function BusySeasonTracker() {
             const returns = internalStatusCounts[status]
             if (returns.length === 0) return null
 
-            // Color coding for internal statuses
+            // Color coding for internal MottaHub statuses
             const getInternalStatusColor = (s: InternalStatus) => {
               switch (s) {
                 case "Unassigned": return "bg-gray-100 text-gray-700 border-gray-300"
-                case "Assigned": return "bg-green-100 text-green-700 border-green-300"
+                case "Ready for Prep": return "bg-blue-100 text-blue-700 border-blue-300"
+                case "Waiting for Client": return "bg-orange-100 text-orange-700 border-orange-300"
+                case "Actively Preparing": return "bg-yellow-100 text-yellow-700 border-yellow-300"
+                case "In Review": return "bg-purple-100 text-purple-700 border-purple-300"
+                case "Finalizing": return "bg-indigo-100 text-indigo-700 border-indigo-300"
+                case "Sent to Client": return "bg-cyan-100 text-cyan-700 border-cyan-300"
+                case "E-filed/Manually Filed": return "bg-green-100 text-green-700 border-green-300"
                 default: return "bg-gray-100 text-gray-700 border-gray-300"
               }
             }
