@@ -30,6 +30,11 @@ import {
   ShieldCheck,
   CreditCard,
   LogOut,
+  ClipboardList,
+  Calculator,
+  FileText,
+  Flame,
+  DollarSign,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -50,15 +55,32 @@ const navigation = [
   { name: "Debriefs", href: "/debriefs/new", icon: MessageSquare },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
+  { name: "Service Pipelines", href: "/pipelines", icon: ClipboardList, alfredSuggestions: 15 },
   {
     name: "Client Services",
     href: "/client-services",
     icon: Headphones,
     children: [
-      { name: "Service Pipelines", href: "/pipelines", icon: GitBranch, alfredSuggestions: 15 },
-      { name: "Payments", href: "/payments", icon: CreditCard },
+      {
+        name: "Accounting",
+        href: "/accounting",
+        icon: Calculator,
+        children: [
+          { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
+        ],
+      },
+      {
+        name: "Tax",
+        href: "/tax",
+        icon: FileText,
+        children: [
+          { name: "Busy Season", href: "/tax/busy-season", icon: FileText },
+        ],
+      },
+      { name: "Special Teams", href: "/special-teams", icon: Flame },
     ],
   },
+  { name: "Payments", href: "/payments", icon: CreditCard },
   { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
   { name: "Karbon Data", href: "/karbon-data", icon: Database },
   {
@@ -266,49 +288,115 @@ function Sidebar() {
                       <ul className="mt-1 space-y-1">
                         {item.children!.map((child) => {
                           const isChildCurrent = pathname === child.href || pathname.startsWith(child.href + "/")
+                          const hasGrandchildren = child.children && child.children.length > 0
+                          const isChildExpanded = expandedSections[child.name] || false
+                          const hasActiveGrandchild = hasGrandchildren && child.children!.some(
+                            (gc: any) => pathname === gc.href || pathname.startsWith(gc.href + "/")
+                          )
 
                           return (
                             <li key={child.name}>
-                              <a
-                                href={child.href}
-                                className={cn(
-                                  isChildCurrent
-                                    ? "text-white border-r-2"
-                                    : "text-gray-700 hover:text-white hover:bg-opacity-80",
-                                  "pl-8 text-sm group flex gap-x-3 rounded-l-md py-2 pr-3 leading-6 font-medium transition-colors relative",
-                                )}
-                                style={{
-                                  backgroundColor: isChildCurrent ? "#6B745D" : "transparent",
-                                  borderColor: isChildCurrent ? "#333333" : "transparent",
-                                }}
-                                onMouseEnter={(e) => {
-                                  if (!isChildCurrent) {
-                                    e.currentTarget.style.backgroundColor = "#8E9B79"
-                                  }
-                                }}
-                                onMouseLeave={(e) => {
-                                  if (!isChildCurrent) {
-                                    e.currentTarget.style.backgroundColor = "transparent"
-                                  }
-                                }}
-                              >
-                                <child.icon
+                              <div className="flex items-center">
+                                <a
+                                  href={child.href}
                                   className={cn(
-                                    isChildCurrent ? "text-white" : "text-gray-400 group-hover:text-white",
-                                    "h-4 w-4 shrink-0",
+                                    isChildCurrent || hasActiveGrandchild
+                                      ? "text-white border-r-2"
+                                      : "text-gray-700 hover:text-white hover:bg-opacity-80",
+                                    "pl-8 text-sm group flex flex-1 gap-x-3 rounded-l-md py-2 pr-3 leading-6 font-medium transition-colors relative",
                                   )}
-                                  aria-hidden="true"
-                                />
-                                <span className="flex-1">{child.name}</span>
-                                {child.alfredSuggestions && (
-                                  <Badge
-                                    variant="secondary"
-                                    className="ml-auto text-xs px-1.5 py-0.5 bg-orange-100 text-orange-700 hover:bg-orange-200"
+                                  style={{
+                                    backgroundColor: isChildCurrent || hasActiveGrandchild ? "#6B745D" : "transparent",
+                                    borderColor: isChildCurrent || hasActiveGrandchild ? "#333333" : "transparent",
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    if (!isChildCurrent && !hasActiveGrandchild) {
+                                      e.currentTarget.style.backgroundColor = "#8E9B79"
+                                    }
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    if (!isChildCurrent && !hasActiveGrandchild) {
+                                      e.currentTarget.style.backgroundColor = "transparent"
+                                    }
+                                  }}
+                                >
+                                  <child.icon
+                                    className={cn(
+                                      isChildCurrent || hasActiveGrandchild ? "text-white" : "text-gray-400 group-hover:text-white",
+                                      "h-4 w-4 shrink-0",
+                                    )}
+                                    aria-hidden="true"
+                                  />
+                                  <span className="flex-1">{child.name}</span>
+                                  {child.alfredSuggestions && (
+                                    <Badge
+                                      variant="secondary"
+                                      className="ml-auto text-xs px-1.5 py-0.5 bg-orange-100 text-orange-700 hover:bg-orange-200"
+                                    >
+                                      {child.alfredSuggestions}
+                                    </Badge>
+                                  )}
+                                </a>
+                                {hasGrandchildren && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      toggleSection(child.name)
+                                    }}
+                                    className={cn(
+                                      "p-1 rounded hover:bg-gray-100 transition-colors mr-1",
+                                      isChildCurrent || hasActiveGrandchild ? "text-gray-600" : "text-gray-400",
+                                    )}
                                   >
-                                    {child.alfredSuggestions}
-                                  </Badge>
+                                    {isChildExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                                  </button>
                                 )}
-                              </a>
+                              </div>
+
+                              {hasGrandchildren && isChildExpanded && (
+                                <ul className="mt-1 space-y-1">
+                                  {child.children!.map((grandchild: any) => {
+                                    const isGrandchildCurrent = pathname === grandchild.href || pathname.startsWith(grandchild.href + "/")
+
+                                    return (
+                                      <li key={grandchild.name}>
+                                        <a
+                                          href={grandchild.href}
+                                          className={cn(
+                                            isGrandchildCurrent
+                                              ? "text-white border-r-2"
+                                              : "text-gray-700 hover:text-white hover:bg-opacity-80",
+                                            "pl-12 text-sm group flex gap-x-3 rounded-l-md py-2 pr-3 leading-6 font-medium transition-colors relative",
+                                          )}
+                                          style={{
+                                            backgroundColor: isGrandchildCurrent ? "#6B745D" : "transparent",
+                                            borderColor: isGrandchildCurrent ? "#333333" : "transparent",
+                                          }}
+                                          onMouseEnter={(e) => {
+                                            if (!isGrandchildCurrent) {
+                                              e.currentTarget.style.backgroundColor = "#8E9B79"
+                                            }
+                                          }}
+                                          onMouseLeave={(e) => {
+                                            if (!isGrandchildCurrent) {
+                                              e.currentTarget.style.backgroundColor = "transparent"
+                                            }
+                                          }}
+                                        >
+                                          <grandchild.icon
+                                            className={cn(
+                                              isGrandchildCurrent ? "text-white" : "text-gray-400 group-hover:text-white",
+                                              "h-4 w-4 shrink-0",
+                                            )}
+                                            aria-hidden="true"
+                                          />
+                                          <span className="flex-1">{grandchild.name}</span>
+                                        </a>
+                                      </li>
+                                    )
+                                  })}
+                                </ul>
+                              )}
                             </li>
                           )
                         })}
