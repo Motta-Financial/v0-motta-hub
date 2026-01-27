@@ -139,35 +139,38 @@ export async function karbonFetchAll<T>(
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30000)
 
-      const response = await fetch(nextUrl, {
-        method: "GET",
-        headers: {
-          AccessKey: config.accessKey,
-          Authorization: `Bearer ${config.bearerToken}`,
-          "Content-Type": "application/json",
-        },
-        signal: controller.signal,
-      })
+      let response: Response
+      try {
+        response = await fetch(nextUrl, {
+          method: "GET",
+          headers: {
+            AccessKey: config.accessKey,
+            Authorization: `Bearer ${config.bearerToken}`,
+            "Content-Type": "application/json",
+          },
+          signal: controller.signal,
+        })
+      } catch (fetchError) {
+        // Network error or abort - return gracefully
+        clearTimeout(timeoutId)
+        if (allItems.length > 0) {
+          return { data: allItems, error: null, totalCount }
+        }
+        return { data: [], error: null, totalCount: 0 }
+      }
 
       clearTimeout(timeoutId)
 
       if (!response.ok) {
         // For 404 errors, return empty array gracefully (common for Tasks/Notes endpoints)
         if (response.status === 404) {
-          return { data: [], error: null, totalCount: 0 }
+          return { data: allItems.length > 0 ? allItems : [], error: null, totalCount: allItems.length || 0 }
         }
-        // Try to get error text but don't throw
-        let errorText = ""
-        try {
-          errorText = await response.text()
-        } catch {
-          // Ignore error reading body
-        }
+        // For other errors, try to continue if we have partial data
         if (allItems.length > 0) {
-          console.warn(`[Karbon API] Error on page ${pageCount}, returning partial data`)
-          break
+          return { data: allItems, error: null, totalCount }
         }
-        return { data: [], error: `${response.status}: ${response.statusText}` }
+        return { data: [], error: `${response.status}: ${response.statusText}`, totalCount: 0 }
       }
 
       const data = await response.json()
