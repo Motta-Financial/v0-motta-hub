@@ -606,10 +606,9 @@ export function BusySeasonTracker() {
       if (updates.notes !== undefined) dbUpdates.notes = updates.notes
       if (updates.documentsReceived !== undefined) dbUpdates.documents_received = updates.documentsReceived
       if (updates.lastUpdatedBy !== undefined) dbUpdates.last_updated_by = updates.lastUpdatedBy
-      if (updates.workflowStatus !== undefined) dbUpdates.workflow_status = updates.workflowStatus
-      if (updates.readyForPrep !== undefined) dbUpdates.ready_for_prep = updates.readyForPrep
-      
-      // Include client info for new records
+  if (updates.workflowStatus !== undefined) dbUpdates.workflow_status = updates.workflowStatus
+  
+  // Include client info for new records
       if (taxReturn) {
         dbUpdates.client_name = taxReturn.clientName
         dbUpdates.entity_type = taxReturn.entityType
