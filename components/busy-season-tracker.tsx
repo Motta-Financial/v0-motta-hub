@@ -52,6 +52,26 @@ const BUSY_SEASON_2025_WORK_TYPES = [
 // Tax year for this busy season
 const BUSY_SEASON_TAX_YEAR = 2025
 
+// Helper to get entity type badge color and short label
+function getEntityTypeDisplay(entityType: string): { label: string; color: string } {
+  if (entityType.includes("1065") || entityType.toLowerCase().includes("partnership")) {
+    return { label: "1065", color: "bg-blue-100 text-blue-700 border-blue-300" }
+  }
+  if (entityType.includes("1120-S") || entityType.includes("1120S") || entityType.toLowerCase().includes("s-corp")) {
+    return { label: "1120-S", color: "bg-green-100 text-green-700 border-green-300" }
+  }
+  if (entityType.includes("1120") || entityType.toLowerCase().includes("c-corp")) {
+    return { label: "1120", color: "bg-orange-100 text-orange-700 border-orange-300" }
+  }
+  if (entityType.includes("1040")) {
+    return { label: "1040", color: "bg-purple-100 text-purple-700 border-purple-300" }
+  }
+  if (entityType.includes("990") || entityType.toLowerCase().includes("non-profit")) {
+    return { label: "990", color: "bg-pink-100 text-pink-700 border-pink-300" }
+  }
+  return { label: entityType, color: "bg-gray-100 text-gray-700 border-gray-300" }
+}
+
 // Helper to extract the actual status from Karbon's prefixed status format
 // e.g., "In Progress - Actively Preparing" -> "Actively Preparing"
 // e.g., "Ready To Start - Send Client Requests" -> "Send Client Requests"
@@ -1154,18 +1174,21 @@ export function BusySeasonTracker() {
             </div>
           ) : (
             <div className="space-y-3">
-              {businessKarbonStatusGroups.map(({ status, items, count }) => {
-                // Apply filters to items in this status group
-                const filteredItems = items.filter(r => {
-                  const matchesSearch = searchQuery === "" || 
-                    r.clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                    r.preparer?.toLowerCase().includes(searchQuery.toLowerCase())
-                  const matchesEntityFilter = businessEntityFilter === "all" ||
-                    (businessEntityFilter === "partnership" && r.entityType === "1065 - Partnership") ||
-                    (businessEntityFilter === "s-corp" && r.entityType === "1120-S - S-Corp") ||
-                    (businessEntityFilter === "c-corp" && r.entityType === "1120 - C-Corp")
-                  return matchesSearch && matchesEntityFilter
-                })
+              {businessKarbonStatusGroups.map(({ status, items }) => {
+                // Apply filters to items in this status group and sort by last updated
+                const filteredItems = items
+                  .filter(r => {
+                    const matchesSearch = searchQuery === "" || 
+                      r.clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      r.preparer?.toLowerCase().includes(searchQuery.toLowerCase())
+                    const matchesEntityFilter = businessEntityFilter === "all" ||
+                      (businessEntityFilter === "partnership" && r.entityType === "1065 - Partnership") ||
+                      (businessEntityFilter === "s-corp" && r.entityType === "1120-S - S-Corp") ||
+                      (businessEntityFilter === "c-corp" && r.entityType === "1120 - C-Corp")
+                    return matchesSearch && matchesEntityFilter
+                  })
+                  // Sort by last updated (most recent first)
+                  .sort((a, b) => new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime())
                 
                 if (filteredItems.length === 0) return null
                 
@@ -1192,58 +1215,63 @@ export function BusySeasonTracker() {
                     </CollapsibleTrigger>
                     <CollapsibleContent>
                       <div className="space-y-2 mt-2 ml-4 border-l-2 border-muted pl-4">
-                        {filteredItems.map((taxReturn) => (
-                          <div
-                            key={taxReturn.id}
-                            className="p-3 rounded-lg border bg-card hover:shadow-md transition-shadow cursor-pointer"
-                            onClick={() => handleRowClick(taxReturn)}
-                          >
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  {taxReturn.isPriority && <Flag className="h-4 w-4 text-red-600 fill-red-600 shrink-0" />}
-                                  <h3 className="font-semibold truncate">{taxReturn.clientName}</h3>
-                                  <Badge variant="outline" className="text-xs shrink-0">
-                                    {taxReturn.entityType}
-                                  </Badge>
-                                  {taxReturn.karbonUrl && (
-                                    <a 
-                                      href={taxReturn.karbonUrl} 
-                                      target="_blank" 
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-muted-foreground hover:text-foreground"
-                                    >
-                                      <ExternalLink className="h-3 w-3" />
-                                    </a>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
-                                  <div className="flex items-center gap-1">
-                                    <Calendar className="h-3 w-3" />
-                                    <span>Due: {taxReturn.dueDate ? new Date(taxReturn.dueDate).toLocaleDateString() : "Not set"}</span>
+                        {filteredItems.map((taxReturn) => {
+                          const entityDisplay = getEntityTypeDisplay(taxReturn.entityType)
+                          return (
+                            <div
+                              key={taxReturn.id}
+                              className="p-3 rounded-lg border bg-card hover:shadow-md transition-shadow cursor-pointer"
+                              onClick={() => handleRowClick(taxReturn)}
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    {/* Entity type badge - prominent with color */}
+                                    <Badge variant="outline" className={`text-xs font-bold shrink-0 ${entityDisplay.color}`}>
+                                      {entityDisplay.label}
+                                    </Badge>
+                                    {taxReturn.isPriority && <Flag className="h-4 w-4 text-red-600 fill-red-600 shrink-0" />}
+                                    <h3 className="font-semibold truncate">{taxReturn.clientName}</h3>
+                                    {taxReturn.karbonUrl && (
+                                      <a 
+                                        href={taxReturn.karbonUrl} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="text-muted-foreground hover:text-foreground"
+                                      >
+                                        <ExternalLink className="h-3 w-3" />
+                                      </a>
+                                    )}
                                   </div>
-                                  {taxReturn.assignedTo && (
+                                  <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
                                     <div className="flex items-center gap-1">
-                                      <User className="h-3 w-3" />
-                                      <span>{taxReturn.assignedTo}</span>
+                                      <Clock className="h-3 w-3" />
+                                      <span>Updated: {formatLastUpdated(taxReturn.lastUpdated)}</span>
                                     </div>
+                                    <div className="flex items-center gap-1">
+                                      <Calendar className="h-3 w-3" />
+                                      <span>Due: {taxReturn.dueDate ? new Date(taxReturn.dueDate).toLocaleDateString() : "Not set"}</span>
+                                    </div>
+                                    {taxReturn.assignedTo && (
+                                      <div className="flex items-center gap-1">
+                                        <User className="h-3 w-3" />
+                                        <span>{taxReturn.assignedTo}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex flex-col items-end gap-1 shrink-0">
+                                  {taxReturn.inQueue && (
+                                    <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300 text-xs">
+                                      In Queue
+                                    </Badge>
                                   )}
                                 </div>
-                              </div>
-                              <div className="flex flex-col items-end gap-1 shrink-0">
-                                {taxReturn.inQueue && (
-                                  <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300 text-xs">
-                                    In Queue
-                                  </Badge>
-                                )}
-                                <Badge variant="outline" className={`text-xs ${getStatusColor(taxReturn.primaryStatus)}`}>
-                                  {taxReturn.primaryStatus}
-                                </Badge>
                               </div>
                             </div>
-                          </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
@@ -1280,12 +1308,14 @@ export function BusySeasonTracker() {
           ) : (
             <div className="space-y-3">
               {individualKarbonStatusGroups.map(({ status, items }) => {
-                // Apply search filter
-                const filteredItems = items.filter(r => {
-                  return searchQuery === "" || 
-                    r.clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                    r.preparer?.toLowerCase().includes(searchQuery.toLowerCase())
-                })
+                // Apply search filter and sort by last updated
+                const filteredItems = items
+                  .filter(r => {
+                    return searchQuery === "" || 
+                      r.clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      r.preparer?.toLowerCase().includes(searchQuery.toLowerCase())
+                  })
+                  .sort((a, b) => new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime())
                 
                 if (filteredItems.length === 0) return null
                 
@@ -1312,58 +1342,63 @@ export function BusySeasonTracker() {
                     </CollapsibleTrigger>
                     <CollapsibleContent>
                       <div className="space-y-2 mt-2 ml-4 border-l-2 border-muted pl-4">
-                        {filteredItems.map((taxReturn) => (
-                          <div
-                            key={taxReturn.id}
-                            className="p-3 rounded-lg border bg-card hover:shadow-md transition-shadow cursor-pointer"
-                            onClick={() => handleRowClick(taxReturn)}
-                          >
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  {taxReturn.isPriority && <Flag className="h-4 w-4 text-red-600 fill-red-600 shrink-0" />}
-                                  <h3 className="font-semibold truncate">{taxReturn.clientName}</h3>
-                                  <Badge variant="outline" className="text-xs shrink-0">
-                                    {taxReturn.entityType}
-                                  </Badge>
-                                  {taxReturn.karbonUrl && (
-                                    <a 
-                                      href={taxReturn.karbonUrl} 
-                                      target="_blank" 
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-muted-foreground hover:text-foreground"
-                                    >
-                                      <ExternalLink className="h-3 w-3" />
-                                    </a>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
-                                  <div className="flex items-center gap-1">
-                                    <Calendar className="h-3 w-3" />
-                                    <span>Due: {taxReturn.dueDate ? new Date(taxReturn.dueDate).toLocaleDateString() : "Not set"}</span>
+                        {filteredItems.map((taxReturn) => {
+                          const entityDisplay = getEntityTypeDisplay(taxReturn.entityType)
+                          return (
+                            <div
+                              key={taxReturn.id}
+                              className="p-3 rounded-lg border bg-card hover:shadow-md transition-shadow cursor-pointer"
+                              onClick={() => handleRowClick(taxReturn)}
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    {/* Entity type badge - prominent with color */}
+                                    <Badge variant="outline" className={`text-xs font-bold shrink-0 ${entityDisplay.color}`}>
+                                      {entityDisplay.label}
+                                    </Badge>
+                                    {taxReturn.isPriority && <Flag className="h-4 w-4 text-red-600 fill-red-600 shrink-0" />}
+                                    <h3 className="font-semibold truncate">{taxReturn.clientName}</h3>
+                                    {taxReturn.karbonUrl && (
+                                      <a 
+                                        href={taxReturn.karbonUrl} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="text-muted-foreground hover:text-foreground"
+                                      >
+                                        <ExternalLink className="h-3 w-3" />
+                                      </a>
+                                    )}
                                   </div>
-                                  {taxReturn.assignedTo && (
+                                  <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
                                     <div className="flex items-center gap-1">
-                                      <User className="h-3 w-3" />
-                                      <span>{taxReturn.assignedTo}</span>
+                                      <Clock className="h-3 w-3" />
+                                      <span>Updated: {formatLastUpdated(taxReturn.lastUpdated)}</span>
                                     </div>
+                                    <div className="flex items-center gap-1">
+                                      <Calendar className="h-3 w-3" />
+                                      <span>Due: {taxReturn.dueDate ? new Date(taxReturn.dueDate).toLocaleDateString() : "Not set"}</span>
+                                    </div>
+                                    {taxReturn.assignedTo && (
+                                      <div className="flex items-center gap-1">
+                                        <User className="h-3 w-3" />
+                                        <span>{taxReturn.assignedTo}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex flex-col items-end gap-1 shrink-0">
+                                  {taxReturn.inQueue && (
+                                    <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300 text-xs">
+                                      In Queue
+                                    </Badge>
                                   )}
                                 </div>
-                              </div>
-                              <div className="flex flex-col items-end gap-1 shrink-0">
-                                {taxReturn.inQueue && (
-                                  <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300 text-xs">
-                                    In Queue
-                                  </Badge>
-                                )}
-                                <Badge variant="outline" className={`text-xs ${getStatusColor(taxReturn.primaryStatus)}`}>
-                                  {taxReturn.primaryStatus}
-                                </Badge>
                               </div>
                             </div>
-                          </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
