@@ -459,15 +459,6 @@ export function BusySeasonTracker() {
     return map
   }, [internalData])
 
-  // Helper to check if work type matches 2025 busy season work types
-  const isBusySeasonWorkType = (title: string): boolean => {
-    const titleLower = title.toLowerCase()
-    return BUSY_SEASON_2025_WORK_TYPES.some(workType => 
-      titleLower.includes(workType.toLowerCase().split(" | ")[1]?.split(" ")[0] || "") ||
-      titleLower.startsWith(workType.toLowerCase())
-    )
-  }
-
   // Transform tax work items and merge with internal Supabase data
   // Filter for 2025 tax year AND matching work types only
   const allReturns = useMemo(() => {

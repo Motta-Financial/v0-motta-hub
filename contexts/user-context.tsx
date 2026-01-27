@@ -56,8 +56,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const isFetchingRef = useRef(false)
   const hasFetchedRef = useRef(false)
   
-  // Don't fetch on login or auth pages (pathname can be null on initial render)
-  const isAuthPage = !pathname || pathname === '/login' || pathname.startsWith('/auth')
+  // Don't fetch on login or auth pages
+  const isAuthPage = pathname === '/login' || pathname?.startsWith('/auth')
 
   const fetchUserData = useCallback(async () => {
     // Skip fetching on auth pages
