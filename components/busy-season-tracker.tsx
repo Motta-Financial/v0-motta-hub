@@ -418,6 +418,7 @@ export function BusySeasonTracker() {
   const [workflowFilter, setWorkflowFilter] = useState<"all" | "leads" | "requesting-docs" | "ready-for-prep" | "in-progress" | "completed">("all")
   const [searchQuery, setSearchQuery] = useState("")
   const [karbonStatusFilter, setKarbonStatusFilter] = useState<string>("all")
+  const [internalStatusFilter, setInternalStatusFilter] = useState<"all" | "Unassigned" | "Ready for Prep" | "Actively Preparing" | "Waiting for Client" | "In Review" | "Finalizing" | "Completed">("all")
   
   // Track which status sections are expanded (default: all expanded)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(BUSY_SEASON_2025_STATUSES))
@@ -955,8 +956,6 @@ export function BusySeasonTracker() {
     })
     return counts
   }, [allReturns])
-
-  const [internalStatusFilter, setInternalStatusFilter] = useState<InternalStatus | "all">("all")
 
   const completedReturns = internalStatusCounts["Completed"]
 
