@@ -908,15 +908,57 @@ export function BusySeasonTracker() {
     return allReturns.filter((r) => r.primaryStatus === status)
   }
 
-  const summaryStatuses: PrimaryStatus[] = [
-    "Ready for Prep",
-    "Waiting for Client",
+  // Internal MottaHub statuses for filtering (based on what we assign internally)
+  const INTERNAL_STATUSES = [
+    "Unassigned",
+    "Ready for Prep", 
     "Actively Preparing",
+    "Waiting for Client",
     "In Review",
     "Finalizing",
-  ]
+    "Completed",
+  ] as const
+  type InternalStatus = typeof INTERNAL_STATUSES[number]
 
-  const completedReturns = getReturnsByStatus("E-filed/Manually Filed")
+  // Get internal status based on assignment and internal primary_status
+  const getInternalStatus = (r: TaxReturn): InternalStatus => {
+    // If no internal assignment, it's unassigned
+    if (!r.assignedTo || r.assignedTo === "Tax Prep Queue" || r.preparer === "Unassigned") {
+      return "Unassigned"
+    }
+    // Check if completed
+    if (r.primaryStatus === "E-filed/Manually Filed") {
+      return "Completed"
+    }
+    // Map primaryStatus to internal status
+    if (r.primaryStatus === "Waiting for Client") return "Waiting for Client"
+    if (r.primaryStatus === "In Review") return "In Review"
+    if (r.primaryStatus === "Finalizing") return "Finalizing"
+    if (r.primaryStatus === "Ready for Prep") return "Ready for Prep"
+    return "Actively Preparing"
+  }
+
+  // Calculate counts for internal status overview
+  const internalStatusCounts = useMemo(() => {
+    const counts: Record<InternalStatus, TaxReturn[]> = {
+      "Unassigned": [],
+      "Ready for Prep": [],
+      "Actively Preparing": [],
+      "Waiting for Client": [],
+      "In Review": [],
+      "Finalizing": [],
+      "Completed": [],
+    }
+    allReturns.forEach(r => {
+      const status = getInternalStatus(r)
+      counts[status].push(r)
+    })
+    return counts
+  }, [allReturns])
+
+  const [internalStatusFilter, setInternalStatusFilter] = useState<InternalStatus | "all">("all")
+
+  const completedReturns = internalStatusCounts["Completed"]
 
   const handleRowClick = (taxReturn: TaxReturn) => {
     setSelectedReturn(taxReturn)
@@ -1052,44 +1094,45 @@ export function BusySeasonTracker() {
           <Badge
             variant="outline"
             className={`px-3 py-1.5 text-sm font-medium cursor-pointer hover:shadow-sm transition-all ${
-              statusFilter === "all"
+              internalStatusFilter === "all"
                 ? "bg-primary text-primary-foreground border-primary shadow-sm"
                 : "bg-background hover:bg-muted"
             }`}
-            onClick={() => handleStatusFilterClick("all")}
+            onClick={() => setInternalStatusFilter("all")}
           >
             All ({allReturns.length})
           </Badge>
-          {summaryStatuses.map((status) => {
-            const returns = getReturnsByStatus(status)
+          {INTERNAL_STATUSES.map((status) => {
+            const returns = internalStatusCounts[status]
             if (returns.length === 0) return null
+
+            // Color coding for internal statuses
+            const getInternalStatusColor = (s: InternalStatus) => {
+              switch (s) {
+                case "Unassigned": return "bg-gray-100 text-gray-700 border-gray-300"
+                case "Ready for Prep": return "bg-blue-100 text-blue-700 border-blue-300"
+                case "Actively Preparing": return "bg-yellow-100 text-yellow-700 border-yellow-300"
+                case "Waiting for Client": return "bg-orange-100 text-orange-700 border-orange-300"
+                case "In Review": return "bg-purple-100 text-purple-700 border-purple-300"
+                case "Finalizing": return "bg-indigo-100 text-indigo-700 border-indigo-300"
+                case "Completed": return "bg-green-100 text-green-700 border-green-300"
+                default: return "bg-gray-100 text-gray-700 border-gray-300"
+              }
+            }
 
             return (
               <Badge
                 key={status}
                 variant="outline"
-                className={`${getStatusColor(status)} px-3 py-1.5 text-sm font-medium cursor-pointer transition-all ${
-                  statusFilter === status ? "shadow-md ring-2 ring-offset-2 ring-current" : "hover:shadow-sm"
+                className={`${getInternalStatusColor(status)} px-3 py-1.5 text-sm font-medium cursor-pointer transition-all ${
+                  internalStatusFilter === status ? "shadow-md ring-2 ring-offset-2 ring-current" : "hover:shadow-sm"
                 }`}
-                onClick={() => handleStatusFilterClick(status)}
+                onClick={() => setInternalStatusFilter(status)}
               >
                 {status} ({returns.length})
               </Badge>
             )
           })}
-          {completedReturns.length > 0 && (
-            <Badge
-              variant="outline"
-              className={`bg-green-100 text-green-700 border-green-300 px-3 py-1.5 text-sm font-medium cursor-pointer transition-all ${
-                statusFilter === "E-filed/Manually Filed"
-                  ? "shadow-md ring-2 ring-offset-2 ring-green-400"
-                  : "hover:shadow-sm"
-              }`}
-              onClick={() => handleStatusFilterClick("E-filed/Manually Filed")}
-            >
-              Completed ({completedReturns.length})
-            </Badge>
-          )}
         </div>
       </div>
 
@@ -1193,7 +1236,10 @@ export function BusySeasonTracker() {
                       (businessEntityFilter === "partnership" && r.entityType === "1065 - Partnership") ||
                       (businessEntityFilter === "s-corp" && r.entityType === "1120-S - S-Corp") ||
                       (businessEntityFilter === "c-corp" && r.entityType === "1120 - C-Corp")
-                    return matchesSearch && matchesEntityFilter
+                    // Apply internal status filter
+                    const matchesInternalStatus = internalStatusFilter === "all" || 
+                      getInternalStatus(r) === internalStatusFilter
+                    return matchesSearch && matchesEntityFilter && matchesInternalStatus
                   })
                   // Sort by last updated (most recent first)
                   .sort((a, b) => new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime())
@@ -1316,12 +1362,15 @@ export function BusySeasonTracker() {
           ) : (
             <div className="space-y-3">
               {individualKarbonStatusGroups.map(({ status, items }) => {
-                // Apply search filter and sort by last updated
+                // Apply search filter, internal status filter, and sort by last updated
                 const filteredItems = items
                   .filter(r => {
-                    return searchQuery === "" || 
+                    const matchesSearch = searchQuery === "" || 
                       r.clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
                       r.preparer?.toLowerCase().includes(searchQuery.toLowerCase())
+                    const matchesInternalStatus = internalStatusFilter === "all" || 
+                      getInternalStatus(r) === internalStatusFilter
+                    return matchesSearch && matchesInternalStatus
                   })
                   .sort((a, b) => new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime())
                 
