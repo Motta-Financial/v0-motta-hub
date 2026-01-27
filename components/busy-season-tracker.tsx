@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, useCallback } from "react"
 import useSWR from "swr"
 import { useTaxWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
+import type { TeamMember } from "@/contexts/user-context"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { Badge } from "@/components/ui/badge"
@@ -420,6 +421,14 @@ export function BusySeasonTracker() {
   
   // Track which status sections are expanded (default: all expanded)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(BUSY_SEASON_2025_STATUSES))
+  
+  // Fetch team members from database
+  const { data: teamMembersData } = useSWR<{ team_members: TeamMember[] }>(
+    "/api/team-members",
+    fetcher,
+    { revalidateOnFocus: false }
+  )
+  const teamMembers = teamMembersData?.team_members || []
   
   // Toggle section expansion
   const toggleSection = (status: string) => {
@@ -1547,11 +1556,16 @@ export function BusySeasonTracker() {
                         onChange={(e) => setAssignmentForm({ ...assignmentForm, assignTo: e.target.value })}
                       >
                         <option value="">Select team member...</option>
-                        <option value="Tax Prep Queue">Tax Prep Queue</option>
-                        <option value="Andrew">Andrew</option>
-                        <option value="Sarah">Sarah</option>
-                        <option value="Thameem">Thameem</option>
-                        <option value="Sophia Echevarria">Sophia Echevarria</option>
+                        <option value="Tax Prep Queue">Tax Prep Queue (Unassigned)</option>
+                        {teamMembers
+                          .filter(member => member.is_active)
+                          .map(member => (
+                            <option key={member.id} value={member.full_name || member.email}>
+                              {member.full_name || `${member.first_name || ''} ${member.last_name || ''}`.trim() || member.email}
+                              {member.title ? ` - ${member.title}` : ''}
+                            </option>
+                          ))
+                        }
                       </select>
                     </div>
                     <div className="space-y-2">
