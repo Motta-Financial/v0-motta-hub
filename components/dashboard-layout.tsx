@@ -35,6 +35,7 @@ import {
   FileText,
   Flame,
   DollarSign,
+  FileSpreadsheet,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -67,6 +68,7 @@ const navigation = [
         icon: Calculator,
         children: [
           { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
+          { name: "Bank Statements", href: "/accounting/bank-statements", icon: FileSpreadsheet },
         ],
       },
       {
