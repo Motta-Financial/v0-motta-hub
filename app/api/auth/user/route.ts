@@ -1,23 +1,9 @@
-import { createClient, isSupabaseConfigured } from "@/lib/supabase/server"
+import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
 
 export async function GET() {
   try {
-    // Check if Supabase is configured
-    if (!isSupabaseConfigured()) {
-      // Return mock data for development when Supabase is not configured
-      return NextResponse.json({
-        user: null,
-        teamMember: null,
-        configured: false,
-      })
-    }
-
     const supabase = await createClient()
-
-    if (!supabase) {
-      return NextResponse.json({ user: null, teamMember: null, configured: false })
-    }
 
     // Get authenticated user
     const {
@@ -26,7 +12,7 @@ export async function GET() {
     } = await supabase.auth.getUser()
 
     if (authError || !user) {
-      return NextResponse.json({ user: null, teamMember: null, configured: true })
+      return NextResponse.json({ user: null, teamMember: null })
     }
 
     // Fetch team member data
@@ -41,9 +27,9 @@ export async function GET() {
       await supabase.from("team_members").update({ auth_user_id: user.id }).eq("id", teamMember.id)
     }
 
-    return NextResponse.json({ user, teamMember, configured: true })
+    return NextResponse.json({ user, teamMember })
   } catch (error) {
     console.error("Error fetching user:", error)
-    return NextResponse.json({ user: null, teamMember: null, configured: true })
+    return NextResponse.json({ user: null, teamMember: null })
   }
 }
