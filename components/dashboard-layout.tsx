@@ -35,7 +35,6 @@ import {
   FileText,
   Flame,
   DollarSign,
-  FileSpreadsheet,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -45,7 +44,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { createClient } from "@/lib/supabase/client"
+import { createClient, isSupabaseConfigured } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 
 const navigation = [
@@ -68,7 +67,6 @@ const navigation = [
         icon: Calculator,
         children: [
           { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
-          { name: "Bank Statements", href: "/accounting/bank-statements", icon: FileSpreadsheet },
         ],
       },
       {
@@ -163,8 +161,12 @@ function Sidebar() {
   }
 
   const handleLogout = async () => {
-    const supabase = createClient()
-    await supabase.auth.signOut()
+    if (isSupabaseConfigured()) {
+      const supabase = createClient()
+      if (supabase) {
+        await supabase.auth.signOut()
+      }
+    }
     router.push("/login")
   }
 

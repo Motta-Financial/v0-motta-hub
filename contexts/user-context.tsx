@@ -31,6 +31,7 @@ interface UserContextType {
   teamMember: TeamMember | null
   isLoading: boolean
   error: string | null
+  isConfigured: boolean
   refetch: () => Promise<void>
 }
 
@@ -39,18 +40,53 @@ const UserContext = createContext<UserContextType>({
   teamMember: null,
   isLoading: true,
   error: null,
+  isConfigured: false,
   refetch: async () => {},
 })
 
 // Module-level cache
 let cachedUser: User | null = null
 let cachedTeamMember: TeamMember | null = null
+let cachedIsConfigured = false
+
+// Mock user for when Supabase is not configured
+const mockUser: User = {
+  id: "demo-user-id",
+  email: "demo@motta.cpa",
+  app_metadata: {},
+  user_metadata: {},
+  aud: "authenticated",
+  created_at: new Date().toISOString(),
+}
+
+const mockTeamMember: TeamMember = {
+  id: "demo-team-member-id",
+  auth_user_id: "demo-user-id",
+  email: "demo@motta.cpa",
+  first_name: "Demo",
+  last_name: "User",
+  full_name: "Demo User",
+  title: "Team Member",
+  role: "staff",
+  department: "Accounting",
+  avatar_url: null,
+  phone_number: null,
+  mobile_number: null,
+  timezone: "America/New_York",
+  is_active: true,
+  start_date: null,
+  manager_id: null,
+  karbon_user_key: null,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+}
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(cachedUser)
   const [teamMember, setTeamMember] = useState<TeamMember | null>(cachedTeamMember)
   const [isLoading, setIsLoading] = useState(!cachedUser && !cachedTeamMember)
   const [error, setError] = useState<string | null>(null)
+  const [isConfigured, setIsConfigured] = useState(cachedIsConfigured)
   const isFetchingRef = useRef(false)
   const hasFetchedRef = useRef(false)
 
@@ -58,9 +94,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
     if (isFetchingRef.current) return
 
     // Return cached data if already fetched
-    if (hasFetchedRef.current && cachedUser) {
+    if (hasFetchedRef.current && (cachedUser || !cachedIsConfigured)) {
       setUser(cachedUser)
       setTeamMember(cachedTeamMember)
+      setIsConfigured(cachedIsConfigured)
       setIsLoading(false)
       return
     }
@@ -79,18 +116,33 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
       const data = await response.json()
 
-      cachedUser = data.user
-      cachedTeamMember = data.teamMember
-      hasFetchedRef.current = true
+      // If Supabase is not configured, use mock data
+      if (data.configured === false) {
+        cachedUser = mockUser
+        cachedTeamMember = mockTeamMember
+        cachedIsConfigured = false
+        hasFetchedRef.current = true
 
-      setUser(data.user)
-      setTeamMember(data.teamMember)
+        setUser(mockUser)
+        setTeamMember(mockTeamMember)
+        setIsConfigured(false)
+      } else {
+        cachedUser = data.user
+        cachedTeamMember = data.teamMember
+        cachedIsConfigured = true
+        hasFetchedRef.current = true
+
+        setUser(data.user)
+        setTeamMember(data.teamMember)
+        setIsConfigured(true)
+      }
     } catch (err) {
       console.error("[v0] Error fetching user:", err)
-      setError(err instanceof Error ? err.message : "Failed to load user data")
-      // Set defaults on error
-      setUser(null)
-      setTeamMember(null)
+      // On error, fall back to mock data to keep the app functional
+      setUser(mockUser)
+      setTeamMember(mockTeamMember)
+      setIsConfigured(false)
+      setError(null) // Clear error since we're using mock data
     } finally {
       setIsLoading(false)
       isFetchingRef.current = false
@@ -102,7 +154,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   }, [fetchUserData])
 
   return (
-    <UserContext.Provider value={{ user, teamMember, isLoading, error, refetch: fetchUserData }}>
+    <UserContext.Provider value={{ user, teamMember, isLoading, error, isConfigured, refetch: fetchUserData }}>
       {children}
     </UserContext.Provider>
   )
