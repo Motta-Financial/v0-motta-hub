@@ -127,7 +127,7 @@ async function linkWorkItemsToClients(supabase: any) {
         .from("contacts")
         .select("id")
         .eq("karbon_contact_key", workItem.karbon_client_key)
-        .single()
+        .maybeSingle()
 
       if (contact) {
         const { error } = await supabase.from("work_items").update({ contact_id: contact.id }).eq("id", workItem.id)
@@ -152,7 +152,7 @@ async function linkWorkItemsToClients(supabase: any) {
         .from("organizations")
         .select("id")
         .eq("karbon_organization_key", workItem.karbon_client_key)
-        .single()
+        .maybeSingle()
 
       if (org) {
         const { error } = await supabase.from("work_items").update({ organization_id: org.id }).eq("id", workItem.id)

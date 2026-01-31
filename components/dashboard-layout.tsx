@@ -44,7 +44,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 
 const navigation = [
@@ -161,9 +160,12 @@ function Sidebar() {
   }
 
   const handleLogout = async () => {
-    const supabase = createClient()
-    await supabase.auth.signOut()
-    router.push("/login")
+    const response = await fetch("/api/auth/logout", {
+      method: "POST",
+    })
+    if (response.ok) {
+      router.push("/login")
+    }
   }
 
   return (
