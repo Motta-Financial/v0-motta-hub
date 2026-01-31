@@ -4,7 +4,6 @@ import { Inter, Source_Code_Pro } from "next/font/google"
 import "./globals.css"
 import { AlfredChatTrigger } from "@/components/alfred-chat-trigger"
 import { UserProvider } from "@/contexts/user-context"
-import { KarbonWorkItemsProvider } from "@/contexts/karbon-work-items-context"
 
 const inter = Inter({
   subsets: ["latin"],
@@ -33,10 +32,8 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} ${sourceCodePro.variable} antialiased`}>
       <body>
         <UserProvider>
-          <KarbonWorkItemsProvider>
-            {children}
-            <AlfredChatTrigger />
-          </KarbonWorkItemsProvider>
+          {children}
+          <AlfredChatTrigger />
         </UserProvider>
       </body>
     </html>
