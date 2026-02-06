@@ -86,7 +86,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
       setUser(data.user)
       setTeamMember(data.teamMember)
     } catch (err) {
-      console.error("[v0] Error fetching user:", err)
       setError(err instanceof Error ? err.message : "Failed to load user data")
       // Set defaults on error
       setUser(null)

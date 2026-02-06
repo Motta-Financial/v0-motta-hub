@@ -101,7 +101,7 @@ export default function ProfileSettingsPage() {
     const id = teamMember?.id || teamMemberId
 
     if (!id) {
-      console.log("[v0] No team member ID available - teamMember:", teamMember, "teamMemberId state:", teamMemberId)
+      // No team member ID available
       toast({
         title: "Error",
         description: "Unable to identify your profile. Please refresh the page.",
@@ -112,8 +112,6 @@ export default function ProfileSettingsPage() {
 
     setIsProfileSaving(true)
     try {
-      console.log("[v0] Saving profile with ID:", id, "data:", profileForm)
-
       const response = await fetch("/api/profile", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -125,7 +123,6 @@ export default function ProfileSettingsPage() {
       })
 
       const result = await response.json()
-      console.log("[v0] Profile update response:", response.status, result)
 
       if (!response.ok) {
         throw new Error(result.error || "Failed to update profile")
@@ -139,7 +136,6 @@ export default function ProfileSettingsPage() {
       // Refresh user data
       refetch()
     } catch (error) {
-      console.log("[v0] Profile update error:", error)
       toast({
         title: "Error",
         description: error instanceof Error ? error.message : "Failed to update profile",

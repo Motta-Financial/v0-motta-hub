@@ -1,12 +1,21 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-
-const supabaseAdmin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createClient } from "@/lib/supabase/server"
 
 export async function PUT(request: NextRequest) {
   try {
+    const supabase = await createClient()
+
+    // Verify the calling user is authenticated
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
     const body = await request.json()
-    console.log("[v0] Profile update request body:", JSON.stringify(body))
 
     const {
       teamMemberId,
@@ -22,8 +31,18 @@ export async function PUT(request: NextRequest) {
     } = body
 
     if (!teamMemberId) {
-      console.log("[v0] Missing teamMemberId in request")
       return NextResponse.json({ error: "Team member ID is required" }, { status: 400 })
+    }
+
+    // Verify the user is updating their own profile
+    const { data: teamMember } = await supabase
+      .from("team_members")
+      .select("id, auth_user_id")
+      .eq("id", teamMemberId)
+      .single()
+
+    if (!teamMember || teamMember.auth_user_id !== user.id) {
+      return NextResponse.json({ error: "You can only update your own profile" }, { status: 403 })
     }
 
     const updateData = {
@@ -38,10 +57,9 @@ export async function PUT(request: NextRequest) {
       timezone,
       updated_at: new Date().toISOString(),
     }
-    console.log("[v0] Updating team_members with:", JSON.stringify(updateData))
 
     // Update team_members table
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from("team_members")
       .update(updateData)
       .eq("id", teamMemberId)
@@ -49,14 +67,12 @@ export async function PUT(request: NextRequest) {
       .single()
 
     if (error) {
-      console.log("[v0] Supabase update error:", error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    console.log("[v0] Profile updated successfully:", JSON.stringify(data))
     return NextResponse.json({ success: true, data })
   } catch (error) {
-    console.log("[v0] Profile update exception:", error)
+    console.error("Profile update error:", error)
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to update profile" },
       { status: 500 },

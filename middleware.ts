@@ -39,9 +39,11 @@ export async function middleware(request: NextRequest) {
   const isLoginPage = pathname === "/login"
   const isAuthCallback = pathname.startsWith("/auth")
   const isPublicApi = pathname.startsWith("/api/alfred")
+  const isWebhook = pathname.startsWith("/api/webhooks") || pathname.startsWith("/api/karbon/webhooks")
+  const isCron = pathname.startsWith("/api/cron")
 
-  // Allow auth callback and public API without any checks
-  if (isAuthCallback || isPublicApi) {
+  // Allow auth callback, public API, webhooks, and cron without auth checks
+  if (isAuthCallback || isPublicApi || isWebhook || isCron) {
     return supabaseResponse
   }
 
