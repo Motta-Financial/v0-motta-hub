@@ -95,8 +95,6 @@ export default function LoginPage() {
       const supabase = createClient()
       const redirectUrl = `${window.location.origin}/auth/callback?type=recovery`
 
-      console.log("[v0] Password reset redirect URL:", redirectUrl)
-
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: redirectUrl,
       })

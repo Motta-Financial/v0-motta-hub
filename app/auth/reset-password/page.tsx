@@ -59,10 +59,11 @@ export default function ResetPasswordPage() {
         }
       }
 
+      // Use getUser() instead of deprecated getSession() for server-validated auth
       const {
-        data: { session },
-      } = await supabase.auth.getSession()
-      if (session) {
+        data: { user: existingUser },
+      } = await supabase.auth.getUser()
+      if (existingUser) {
         setSessionReady(true)
         setIsVerifying(false)
         return
