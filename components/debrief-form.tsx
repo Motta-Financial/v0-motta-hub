@@ -790,9 +790,9 @@ export function DebriefForm() {
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-[500px] p-0" align="start">
-                <Command>
+                <Command shouldFilter={false}>
                   <CommandInput
-                    placeholder="Search work items..."
+                    placeholder="Search by title, client, or type..."
                     value={workItemSearch}
                     onValueChange={setWorkItemSearch}
                   />
@@ -802,21 +802,23 @@ export function DebriefForm() {
                         ? "Searching..."
                         : workItemSearch.length < 2
                           ? "Type at least 2 characters to search"
-                          : "No work item found."}
+                          : "No active work item found."}
                     </CommandEmpty>
-                    <CommandGroup>
-                      {workItems.map((item) => (
-                        <CommandItem key={item.id} value={item.title} onSelect={() => addWorkItem(item)}>
-                          <Briefcase className="mr-2 h-4 w-4 text-orange-500" />
-                          <div className="flex flex-col">
-                            <span>{item.title}</span>
-                            <span className="text-xs text-muted-foreground">
-                              {item.client_name} • {item.work_type || "No type"} • {item.status || "No status"}
-                            </span>
-                          </div>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
+                    {workItems.length > 0 && (
+                      <CommandGroup>
+                        {workItems.map((item) => (
+                          <CommandItem key={item.id} value={`wi-${item.id}`} onSelect={() => addWorkItem(item)}>
+                            <Briefcase className="mr-2 h-4 w-4 text-orange-500" />
+                            <div className="flex flex-col">
+                              <span>{item.title}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {item.client_name} • {item.work_type || "No type"} • {item.status || "No status"}
+                              </span>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
                   </CommandList>
                 </Command>
               </PopoverContent>
@@ -865,9 +867,9 @@ export function DebriefForm() {
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-[400px] p-0" align="start">
-                <Command>
+                <Command shouldFilter={false}>
                   <CommandInput
-                    placeholder="Search by full name..."
+                    placeholder="Search by name or email..."
                     value={clientSearch}
                     onValueChange={setClientSearch}
                   />
@@ -879,29 +881,33 @@ export function DebriefForm() {
                           ? "Type at least 2 characters to search"
                           : "No client found."}
                     </CommandEmpty>
-                    <CommandGroup heading="Contacts">
-                      {clients
-                        .filter((c) => c.type === "contact")
-                        .map((client) => (
-                          <CommandItem key={client.id} value={client.full_name} onSelect={() => addClient(client)}>
-                            <User className="mr-2 h-4 w-4 text-blue-500" />
-                            <span>{client.full_name}</span>
-                            {client.primary_email && (
-                              <span className="ml-2 text-xs text-muted-foreground">{client.primary_email}</span>
-                            )}
-                          </CommandItem>
-                        ))}
-                    </CommandGroup>
-                    <CommandGroup heading="Organizations">
-                      {clients
-                        .filter((c) => c.type === "organization")
-                        .map((client) => (
-                          <CommandItem key={client.id} value={client.full_name} onSelect={() => addClient(client)}>
-                            <Building2 className="mr-2 h-4 w-4 text-green-500" />
-                            <span>{client.full_name}</span>
-                          </CommandItem>
-                        ))}
-                    </CommandGroup>
+                    {clients.filter((c) => c.type === "contact").length > 0 && (
+                      <CommandGroup heading="Contacts">
+                        {clients
+                          .filter((c) => c.type === "contact")
+                          .map((client) => (
+                            <CommandItem key={client.id} value={`contact-${client.id}`} onSelect={() => addClient(client)}>
+                              <User className="mr-2 h-4 w-4 text-blue-500" />
+                              <span>{client.full_name || client.name || "Unknown"}</span>
+                              {client.primary_email && (
+                                <span className="ml-2 text-xs text-muted-foreground">{client.primary_email}</span>
+                              )}
+                            </CommandItem>
+                          ))}
+                      </CommandGroup>
+                    )}
+                    {clients.filter((c) => c.type === "organization").length > 0 && (
+                      <CommandGroup heading="Organizations">
+                        {clients
+                          .filter((c) => c.type === "organization")
+                          .map((client) => (
+                            <CommandItem key={client.id} value={`org-${client.id}`} onSelect={() => addClient(client)}>
+                              <Building2 className="mr-2 h-4 w-4 text-green-500" />
+                              <span>{client.full_name || client.name || "Unknown"}</span>
+                            </CommandItem>
+                          ))}
+                      </CommandGroup>
+                    )}
                   </CommandList>
                 </Command>
               </PopoverContent>

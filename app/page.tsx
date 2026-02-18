@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, Component, type ReactNode, type ErrorInfo } from "react"
+import { useState } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { DashboardHome } from "@/components/dashboard-home"
 import { ServiceLineDashboard } from "@/components/service-line-dashboard"
@@ -16,40 +16,12 @@ import { IrsNotices } from "@/components/irs-notices"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Home, Calculator, FileText, Users2 } from "lucide-react"
 
-class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  constructor(props: { children: ReactNode }) {
-    super(props)
-    this.state = { error: null }
-  }
-  static getDerivedStateFromError(error: Error) {
-    return { error }
-  }
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.log("[v0] ErrorBoundary caught:", error.message, error.stack, info.componentStack)
-  }
-  render() {
-    if (this.state.error) {
-      return (
-        <div className="p-8 max-w-2xl mx-auto">
-          <h2 className="text-xl font-bold text-red-600 mb-2">Something went wrong</h2>
-          <pre className="bg-gray-100 p-4 rounded text-sm overflow-auto whitespace-pre-wrap">{this.state.error.message}{"\n"}{this.state.error.stack}</pre>
-          <button className="mt-4 px-4 py-2 bg-blue-600 text-white rounded" onClick={() => this.setState({ error: null })}>
-            Try Again
-          </button>
-        </div>
-      )
-    }
-    return this.props.children
-  }
-}
-
 export default function Page() {
   const [activeTab, setActiveTab] = useState("dashboard")
   const [accountingSubTab, setAccountingSubTab] = useState("overview")
   const [taxSubTab, setTaxSubTab] = useState("overview")
 
   return (
-    <ErrorBoundary>
     <DashboardLayout>
       <div className="space-y-6">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -177,6 +149,5 @@ export default function Page() {
         </Tabs>
       </div>
     </DashboardLayout>
-    </ErrorBoundary>
   )
 }
