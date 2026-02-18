@@ -58,6 +58,8 @@ export function TommyVotingForm() {
         .from("team_members")
         .select("id, full_name, email, avatar_url, role")
         .eq("is_active", true)
+        .not("role", "eq", "Company")
+        .not("role", "eq", "Alumni")
         .order("full_name")
 
       if (membersError) throw membersError

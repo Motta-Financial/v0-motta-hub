@@ -287,7 +287,7 @@ export async function POST(request: NextRequest) {
         // Send notifications for new events
         if (isNew) {
           // Get all active team members
-          const { data: teamMembers } = await supabase.from("team_members").select("id").eq("is_active", true)
+          const { data: teamMembers } = await supabase.from("team_members").select("id").eq("is_active", true).not("role", "eq", "Company").not("role", "eq", "Alumni")
 
           if (teamMembers) {
             const inviteeNames = (event.invitees || []).map((i: any) => i.name || i.email).join(", ")

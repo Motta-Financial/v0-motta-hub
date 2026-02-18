@@ -8,10 +8,14 @@ export async function GET(request: Request) {
     const role = searchParams.get("role")
     const status = searchParams.get("status")
 
+    const includeAll = searchParams.get("include_all") === "true"
     let query = supabase.from("team_members").select("*").order("full_name", { ascending: true })
 
     if (role) {
       query = query.eq("role", role)
+    } else if (!includeAll) {
+      // By default, exclude Company and Alumni roles from user-facing lists
+      query = query.not("role", "eq", "Company").not("role", "eq", "Alumni")
     }
     if (status) {
       query = query.eq("status", status)

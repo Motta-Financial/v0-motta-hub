@@ -225,7 +225,7 @@ export async function POST(request: Request) {
 
     if (todayMeetings.length > 0) {
       // Get all team members
-      const { data: teamMembers } = await supabaseAdmin.from("team_members").select("id").eq("is_active", true)
+      const { data: teamMembers } = await supabaseAdmin.from("team_members").select("id").eq("is_active", true).not("role", "eq", "Company").not("role", "eq", "Alumni")
 
       if (teamMembers && teamMembers.length > 0) {
         const notifications = teamMembers.map((tm) => ({
