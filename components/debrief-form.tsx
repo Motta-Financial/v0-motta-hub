@@ -217,7 +217,7 @@ export function DebriefForm() {
 
     setLoadingWorkItems(true)
     try {
-      const res = await fetch(`/api/work-items?search=${encodeURIComponent(search)}&limit=20`)
+      const res = await fetch(`/api/work-items?search=${encodeURIComponent(search)}&limit=20&active=true`)
       const data = await res.json()
       setWorkItems(
         (data.work_items || []).map((w: any) => ({
@@ -316,7 +316,6 @@ export function DebriefForm() {
     if (serviceSearch === "") return
 
     const timer = setTimeout(() => {
-      console.log("[v0] Searching services with query:", serviceSearch)
       fetchServices(serviceSearch)
     }, 300)
     return () => clearTimeout(timer)
@@ -1097,10 +1096,7 @@ export function DebriefForm() {
                   <CommandInput
                     placeholder="Search services by name..."
                     value={serviceSearch}
-                    onValueChange={(value) => {
-                      console.log("[v0] Service search input changed:", value)
-                      setServiceSearch(value)
-                    }}
+                    onValueChange={setServiceSearch}
                   />
                   <CommandList className="max-h-[300px]">
                     <CommandEmpty>{loadingServices ? "Loading services..." : "No services found."}</CommandEmpty>
@@ -1109,10 +1105,7 @@ export function DebriefForm() {
                         <CommandItem
                           key={service.id}
                           value={service.id}
-                          onSelect={() => {
-                            console.log("[v0] Service selected:", service.name)
-                            toggleService(service)
-                          }}
+                          onSelect={() => toggleService(service)}
                         >
                           <Checkbox checked={formData.services.some((s) => s.id === service.id)} className="mr-2" />
                           <div className="flex flex-col flex-1">

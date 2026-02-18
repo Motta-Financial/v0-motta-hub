@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { sendEmail, buildDebriefEmailHtml } from "@/lib/email"
 
 export async function GET(request: NextRequest) {
   const supabase = createAdminClient()
@@ -107,7 +108,7 @@ export async function POST(request: NextRequest) {
 
     const createdDebrief = data[0]
 
-    await createDebriefNotifications(createdDebrief, body.team_member)
+    await createDebriefNotifications(createdDebrief, body.team_member, body)
 
     return NextResponse.json({ debrief: createdDebrief })
   } catch (error) {
@@ -116,7 +117,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function createDebriefNotifications(debrief: any, authorName: string) {
+async function createDebriefNotifications(debrief: any, authorName: string, body: any) {
   try {
     const supabase = createAdminClient()
     // Fetch all active team members
@@ -138,7 +139,13 @@ async function createDebriefNotifications(debrief: any, authorName: string) {
       if (contact) clientName = contact.full_name
     }
 
-    // Create notification for all team members (except the author)
+    // Also use related_clients from body for better naming
+    const relatedClientNames = (body?.related_clients || []).map((c: any) => c.name).filter(Boolean)
+    if (relatedClientNames.length > 0) {
+      clientName = relatedClientNames.join(", ")
+    }
+
+    // Create in-app notification for all team members (except the author)
     const notifications = teamMembers
       .filter((tm) => tm.id !== debrief.created_by_id)
       .map((tm) => ({
@@ -156,6 +163,47 @@ async function createDebriefNotifications(debrief: any, authorName: string) {
       await supabase.from("notifications").insert(notifications)
     }
 
+    // Send EMAIL to all active team members (except author)
+    const recipientEmails = teamMembers
+      .filter((tm) => tm.id !== debrief.created_by_id && tm.email)
+      .map((tm) => tm.email)
+
+    if (recipientEmails.length > 0) {
+      const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://mottahub-motta.vercel.app"
+      const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
+
+      const html = buildDebriefEmailHtml({
+        authorName: authorName || "A team member",
+        clientName,
+        debriefDate: debrief.debrief_date
+          ? new Date(debrief.debrief_date).toLocaleDateString("en-US", {
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
+          : "N/A",
+        notes: body?.notes || debrief.notes || undefined,
+        actionItems: debrief.action_items?.items || body?.action_items || [],
+        services: body?.services || [],
+        researchTopics: body?.research_topics || undefined,
+        feeAdjustment: body?.fee_adjustment || undefined,
+        debriefUrl,
+      })
+
+      const emailResult = await sendEmail({
+        to: recipientEmails,
+        subject: `New Debrief: ${clientName} - ${authorName || "Team Member"}`,
+        html,
+      })
+
+      if (!emailResult.success) {
+        console.warn("[debrief] Email send failed (in-app notifications still created):", emailResult.error)
+      } else {
+        console.log(`[debrief] Email sent to ${recipientEmails.length} active team members`)
+      }
+    }
+
+    // Action item assignment notifications
     const actionItems = debrief.action_items?.items || []
     const actionNotifications: any[] = []
 
