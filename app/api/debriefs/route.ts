@@ -120,11 +120,13 @@ export async function POST(request: NextRequest) {
 async function createDebriefNotifications(debrief: any, authorName: string, body: any) {
   try {
     const supabase = createAdminClient()
-    // Fetch all active team members
+    // Fetch all active team members (excluding Company and Alumni roles)
     const { data: teamMembers } = await supabase
       .from("team_members")
-      .select("id, full_name, email")
+      .select("id, full_name, email, role")
       .eq("is_active", true)
+      .not("role", "eq", "Company")
+      .not("role", "eq", "Alumni")
 
     if (!teamMembers || teamMembers.length === 0) return
 
