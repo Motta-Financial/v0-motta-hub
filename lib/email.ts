@@ -1,9 +1,3 @@
-import { Resend } from "resend"
-
-const resend = process.env.RESEND_API_KEY
-  ? new Resend(process.env.RESEND_API_KEY)
-  : null
-
 const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "ALFRED Ai <Info@mottafinancial.com>"
 
 interface SendEmailParams {
@@ -13,9 +7,21 @@ interface SendEmailParams {
   replyTo?: string
 }
 
+async function getResendClient() {
+  if (!process.env.RESEND_API_KEY) return null
+  try {
+    const { Resend } = await import("resend")
+    return new Resend(process.env.RESEND_API_KEY)
+  } catch {
+    console.warn("[email] resend package not available")
+    return null
+  }
+}
+
 export async function sendEmail({ to, subject, html, replyTo }: SendEmailParams) {
+  const resend = await getResendClient()
   if (!resend) {
-    console.warn("[email] RESEND_API_KEY not configured -- skipping email send")
+    console.warn("[email] Email service not configured -- skipping email send")
     return { success: false, error: "Email service not configured" }
   }
 

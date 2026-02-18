@@ -112,8 +112,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ debrief: createdDebrief })
   } catch (error) {
-    console.error("Error in POST /api/debriefs:", error)
-    return NextResponse.json({ error: "Failed to create debrief" }, { status: 500 })
+    const message = error instanceof Error ? error.message : "Unknown error"
+    console.error("Error in POST /api/debriefs:", message, error)
+    return NextResponse.json({ error: `Failed to create debrief: ${message}` }, { status: 500 })
   }
 }
 
