@@ -1,37 +1,35 @@
 /**
- * Karbon -> Supabase Sync: All Bulk Entities
+ * Karbon -> Supabase Comprehensive Sync
  * 
- * Fixed for actual Karbon API response shapes:
- *   - Users: {Id, Name, EmailAddress} (not UserKey/FirstName/LastName)
- *   - Contacts: {ContactKey, FullName, ...} (no $expand in list)
- *   - Organizations: {OrganizationKey, OrganizationName, ...}
- *   - etc.
+ * NO optional chaining (?.) or nullish coalescing (??) - sandbox compatible
  */
 
-const BASE = "https://api.karbonhq.com/v3"
-const AK = process.env.KARBON_ACCESS_KEY
-const BT = process.env.KARBON_BEARER_TOKEN
-const SB_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
-const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+var BASE = "https://api.karbonhq.com/v3"
+var AK = process.env.KARBON_ACCESS_KEY
+var BT = process.env.KARBON_BEARER_TOKEN
+var SB_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+var SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 
 if (!AK || !BT || !SB_URL || !SB_KEY) { console.error("Missing env vars"); process.exit(1) }
 
+function safe(obj, key) { return obj && obj[key] != null ? obj[key] : null }
+function safeStr(obj, key) { var v = safe(obj, key); return v ? String(v) : null }
+
 async function kFetch(url) {
-  const u = url.startsWith("http") ? url : `${BASE}${url}`
-  const r = await fetch(u, { headers: { Authorization: `Bearer ${BT}`, AccessKey: AK, Accept: "application/json" } })
-  if (!r.ok) { const t = await r.text().catch(()=>""); throw new Error(`${r.status} ${u.substring(0,80)}: ${t.substring(0,200)}`) }
+  var u = url.startsWith("http") ? url : BASE + url
+  var r = await fetch(u, { headers: { Authorization: "Bearer " + BT, AccessKey: AK, Accept: "application/json" } })
+  if (!r.ok) { var t = ""; try { t = await r.text() } catch(x){} throw new Error(r.status + " " + u.substring(0,80) + ": " + t.substring(0,200)) }
   return r.json()
 }
 
 async function kFetchAll(endpoint) {
-  const all = []
-  let url = `${BASE}${endpoint}`, pg = 1
+  var all = [], url = BASE + endpoint, pg = 1
   while (url) {
-    const d = await kFetch(url)
-    const items = d.value || d || []
-    if (Array.isArray(items)) all.push(...items)
+    var d = await kFetch(url)
+    var items = d.value || d || []
+    if (Array.isArray(items)) { for (var i = 0; i < items.length; i++) all.push(items[i]) }
     url = d["@odata.nextLink"] || d["odata.nextLink"] || null
-    if (pg % 5 === 0) console.log(`  ... ${all.length} items (page ${pg})`)
+    if (pg % 5 === 0) console.log("  ... " + all.length + " items (page " + pg + ")")
     pg++
     if (pg > 500) break
   }
@@ -40,30 +38,31 @@ async function kFetchAll(endpoint) {
 
 async function sbUpsert(table, data) {
   if (!data || !data.length) return { synced: 0, errors: 0 }
-  let synced = 0, errors = 0
-  for (let i = 0; i < data.length; i += 50) {
-    const batch = data.slice(i, i + 50)
-    const r = await fetch(`${SB_URL}/rest/v1/${table}`, {
+  var synced = 0, errors = 0
+  for (var i = 0; i < data.length; i += 50) {
+    var batch = data.slice(i, i + 50)
+    var r = await fetch(SB_URL + "/rest/v1/" + table, {
       method: "POST",
-      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+      headers: { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify(batch),
     })
     if (r.ok) { synced += batch.length }
     else {
-      const t = await r.text().catch(()=>"")
-      console.error(`  ERR ${table} batch ${Math.floor(i/50)+1}: ${r.status} ${t.substring(0,400)}`)
+      var t = ""; try { t = await r.text() } catch(x){}
+      console.error("  ERR " + table + " batch " + (Math.floor(i/50)+1) + ": " + r.status + " " + t.substring(0,400))
       errors += batch.length
     }
   }
-  return { synced, errors }
+  return { synced: synced, errors: errors }
 }
 
-// ── User mapper (Karbon Users have: Id, Name, EmailAddress) ──
+// ── Mappers (no ?. or ?? anywhere) ──
+
 function mapUser(u) {
-  const key = u.UserKey || u.MemberKey || u.Id
-  const parts = (u.Name || "").split(" ")
-  const fn = u.FirstName || parts[0] || ""
-  const ln = u.LastName || parts.slice(1).join(" ") || ""
+  var key = u.UserKey || u.MemberKey || u.Id
+  var parts = (u.Name || "").split(" ")
+  var fn = u.FirstName || parts[0] || ""
+  var ln = u.LastName || parts.slice(1).join(" ") || ""
   return {
     karbon_user_key: key,
     first_name: fn || null,
@@ -79,24 +78,25 @@ function mapUser(u) {
     timezone: u.TimeZone || null,
     start_date: u.StartDate ? u.StartDate.split("T")[0] : null,
     is_active: u.IsActive !== false,
-    karbon_url: key ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/team/${key}` : null,
+    karbon_url: key ? "https://app2.karbonhq.com/4mTyp9lLRWTC#/team/" + key : null,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
 }
 
 function mapContact(c) {
-  const bcs = Array.isArray(c.BusinessCards) ? c.BusinessCards : []
-  const bc = bcs.find(b => b.IsPrimaryCard) || bcs[0] || {}
-  const acct = c.AccountingDetail || {}
-  const addrs = Array.isArray(bc.Addresses) ? bc.Addresses : bc.Addresses ? [bc.Addresses] : []
-  const addr = addrs.find(a => a.Label === "Physical") || addrs[0] || {}
-  const mail = addrs.find(a => a.Label === "Mailing") || {}
-  const phs = Array.isArray(bc.PhoneNumbers) ? bc.PhoneNumbers : bc.PhoneNumbers ? [bc.PhoneNumbers] : []
-  const ems = Array.isArray(bc.EmailAddresses) ? bc.EmailAddresses : bc.EmailAddresses ? [bc.EmailAddresses] : []
-  const fn = c.FirstName || null, ln = c.LastName || null
-  const full = c.FullName || [fn, c.MiddleName, ln].filter(Boolean).join(" ") || null
-  const findPh = (label) => { const p = phs.find(x => x.Label === label); return p?.Number ? String(p.Number) : null }
+  var bcs = Array.isArray(c.BusinessCards) ? c.BusinessCards : []
+  var bc = bcs.find(function(b){return b.IsPrimaryCard}) || bcs[0] || {}
+  var acct = c.AccountingDetail || {}
+  var addrs = Array.isArray(bc.Addresses) ? bc.Addresses : bc.Addresses ? [bc.Addresses] : []
+  var addr = addrs.find(function(a){return a.Label === "Physical"}) || addrs[0] || {}
+  var mail = addrs.find(function(a){return a.Label === "Mailing"}) || {}
+  var phs = Array.isArray(bc.PhoneNumbers) ? bc.PhoneNumbers : bc.PhoneNumbers ? [bc.PhoneNumbers] : []
+  var ems = Array.isArray(bc.EmailAddresses) ? bc.EmailAddresses : bc.EmailAddresses ? [bc.EmailAddresses] : []
+  var fn = c.FirstName || null, ln = c.LastName || null
+  var full = c.FullName || [fn, c.MiddleName, ln].filter(Boolean).join(" ") || null
+  function findPh(label) { var p = phs.find(function(x){return x.Label === label}); return p && p.Number ? String(p.Number) : null }
+  var acctNotes = acct.Notes || {}
   return {
     karbon_contact_key: c.ContactKey,
     first_name: fn, last_name: ln, middle_name: c.MiddleName || null,
@@ -107,7 +107,7 @@ function mapContact(c) {
     is_prospect: c.ContactType === "Prospect",
     primary_email: c.EmailAddress || ems[0] || null,
     secondary_email: ems.length > 1 ? ems[1] : null,
-    phone_primary: c.PhoneNumber || (phs[0]?.Number ? String(phs[0].Number) : null),
+    phone_primary: c.PhoneNumber || (phs[0] && phs[0].Number ? String(phs[0].Number) : null),
     phone_mobile: findPh("Mobile"), phone_work: findPh("Work"), phone_fax: findPh("Fax"),
     address_line1: addr.AddressLines || addr.Street || null, address_line2: addr.AddressLine2 || null,
     city: addr.City || null, state: addr.StateProvinceCounty || addr.State || null,
@@ -128,27 +128,27 @@ function mapContact(c) {
     business_cards: bcs.length > 0 ? bcs : null,
     accounting_detail: Object.keys(acct).length > 0 ? acct : null,
     assigned_team_members: c.AssignedTeamMembers || [], tags: c.Tags || [],
-    notes: acct.Notes?.Body || c.Notes || null, custom_fields: c.CustomFields || {},
+    notes: acctNotes.Body || c.Notes || null, custom_fields: c.CustomFields || {},
     contact_preference: c.ContactPreference || null,
-    karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/contacts/${c.ContactKey}`,
-    karbon_contact_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/contacts/${c.ContactKey}`,
+    karbon_url: "https://app2.karbonhq.com/4mTyp9lLRWTC#/contacts/" + c.ContactKey,
+    karbon_contact_url: "https://app2.karbonhq.com/4mTyp9lLRWTC#/contacts/" + c.ContactKey,
     karbon_created_at: c.CreatedDateTime || null, karbon_modified_at: c.LastModifiedDateTime || null,
     last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }
 }
 
 function mapOrg(o) {
-  const bcs = Array.isArray(o.BusinessCards) ? o.BusinessCards : []
-  const bc = bcs.find(b => b.IsPrimaryCard) || bcs[0] || {}
-  const acct = o.AccountingDetail || {}
-  const addrs = Array.isArray(bc.Addresses) ? bc.Addresses : bc.Addresses ? [bc.Addresses] : []
-  const addr = addrs[0] || {}
-  const phs = Array.isArray(bc.PhoneNumbers) ? bc.PhoneNumbers : bc.PhoneNumbers ? [bc.PhoneNumbers] : []
-  const ems = Array.isArray(bc.EmailAddresses) ? bc.EmailAddresses : bc.EmailAddresses ? [bc.EmailAddresses] : []
-  const etMap = {B:"Business",P:"Partnership",T:"Trust",C:"Corporation",S:"S-Corp",N:"Non-Profit",I:"Individual",O:"Other"}
+  var bcs = Array.isArray(o.BusinessCards) ? o.BusinessCards : []
+  var bc = bcs.find(function(b){return b.IsPrimaryCard}) || bcs[0] || {}
+  var acct = o.AccountingDetail || {}
+  var addrs = Array.isArray(bc.Addresses) ? bc.Addresses : bc.Addresses ? [bc.Addresses] : []
+  var addr = addrs[0] || {}
+  var phs = Array.isArray(bc.PhoneNumbers) ? bc.PhoneNumbers : bc.PhoneNumbers ? [bc.PhoneNumbers] : []
+  var ems = Array.isArray(bc.EmailAddresses) ? bc.EmailAddresses : bc.EmailAddresses ? [bc.EmailAddresses] : []
+  var etMap = {B:"Business",P:"Partnership",T:"Trust",C:"Corporation",S:"S-Corp",N:"Non-Profit",I:"Individual",O:"Other"}
   return {
     karbon_organization_key: o.OrganizationKey,
-    name: o.OrganizationName || o.Name || `Org ${o.OrganizationKey}`,
+    name: o.OrganizationName || o.Name || "Org " + o.OrganizationKey,
     full_name: o.FullName || o.OrganizationName || o.Name || null,
     legal_name: o.LegalName || null, trading_name: o.TradingName || null,
     description: o.Description || null, entity_type: etMap[o.EntityType] || o.EntityType || "Business",
@@ -156,7 +156,7 @@ function mapOrg(o) {
     user_defined_identifier: o.UserDefinedIdentifier || null,
     industry: o.Industry || null, line_of_business: o.LineOfBusiness || null,
     primary_email: o.EmailAddress || ems[0] || null,
-    phone: o.PhoneNumber || (phs[0]?.Number ? String(phs[0].Number) : null),
+    phone: o.PhoneNumber || (phs[0] && phs[0].Number ? String(phs[0].Number) : null),
     website: Array.isArray(bc.WebSites) ? bc.WebSites[0] : bc.WebSites || null,
     address_line1: addr.AddressLines || addr.Street || null, address_line2: addr.AddressLine2 || null,
     city: addr.City || null, state: addr.StateProvinceCounty || addr.State || null,
@@ -165,12 +165,12 @@ function mapOrg(o) {
     facebook_url: bc.FacebookLink || null,
     fiscal_year_end_month: acct.FiscalYearEndMonth || null, fiscal_year_end_day: acct.FiscalYearEndDay || null,
     base_currency: acct.BaseCurrency || null, tax_country_code: acct.TaxCountryCode || null,
-    pays_tax: acct.PaysTax ?? null,
+    pays_tax: acct.PaysTax != null ? acct.PaysTax : null,
     client_owner_key: o.ClientOwnerKey || null, client_manager_key: o.ClientManagerKey || null,
     client_partner_key: o.ClientPartnerKey || null, parent_organization_key: o.ParentOrganizationKey || null,
     business_cards: bcs.length > 0 ? bcs : null,
     assigned_team_members: o.AssignedTeamMembers || null, custom_fields: o.CustomFieldValues || null,
-    karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/organizations/${o.OrganizationKey}`,
+    karbon_url: "https://app2.karbonhq.com/4mTyp9lLRWTC#/organizations/" + o.OrganizationKey,
     karbon_created_at: o.CreatedDateTime || null, karbon_modified_at: o.LastModifiedDateTime || null,
     last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }
@@ -179,7 +179,7 @@ function mapOrg(o) {
 function mapGroup(g) {
   return {
     karbon_client_group_key: g.ClientGroupKey,
-    name: g.FullName || g.Name || `Group ${g.ClientGroupKey}`,
+    name: g.FullName || g.Name || "Group " + g.ClientGroupKey,
     description: g.EntityDescription || g.Description || null,
     group_type: g.ContactType || g.GroupType || null, contact_type: g.ContactType || null,
     primary_contact_key: g.PrimaryContactKey || null, primary_contact_name: g.PrimaryContactName || null,
@@ -187,17 +187,18 @@ function mapGroup(g) {
     client_manager_key: g.ClientManager || null, client_manager_name: g.ClientManagerName || null,
     members: g.Members || [], restriction_level: g.RestrictionLevel || "Public",
     user_defined_identifier: g.UserDefinedIdentifier || null, entity_description: g.EntityDescription || null,
-    karbon_url: g.ClientGroupKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/client-groups/${g.ClientGroupKey}` : null,
+    karbon_url: g.ClientGroupKey ? "https://app2.karbonhq.com/4mTyp9lLRWTC#/client-groups/" + g.ClientGroupKey : null,
     karbon_created_at: g.CreatedDate || null, karbon_modified_at: g.LastModifiedDateTime || null,
     last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }
 }
 
 function mapStatus(s, i) {
-  const inactive = (s.PrimaryStatusName||"").toLowerCase().includes("complet") || (s.PrimaryStatusName||"").toLowerCase().includes("cancel")
+  var pn = s.PrimaryStatusName || ""
+  var inactive = pn.toLowerCase().indexOf("complet") >= 0 || pn.toLowerCase().indexOf("cancel") >= 0
   return {
     karbon_status_key: s.WorkStatusKey,
-    name: [s.PrimaryStatusName, s.SecondaryStatusName].filter(Boolean).join(" - ") || `Status ${i}`,
+    name: [s.PrimaryStatusName, s.SecondaryStatusName].filter(Boolean).join(" - ") || "Status " + i,
     description: s.SecondaryStatusName || null, status_type: s.PrimaryStatusName || null,
     primary_status_name: s.PrimaryStatusName || null, secondary_status_name: s.SecondaryStatusName || null,
     work_type_keys: s.WorkTypeKeys || null, display_order: i,
@@ -207,13 +208,14 @@ function mapStatus(s, i) {
 
 function parseTaxYear(w) {
   if (w.TaxYear) return w.TaxYear
-  if (w.YearEnd) { const y = new Date(w.YearEnd).getFullYear(); if (y>2000&&y<2100) return y }
-  if (w.Title) { const m = w.Title.match(/\b(20\d{2})\b/); if (m) return parseInt(m[1],10) }
+  if (w.YearEnd) { var y = new Date(w.YearEnd).getFullYear(); if (y > 2000 && y < 2100) return y }
+  if (w.Title) { var m = w.Title.match(/\b(20\d{2})\b/); if (m) return parseInt(m[1], 10) }
   return null
 }
 
 function mapWorkItem(w) {
-  const f = w.FeeSettings || {}
+  var f = w.FeeSettings || {}
+  var budget = w.Budget || {}
   return {
     karbon_work_item_key: w.WorkItemKey, karbon_client_key: w.ClientKey || null,
     client_type: w.ClientType || null, client_name: w.ClientName || null,
@@ -241,19 +243,21 @@ function mapWorkItem(w) {
     work_template_key: w.WorkTemplateKey || null,
     work_template_name: w.WorkTemplateTitle || w.WorkTemplateTile || null,
     fee_type: f.FeeType || null, estimated_fee: f.FeeValue || null,
-    fixed_fee_amount: f.FeeType==="Fixed" ? f.FeeValue : null,
-    hourly_rate: f.FeeType==="Hourly" ? f.FeeValue : null,
+    fixed_fee_amount: f.FeeType === "Fixed" ? f.FeeValue : null,
+    hourly_rate: f.FeeType === "Hourly" ? f.FeeValue : null,
     estimated_minutes: w.EstimatedBudgetMinutes || null, actual_minutes: w.ActualBudget || null,
     billable_minutes: w.BillableTime || null,
-    budget_minutes: w.Budget?.BudgetedHours ? Math.round(w.Budget.BudgetedHours*60) : null,
-    budget_hours: w.Budget?.BudgetedHours || null, budget_amount: w.Budget?.BudgetedAmount || null,
+    budget_minutes: budget.BudgetedHours ? Math.round(budget.BudgetedHours * 60) : null,
+    budget_hours: budget.BudgetedHours || null, budget_amount: budget.BudgetedAmount || null,
     actual_hours: w.ActualHours || null, actual_amount: w.ActualAmount || null, actual_fee: w.ActualFee || null,
     todo_count: w.TodoCount || 0, completed_todo_count: w.CompletedTodoCount || 0,
     has_blocking_todos: w.HasBlockingTodos || false,
     priority: w.Priority || "Normal", tags: w.Tags || [],
-    is_recurring: w.IsRecurring ?? false, is_billable: w.IsBillable ?? true, is_internal: w.IsInternal ?? false,
+    is_recurring: w.IsRecurring != null ? w.IsRecurring : false,
+    is_billable: w.IsBillable != null ? w.IsBillable : true,
+    is_internal: w.IsInternal != null ? w.IsInternal : false,
     notes: w.Notes || null, custom_fields: w.CustomFields || {}, related_work_keys: w.RelatedWorkKeys || [],
-    karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/work/${w.WorkItemKey}`,
+    karbon_url: "https://app2.karbonhq.com/4mTyp9lLRWTC#/work/" + w.WorkItemKey,
     karbon_created_at: w.CreatedDate || w.CreatedDateTime || null,
     karbon_modified_at: w.LastModifiedDateTime || w.ModifiedDate || null,
     last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString(),
@@ -261,22 +265,30 @@ function mapWorkItem(w) {
 }
 
 function mapTimesheet(e, ts, idx) {
-  const k = e.TimeEntryKey || e.TimesheetKey || `${ts?.TimesheetKey||"ts"}-${e.Date?e.Date.split("T")[0]:"nd"}-${e.WorkItemKey||"nw"}-${idx||0}`
+  var tsKey = ts ? ts.TimesheetKey : "ts"
+  var dateStr = e.Date ? e.Date.split("T")[0] : "nd"
+  var k = e.TimeEntryKey || e.TimesheetKey || (tsKey + "-" + dateStr + "-" + (e.WorkItemKey || "nw") + "-" + (idx || 0))
+  var tsStartDate = ts ? ts.StartDate : null
+  var tsStatus = ts ? ts.Status : null
+  var tsUserKey = ts ? ts.UserKey : null
+  var tsUserName = ts ? ts.UserName : null
+  var tsEndDate = ts ? ts.EndDate : null
   return {
     karbon_timesheet_key: k,
-    date: e.Date ? e.Date.split("T")[0] : (ts?.StartDate ? ts.StartDate.split("T")[0] : null),
+    date: e.Date ? e.Date.split("T")[0] : (tsStartDate ? tsStartDate.split("T")[0] : null),
     minutes: e.Minutes || 0, description: e.TaskTypeName || e.Description || null,
-    is_billable: e.IsBillable ?? true, billing_status: e.BillingStatus || ts?.Status || null,
+    is_billable: e.IsBillable != null ? e.IsBillable : true,
+    billing_status: e.BillingStatus || tsStatus || null,
     hourly_rate: e.HourlyRate || null,
-    billed_amount: e.HourlyRate && e.Minutes ? ((e.HourlyRate*e.Minutes)/60) : null,
-    user_key: e.UserKey || ts?.UserKey || null, user_name: e.UserName || ts?.UserName || null,
+    billed_amount: e.HourlyRate && e.Minutes ? ((e.HourlyRate * e.Minutes) / 60) : null,
+    user_key: e.UserKey || tsUserKey || null, user_name: e.UserName || tsUserName || null,
     karbon_work_item_key: e.WorkItemKey || null, work_item_title: e.WorkItemTitle || null,
     client_key: e.ClientKey || null, client_name: e.ClientName || null,
     task_key: e.TaskTypeKey || e.TaskKey || null, role_name: e.RoleName || null,
-    task_type_name: e.TaskTypeName || null, timesheet_status: ts?.Status || e.Status || null,
-    karbon_url: ts?.TimesheetKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/timesheets/${ts.TimesheetKey}` : null,
-    karbon_created_at: ts?.StartDate || e.CreatedDate || null,
-    karbon_modified_at: ts?.EndDate || e.LastModifiedDateTime || null,
+    task_type_name: e.TaskTypeName || null, timesheet_status: tsStatus || e.Status || null,
+    karbon_url: tsKey !== "ts" ? "https://app2.karbonhq.com/4mTyp9lLRWTC#/timesheets/" + tsKey : null,
+    karbon_created_at: tsStartDate || e.CreatedDate || null,
+    karbon_modified_at: tsEndDate || e.LastModifiedDateTime || null,
     last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }
 }
@@ -293,7 +305,7 @@ function mapInvoice(inv) {
     amount: inv.Amount || inv.SubTotal || null, tax: inv.TaxAmount || inv.Tax || null,
     total_amount: inv.TotalAmount || null, currency: inv.Currency || "USD",
     line_items: inv.LineItems || null,
-    karbon_url: inv.InvoiceKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/invoices/${inv.InvoiceKey}` : null,
+    karbon_url: inv.InvoiceKey ? "https://app2.karbonhq.com/4mTyp9lLRWTC#/invoices/" + inv.InvoiceKey : null,
     karbon_created_at: inv.CreatedDate || null, karbon_modified_at: inv.LastModifiedDateTime || null,
     last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }
@@ -302,116 +314,130 @@ function mapInvoice(inv) {
 // ── Main ──
 async function main() {
   console.log("=== KARBON -> SUPABASE COMPREHENSIVE SYNC ===")
-  console.log(`Started: ${new Date().toISOString()}\n`)
-  const R = {}
+  console.log("Started: " + new Date().toISOString() + "\n")
+  var R = {}
 
-  // 1. Users - dedupe by key AND email
+  // 1. Users
   try {
     console.log("1/8 Users...")
-    const raw = await kFetchAll("/Users")
-    console.log(`  Fetched ${raw.length} users. Sample keys: ${raw.length > 0 ? Object.keys(raw[0]).join(",") : "none"}`)
-    const seenKeys = new Set(), seenEmails = new Set()
-    const deduped = raw.filter(u => {
-      const k = u.UserKey || u.MemberKey || u.Id
-      const e = (u.EmailAddress || u.Email || "").toLowerCase()
-      if (!k || seenKeys.has(k) || (e && seenEmails.has(e))) return false
-      seenKeys.add(k); if (e) seenEmails.add(e)
+    var rawU = await kFetchAll("/Users")
+    console.log("  Fetched " + rawU.length + " users")
+    var seenKeys = {}, seenEmails = {}
+    var deduped = rawU.filter(function(u) {
+      var k = u.UserKey || u.MemberKey || u.Id
+      var e = (u.EmailAddress || u.Email || "").toLowerCase()
+      if (!k || seenKeys[k] || (e && seenEmails[e])) return false
+      seenKeys[k] = true; if (e) seenEmails[e] = true
       return true
     })
-    console.log(`  Deduped to ${deduped.length} unique users`)
+    console.log("  Deduped to " + deduped.length)
     R.users = await sbUpsert("team_members", deduped.map(mapUser))
-    console.log(`  OK: ${R.users.synced} synced, ${R.users.errors} errors\n`)
-  } catch(e) { console.error(`  FAIL: ${e.message}\n`); R.users = {synced:0,errors:1} }
+    console.log("  OK: " + R.users.synced + " synced, " + R.users.errors + " errors\n")
+  } catch(e) { console.error("  FAIL: " + e.message + "\n"); R.users = {synced:0,errors:1} }
 
   // 2. Contacts
   try {
     console.log("2/8 Contacts...")
-    const raw = await kFetchAll("/Contacts")
-    console.log(`  Fetched ${raw.length} contacts`)
-    R.contacts = await sbUpsert("contacts", raw.map(mapContact))
-    console.log(`  OK: ${R.contacts.synced} synced, ${R.contacts.errors} errors\n`)
-  } catch(e) { console.error(`  FAIL: ${e.message}\n`); R.contacts = {synced:0,errors:1} }
+    var rawC = await kFetchAll("/Contacts")
+    console.log("  Fetched " + rawC.length + " contacts")
+    R.contacts = await sbUpsert("contacts", rawC.map(mapContact))
+    console.log("  OK: " + R.contacts.synced + " synced, " + R.contacts.errors + " errors\n")
+  } catch(e) { console.error("  FAIL: " + e.message + "\n"); R.contacts = {synced:0,errors:1} }
 
   // 3. Organizations
   try {
     console.log("3/8 Organizations...")
-    const raw = await kFetchAll("/Organizations")
-    console.log(`  Fetched ${raw.length} orgs`)
-    R.orgs = await sbUpsert("organizations", raw.map(mapOrg))
-    console.log(`  OK: ${R.orgs.synced} synced, ${R.orgs.errors} errors\n`)
-  } catch(e) { console.error(`  FAIL: ${e.message}\n`); R.orgs = {synced:0,errors:1} }
+    var rawO = await kFetchAll("/Organizations")
+    console.log("  Fetched " + rawO.length + " orgs")
+    R.orgs = await sbUpsert("organizations", rawO.map(mapOrg))
+    console.log("  OK: " + R.orgs.synced + " synced, " + R.orgs.errors + " errors\n")
+  } catch(e) { console.error("  FAIL: " + e.message + "\n"); R.orgs = {synced:0,errors:1} }
 
   // 4. Client Groups
   try {
     console.log("4/8 Client Groups...")
-    const raw = await kFetchAll("/ClientGroups")
-    console.log(`  Fetched ${raw.length} groups`)
-    R.groups = await sbUpsert("client_groups", raw.map(mapGroup))
-    console.log(`  OK: ${R.groups.synced} synced, ${R.groups.errors} errors\n`)
-  } catch(e) { console.error(`  FAIL: ${e.message}\n`); R.groups = {synced:0,errors:1} }
+    var rawG = await kFetchAll("/ClientGroups")
+    console.log("  Fetched " + rawG.length + " groups")
+    R.groups = await sbUpsert("client_groups", rawG.map(mapGroup))
+    console.log("  OK: " + R.groups.synced + " synced, " + R.groups.errors + " errors\n")
+  } catch(e) { console.error("  FAIL: " + e.message + "\n"); R.groups = {synced:0,errors:1} }
 
-  // 5. Work Statuses
+  // 5. Work Statuses (try /WorkStatuses first, fallback to /TenantSettings)
   try {
     console.log("5/8 Work Statuses...")
-    let statuses = []
+    var statuses = []
     try {
-      const d = await kFetch(`${BASE}/WorkStatuses`)
-      statuses = (d.value || d || []).filter(s => s.WorkStatusKey)
+      var d1 = await kFetch(BASE + "/WorkStatuses")
+      var arr1 = d1.value || d1 || []
+      if (Array.isArray(arr1)) statuses = arr1.filter(function(s){return s.WorkStatusKey})
     } catch(e1) {
-      console.log(`  /WorkStatuses failed (${e1.message}), trying /TenantSettings...`)
+      console.log("  /WorkStatuses failed, trying /TenantSettings...")
       try {
-        const d = await kFetch(`${BASE}/TenantSettings`)
-        statuses = (d.WorkStatuses || []).filter(s => s.WorkStatusKey)
-      } catch(e2) { console.log(`  TenantSettings also failed: ${e2.message}`) }
+        var d2 = await kFetch(BASE + "/TenantSettings")
+        var arr2 = d2.WorkStatuses || []
+        statuses = arr2.filter(function(s){return s.WorkStatusKey})
+      } catch(e2) { console.log("  TenantSettings also failed: " + e2.message) }
     }
-    console.log(`  ${statuses.length} valid statuses`)
-    R.statuses = statuses.length > 0 ? await sbUpsert("work_status", statuses.map((s,i)=>mapStatus(s,i))) : {synced:0,errors:0}
-    console.log(`  OK: ${R.statuses.synced} synced, ${R.statuses.errors} errors\n`)
-  } catch(e) { console.error(`  FAIL: ${e.message}\n`); R.statuses = {synced:0,errors:1} }
+    console.log("  " + statuses.length + " valid statuses")
+    R.statuses = statuses.length > 0 ? await sbUpsert("work_status", statuses.map(function(s,i){return mapStatus(s,i)})) : {synced:0,errors:0}
+    console.log("  OK: " + R.statuses.synced + " synced, " + R.statuses.errors + " errors\n")
+  } catch(e) { console.error("  FAIL: " + e.message + "\n"); R.statuses = {synced:0,errors:1} }
 
   // 6. Work Items
   try {
     console.log("6/8 Work Items...")
-    const raw = await kFetchAll("/WorkItems")
-    console.log(`  Fetched ${raw.length} work items`)
-    R.workItems = await sbUpsert("work_items", raw.map(mapWorkItem))
-    console.log(`  OK: ${R.workItems.synced} synced, ${R.workItems.errors} errors\n`)
-  } catch(e) { console.error(`  FAIL: ${e.message}\n`); R.workItems = {synced:0,errors:1} }
+    var rawW = await kFetchAll("/WorkItems")
+    console.log("  Fetched " + rawW.length + " work items")
+    R.workItems = await sbUpsert("work_items", rawW.map(mapWorkItem))
+    console.log("  OK: " + R.workItems.synced + " synced, " + R.workItems.errors + " errors\n")
+  } catch(e) { console.error("  FAIL: " + e.message + "\n"); R.workItems = {synced:0,errors:1} }
 
   // 7. Timesheets
   try {
     console.log("7/8 Timesheets...")
-    const raw = await kFetchAll("/Timesheets")
-    console.log(`  Fetched ${raw.length} weekly timesheets`)
-    const entries = []
-    for (const ts of raw) {
-      if (ts.TimeEntries && Array.isArray(ts.TimeEntries)) {
-        ts.TimeEntries.forEach((e,i) => entries.push(mapTimesheet(e, ts, i)))
-      } else { entries.push(mapTimesheet(ts, null, 0)) }
+    var rawT = await kFetchAll("/Timesheets")
+    console.log("  Fetched " + rawT.length + " weekly timesheets")
+    var entries = []
+    for (var ti = 0; ti < rawT.length; ti++) {
+      var tsItem = rawT[ti]
+      if (tsItem.TimeEntries && Array.isArray(tsItem.TimeEntries)) {
+        for (var ei = 0; ei < tsItem.TimeEntries.length; ei++) {
+          entries.push(mapTimesheet(tsItem.TimeEntries[ei], tsItem, ei))
+        }
+      } else {
+        entries.push(mapTimesheet(tsItem, null, 0))
+      }
     }
-    console.log(`  Flattened to ${entries.length} entries`)
-    R.timesheets = await sbUpsert("karbon_timesheets", entries.filter(e => e.karbon_timesheet_key))
-    console.log(`  OK: ${R.timesheets.synced} synced, ${R.timesheets.errors} errors\n`)
-  } catch(e) { console.error(`  FAIL: ${e.message}\n`); R.timesheets = {synced:0,errors:1} }
+    console.log("  Flattened to " + entries.length + " entries")
+    var validEntries = entries.filter(function(e){return e.karbon_timesheet_key})
+    R.timesheets = await sbUpsert("karbon_timesheets", validEntries)
+    console.log("  OK: " + R.timesheets.synced + " synced, " + R.timesheets.errors + " errors\n")
+  } catch(e) { console.error("  FAIL: " + e.message + "\n"); R.timesheets = {synced:0,errors:1} }
 
   // 8. Invoices
   try {
     console.log("8/8 Invoices...")
-    const raw = await kFetchAll("/Invoices")
-    console.log(`  Fetched ${raw.length} invoices`)
-    R.invoices = await sbUpsert("karbon_invoices", raw.map(mapInvoice).filter(i => i.karbon_invoice_key))
-    console.log(`  OK: ${R.invoices.synced} synced, ${R.invoices.errors} errors\n`)
-  } catch(e) { console.error(`  FAIL: ${e.message}\n`); R.invoices = {synced:0,errors:1} }
+    var rawI = await kFetchAll("/Invoices")
+    console.log("  Fetched " + rawI.length + " invoices")
+    var validInv = rawI.map(mapInvoice).filter(function(i){return i.karbon_invoice_key})
+    R.invoices = await sbUpsert("karbon_invoices", validInv)
+    console.log("  OK: " + R.invoices.synced + " synced, " + R.invoices.errors + " errors\n")
+  } catch(e) { console.error("  FAIL: " + e.message + "\n"); R.invoices = {synced:0,errors:1} }
 
   // Summary
   console.log("=== SYNC COMPLETE ===")
-  console.log(`Finished: ${new Date().toISOString()}\n`)
+  console.log("Finished: " + new Date().toISOString() + "\n")
+  var keys = Object.keys(R)
   console.log("Entity            | Synced | Errors")
   console.log("------------------|--------|-------")
-  for (const [k,v] of Object.entries(R)) console.log(`${k.padEnd(18)}| ${String(v.synced).padEnd(7)}| ${v.errors}`)
-  const ts = Object.values(R).reduce((s,r)=>s+r.synced,0)
-  const te = Object.values(R).reduce((s,r)=>s+r.errors,0)
-  console.log(`${"TOTAL".padEnd(18)}| ${String(ts).padEnd(7)}| ${te}`)
+  var totalS = 0, totalE = 0
+  for (var ki = 0; ki < keys.length; ki++) {
+    var key = keys[ki], val = R[key]
+    var pad = key + "                  "
+    console.log(pad.substring(0,18) + "| " + (val.synced + "       ").substring(0,7) + "| " + val.errors)
+    totalS += val.synced; totalE += val.errors
+  }
+  console.log("TOTAL             | " + (totalS + "       ").substring(0,7) + "| " + totalE)
 }
 
-main().catch(e => { console.error("FATAL:", e); process.exit(1) })
+main().catch(function(e) { console.error("FATAL: " + e.message); process.exit(1) })
