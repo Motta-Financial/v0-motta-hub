@@ -22,11 +22,23 @@ function getSupabaseClient() {
  * Each TimeEntry inside has: WorkItemKey, TaskTypeName, RoleName, Minutes, HourlyRate, etc.
  * We flatten TimeEntries into our karbon_timesheets table (one row per entry).
  */
-function mapKarbonTimesheetToSupabase(entry: any, parentTimesheet?: any) {
+/**
+ * entryIndex is the position of this TimeEntry within the parent's TimeEntries array.
+ * Used to generate collision-free synthetic keys when TimeEntryKey is absent.
+ */
+function mapKarbonTimesheetToSupabase(entry: any, parentTimesheet?: any, entryIndex = 0) {
   // If this is a flattened time entry from $expand, use parent's UserKey/Status
   const userKey = entry.UserKey || parentTimesheet?.UserKey || null
   const userName = entry.UserName || parentTimesheet?.UserName || null
-  const timesheetKey = entry.TimeEntryKey || entry.TimesheetKey || `${parentTimesheet?.TimesheetKey}-${entry.WorkItemKey}-${entry.Minutes}`
+
+  // Build a collision-free key:
+  //   1. Prefer the real TimeEntryKey if Karbon provides one
+  //   2. Otherwise build a deterministic composite key from parent + date + work-item + index
+  const entryDate = entry.Date ? entry.Date.split("T")[0] : "nodate"
+  const timesheetKey =
+    entry.TimeEntryKey ||
+    entry.TimesheetKey ||
+    `${parentTimesheet?.TimesheetKey || "ts"}-${entryDate}-${entry.WorkItemKey || "nowi"}-${entryIndex}`
 
   return {
     karbon_timesheet_key: timesheetKey,
@@ -44,6 +56,10 @@ function mapKarbonTimesheetToSupabase(entry: any, parentTimesheet?: any) {
     client_key: entry.ClientKey || null,
     client_name: entry.ClientName || null,
     task_key: entry.TaskTypeKey || entry.TaskKey || null,
+    // New columns from migration 021
+    role_name: entry.RoleName || null,
+    task_type_name: entry.TaskTypeName || null,
+    timesheet_status: parentTimesheet?.Status || entry.Status || null,
     karbon_url: parentTimesheet?.TimesheetKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/timesheets/${parentTimesheet.TimesheetKey}` : null,
     karbon_created_at: parentTimesheet?.StartDate || entry.CreatedDate || null,
     karbon_modified_at: parentTimesheet?.EndDate || entry.LastModifiedDateTime || null,
@@ -134,9 +150,9 @@ export async function GET(request: NextRequest) {
     const timesheets: any[] = []
     for (const weeklyTs of weeklyTimesheets) {
       if (weeklyTs.TimeEntries && Array.isArray(weeklyTs.TimeEntries)) {
-        for (const entry of weeklyTs.TimeEntries) {
-          timesheets.push({ ...entry, _parentTimesheet: weeklyTs })
-        }
+        weeklyTs.TimeEntries.forEach((entry: any, idx: number) => {
+          timesheets.push({ ...entry, _parentTimesheet: weeklyTs, _entryIndex: idx })
+        })
       } else {
         // If no expanded entries, treat the timesheet itself as a single entry
         timesheets.push(weeklyTs)
@@ -161,7 +177,7 @@ export async function GET(request: NextRequest) {
         for (let i = 0; i < timesheets.length; i += batchSize) {
           const batch = timesheets.slice(i, i + batchSize)
           const mappedBatch = batch.map((entry: any) => ({
-            ...mapKarbonTimesheetToSupabase(entry, entry._parentTimesheet),
+            ...mapKarbonTimesheetToSupabase(entry, entry._parentTimesheet, entry._entryIndex || 0),
             created_at: new Date().toISOString(),
           }))
 

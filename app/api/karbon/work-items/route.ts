@@ -14,6 +14,22 @@ function getSupabaseClient() {
   return createClient(supabaseUrl, supabaseKey)
 }
 
+function parseTaxYear(item: any): number | null {
+  // First try the explicit TaxYear field
+  if (item.TaxYear) return item.TaxYear
+  // Parse from YearEnd (e.g. "2024-12-31T00:00:00")
+  if (item.YearEnd) {
+    const year = new Date(item.YearEnd).getFullYear()
+    if (year > 2000 && year < 2100) return year
+  }
+  // Parse from title (e.g. "TAX | Individual (1040) - Smith, John - 2024")
+  if (item.Title) {
+    const match = item.Title.match(/\b(20\d{2})\b/)
+    if (match) return parseInt(match[1], 10)
+  }
+  return null
+}
+
 function mapKarbonToSupabase(item: any) {
   // Extract fee settings
   const feeSettings = item.FeeSettings || {}
@@ -25,6 +41,11 @@ function mapKarbonToSupabase(item: any) {
 
     // Client information
     client_type: item.ClientType || null,
+    client_name: item.ClientName || null,
+
+    // Client owner information
+    client_owner_key: item.ClientOwnerKey || null,
+    client_owner_name: item.ClientOwnerName || null,
 
     // Client group information (use correct column names)
     client_group_key: item.RelatedClientGroupKey || item.ClientGroupKey || null,
@@ -47,17 +68,23 @@ function mapKarbonToSupabase(item: any) {
     description: item.Description || null,
     work_type: item.WorkType || null,
 
-    // Status fields (only columns that exist)
+    // Status fields
     workflow_status: item.WorkStatus || null,
     status: item.PrimaryStatus || null,
     status_code: item.SecondaryStatus || null,
+    primary_status: item.PrimaryStatus || null,
+    secondary_status: item.SecondaryStatus || null,
     work_status_key: item.WorkStatusKey || null,
+
+    // User-defined identifier
+    user_defined_identifier: item.UserDefinedIdentifier || null,
 
     // Date fields (only columns that exist)
     start_date: item.StartDate ? item.StartDate.split("T")[0] : null,
     due_date: item.DueDate ? item.DueDate.split("T")[0] : null,
     completed_date: item.CompletedDate ? item.CompletedDate.split("T")[0] : null,
     year_end: item.YearEnd ? item.YearEnd.split("T")[0] : null,
+    tax_year: parseTaxYear(item),
     period_start: item.PeriodStart ? item.PeriodStart.split("T")[0] : null,
     period_end: item.PeriodEnd ? item.PeriodEnd.split("T")[0] : null,
     internal_due_date: item.InternalDueDate ? item.InternalDueDate.split("T")[0] : null,

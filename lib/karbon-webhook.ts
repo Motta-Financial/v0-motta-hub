@@ -88,46 +88,124 @@ export function parseKarbonWebhookPayload(body: string): KarbonWebhookPayload | 
 }
 
 /**
- * Map Karbon work item data to Supabase work_items table format
+ * Map Karbon work item data to Supabase work_items table format.
+ *
+ * This mapper is used by the webhook handler for real-time single-item updates.
+ * It mirrors the full mapper in /api/karbon/work-items/route.ts so that
+ * webhook-synced rows are identical to cron-synced rows.
  */
 export function mapKarbonWorkItemToSupabase(item: any) {
-  return {
-    karbon_work_item_key: item.WorkItemKey || item.WorkKey,
-    title: item.Title,
-    work_type: item.WorkType,
-    work_status_key: item.WorkStatus,
-    workflow_status: item.WorkStatus,
-    status: item.PrimaryStatus || "Unknown",
-    status_code: item.SecondaryStatus,
-    description: item.Description,
+  const feeSettings = item.FeeSettings || {}
 
-    // Client info
-    karbon_client_key: item.ClientKey,
-    client_type: item.ClientType,
+  // Parse tax year from YearEnd or title
+  let taxYear: number | null = null
+  if (item.TaxYear) taxYear = item.TaxYear
+  else if (item.YearEnd) {
+    const yr = new Date(item.YearEnd).getFullYear()
+    if (yr > 2000 && yr < 2100) taxYear = yr
+  } else if (item.Title) {
+    const m = item.Title.match(/\b(20\d{2})\b/)
+    if (m) taxYear = parseInt(m[1], 10)
+  }
+
+  return {
+    // Core identifiers
+    karbon_work_item_key: item.WorkItemKey || item.WorkKey,
+    karbon_client_key: item.ClientKey || null,
+
+    // Client information
+    client_type: item.ClientType || null,
+    client_name: item.ClientName || null,
+
+    // Client owner
+    client_owner_key: item.ClientOwnerKey || null,
+    client_owner_name: item.ClientOwnerName || null,
+
+    // Client group
+    client_group_key: item.RelatedClientGroupKey || item.ClientGroupKey || null,
+    client_group_name: item.RelatedClientGroupName || null,
+
+    // Assignee
+    assignee_key: item.AssigneeKey || null,
+    assignee_name: item.AssigneeName || null,
+
+    // Client manager
+    client_manager_key: item.ClientManagerKey || null,
+    client_manager_name: item.ClientManagerName || null,
+
+    // Client partner
+    client_partner_key: item.ClientPartnerKey || null,
+    client_partner_name: item.ClientPartnerName || null,
+
+    // Work item details
+    title: item.Title || null,
+    description: item.Description || null,
+    work_type: item.WorkType || null,
+
+    // Status fields
+    workflow_status: item.WorkStatus || null,
+    status: item.PrimaryStatus || null,
+    status_code: item.SecondaryStatus || null,
+    primary_status: item.PrimaryStatus || null,
+    secondary_status: item.SecondaryStatus || null,
+    work_status_key: item.WorkStatusKey || null,
+
+    // User-defined identifier
+    user_defined_identifier: item.UserDefinedIdentifier || null,
 
     // Dates
-    start_date: item.StartDate ? new Date(item.StartDate).toISOString() : null,
-    due_date: item.DueDate ? new Date(item.DueDate).toISOString() : null,
-    completed_date: item.CompletedDate ? new Date(item.CompletedDate).toISOString() : null,
+    start_date: item.StartDate ? item.StartDate.split("T")[0] : null,
+    due_date: item.DueDate ? item.DueDate.split("T")[0] : null,
+    completed_date: item.CompletedDate ? item.CompletedDate.split("T")[0] : null,
+    year_end: item.YearEnd ? item.YearEnd.split("T")[0] : null,
+    tax_year: taxYear,
+    period_start: item.PeriodStart ? item.PeriodStart.split("T")[0] : null,
+    period_end: item.PeriodEnd ? item.PeriodEnd.split("T")[0] : null,
+    internal_due_date: item.InternalDueDate ? item.InternalDueDate.split("T")[0] : null,
+    regulatory_deadline: item.RegulatoryDeadline ? item.RegulatoryDeadline.split("T")[0] : null,
+    client_deadline: item.ClientDeadline ? item.ClientDeadline.split("T")[0] : null,
+    extension_date: item.ExtensionDate ? item.ExtensionDate.split("T")[0] : null,
 
-    // Assignment
-    assignee_id: null, // Will need to map from Karbon UserKey to our team_members.id
+    // Template
+    work_template_key: item.WorkTemplateKey || null,
+    work_template_name: item.WorkTemplateTitle || item.WorkTemplateTile || null,
 
-    // Budget/Billing
-    estimated_minutes: item.EstimatedBudgetMinutes,
-    budget_minutes: item.Budget?.BudgetedHours ? item.Budget.BudgetedHours * 60 : null,
-    estimated_fee: item.FeeSettings?.FeeValue,
-    is_billable: item.IsBillable ?? true,
+    // Fee settings
+    fee_type: feeSettings.FeeType || null,
+    estimated_fee: feeSettings.FeeValue || null,
+    fixed_fee_amount: feeSettings.FeeType === "Fixed" ? feeSettings.FeeValue : null,
+    hourly_rate: feeSettings.FeeType === "Hourly" ? feeSettings.FeeValue : null,
+
+    // Time/budget tracking
+    estimated_minutes: item.EstimatedBudgetMinutes || null,
+    actual_minutes: item.ActualBudget || null,
+    billable_minutes: item.BillableTime || null,
+    budget_minutes: item.Budget?.BudgetedHours ? Math.round(item.Budget.BudgetedHours * 60) : null,
+    budget_hours: item.Budget?.BudgetedHours || null,
+    budget_amount: item.Budget?.BudgetedAmount || null,
+    actual_hours: item.ActualHours || null,
+    actual_amount: item.ActualAmount || null,
+    actual_fee: item.ActualFee || null,
+
+    // Todo tracking
+    todo_count: item.TodoCount || 0,
+    completed_todo_count: item.CompletedTodoCount || 0,
+    has_blocking_todos: item.HasBlockingTodos || false,
 
     // Metadata
     priority: item.Priority || "Normal",
     tags: item.Tags || [],
+    is_recurring: item.IsRecurring ?? false,
+    is_billable: item.IsBillable ?? true,
+    is_internal: item.IsInternal ?? false,
+    notes: item.Notes || null,
     custom_fields: item.CustomFields || {},
+    related_work_keys: item.RelatedWorkKeys || [],
 
-    // Karbon URL for linking back
-    karbon_url: `https://app.karbonhq.com/work/${item.WorkItemKey || item.WorkKey}`,
-
-    // Sync tracking
+    // Karbon URL and sync timestamps
+    karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/work/${item.WorkItemKey || item.WorkKey}`,
+    karbon_created_at: item.CreatedDate || item.CreatedDateTime || null,
+    karbon_modified_at: item.LastModifiedDateTime || item.ModifiedDate || null,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
