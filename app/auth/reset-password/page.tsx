@@ -2,7 +2,7 @@
 
 import type React from "react"
 import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -14,6 +14,8 @@ import Image from "next/image"
 
 export default function ResetPasswordPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const isInvited = searchParams.get("invited") === "true"
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
@@ -189,8 +191,12 @@ export default function ResetPasswordPage() {
             />
           </div>
           <div>
-            <CardTitle className="text-2xl">Reset Your Password</CardTitle>
-            <CardDescription className="mt-2">Enter a new password for your Motta Hub account</CardDescription>
+            <CardTitle className="text-2xl">{isInvited ? "Welcome to Motta Hub" : "Reset Your Password"}</CardTitle>
+            <CardDescription className="mt-2">
+              {isInvited
+                ? "You've been invited to join Motta Hub. Set your password to get started."
+                : "Enter a new password for your Motta Hub account"}
+            </CardDescription>
           </div>
         </CardHeader>
         <CardContent>
@@ -277,7 +283,7 @@ export default function ResetPasswordPage() {
             </div>
 
             <Button type="submit" className="w-full" disabled={isLoading || !allRequirementsMet || !passwordsMatch}>
-              {isLoading ? "Updating Password..." : "Reset Password"}
+              {isLoading ? "Updating Password..." : isInvited ? "Set Password & Get Started" : "Reset Password"}
             </Button>
           </form>
         </CardContent>
