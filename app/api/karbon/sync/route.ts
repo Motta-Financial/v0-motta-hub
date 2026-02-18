@@ -1,12 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-
-function getSupabaseAdmin() {
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!url || !key) return null
-  return createClient(url, key)
-}
+import { createAdminClient } from "@/lib/supabase/server"
 
 /**
  * GET /api/karbon/sync
@@ -52,8 +45,14 @@ export async function GET(request: NextRequest) {
   const errors: string[] = []
 
   // Create sync_log entry to track this sync operation
-  const supabase = getSupabaseAdmin()
+  let supabase: ReturnType<typeof createAdminClient> | null = null
   let syncLogId: string | null = null
+
+  try {
+    supabase = createAdminClient()
+  } catch {
+    // If env vars missing, continue without logging
+  }
 
   if (supabase) {
     const { data: logEntry } = await supabase
@@ -72,12 +71,14 @@ export async function GET(request: NextRequest) {
   }
 
   // Helper function to call sync endpoints
+  // Passes x-internal-secret so middleware allows server-to-server calls
   async function syncEntity(entity: string, endpoint: string, extraParams = "") {
     try {
       const url = `${baseUrl}${endpoint}?import=true&incremental=${incremental}${extraParams}`
       const response = await fetch(url, {
         headers: {
           "Content-Type": "application/json",
+          ...(process.env.CRON_SECRET ? { "x-internal-secret": process.env.CRON_SECRET } : {}),
         },
       })
 

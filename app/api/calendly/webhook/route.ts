@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import { createAdminClient } from "@/lib/supabase/server"
 import crypto from "crypto"
-
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 
 const CALENDLY_ACCESS_TOKEN = process.env.CALENDLY_ACCESS_TOKEN
 
@@ -46,6 +44,7 @@ async function fetchInvitees(eventUri: string) {
 // Create notifications for all team members about a new meeting
 async function notifyTeamMembers(event: any, invitee: any, eventType: "created" | "canceled") {
   try {
+    const supabase = createAdminClient()
     // Get all team members
     const { data: teamMembers, error: teamError } = await supabase
       .from("team_members")
@@ -117,6 +116,7 @@ async function notifyTeamMembers(event: any, invitee: any, eventType: "created" 
 
 // Sync event to Supabase
 async function syncEventToSupabase(event: any, status: "active" | "canceled" = "active") {
+  const supabase = createAdminClient()
   const calendlyUuid = extractUuid(event.uri)
 
   // Extract location info
@@ -173,6 +173,7 @@ async function syncEventToSupabase(event: any, status: "active" | "canceled" = "
 
 // Sync invitee to Supabase
 async function syncInviteeToSupabase(invitee: any, calendlyEventId: string, calendlyEventUuid: string) {
+  const supabase = createAdminClient()
   const inviteeUuid = extractUuid(invitee.uri)
 
   // Try to find matching contact by email

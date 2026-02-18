@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createAdminClient } from "@/lib/supabase/server"
 
 export async function POST(request: Request) {
+  const supabase = createAdminClient()
   const accessToken = process.env.CALENDLY_ACCESS_TOKEN
 
   if (!accessToken) {

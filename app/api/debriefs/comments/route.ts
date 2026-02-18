@@ -1,7 +1,5 @@
-import { createClient } from "@supabase/supabase-js"
 import { type NextRequest, NextResponse } from "next/server"
-
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createAdminClient } from "@/lib/supabase/server"
 
 function isTableNotFoundError(error: any): boolean {
   if (!error) return false
@@ -28,6 +26,7 @@ function isTableNotFoundError(error: any): boolean {
 
 export async function GET(request: NextRequest) {
   try {
+    const supabase = createAdminClient()
     const { searchParams } = new URL(request.url)
     const debriefIds = searchParams.get("debriefIds")?.split(",").filter(Boolean)
 
@@ -65,6 +64,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = createAdminClient()
     const body = await request.json()
     const { debrief_id, author_id, author_name, content } = body
 
