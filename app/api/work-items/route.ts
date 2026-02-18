@@ -10,6 +10,7 @@ export async function GET(request: Request) {
     const clientId = searchParams.get("clientId")
     const workType = searchParams.get("workType")
     const search = searchParams.get("search")
+    const active = searchParams.get("active")
     const limit = Math.min(Number.parseInt(searchParams.get("limit") || "100"), 5000)
     const offset = Number.parseInt(searchParams.get("offset") || "0")
 
@@ -45,7 +46,15 @@ export async function GET(request: Request) {
       query = query.eq("work_type", workType)
     }
     if (search) {
-      query = query.ilike("title", `%${search}%`)
+      query = query.or(
+        `title.ilike.%${search}%,client_name.ilike.%${search}%,work_type.ilike.%${search}%,karbon_work_item_key.ilike.%${search}%`
+      )
+    }
+    if (active === "true") {
+      query = query
+        .not("status", "ilike", "%completed%")
+        .not("status", "ilike", "%cancelled%")
+        .not("status", "ilike", "%canceled%")
     }
 
     const { data: workItems, error, count } = await query
