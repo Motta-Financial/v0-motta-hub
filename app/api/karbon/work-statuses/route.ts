@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server"
 import { karbonFetch, getKarbonCredentials } from "@/lib/karbon-api"
-import { createClient } from "@supabase/supabase-js"
-
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createAdminClient } from "@/lib/supabase/server"
 
 interface KarbonWorkStatusFromTenant {
   WorkStatusKey: string
@@ -23,6 +21,7 @@ interface KarbonTenantSettings {
 
 // GET - Fetch work statuses from Karbon TenantSettings and optionally sync to Supabase
 export async function GET(request: Request) {
+  const supabase = createAdminClient()
   const { searchParams } = new URL(request.url)
   const sync = searchParams.get("sync") === "true"
   const fromSupabase = searchParams.get("source") === "supabase"
@@ -136,6 +135,7 @@ export async function GET(request: Request) {
 // PATCH - Update work status filter preferences
 export async function PATCH(request: Request) {
   try {
+    const supabase = createAdminClient()
     const body = await request.json()
     const { id, is_default_filter, is_active } = body
 

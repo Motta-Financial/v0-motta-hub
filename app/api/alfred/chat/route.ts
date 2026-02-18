@@ -1,11 +1,8 @@
 import { convertToModelMessages, streamText, tool, type UIMessage } from "ai"
 import { z } from "zod"
-import { createClient } from "@supabase/supabase-js"
+import { createAdminClient } from "@/lib/supabase/server"
 
 export const maxDuration = 60
-
-// Initialize Supabase client with service role for full access
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 
 // Define all the tools ALFRED has access to
 const alfredTools = {
@@ -53,6 +50,7 @@ const alfredTools = {
     }),
     execute: async ({ table, select = "*", filters = [], orderBy, limit = 50 }) => {
       try {
+        const supabase = createAdminClient()
         let query = supabase.from(table).select(select)
 
         for (const filter of filters) {
@@ -94,6 +92,7 @@ const alfredTools = {
       tables: z.array(z.string()).describe("Tables to get counts for"),
     }),
     execute: async ({ tables }) => {
+      const supabase = createAdminClient()
       const stats: Record<string, number> = {}
 
       for (const table of tables) {
@@ -128,6 +127,7 @@ const alfredTools = {
         .describe("Tables and columns to search"),
     }),
     execute: async ({ searchTerm, tables }) => {
+      const supabase = createAdminClient()
       const results: Record<string, any[]> = {}
 
       for (const table of tables) {
@@ -163,6 +163,7 @@ const alfredTools = {
     }),
     execute: async ({ groupBy, filters = {} }) => {
       try {
+        const supabase = createAdminClient()
         let query = supabase.from("work_items").select("*")
 
         if (filters.status) query = query.eq("status", filters.status)
@@ -200,6 +201,7 @@ const alfredTools = {
     }),
     execute: async ({ teamMemberId, includeCompleted = false }) => {
       try {
+        const supabase = createAdminClient()
         let query = supabase.from("work_items").select("assignee_name, status, due_date, title")
 
         if (!includeCompleted) {
@@ -249,6 +251,7 @@ const alfredTools = {
     }),
     execute: async ({ searchTerm, includeWorkItems = true, includeContacts = true }) => {
       try {
+        const supabase = createAdminClient()
         // Search client groups
         const { data: clientGroups } = await supabase
           .from("client_groups")
@@ -302,6 +305,7 @@ const alfredTools = {
     }),
     execute: async ({ days = 7, assignee }) => {
       try {
+        const supabase = createAdminClient()
         const today = new Date()
         const futureDate = new Date(today.getTime() + days * 24 * 60 * 60 * 1000)
 
@@ -339,6 +343,7 @@ const alfredTools = {
     }),
     execute: async ({ days = 7, type = "all" }) => {
       try {
+        const supabase = createAdminClient()
         const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
         const results: Record<string, any[]> = {}
 
@@ -387,6 +392,7 @@ const alfredTools = {
     }),
     execute: async ({ year = new Date().getFullYear() }) => {
       try {
+        const supabase = createAdminClient()
         const { data, error } = await supabase
           .from("tommy_award_yearly_totals")
           .select("*")
@@ -414,6 +420,7 @@ const alfredTools = {
     }),
     execute: async ({ category, searchTerm }) => {
       try {
+        const supabase = createAdminClient()
         let query = supabase.from("services").select("*")
 
         if (category) {
@@ -445,6 +452,7 @@ const alfredTools = {
     }),
     execute: async ({ period = "month" }) => {
       try {
+        const supabase = createAdminClient()
         // Get invoice totals
         const { data: invoices } = await supabase
           .from("invoices")

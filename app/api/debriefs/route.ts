@@ -1,9 +1,8 @@
-import { createClient } from "@supabase/supabase-js"
 import { type NextRequest, NextResponse } from "next/server"
-
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createAdminClient } from "@/lib/supabase/server"
 
 export async function GET(request: NextRequest) {
+  const supabase = createAdminClient()
   const searchParams = request.nextUrl.searchParams
   const clientKey = searchParams.get("clientKey")
   const contactId = searchParams.get("contactId")
@@ -32,6 +31,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = createAdminClient()
     const body = await request.json()
 
     // Extract core debrief fields that map to the table
@@ -118,6 +118,7 @@ export async function POST(request: NextRequest) {
 
 async function createDebriefNotifications(debrief: any, authorName: string) {
   try {
+    const supabase = createAdminClient()
     // Fetch all active team members
     const { data: teamMembers } = await supabase
       .from("team_members")

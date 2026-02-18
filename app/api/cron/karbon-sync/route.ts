@@ -25,9 +25,11 @@ export async function GET(request: Request) {
         : "http://localhost:3000")
 
     // Run incremental sync (only modified records) with audit trail
+    // Pass internal secret so middleware allows the server-to-server call chain
     const response = await fetch(`${baseUrl}/api/karbon/sync?incremental=true&expand=false&manual=false`, {
       headers: {
         "Content-Type": "application/json",
+        ...(process.env.CRON_SECRET ? { "x-internal-secret": process.env.CRON_SECRET } : {}),
       },
     })
 
