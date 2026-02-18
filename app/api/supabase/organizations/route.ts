@@ -12,7 +12,7 @@ export async function GET(request: Request) {
     let query = supabase
       .from("organizations")
       .select(
-        "id, karbon_organization_key, name, full_name, entity_type, contact_type, industry, primary_email, phone, city, state",
+        "id, karbon_organization_key, name, full_name, trading_name, legal_name, entity_type, contact_type, industry, primary_email, phone, city, state",
       )
       .order("name", { ascending: true })
       .limit(limit)
@@ -22,7 +22,9 @@ export async function GET(request: Request) {
     }
 
     if (search) {
-      query = query.or(`name.ilike.%${search}%,full_name.ilike.%${search}%`)
+      query = query.or(
+        `name.ilike.%${search}%,full_name.ilike.%${search}%,trading_name.ilike.%${search}%,legal_name.ilike.%${search}%,primary_email.ilike.%${search}%`,
+      )
     }
 
     const { data: organizations, error } = await query
