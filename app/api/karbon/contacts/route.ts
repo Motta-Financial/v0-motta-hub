@@ -145,9 +145,13 @@ function mapKarbonContactToSupabase(contact: any) {
   const legal_firm_key = accountingDetail.LegalFirm?.OrganizationKey || null
   const legal_firm_name = accountingDetail.LegalFirm?.Name || null
 
-  // Client manager/partner keys from Karbon
+  // Client owner/manager/partner keys from Karbon
+  const client_owner_key = contact.ClientOwnerKey || null
   const client_manager_key = contact.ClientManagerKey || null
   const client_partner_key = contact.ClientPartnerKey || null
+
+  // User-defined identifier from Karbon
+  const user_defined_identifier = contact.UserDefinedIdentifier || null
 
   // Registration numbers - parsed from Karbon RegistrationNumbers
   const registration_numbers = regNumbers
@@ -245,9 +249,11 @@ function mapKarbonContactToSupabase(contact: any) {
     legal_firm_key,
     legal_firm_name,
 
-    // Client manager/partner keys from Karbon
+    // Client owner/manager/partner keys from Karbon
+    client_owner_key,
     client_manager_key,
     client_partner_key,
+    user_defined_identifier,
 
     // Registration numbers - parsed from Karbon RegistrationNumbers
     ein,

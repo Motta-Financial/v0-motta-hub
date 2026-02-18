@@ -76,6 +76,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Map the note to our karbon_notes table
+    // Mirrors the full mapper in /api/karbon/notes/route.ts so that
+    // webhook-synced rows are identical to cron-synced rows.
     const mappedNote = {
       karbon_note_key: note.NoteKey || noteKey,
       subject: note.Subject || null,
@@ -84,6 +86,11 @@ export async function POST(request: NextRequest) {
       is_pinned: note.IsPinned || false,
       author_key: note.AuthorKey || null,
       author_name: note.AuthorName || note.AuthorEmailAddress || null,
+      assignee_email: note.AssigneeEmailAddress || null,
+      due_date: note.DueDate ? note.DueDate.split("T")[0] : null,
+      todo_date: note.TodoDate ? note.TodoDate.split("T")[0] : null,
+      timelines: note.Timelines || null,
+      comments: note.Comments || null,
       karbon_work_item_key: note.WorkItemKey || Data.WorkItemKey || null,
       work_item_title: note.WorkItemTitle || null,
       karbon_contact_key: note.ContactKey || Data.ContactKey || null,

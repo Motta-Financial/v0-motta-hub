@@ -17,8 +17,10 @@ function mapKarbonUserToSupabase(user: any) {
   const lastName = user.LastName || null
   const fullName = user.FullName || `${firstName || ""} ${lastName || ""}`.trim() || "Unknown User"
 
+  const userKey = user.UserKey || user.MemberKey
+
   return {
-    karbon_user_key: user.UserKey || user.MemberKey,
+    karbon_user_key: userKey,
     first_name: firstName,
     last_name: lastName,
     full_name: fullName,
@@ -32,6 +34,8 @@ function mapKarbonUserToSupabase(user: any) {
     timezone: user.TimeZone || user.Timezone || null,
     start_date: user.StartDate ? user.StartDate.split("T")[0] : null,
     is_active: user.IsActive !== false,
+    karbon_url: userKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/team/${userKey}` : null,
+    last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
 }

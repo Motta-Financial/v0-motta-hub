@@ -15,10 +15,14 @@ export async function GET(request: Request) {
   }
 
   try {
+    // Fix: parentheses needed to avoid operator precedence bug
+    // Without them, NEXT_PUBLIC_APP_URL being truthy short-circuits to
+    // the ternary, which always evaluates VERCEL_URL regardless.
     const baseUrl =
-      process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+      process.env.NEXT_PUBLIC_APP_URL ||
+      (process.env.VERCEL_URL
         ? `https://${process.env.VERCEL_URL}`
-        : "http://localhost:3000"
+        : "http://localhost:3000")
 
     // Run incremental sync (only modified records) with audit trail
     const response = await fetch(`${baseUrl}/api/karbon/sync?incremental=true&expand=false&manual=false`, {

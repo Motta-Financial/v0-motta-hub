@@ -108,12 +108,15 @@ function mapKarbonOrganizationToSupabase(org: any) {
   return {
     karbon_organization_key: org.OrganizationKey,
     name: org.OrganizationName || org.Name || `Organization ${org.OrganizationKey}`,
+    full_name: org.FullName || org.OrganizationName || org.Name || null,
     legal_name: org.LegalName || null,
     trading_name: org.TradingName || null,
     description: org.Description || null,
 
     entity_type: entityType,
     contact_type: org.ContactType || null,
+    restriction_level: org.RestrictionLevel || null,
+    user_defined_identifier: org.UserDefinedIdentifier || null,
 
     industry: org.Industry || null,
     line_of_business: org.LineOfBusiness || null,
@@ -156,6 +159,7 @@ function mapKarbonOrganizationToSupabase(org: any) {
     tax_provider_name: org.TaxProvider?.Name || null,
     legal_firm_key: org.LegalFirm?.OrganizationKey || null,
     legal_firm_name: org.LegalFirm?.Name || null,
+    client_owner_key: org.ClientOwnerKey || null,
     client_manager_key: org.ClientManagerKey || null,
     client_partner_key: org.ClientPartnerKey || null,
     parent_organization_key: org.ParentOrganizationKey || null,
@@ -173,6 +177,7 @@ function mapKarbonOrganizationToSupabase(org: any) {
     karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/organizations/${org.OrganizationKey}`,
     karbon_created_at: org.CreatedDateTime || null,
     karbon_modified_at: org.LastModifiedDateTime || null,
+    last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
 }

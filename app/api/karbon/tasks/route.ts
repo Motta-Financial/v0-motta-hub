@@ -25,6 +25,7 @@ function mapKarbonTaskToSupabase(task: any) {
   const taskKey = task.IntegrationTaskKey || task.TaskKey
   return {
     karbon_task_key: taskKey,
+    task_definition_key: task.TaskDefinitionKey || null,
     title: task.Data?.Title || task.Title || null,
     description: task.Data?.Description || task.Description || null,
     status: task.Status || null,
@@ -39,6 +40,7 @@ function mapKarbonTaskToSupabase(task: any) {
     is_blocking: task.Data?.IsBlocking || false,
     estimated_minutes: task.Data?.EstimatedMinutes || null,
     actual_minutes: task.Data?.ActualMinutes || null,
+    task_data: task.Data || null,
     karbon_url: taskKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/tasks/${taskKey}` : null,
     karbon_created_at: task.CreatedAt || task.CreatedDate || null,
     karbon_modified_at: task.UpdatedAt || task.LastModifiedDateTime || null,
