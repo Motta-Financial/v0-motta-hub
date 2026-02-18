@@ -188,7 +188,7 @@ function MultiSelectFilter({
 }
 
 export function TaxBusySeason() {
-  const { allWorkItems, isLoading: loading, error: contextError, refresh } = useKarbonWorkItems()
+  const { activeWorkItems, isLoading: loading, error: contextError, refresh } = useKarbonWorkItems()
   const error = contextError
   const [selectedItem, setSelectedItem] = useState<TaxWorkItem | null>(null)
 
@@ -199,9 +199,9 @@ export function TaxBusySeason() {
   const [selectedAssignees, setSelectedAssignees] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState("")
 
-  // Derive tax work items from the shared context
+  // Derive tax work items from the shared context (completed already excluded)
   const workItems = useMemo<TaxWorkItem[]>(() => {
-    return allWorkItems
+    return activeWorkItems
       .filter((item) => {
         const workType = item.WorkType || ""
         return TAX_RETURN_WORK_TYPES.some((type) => type.toLowerCase() === workType.toLowerCase())
@@ -211,7 +211,7 @@ export function TaxBusySeason() {
         taxYear: extractTaxYear(item.Title || ""),
         returnType: getReturnType(item.WorkType || ""),
       }))
-  }, [allWorkItems])
+  }, [activeWorkItems])
 
   // Get unique filter options with counts
   const filterOptions = useMemo(() => {

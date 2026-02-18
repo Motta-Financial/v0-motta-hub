@@ -77,7 +77,7 @@ const getCurrentAndUpcomingQuarter = () => {
 }
 
 export function TaxEstimates() {
-  const { allWorkItems, isLoading: loading, error } = useKarbonWorkItems()
+  const { activeWorkItems, isLoading: loading, error } = useKarbonWorkItems()
   const [selectedQuarter, setSelectedQuarter] = useState<string>("all")
 
   const extractQuarter = (item: KarbonWorkItem): string | undefined => {
@@ -109,7 +109,7 @@ export function TaxEstimates() {
   }
 
   const estimates = useMemo(() => {
-    return allWorkItems
+    return activeWorkItems
       .filter((item: KarbonWorkItem) => {
         const title = item.Title?.toUpperCase() || ""
         const workType = item.WorkType?.toUpperCase() || ""
@@ -130,7 +130,7 @@ export function TaxEstimates() {
         ...item,
         quarter: extractQuarter(item),
       }))
-  }, [allWorkItems])
+  }, [activeWorkItems])
 
   const groupByQuarter = () => {
     const quarters = {

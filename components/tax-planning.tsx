@@ -26,14 +26,14 @@ interface PlanningItem extends KarbonWorkItem {
 }
 
 export function TaxPlanning() {
-  const { allWorkItems, isLoading: loading, error } = useKarbonWorkItems()
+  const { activeWorkItems, isLoading: loading, error } = useKarbonWorkItems()
   const [currentClientsOpen, setCurrentClientsOpen] = useState(false)
   const [prospectsOpen, setProspectsOpen] = useState(false)
   const [showAllCurrentClients, setShowAllCurrentClients] = useState(false)
   const [showAllProspects, setShowAllProspects] = useState(false)
 
   const planningItems = useMemo(() => {
-    return allWorkItems.filter((item: KarbonWorkItem) => {
+    return activeWorkItems.filter((item: KarbonWorkItem) => {
       const title = item.Title?.toUpperCase() || ""
       const workType = item.WorkType?.toUpperCase() || ""
 
@@ -54,7 +54,7 @@ export function TaxPlanning() {
         ...item,
         planningType: determinePlanningType(item),
       }))
-  }, [allWorkItems])
+  }, [activeWorkItems])
 
   const determinePlanningType = (item: KarbonWorkItem): string => {
     const title = item.Title?.toUpperCase() || ""

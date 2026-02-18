@@ -50,7 +50,10 @@ export interface KarbonWorkItem {
 }
 
 interface KarbonWorkItemsContextValue {
+  /** Every work item from Supabase (includes completed). Use for search. */
   allWorkItems: KarbonWorkItem[]
+  /** Work items excluding completed/cancelled. Use for dashboard views. */
+  activeWorkItems: KarbonWorkItem[]
   taxWorkItems: KarbonWorkItem[]
   isLoading: boolean
   error: string | null
@@ -164,12 +167,21 @@ export function KarbonWorkItemsProvider({ children }: { children: ReactNode }) {
     return items.map(mapSupabaseToKarbon)
   }, [data])
 
-  const taxWorkItems = useMemo(() => {
-    return allWorkItems.filter((item: KarbonWorkItem) => isTaxWorkItem(item.Title, item.WorkType))
+  // Exclude completed / cancelled items for dashboard views
+  const activeWorkItems = useMemo(() => {
+    return allWorkItems.filter((item) => {
+      const s = (item.status || item.primary_status || item.WorkStatus || "").toLowerCase()
+      return !s.includes("completed") && !s.includes("complete") && !s.includes("cancelled") && !s.includes("canceled")
+    })
   }, [allWorkItems])
+
+  const taxWorkItems = useMemo(() => {
+    return activeWorkItems.filter((item: KarbonWorkItem) => isTaxWorkItem(item.Title, item.WorkType))
+  }, [activeWorkItems])
 
   const value: KarbonWorkItemsContextValue = {
     allWorkItems,
+    activeWorkItems,
     taxWorkItems,
     isLoading,
     error: error?.message || null,

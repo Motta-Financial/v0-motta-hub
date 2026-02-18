@@ -52,8 +52,11 @@ export async function GET(request: Request) {
       query = query.ilike("title", `%${titleFilter}%`)
     }
 
-    if (status === "active") {
+    if (status === "active" || !status) {
+      // Default: exclude completed and cancelled work items from dashboard views
       query = query.not("status", "ilike", "%completed%").not("status", "ilike", "%cancelled%")
+    } else if (status === "all") {
+      // Explicitly request all statuses (for search)
     } else if (status) {
       query = query.ilike("status", `%${status}%`)
     }

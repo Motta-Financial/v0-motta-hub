@@ -10,13 +10,13 @@ import { ExpandableCard } from "@/components/ui/expandable-card"
 import { useKarbonWorkItems } from "@/contexts/karbon-work-items-context"
 
 export function TriageSummary() {
-  const { allWorkItems, isLoading: loading, error } = useKarbonWorkItems()
+  const { activeWorkItems, isLoading: loading, error } = useKarbonWorkItems()
 
   const triageItems = useMemo(() => {
     const now = new Date()
     const threeDaysFromNow = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
 
-    const needsAttention = allWorkItems.filter((item) => {
+    const needsAttention = activeWorkItems.filter((item) => {
       const isDueSoon = item.DueDate && new Date(item.DueDate) <= threeDaysFromNow
       const isHighPriority = item.Priority === "High" || item.Priority === "Critical"
       const isInProgress = item.PrimaryStatus === "In Progress" || item.PrimaryStatus === "Ready To Start"
@@ -34,7 +34,7 @@ export function TriageSummary() {
         return (priorityOrder[a.Priority || "Normal"] || 2) - (priorityOrder[b.Priority || "Normal"] || 2)
       })
       .slice(0, 5)
-  }, [allWorkItems])
+  }, [activeWorkItems])
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {

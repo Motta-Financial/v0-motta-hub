@@ -76,9 +76,13 @@ export function ServiceLineDashboard({
     }
   }
 
-  // Filter work items by service line using the categorizeServiceLine function
+  // Filter work items by service line, excluding completed/cancelled
   const filteredWorkItems = useMemo(() => {
     return workItems.filter((item) => {
+      const status = (item.status || item.primary_status || "").toLowerCase()
+      if (status.includes("completed") || status.includes("complete") || status.includes("cancelled") || status.includes("canceled")) {
+        return false
+      }
       const sl = categorizeServiceLine(item.title || "", item.client_name || "")
       return serviceLineKeywords.includes(sl)
     })
