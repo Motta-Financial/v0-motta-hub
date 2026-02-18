@@ -20,8 +20,8 @@ export async function GET(request: Request) {
         ? `https://${process.env.VERCEL_URL}`
         : "http://localhost:3000"
 
-    // Run incremental sync (only modified records)
-    const response = await fetch(`${baseUrl}/api/karbon/sync?incremental=true&expand=false`, {
+    // Run incremental sync (only modified records) with audit trail
+    const response = await fetch(`${baseUrl}/api/karbon/sync?incremental=true&expand=false&manual=false`, {
       headers: {
         "Content-Type": "application/json",
       },
