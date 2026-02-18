@@ -1,80 +1,40 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useMemo } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Inbox, FileText, Clock, ArrowRight, ExternalLink, AlertCircle } from "lucide-react"
 import Link from "next/link"
-import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
 import { ExpandableCard } from "@/components/ui/expandable-card"
-
-interface WorkItem {
-  WorkKey: string
-  Title: string
-  ClientName: string
-  DueDate: string | null
-  Priority: string
-  PrimaryStatus: string
-  AssignedTo: Array<{ FullName: string }>
-  ModifiedDate: string
-}
+import { useKarbonWorkItems } from "@/contexts/karbon-work-items-context"
 
 export function TriageSummary() {
-  const [triageItems, setTriageItems] = useState<WorkItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { allWorkItems, isLoading: loading, error } = useKarbonWorkItems()
 
-  useEffect(() => {
-    async function fetchTriageItems() {
-      try {
-        const response = await fetch("/api/karbon/work-items")
+  const triageItems = useMemo(() => {
+    const now = new Date()
+    const threeDaysFromNow = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
 
-        if (response.status === 401) {
-          setError("Karbon API credentials not configured")
-          setLoading(false)
-          return
+    const needsAttention = allWorkItems.filter((item) => {
+      const isDueSoon = item.DueDate && new Date(item.DueDate) <= threeDaysFromNow
+      const isHighPriority = item.Priority === "High" || item.Priority === "Critical"
+      const isInProgress = item.PrimaryStatus === "In Progress" || item.PrimaryStatus === "Ready To Start"
+      return (isDueSoon || isHighPriority) && isInProgress
+    })
+
+    return needsAttention
+      .sort((a, b) => {
+        if (a.DueDate && b.DueDate) {
+          return new Date(a.DueDate).getTime() - new Date(b.DueDate).getTime()
         }
-
-        if (!response.ok) throw new Error("Failed to fetch work items")
-
-        const data = await response.json()
-
-        const now = new Date()
-        const threeDaysFromNow = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
-
-        const needsAttention = data.workItems.filter((item: WorkItem) => {
-          const isDueSoon = item.DueDate && new Date(item.DueDate) <= threeDaysFromNow
-          const isHighPriority = item.Priority === "High" || item.Priority === "Critical"
-          const isInProgress = item.PrimaryStatus === "In Progress" || item.PrimaryStatus === "Ready To Start"
-
-          return (isDueSoon || isHighPriority) && isInProgress
-        })
-
-        const sorted = needsAttention
-          .sort((a: WorkItem, b: WorkItem) => {
-            if (a.DueDate && b.DueDate) {
-              return new Date(a.DueDate).getTime() - new Date(b.DueDate).getTime()
-            }
-            if (a.DueDate) return -1
-            if (b.DueDate) return 1
-
-            const priorityOrder: Record<string, number> = { Critical: 0, High: 1, Normal: 2, Low: 3 }
-            return (priorityOrder[a.Priority] || 2) - (priorityOrder[b.Priority] || 2)
-          })
-          .slice(0, 5)
-
-        setTriageItems(sorted)
-      } catch (err) {
-        console.error("Error fetching triage items:", err)
-        setError(err instanceof Error ? err.message : "Failed to fetch triage items")
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    fetchTriageItems()
-  }, [])
+        if (a.DueDate) return -1
+        if (b.DueDate) return 1
+        const priorityOrder: Record<string, number> = { Critical: 0, High: 1, Normal: 2, Low: 3 }
+        return (priorityOrder[a.Priority || "Normal"] || 2) - (priorityOrder[b.Priority || "Normal"] || 2)
+      })
+      .slice(0, 5)
+  }, [allWorkItems])
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {
@@ -170,7 +130,7 @@ export function TriageSummary() {
             return (
               <a
                 key={item.WorkKey}
-                href={getKarbonWorkItemUrl(item.WorkKey)}
+                href={item.karbon_url || `https://app2.karbonhq.com/work/${item.WorkKey}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="block border border-gray-200 rounded-lg p-3 hover:border-emerald-300 hover:bg-emerald-50/30 transition-all"
@@ -181,8 +141,8 @@ export function TriageSummary() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <Badge variant="outline" className={getPriorityColor(item.Priority)}>
-                        {item.Priority}
+                      <Badge variant="outline" className={getPriorityColor(item.Priority || "Normal")}>
+                        {item.Priority || "Normal"}
                       </Badge>
                       {dueDateInfo && (
                         <span className={`text-xs font-medium ${dueDateInfo.color} flex items-center gap-1`}>
@@ -200,10 +160,10 @@ export function TriageSummary() {
                     </h4>
                     <div className="flex items-center gap-2 mt-1 text-xs text-gray-600">
                       <span>{item.ClientName}</span>
-                      {item.AssignedTo.length > 0 && (
+                      {item.AssigneeName && (
                         <>
                           <span>•</span>
-                          <span>{item.AssignedTo[0].FullName}</span>
+                          <span>{item.AssigneeName}</span>
                         </>
                       )}
                     </div>

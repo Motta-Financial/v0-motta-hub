@@ -1,11 +1,33 @@
 "use client"
 
-import { createContext, useContext, useMemo, useState, useEffect, type ReactNode } from "react"
+import { createContext, useContext, useMemo, type ReactNode } from "react"
 import { usePathname } from "next/navigation"
 import useSWR from "swr"
 
-// Karbon work item type
+// Work item type -- matches the Supabase work_items table,
+// but also exposes legacy Karbon-style field aliases so existing
+// components keep working without a rewrite.
 export interface KarbonWorkItem {
+  // Primary Supabase fields
+  id?: string
+  karbon_work_item_key?: string
+  title?: string
+  client_name?: string | null
+  work_type?: string | null
+  workflow_status?: string | null
+  status?: string | null
+  primary_status?: string | null
+  due_date?: string | null
+  start_date?: string | null
+  completed_date?: string | null
+  karbon_modified_at?: string | null
+  assignee_name?: string | null
+  karbon_client_key?: string | null
+  description?: string | null
+  priority?: string | null
+  karbon_url?: string | null
+  client_group_name?: string | null
+  // Legacy aliases (mapped from Supabase fields)
   WorkKey: string
   Title: string
   ClientName?: string
@@ -13,21 +35,21 @@ export interface KarbonWorkItem {
   WorkStatus?: string
   DueDate?: string
   StartDate?: string
+  CompletedDate?: string
   LastModifiedDateTime?: string
   AssigneeName?: string
   ClientKey?: string
   Description?: string
+  Priority?: string
+  PrimaryStatus?: string
+  ClientGroupName?: string
 }
 
 interface KarbonWorkItemsContextValue {
-  // All work items from Karbon
   allWorkItems: KarbonWorkItem[]
-  // Filtered tax work items (title starts with "TAX |")
   taxWorkItems: KarbonWorkItem[]
-  // Loading and error states
   isLoading: boolean
   error: string | null
-  // Refresh function
   refresh: () => void
 }
 
@@ -48,52 +70,91 @@ const fetcher = async (url: string) => {
   return res.json()
 }
 
-// Helper to check if a work item is a tax work item
+// Map a Supabase work_items row into the KarbonWorkItem shape
+// so downstream components can use either naming convention.
+function mapSupabaseToKarbon(item: any): KarbonWorkItem {
+  return {
+    // Supabase fields
+    id: item.id,
+    karbon_work_item_key: item.karbon_work_item_key,
+    title: item.title,
+    client_name: item.client_name,
+    work_type: item.work_type,
+    workflow_status: item.workflow_status,
+    status: item.status,
+    primary_status: item.primary_status,
+    due_date: item.due_date,
+    start_date: item.start_date,
+    completed_date: item.completed_date,
+    karbon_modified_at: item.karbon_modified_at,
+    assignee_name: item.assignee_name,
+    karbon_client_key: item.karbon_client_key,
+    description: item.description,
+    priority: item.priority,
+    karbon_url: item.karbon_url,
+    client_group_name: item.client_group_name,
+    // Legacy aliases
+    WorkKey: item.karbon_work_item_key || item.id,
+    Title: item.title || "",
+    ClientName: item.client_name || undefined,
+    WorkType: item.work_type || undefined,
+    WorkStatus: item.workflow_status || item.status || undefined,
+    DueDate: item.due_date || undefined,
+    StartDate: item.start_date || undefined,
+    CompletedDate: item.completed_date || undefined,
+    LastModifiedDateTime: item.karbon_modified_at || undefined,
+    AssigneeName: item.assignee_name || undefined,
+    ClientKey: item.karbon_client_key || undefined,
+    Description: item.description || undefined,
+    Priority: item.priority || undefined,
+    PrimaryStatus: item.primary_status || item.status || undefined,
+    ClientGroupName: item.client_group_name || undefined,
+  }
+}
+
 function isTaxWorkItem(title: string, workType?: string): boolean {
   if (!title) return false
   const titleLower = title.toLowerCase()
   const workTypeLower = (workType || "").toLowerCase()
-  
-  // Check if title starts with "TAX |" pattern
   if (titleLower.startsWith("tax |")) return true
-  
-  // Check work type for tax-related keywords
-  if (workTypeLower.includes("tax") || 
-      workTypeLower.includes("1040") || 
-      workTypeLower.includes("1120") ||
-      workTypeLower.includes("1065") ||
-      workTypeLower.includes("990")) {
+  if (
+    workTypeLower.includes("tax") ||
+    workTypeLower.includes("1040") ||
+    workTypeLower.includes("1120") ||
+    workTypeLower.includes("1065") ||
+    workTypeLower.includes("990")
+  ) {
     return true
   }
-  
   return false
 }
 
 export function KarbonWorkItemsProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname()
-  
+
   // Don't fetch on login or auth pages
-  const isAuthPage = pathname === '/login' || pathname?.startsWith('/auth')
-  
+  const isAuthPage = pathname === "/login" || pathname?.startsWith("/auth")
+
+  // Fetch from Supabase-backed route (fast, <100ms) instead of
+  // the Karbon API proxy (slow, 30+ seconds, frequently times out)
   const { data, error, isLoading, mutate } = useSWR(
-    isAuthPage ? null : "/api/karbon/work-items",
+    isAuthPage ? null : "/api/work-items?limit=5000",
     fetcher,
     {
       revalidateOnFocus: false,
       revalidateOnReconnect: true,
-      dedupingInterval: 60000, // 1 minute - prevents duplicate fetches
-      refreshInterval: 300000, // 5 minutes - background refresh
-    }
+      dedupingInterval: 60000,
+      refreshInterval: 300000,
+    },
   )
 
   const allWorkItems = useMemo(() => {
-    return data?.workItems || []
+    const items = data?.work_items || []
+    return items.map(mapSupabaseToKarbon)
   }, [data])
 
   const taxWorkItems = useMemo(() => {
-    return allWorkItems.filter((item: KarbonWorkItem) => 
-      isTaxWorkItem(item.Title, item.WorkType)
-    )
+    return allWorkItems.filter((item: KarbonWorkItem) => isTaxWorkItem(item.Title, item.WorkType))
   }, [allWorkItems])
 
   const value: KarbonWorkItemsContextValue = {

@@ -10,20 +10,26 @@ export async function GET(request: Request) {
     const clientId = searchParams.get("clientId")
     const workType = searchParams.get("workType")
     const search = searchParams.get("search")
-    const limit = Number.parseInt(searchParams.get("limit") || "100")
+    const limit = Math.min(Number.parseInt(searchParams.get("limit") || "100"), 5000)
     const offset = Number.parseInt(searchParams.get("offset") || "0")
+
+    // For large requests (dashboards), use a leaner select to avoid
+    // Supabase's 1000-row default and reduce payload size
+    const isLargeRequest = limit > 1000
 
     let query = supabase
       .from("work_items")
       .select(
-        `
-        *,
-        contacts:contact_id (id, full_name, primary_email, karbon_url),
-        organizations:organization_id (id, name, primary_email, karbon_url)
-      `,
+        isLargeRequest
+          ? `id, karbon_work_item_key, title, client_name, karbon_client_key,
+             client_group_name, status, primary_status, workflow_status,
+             work_type, due_date, start_date, completed_date, assignee_name,
+             priority, karbon_modified_at, karbon_url, description`
+          : `*, contacts:contact_id (id, full_name, primary_email, karbon_url),
+             organizations:organization_id (id, name, primary_email, karbon_url)`,
         { count: "exact" },
       )
-      .order("due_date", { ascending: true })
+      .order("due_date", { ascending: true, nullsFirst: false })
       .range(offset, offset + limit - 1)
 
     if (status) {
@@ -46,10 +52,10 @@ export async function GET(request: Request) {
 
     if (error) throw error
 
-    // Transform to include client info
-    const formattedItems = (workItems || []).map((item) => ({
+    // Transform to include client info (only for non-large requests with joins)
+    const formattedItems = (workItems || []).map((item: any) => ({
       ...item,
-      client_name: item.contacts?.full_name || item.organizations?.name || item.client_type,
+      client_name: item.client_name || item.contacts?.full_name || item.organizations?.name || item.client_type,
       client_email: item.contacts?.primary_email || item.organizations?.primary_email,
       client_karbon_url: item.contacts?.karbon_url || item.organizations?.karbon_url,
     }))

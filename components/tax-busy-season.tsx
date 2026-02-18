@@ -26,7 +26,7 @@ import {
   Search,
 } from "lucide-react"
 import { TAX_RETURN_WORK_TYPES } from "@/lib/karbon-api"
-import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
+import { useKarbonWorkItems } from "@/contexts/karbon-work-items-context"
 
 interface KarbonWorkItem {
   WorkKey: string
@@ -188,9 +188,8 @@ function MultiSelectFilter({
 }
 
 export function TaxBusySeason() {
-  const [workItems, setWorkItems] = useState<TaxWorkItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { allWorkItems, isLoading: loading, error: contextError, refresh } = useKarbonWorkItems()
+  const error = contextError
   const [selectedItem, setSelectedItem] = useState<TaxWorkItem | null>(null)
 
   // Filters
@@ -200,39 +199,19 @@ export function TaxBusySeason() {
   const [selectedAssignees, setSelectedAssignees] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState("")
 
-  const fetchWorkItems = async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const response = await fetch("/api/karbon/work-items")
-      if (!response.ok) {
-        throw new Error("Failed to fetch work items")
-      }
-      const data = await response.json()
-
-      // Filter for tax return work types
-      const taxReturnItems: TaxWorkItem[] = (data.workItems || [])
-        .filter((item: KarbonWorkItem) => {
-          const workType = item.WorkType || ""
-          return TAX_RETURN_WORK_TYPES.some((type) => type.toLowerCase() === workType.toLowerCase())
-        })
-        .map((item: KarbonWorkItem) => ({
-          ...item,
-          taxYear: extractTaxYear(item.Title || ""),
-          returnType: getReturnType(item.WorkType || ""),
-        }))
-
-      setWorkItems(taxReturnItems)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error")
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    fetchWorkItems()
-  }, [])
+  // Derive tax work items from the shared context
+  const workItems = useMemo<TaxWorkItem[]>(() => {
+    return allWorkItems
+      .filter((item) => {
+        const workType = item.WorkType || ""
+        return TAX_RETURN_WORK_TYPES.some((type) => type.toLowerCase() === workType.toLowerCase())
+      })
+      .map((item) => ({
+        ...item,
+        taxYear: extractTaxYear(item.Title || ""),
+        returnType: getReturnType(item.WorkType || ""),
+      }))
+  }, [allWorkItems])
 
   // Get unique filter options with counts
   const filterOptions = useMemo(() => {
@@ -388,7 +367,7 @@ export function TaxBusySeason() {
       <div className="flex flex-col items-center justify-center h-64 gap-4">
         <AlertCircle className="h-8 w-8 text-destructive" />
         <p className="text-destructive">{error}</p>
-        <Button onClick={fetchWorkItems} variant="outline" size="sm">
+        <Button onClick={refresh} variant="outline" size="sm">
           <RefreshCw className="h-4 w-4 mr-2" />
           Retry
         </Button>
@@ -414,7 +393,7 @@ export function TaxBusySeason() {
               className="pl-9 w-[280px]"
             />
           </div>
-          <Button onClick={fetchWorkItems} variant="outline" size="sm">
+          <Button onClick={refresh} variant="outline" size="sm">
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
           </Button>
@@ -509,7 +488,7 @@ export function TaxBusySeason() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <a
-                            href={getKarbonWorkItemUrl(item.WorkKey)}
+                            href={item.karbon_url || `https://app2.karbonhq.com/work/${item.WorkKey}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="font-medium truncate hover:underline flex items-center gap-1"

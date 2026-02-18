@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useMemo, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -17,57 +17,29 @@ import {
   ChevronRight,
   Users,
   UserPlus,
+  Loader2,
 } from "lucide-react"
-import type { KarbonWorkItem } from "@/lib/karbon-types"
+import { useKarbonWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
 
 interface PlanningItem extends KarbonWorkItem {
   planningType?: string
 }
 
 export function TaxPlanning() {
-  const [planningItems, setPlanningItems] = useState<PlanningItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { allWorkItems, isLoading: loading, error } = useKarbonWorkItems()
   const [currentClientsOpen, setCurrentClientsOpen] = useState(false)
   const [prospectsOpen, setProspectsOpen] = useState(false)
   const [showAllCurrentClients, setShowAllCurrentClients] = useState(false)
   const [showAllProspects, setShowAllProspects] = useState(false)
 
-  useEffect(() => {
-    fetchPlanningItems()
-  }, [])
+  const planningItems = useMemo(() => {
+    return allWorkItems.filter((item: KarbonWorkItem) => {
+      const title = item.Title?.toUpperCase() || ""
+      const workType = item.WorkType?.toUpperCase() || ""
 
-  const fetchPlanningItems = async () => {
-    try {
-      setLoading(true)
-      console.log("[v0] Fetching tax planning work items...")
-
-      const response = await fetch("/api/karbon/work-items")
-
-      if (response.status === 401) {
-        console.log("[v0] Karbon credentials missing, showing error")
-        setError(
-          "Karbon API credentials not configured. Please add KARBON_BEARER_TOKEN and KARBON_ACCESS_KEY environment variables.",
-        )
-        setLoading(false)
-        return
-      }
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch work items")
-      }
-
-      const data = await response.json()
-      console.log("[v0] Fetched work items:", data.workItems?.length || 0)
-
-      // Filter for tax planning work items
-      const filtered = data.workItems.filter((item: KarbonWorkItem) => {
-        const title = item.Title?.toUpperCase() || ""
-        const workType = item.WorkType?.toUpperCase() || ""
-
-        // Look for planning-related keywords
-        const planningKeywords = [
-          "PLANNING",
+      // Look for planning-related keywords
+      const planningKeywords = [
+        "PLANNING",
           "PLAN",
           "TAX PLAN",
           "PROJECTION",
@@ -78,23 +50,11 @@ export function TaxPlanning() {
         ]
 
         return planningKeywords.some((keyword) => title.includes(keyword) || workType.includes(keyword))
-      })
-
-      // Add planning type classification
-      const withPlanningType = filtered.map((item: KarbonWorkItem) => ({
+      }).map((item) => ({
         ...item,
         planningType: determinePlanningType(item),
       }))
-
-      console.log("[v0] Filtered tax planning items:", withPlanningType.length)
-      setPlanningItems(withPlanningType)
-      setLoading(false)
-    } catch (err) {
-      console.error("[v0] Error fetching planning items:", err)
-      setError(err instanceof Error ? err.message : "Failed to fetch planning items")
-      setLoading(false)
-    }
-  }
+  }, [allWorkItems])
 
   const determinePlanningType = (item: KarbonWorkItem): string => {
     const title = item.Title?.toUpperCase() || ""

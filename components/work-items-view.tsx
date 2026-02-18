@@ -102,7 +102,7 @@ export function WorkItemsView() {
   const fetchKarbonData = async () => {
     setFetchingKarbonData(true)
     try {
-      const response = await fetch("/api/karbon/work-items")
+      const response = await fetch("/api/work-items?limit=5000")
       const data = await response.json()
 
       if (data.value) {

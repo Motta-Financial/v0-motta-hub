@@ -1,13 +1,12 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useMemo, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Plus, ExternalLink, Calendar, User, AlertCircle, DollarSign, Bell } from "lucide-react"
-import type { KarbonWorkItem } from "@/lib/karbon-types"
-import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
+import { Plus, ExternalLink, Calendar, User, AlertCircle, DollarSign, Bell, Loader2 } from "lucide-react"
+import { useKarbonWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
 import { format, differenceInDays } from "date-fns"
 
 interface TaxEstimateItem extends KarbonWorkItem {
@@ -78,14 +77,8 @@ const getCurrentAndUpcomingQuarter = () => {
 }
 
 export function TaxEstimates() {
-  const [estimates, setEstimates] = useState<TaxEstimateItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { allWorkItems, isLoading: loading, error } = useKarbonWorkItems()
   const [selectedQuarter, setSelectedQuarter] = useState<string>("all")
-
-  useEffect(() => {
-    fetchEstimates()
-  }, [])
 
   const extractQuarter = (item: KarbonWorkItem): string | undefined => {
     const title = item.Title?.toUpperCase() || ""
@@ -115,55 +108,29 @@ export function TaxEstimates() {
     return undefined
   }
 
-  const fetchEstimates = async () => {
-    try {
-      setLoading(true)
-      const response = await fetch("/api/karbon/work-items")
-
-      if (response.status === 401) {
-        setError(
-          "Karbon API credentials not configured. Please add KARBON_BEARER_TOKEN and KARBON_ACCESS_KEY environment variables.",
-        )
-        setLoading(false)
-        return
-      }
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch work items")
-      }
-
-      const data = await response.json()
-
-      const taxEstimates = data.workItems
-        .filter((item: KarbonWorkItem) => {
-          const title = item.Title?.toUpperCase() || ""
-          const workType = item.WorkType?.toUpperCase() || ""
-          const isTax = item.ServiceLine === "TAX"
-          const isEstimate =
-            workType.includes("ESTIMATE") ||
-            workType.includes("ESTIMATED") ||
-            title.includes("ESTIMATE") ||
-            title.includes("EST") ||
-            title.includes("QUARTERLY") ||
-            title.includes("Q1") ||
-            title.includes("Q2") ||
-            title.includes("Q3") ||
-            title.includes("Q4")
-          return isTax && isEstimate
-        })
-        .map((item: KarbonWorkItem) => ({
-          ...item,
-          quarter: extractQuarter(item),
-        }))
-
-      setEstimates(taxEstimates)
-      setLoading(false)
-    } catch (err) {
-      console.error("[v0] Error fetching tax estimates:", err)
-      setError(err instanceof Error ? err.message : "Failed to fetch tax estimates")
-      setLoading(false)
-    }
-  }
+  const estimates = useMemo(() => {
+    return allWorkItems
+      .filter((item: KarbonWorkItem) => {
+        const title = item.Title?.toUpperCase() || ""
+        const workType = item.WorkType?.toUpperCase() || ""
+        const isTax = title.startsWith("TAX")
+        const isEstimate =
+          workType.includes("ESTIMATE") ||
+          workType.includes("ESTIMATED") ||
+          title.includes("ESTIMATE") ||
+          title.includes("EST") ||
+          title.includes("QUARTERLY") ||
+          title.includes("Q1") ||
+          title.includes("Q2") ||
+          title.includes("Q3") ||
+          title.includes("Q4")
+        return isTax && isEstimate
+      })
+      .map((item: KarbonWorkItem) => ({
+        ...item,
+        quarter: extractQuarter(item),
+      }))
+  }, [allWorkItems])
 
   const groupByQuarter = () => {
     const quarters = {
@@ -412,7 +379,7 @@ export function TaxEstimates() {
                     </div>
                   </div>
                   <Button variant="ghost" size="sm" asChild>
-                    <a href={getKarbonWorkItemUrl(estimate.WorkKey)} target="_blank" rel="noopener noreferrer">
+                    <a href={estimate.karbon_url || `https://app2.karbonhq.com/work/${estimate.WorkKey}`} target="_blank" rel="noopener noreferrer">
                       <ExternalLink className="h-4 w-4" />
                     </a>
                   </Button>
