@@ -33,7 +33,7 @@ export async function PATCH(request: Request) {
   try {
     const supabase = createAdminClient()
     const body = await request.json()
-    const { id, is_read }
+    const { id, is_read } = body
 
     const { data, error } = await supabase
       .from("notifications")
