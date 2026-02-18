@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     let query = supabase
       .from("contacts")
       .select(
-        "id, karbon_contact_key, full_name, first_name, last_name, entity_type, contact_type, primary_email, phone_primary, city, state, is_prospect, avatar_url",
+        "id, karbon_contact_key, full_name, first_name, last_name, preferred_name, entity_type, contact_type, primary_email, phone_primary, city, state, is_prospect, avatar_url",
       )
       .order("full_name", { ascending: true })
       .limit(limit)
@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
     if (search) {
       query = query.or(
-        `full_name.ilike.%${search}%,first_name.ilike.%${search}%,last_name.ilike.%${search}%,primary_email.ilike.%${search}%`,
+        `full_name.ilike.%${search}%,first_name.ilike.%${search}%,last_name.ilike.%${search}%,preferred_name.ilike.%${search}%,primary_email.ilike.%${search}%`,
       )
     }
 

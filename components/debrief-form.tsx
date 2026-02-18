@@ -181,25 +181,34 @@ export function DebriefForm() {
       const orgsData = await orgsRes.json()
 
       const contactClients: Client[] = (contactsData.contacts || []).map((c: any) => {
-        const fullName = c.full_name || `${c.first_name || ""} ${c.last_name || ""}`.trim()
+        // Build the best display name from all available fields
+        const fullName =
+          c.full_name ||
+          `${c.first_name || ""} ${c.last_name || ""}`.trim() ||
+          c.preferred_name ||
+          c.primary_email ||
+          "Unknown Contact"
         return {
           id: c.id,
           name: fullName,
-          full_name: fullName, // Store full name for search
+          full_name: fullName,
           type: "contact" as const,
           karbon_key: c.karbon_contact_key,
           primary_email: c.primary_email,
         }
       })
 
-      const orgClients: Client[] = (orgsData.organizations || []).map((o: any) => ({
-        id: o.id,
-        name: o.name,
-        full_name: o.name, // Use name as full_name for orgs
-        type: "organization" as const,
-        karbon_key: o.karbon_organization_key,
-        primary_email: o.primary_email,
-      }))
+      const orgClients: Client[] = (orgsData.organizations || []).map((o: any) => {
+        const orgName = o.name || o.full_name || o.trading_name || o.legal_name || o.primary_email || "Unknown Organization"
+        return {
+          id: o.id,
+          name: orgName,
+          full_name: orgName,
+          type: "organization" as const,
+          karbon_key: o.karbon_organization_key,
+          primary_email: o.primary_email,
+        }
+      })
 
       setClients([...contactClients, ...orgClients])
     } catch (error) {
