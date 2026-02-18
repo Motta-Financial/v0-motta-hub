@@ -34,6 +34,10 @@ export async function POST(request: NextRequest) {
   try {
     const supabase = createAdminClient()
     const body = await request.json()
+    console.log("[v0] POST /api/debriefs received body keys:", Object.keys(body))
+    console.log("[v0] related_clients:", JSON.stringify(body.related_clients))
+    console.log("[v0] related_work_items:", JSON.stringify(body.related_work_items))
+    console.log("[v0] created_by_id:", body.created_by_id)
 
     // Extract the first related client and work item for the main FK columns
     const relatedClients = body.related_clients || []
@@ -108,12 +112,16 @@ export async function POST(request: NextRequest) {
       team_member_name: body.team_member || null,
     }
 
+    console.log("[v0] Debrief insert payload:", JSON.stringify(debriefData, null, 2))
+
     const { data, error } = await supabase.from("debriefs").insert(debriefData).select()
 
     if (error) {
-      console.error("Error creating debrief:", error)
+      console.error("[v0] Supabase insert error:", error.message, error.details, error.hint, error.code)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
+    
+    console.log("[v0] Debrief created successfully:", data?.[0]?.id)
 
     const createdDebrief = data[0]
 
