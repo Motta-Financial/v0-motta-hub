@@ -41,8 +41,8 @@ interface KarbonWorkItem {
   DueDate?: string
   CompletedDate?: string
   AssignedTo?:
-    | { FullName: string; Email: string; UserKey: string }
-    | { FullName: string; Email: string; UserKey: string }[]
+    | { FullName: string; Email?: string; UserKey?: string }
+    | { FullName: string; Email?: string; UserKey?: string }[]
   CreatedDate?: string
   ModifiedDate?: string
   EstimatedBudget?: number
@@ -102,7 +102,7 @@ function getReturnType(workType: string): string {
 // Normalize AssignedTo to always be an array
 function normalizeAssignedTo(
   assignedTo: KarbonWorkItem["AssignedTo"],
-): { FullName: string; Email: string; UserKey: string }[] {
+): { FullName: string; Email?: string; UserKey?: string }[] {
   if (!assignedTo) return []
   if (Array.isArray(assignedTo)) return assignedTo
   return [assignedTo]

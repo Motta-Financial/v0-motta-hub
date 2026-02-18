@@ -27,6 +27,7 @@ export interface KarbonWorkItem {
   priority?: string | null
   karbon_url?: string | null
   client_group_name?: string | null
+  secondary_status?: string | null
   // Legacy aliases (mapped from Supabase fields)
   WorkKey: string
   Title: string
@@ -38,11 +39,14 @@ export interface KarbonWorkItem {
   CompletedDate?: string
   LastModifiedDateTime?: string
   AssigneeName?: string
+  AssignedTo?: { FullName: string; Email?: string; UserKey?: string }[]
   ClientKey?: string
   Description?: string
   Priority?: string
   PrimaryStatus?: string
+  SecondaryStatus?: string
   ClientGroupName?: string
+  Key?: string
 }
 
 interface KarbonWorkItemsContextValue {
@@ -93,8 +97,10 @@ function mapSupabaseToKarbon(item: any): KarbonWorkItem {
     priority: item.priority,
     karbon_url: item.karbon_url,
     client_group_name: item.client_group_name,
+    secondary_status: item.secondary_status,
     // Legacy aliases
     WorkKey: item.karbon_work_item_key || item.id,
+    Key: item.karbon_work_item_key || item.id,
     Title: item.title || "",
     ClientName: item.client_name || undefined,
     WorkType: item.work_type || undefined,
@@ -104,10 +110,15 @@ function mapSupabaseToKarbon(item: any): KarbonWorkItem {
     CompletedDate: item.completed_date || undefined,
     LastModifiedDateTime: item.karbon_modified_at || undefined,
     AssigneeName: item.assignee_name || undefined,
+    // Build AssignedTo array from assignee_name for backwards compat
+    AssignedTo: item.assignee_name
+      ? [{ FullName: item.assignee_name, Email: undefined, UserKey: undefined }]
+      : undefined,
     ClientKey: item.karbon_client_key || undefined,
     Description: item.description || undefined,
     Priority: item.priority || undefined,
     PrimaryStatus: item.primary_status || item.status || undefined,
+    SecondaryStatus: item.secondary_status || undefined,
     ClientGroupName: item.client_group_name || undefined,
   }
 }

@@ -22,9 +22,9 @@ export async function GET(request: Request) {
       .select(
         isLargeRequest
           ? `id, karbon_work_item_key, title, client_name, karbon_client_key,
-             client_group_name, status, primary_status, workflow_status,
-             work_type, due_date, start_date, completed_date, assignee_name,
-             priority, karbon_modified_at, karbon_url, description`
+             client_group_name, status, primary_status, secondary_status,
+             workflow_status, work_type, due_date, start_date, completed_date,
+             assignee_name, priority, karbon_modified_at, karbon_url, description`
           : `*, contacts:contact_id (id, full_name, primary_email, karbon_url),
              organizations:organization_id (id, name, primary_email, karbon_url)`,
         { count: "exact" },
