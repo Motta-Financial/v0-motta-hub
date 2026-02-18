@@ -1,23 +1,36 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { createClient } from "@supabase/supabase-js"
+
+function getSupabaseAdmin() {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key) return null
+  return createClient(url, key)
+}
 
 /**
  * GET /api/karbon/sync
  * Comprehensive sync endpoint that syncs all Karbon data to Supabase.
- * Can be triggered manually or via Vercel Cron.
+ * Now with sync_log audit trail for tracking all sync operations.
  *
  * Query params:
- * - incremental=true: Only sync records modified since last sync
+ * - incremental=true: Only sync records modified since last sync (default: true)
  * - expand=true: Fetch expanded details (BusinessCards, AccountingDetail) for contacts/orgs
- * - entities=contacts,organizations,work-items,users,client-groups,tasks,timesheets,notes
+ * - entities=contacts,organizations,work-items,users,client-groups,tasks,timesheets
+ * - manual=true: Mark this sync as manually triggered (vs cron)
+ * 
+ * NOTE: "notes" removed from default sync - Karbon API does NOT have a list endpoint
+ * for notes. Notes are synced via webhooks or individual fetches.
  */
 export async function GET(request: NextRequest) {
   const startTime = Date.now()
   const searchParams = request.nextUrl.searchParams
   const incremental = searchParams.get("incremental") !== "false" // Default to true
   const expand = searchParams.get("expand") === "true"
+  const isManual = searchParams.get("manual") === "true"
   const entitiesParam = searchParams.get("entities")
 
-  // Default entities to sync
+  // Default entities to sync (notes removed - no list endpoint in Karbon API)
   const defaultEntities = [
     "contacts",
     "organizations",
@@ -26,17 +39,37 @@ export async function GET(request: NextRequest) {
     "client-groups",
     "tasks",
     "timesheets",
-    "notes",
+    "invoices",
   ]
   const entities = entitiesParam ? entitiesParam.split(",") : defaultEntities
 
   const baseUrl =
-    process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+    process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3000"
+      : "http://localhost:3000")
 
   const results: Record<string, any> = {}
   const errors: string[] = []
+
+  // Create sync_log entry to track this sync operation
+  const supabase = getSupabaseAdmin()
+  let syncLogId: string | null = null
+
+  if (supabase) {
+    const { data: logEntry } = await supabase
+      .from("sync_log")
+      .insert({
+        sync_type: incremental ? "incremental" : "full",
+        sync_direction: "karbon_to_supabase",
+        status: "running",
+        is_manual: isManual,
+        started_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single()
+
+    syncLogId = logEntry?.id || null
+  }
 
   // Helper function to call sync endpoints
   async function syncEntity(entity: string, endpoint: string, extraParams = "") {
@@ -92,7 +125,7 @@ export async function GET(request: NextRequest) {
     results.workItems = await syncEntity("work-items", "/api/karbon/work-items")
   }
 
-  // 6. Tasks - depends on work items for linking
+  // 6. Tasks (IntegrationTasks) - depends on work items for linking
   if (entities.includes("tasks")) {
     results.tasks = await syncEntity("tasks", "/api/karbon/tasks")
   }
@@ -102,9 +135,14 @@ export async function GET(request: NextRequest) {
     results.timesheets = await syncEntity("timesheets", "/api/karbon/timesheets")
   }
 
-  // 8. Notes - depends on contacts/work items for linking
-  if (entities.includes("notes")) {
-    results.notes = await syncEntity("notes", "/api/karbon/notes")
+  // 8. Invoices - depends on work items/clients for linking
+  if (entities.includes("invoices")) {
+    results.invoices = await syncEntity("invoices", "/api/karbon/invoices")
+  }
+
+  // Work statuses from TenantSettings (always sync)
+  if (entities.includes("work-statuses") || !entitiesParam) {
+    results.workStatuses = await syncEntity("work-statuses", "/api/karbon/work-statuses", "&sync=true")
   }
 
   const duration = Date.now() - startTime
@@ -113,11 +151,29 @@ export async function GET(request: NextRequest) {
   const totalSynced = Object.values(results).reduce((sum: number, r: any) => sum + (r?.synced || 0), 0)
   const totalErrors = Object.values(results).reduce((sum: number, r: any) => sum + (r?.errors || 0), 0)
 
+  // Update sync_log with results
+  if (supabase && syncLogId) {
+    await supabase
+      .from("sync_log")
+      .update({
+        status: errors.length === 0 ? "completed" : "completed_with_errors",
+        records_fetched: totalSynced + totalErrors,
+        records_created: totalSynced,
+        records_updated: 0,
+        records_failed: totalErrors,
+        completed_at: new Date().toISOString(),
+        error_message: errors.length > 0 ? errors.join("; ") : null,
+        error_details: errors.length > 0 ? { errors, results } : null,
+      })
+      .eq("id", syncLogId)
+  }
+
   return NextResponse.json({
     success: errors.length === 0,
     syncType: incremental ? "incremental" : "full",
     expandedDetails: expand,
     duration: `${(duration / 1000).toFixed(2)}s`,
+    syncLogId,
     summary: {
       totalSynced,
       totalErrors,

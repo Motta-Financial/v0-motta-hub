@@ -13,26 +13,35 @@ function getSupabaseClient() {
   return createClient(supabaseUrl, supabaseKey)
 }
 
+/**
+ * Maps Karbon IntegrationTask to Supabase karbon_tasks table.
+ * 
+ * Karbon API: /v3/IntegrationTasks (NOT /v3/Tasks which doesn't exist)
+ * Fields: IntegrationTaskKey, TaskDefinitionKey, WorkItemKey, WorkItemClientKey,
+ *         Status, CreatedAt, UpdatedAt, Data (JSON object with custom fields)
+ */
 function mapKarbonTaskToSupabase(task: any) {
+  // IntegrationTasks have a different shape than the fictional /Tasks endpoint
+  const taskKey = task.IntegrationTaskKey || task.TaskKey
   return {
-    karbon_task_key: task.TaskKey,
-    title: task.Title || null,
-    description: task.Description || null,
+    karbon_task_key: taskKey,
+    title: task.Data?.Title || task.Title || null,
+    description: task.Data?.Description || task.Description || null,
     status: task.Status || null,
-    priority: task.Priority || "Normal",
-    due_date: task.DueDate ? task.DueDate.split("T")[0] : null,
-    completed_date: task.CompletedDate ? task.CompletedDate.split("T")[0] : null,
-    assignee_key: task.AssigneeKey || null,
-    assignee_name: task.AssigneeName || null,
-    assignee_email: task.AssigneeEmailAddress || null,
+    priority: task.Data?.Priority || task.Priority || "Normal",
+    due_date: task.Data?.DueDate ? task.Data.DueDate.split("T")[0] : (task.DueDate ? task.DueDate.split("T")[0] : null),
+    completed_date: task.Data?.CompletedDate ? task.Data.CompletedDate.split("T")[0] : (task.CompletedDate ? task.CompletedDate.split("T")[0] : null),
+    assignee_key: task.Data?.AssigneeKey || task.AssigneeKey || null,
+    assignee_name: task.Data?.AssigneeName || task.AssigneeName || null,
+    assignee_email: task.Data?.AssigneeEmailAddress || task.AssigneeEmailAddress || null,
     karbon_work_item_key: task.WorkItemKey || null,
-    karbon_contact_key: task.ContactKey || null,
-    is_blocking: task.IsBlocking || false,
-    estimated_minutes: task.EstimatedMinutes || null,
-    actual_minutes: task.ActualMinutes || null,
-    karbon_url: task.TaskKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/tasks/${task.TaskKey}` : null,
-    karbon_created_at: task.CreatedDate || null,
-    karbon_modified_at: task.LastModifiedDateTime || null,
+    karbon_contact_key: task.WorkItemClientKey || task.ContactKey || null,
+    is_blocking: task.Data?.IsBlocking || false,
+    estimated_minutes: task.Data?.EstimatedMinutes || null,
+    actual_minutes: task.Data?.ActualMinutes || null,
+    karbon_url: taskKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/tasks/${taskKey}` : null,
+    karbon_created_at: task.CreatedAt || task.CreatedDate || null,
+    karbon_modified_at: task.UpdatedAt || task.LastModifiedDateTime || null,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
@@ -61,8 +70,11 @@ export async function GET(request: NextRequest) {
 
     const filters: string[] = []
 
+    // IntegrationTasks supports: CreatedAt, TaskDefinitionKey, WorkItemKey, WorkItemClientKey
     if (assigneeKey) {
-      filters.push(`AssigneeKey eq '${assigneeKey}'`)
+      // IntegrationTasks doesn't support direct AssigneeKey filter
+      // We filter client-side after fetch, or use WorkItemClientKey
+      filters.push(`WorkItemClientKey eq '${assigneeKey}'`)
     }
 
     if (status) {
@@ -70,16 +82,16 @@ export async function GET(request: NextRequest) {
     }
 
     if (dueBefore) {
-      filters.push(`DueDate lt ${dueBefore}`)
+      filters.push(`CreatedAt lt ${dueBefore}`)
     }
 
     if (dueAfter) {
-      filters.push(`DueDate ge ${dueAfter}`)
+      filters.push(`CreatedAt ge ${dueAfter}`)
     }
 
     const queryOptions: any = {
       count: true,
-      orderby: "DueDate asc",
+      orderby: "CreatedAt desc",
     }
 
     // Get last sync timestamp for incremental sync
@@ -97,7 +109,7 @@ export async function GET(request: NextRequest) {
 
         if (lastSync?.karbon_modified_at) {
           lastSyncTimestamp = lastSync.karbon_modified_at
-          filters.push(`LastModifiedDateTime gt ${lastSyncTimestamp}`)
+          filters.push(`CreatedAt gt ${lastSyncTimestamp}`)
         }
       }
     }
@@ -110,7 +122,8 @@ export async function GET(request: NextRequest) {
       queryOptions.top = Number.parseInt(top, 10)
     }
 
-    const { data: tasks, error, totalCount } = await karbonFetchAll<any>("/Tasks", credentials, queryOptions)
+    // Correct Karbon endpoint: /IntegrationTasks (not /Tasks)
+    const { data: tasks, error, totalCount } = await karbonFetchAll<any>("/IntegrationTasks", credentials, queryOptions)
 
     if (error) {
       return NextResponse.json({ error: `Karbon API error: ${error}` }, { status: 500 })
@@ -159,24 +172,26 @@ export async function GET(request: NextRequest) {
     }
 
     const mappedTasks = tasks.map((task: any) => ({
-      TaskKey: task.TaskKey,
-      Title: task.Title,
-      Description: task.Description,
+      TaskKey: task.IntegrationTaskKey || task.TaskKey,
+      TaskDefinitionKey: task.TaskDefinitionKey,
+      Title: task.Data?.Title || task.Title,
+      Description: task.Data?.Description || task.Description,
       Status: task.Status,
-      DueDate: task.DueDate,
-      CompletedDate: task.CompletedDate,
-      AssignedTo: task.AssigneeName
+      DueDate: task.Data?.DueDate || task.DueDate,
+      CompletedDate: task.Data?.CompletedDate || task.CompletedDate,
+      AssignedTo: (task.Data?.AssigneeName || task.AssigneeName)
         ? {
-            FullName: task.AssigneeName,
-            Email: task.AssigneeEmailAddress,
-            UserKey: task.AssigneeKey,
+            FullName: task.Data?.AssigneeName || task.AssigneeName,
+            Email: task.Data?.AssigneeEmailAddress || task.AssigneeEmailAddress,
+            UserKey: task.Data?.AssigneeKey || task.AssigneeKey,
           }
         : null,
-      Priority: task.Priority,
+      Priority: task.Data?.Priority || task.Priority,
       WorkItemKey: task.WorkItemKey,
-      ContactKey: task.ContactKey,
-      CreatedDate: task.CreatedDate,
-      ModifiedDate: task.LastModifiedDateTime,
+      WorkItemClientKey: task.WorkItemClientKey,
+      CreatedDate: task.CreatedAt || task.CreatedDate,
+      ModifiedDate: task.UpdatedAt || task.LastModifiedDateTime,
+      Data: task.Data,
     }))
 
     return NextResponse.json({
@@ -208,7 +223,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
 
-    const { data, error } = await karbonFetch<any>("/Tasks", credentials, {
+    const { data, error } = await karbonFetch<any>("/IntegrationTasks", credentials, {
       method: "POST",
       body,
     })

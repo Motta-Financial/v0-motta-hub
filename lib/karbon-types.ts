@@ -94,6 +94,10 @@ export interface KarbonClientDetails {
   }>
 }
 
+/**
+ * KarbonTask now represents the real /v3/IntegrationTasks endpoint shape.
+ * The old /v3/Tasks endpoint does not exist in Karbon's API.
+ */
 export interface KarbonTask {
   TaskKey: string
   Title: string
@@ -111,6 +115,66 @@ export interface KarbonTask {
   ContactKey?: string
   CreatedDate?: string
   ModifiedDate?: string
+}
+
+/**
+ * Karbon IntegrationTask - the actual API shape from /v3/IntegrationTasks
+ */
+export interface KarbonIntegrationTask {
+  IntegrationTaskKey: string
+  TaskDefinitionKey: string
+  WorkItemKey: string
+  WorkItemClientKey?: string
+  Status: string
+  CreatedAt: string
+  UpdatedAt: string
+  Data?: Record<string, any>
+}
+
+/**
+ * Karbon Invoice - from /v3/Invoices endpoint
+ */
+export interface KarbonInvoice {
+  InvoiceKey: string
+  InvoiceNumber?: string
+  WorkItemKey?: string
+  ClientKey?: string
+  ClientName?: string
+  Amount?: number
+  Tax?: number
+  TotalAmount?: number
+  Status?: string
+  IssuedDate?: string
+  DueDate?: string
+  PaidDate?: string
+  Currency?: string
+  LineItems?: Array<{
+    Description?: string
+    Quantity?: number
+    UnitPrice?: number
+    Amount?: number
+    TaskTypeKey?: string
+  }>
+  CreatedDate?: string
+  ModifiedDate?: string
+}
+
+/**
+ * Karbon TenantSettings - from /v3/TenantSettings (replaces fictional /WorkStatuses)
+ */
+export interface KarbonTenantSettings {
+  WorkStatuses?: Array<{
+    WorkStatusKey: string
+    PrimaryStatusName: string
+    SecondaryStatusName: string
+    WorkTypeKeys?: string[]
+  }>
+  WorkTypes?: Array<{
+    WorkTypeKey: string
+    Name: string
+    AvailableStatuses?: string[]
+  }>
+  ContactTypes?: string[]
 }
 
 export interface KarbonWorkItemTask {

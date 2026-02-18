@@ -27,6 +27,20 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/auth/reset-password`)
   }
 
+  // Supabase sends type=invite when users click invite links (from inviteUserByEmail)
+  // The invite link works the same as recovery - user sets their password
+  if (type === "invite") {
+    if (code) {
+      const supabase = await createClient()
+      const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+      if (exchangeError) {
+        return NextResponse.redirect(`${origin}/auth/reset-password?error=invalid_link`)
+      }
+    }
+    // Redirect to set password page - invited users need to set their password
+    return NextResponse.redirect(`${origin}/auth/reset-password?invited=true`)
+  }
+
   // If no code, redirect to reset-password page for hash-based handling
   if (!code) {
     return NextResponse.redirect(`${origin}/auth/reset-password`)

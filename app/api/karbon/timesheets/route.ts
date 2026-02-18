@@ -13,26 +13,40 @@ function getSupabaseClient() {
   return createClient(supabaseUrl, supabaseKey)
 }
 
-function mapKarbonTimesheetToSupabase(entry: any) {
+/**
+ * Maps a Karbon TimeEntry (from $expand=TimeEntries on /Timesheets) to Supabase.
+ * 
+ * Karbon Timesheets API returns WEEK-level summaries:
+ *   { TimesheetKey, UserKey, StartDate, EndDate, Status, TimeEntries: [...] }
+ * 
+ * Each TimeEntry inside has: WorkItemKey, TaskTypeName, RoleName, Minutes, HourlyRate, etc.
+ * We flatten TimeEntries into our karbon_timesheets table (one row per entry).
+ */
+function mapKarbonTimesheetToSupabase(entry: any, parentTimesheet?: any) {
+  // If this is a flattened time entry from $expand, use parent's UserKey/Status
+  const userKey = entry.UserKey || parentTimesheet?.UserKey || null
+  const userName = entry.UserName || parentTimesheet?.UserName || null
+  const timesheetKey = entry.TimeEntryKey || entry.TimesheetKey || `${parentTimesheet?.TimesheetKey}-${entry.WorkItemKey}-${entry.Minutes}`
+
   return {
-    karbon_timesheet_key: entry.TimesheetKey,
-    date: entry.Date ? entry.Date.split("T")[0] : null,
+    karbon_timesheet_key: timesheetKey,
+    date: entry.Date ? entry.Date.split("T")[0] : (parentTimesheet?.StartDate ? parentTimesheet.StartDate.split("T")[0] : null),
     minutes: entry.Minutes || 0,
-    description: entry.Description || null,
+    description: entry.TaskTypeName || entry.Description || null,
     is_billable: entry.IsBillable ?? true,
-    billing_status: entry.BillingStatus || null,
+    billing_status: entry.BillingStatus || parentTimesheet?.Status || null,
     hourly_rate: entry.HourlyRate || null,
-    billed_amount: entry.BilledAmount || null,
-    user_key: entry.UserKey || null,
-    user_name: entry.UserName || null,
+    billed_amount: entry.HourlyRate && entry.Minutes ? ((entry.HourlyRate * entry.Minutes) / 60) : null,
+    user_key: userKey,
+    user_name: userName,
     karbon_work_item_key: entry.WorkItemKey || null,
     work_item_title: entry.WorkItemTitle || null,
     client_key: entry.ClientKey || null,
     client_name: entry.ClientName || null,
-    task_key: entry.TaskKey || null,
-    karbon_url: entry.TimesheetKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/timesheets/${entry.TimesheetKey}` : null,
-    karbon_created_at: entry.CreatedDate || null,
-    karbon_modified_at: entry.LastModifiedDateTime || null,
+    task_key: entry.TaskTypeKey || entry.TaskKey || null,
+    karbon_url: parentTimesheet?.TimesheetKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/timesheets/${parentTimesheet.TimesheetKey}` : null,
+    karbon_created_at: parentTimesheet?.StartDate || entry.CreatedDate || null,
+    karbon_modified_at: parentTimesheet?.EndDate || entry.LastModifiedDateTime || null,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
@@ -78,9 +92,12 @@ export async function GET(request: NextRequest) {
       filters.push(`Date le ${dateTo}`)
     }
 
+    // Karbon /Timesheets supports: $filter by StartDate, EndDate, UserKey, WorkItemKeys, Status
+    // and $expand=TimeEntries to get the individual time entries
     const queryOptions: any = {
       count: true,
-      orderby: "Date desc",
+      orderby: "StartDate desc",
+      expand: ["TimeEntries"],
     }
 
     // Get last sync timestamp for incremental sync
@@ -98,7 +115,7 @@ export async function GET(request: NextRequest) {
 
         if (lastSync?.karbon_modified_at) {
           lastSyncTimestamp = lastSync.karbon_modified_at
-          filters.push(`LastModifiedDateTime gt ${lastSyncTimestamp}`)
+          filters.push(`StartDate gt ${lastSyncTimestamp}`)
         }
       }
     }
@@ -111,7 +128,20 @@ export async function GET(request: NextRequest) {
       queryOptions.top = Number.parseInt(top, 10)
     }
 
-    const { data: timesheets, error, totalCount } = await karbonFetchAll<any>("/Timesheets", credentials, queryOptions)
+    const { data: weeklyTimesheets, error, totalCount } = await karbonFetchAll<any>("/Timesheets", credentials, queryOptions)
+
+    // Flatten: each weekly timesheet has TimeEntries[] - extract individual entries
+    const timesheets: any[] = []
+    for (const weeklyTs of weeklyTimesheets) {
+      if (weeklyTs.TimeEntries && Array.isArray(weeklyTs.TimeEntries)) {
+        for (const entry of weeklyTs.TimeEntries) {
+          timesheets.push({ ...entry, _parentTimesheet: weeklyTs })
+        }
+      } else {
+        // If no expanded entries, treat the timesheet itself as a single entry
+        timesheets.push(weeklyTs)
+      }
+    }
 
     if (error) {
       return NextResponse.json({ error: `Karbon API error: ${error}` }, { status: 500 })
@@ -131,7 +161,7 @@ export async function GET(request: NextRequest) {
         for (let i = 0; i < timesheets.length; i += batchSize) {
           const batch = timesheets.slice(i, i + batchSize)
           const mappedBatch = batch.map((entry: any) => ({
-            ...mapKarbonTimesheetToSupabase(entry),
+            ...mapKarbonTimesheetToSupabase(entry, entry._parentTimesheet),
             created_at: new Date().toISOString(),
           }))
 

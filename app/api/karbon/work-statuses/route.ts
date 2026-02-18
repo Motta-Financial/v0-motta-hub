@@ -4,14 +4,24 @@ import { createClient } from "@supabase/supabase-js"
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 
-interface KarbonWorkStatus {
+interface KarbonWorkStatusFromTenant {
   WorkStatusKey: string
-  Name: string
-  Description?: string
-  DisplayOrder?: number
+  PrimaryStatusName: string
+  SecondaryStatusName: string
+  WorkTypeKeys?: string[]
 }
 
-// GET - Fetch work statuses from Karbon and optionally sync to Supabase
+interface KarbonTenantSettings {
+  WorkStatuses?: KarbonWorkStatusFromTenant[]
+  WorkTypes?: Array<{
+    WorkTypeKey: string
+    Name: string
+    AvailableStatuses?: string[]
+  }>
+  ContactTypes?: string[]
+}
+
+// GET - Fetch work statuses from Karbon TenantSettings and optionally sync to Supabase
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const sync = searchParams.get("sync") === "true"
@@ -32,20 +42,21 @@ export async function GET(request: Request) {
     })
   }
 
-  // Fetch from Karbon API
+  // Fetch from Karbon API - correct endpoint is /TenantSettings
   const credentials = getKarbonCredentials()
   if (!credentials) {
     return NextResponse.json({ error: "Karbon credentials not configured" }, { status: 500 })
   }
 
-  // Karbon WorkStatuses endpoint
-  const { data: statuses, error } = await karbonFetch<KarbonWorkStatus[]>("/WorkStatuses", credentials)
+  // The Karbon API exposes statuses under /TenantSettings, NOT /WorkStatuses
+  const { data: tenantSettings, error } = await karbonFetch<KarbonTenantSettings>("/TenantSettings", credentials)
 
-  if (error || !statuses) {
-    return NextResponse.json({ error: error || "Failed to fetch work statuses from Karbon" }, { status: 500 })
+  if (error || !tenantSettings) {
+    return NextResponse.json({ error: error || "Failed to fetch tenant settings from Karbon" }, { status: 500 })
   }
 
-  console.log(`[Karbon] Fetched ${statuses.length} work statuses`)
+  const statuses = tenantSettings.WorkStatuses || []
+  console.log(`[Karbon] Fetched ${statuses.length} work statuses from TenantSettings`)
 
   // If sync is requested, upsert to Supabase
   if (sync) {
@@ -63,17 +74,23 @@ export async function GET(request: Request) {
       "deleted",
     ]
 
+    // TenantSettings returns statuses with PrimaryStatusName + SecondaryStatusName
+    // The combined name represents the full status (e.g. "In Progress" / "Waiting on Client")
     const statusRecords = statuses.map((status, index) => {
-      const nameLower = status.Name.toLowerCase()
+      const statusName = status.SecondaryStatusName
+        ? `${status.PrimaryStatusName} - ${status.SecondaryStatusName}`
+        : status.PrimaryStatusName
+      const nameLower = statusName.toLowerCase()
       const isInactive = inactiveStatuses.some((s) => nameLower.includes(s))
 
       return {
         karbon_status_key: status.WorkStatusKey,
-        name: status.Name,
-        description: status.Description || null,
-        display_order: status.DisplayOrder || index,
+        name: statusName,
+        description: status.SecondaryStatusName || null,
+        status_type: status.PrimaryStatusName || null,
+        display_order: index,
         is_active: !isInactive,
-        is_default_filter: !isInactive, // Include in active work items count by default
+        is_default_filter: !isInactive,
         updated_at: new Date().toISOString(),
       }
     })

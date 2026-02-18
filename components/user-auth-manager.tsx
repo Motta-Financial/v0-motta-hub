@@ -18,6 +18,12 @@ import {
   RefreshCw,
   Link2,
   Plus,
+  Mail,
+  KeyRound,
+  Send,
+  CheckCircle2,
+  XCircle,
+  Wifi,
 } from "lucide-react"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -74,6 +80,28 @@ interface SyncResult {
   failed: Array<{ email: string; error: string }>
 }
 
+interface InviteResult {
+  sent: Array<{ email: string; full_name: string; action: string }>
+  failed: Array<{ email: string; error: string }>
+}
+
+interface SmtpStatus {
+  smtp_configured: boolean
+  smtp_details: {
+    sender_email: string
+    sender_name: string
+    smtp_host: string
+    smtp_port: number
+    min_interval: string
+  }
+  auth_summary: {
+    total_users: number
+    email_confirmed: number
+    recent_sign_ins_7d: number
+  }
+  email_capabilities: string[]
+}
+
 export function UserAuthManager() {
   const [members, setMembers] = useState<TeamMember[]>([])
   const [loading, setLoading] = useState(true)
@@ -94,6 +122,98 @@ export function UserAuthManager() {
   const [userDetails, setUserDetails] = useState<
     Record<string, { full_name: string; role: string; department: string }>
   >({})
+
+  // SMTP / Invite state
+  const [smtpStatus, setSmtpStatus] = useState<SmtpStatus | null>(null)
+  const [checkingSmtp, setCheckingSmtp] = useState(false)
+  const [sendingInvites, setSendingInvites] = useState(false)
+  const [sendingReset, setSendingReset] = useState<string | null>(null)
+  const [inviteResult, setInviteResult] = useState<InviteResult | null>(null)
+  const [showInviteResult, setShowInviteResult] = useState(false)
+  const [testingSmtp, setTestingSmtp] = useState(false)
+  const [smtpTestResult, setSmtpTestResult] = useState<{ success: boolean; message: string } | null>(null)
+
+  const checkSmtpStatus = useCallback(async () => {
+    setCheckingSmtp(true)
+    try {
+      const response = await fetch("/api/auth/test-smtp")
+      if (response.ok) {
+        const data = await response.json()
+        setSmtpStatus(data)
+      }
+    } catch (error) {
+      console.error("Error checking SMTP:", error)
+    } finally {
+      setCheckingSmtp(false)
+    }
+  }, [])
+
+  const handleTestSmtp = async (email: string) => {
+    setTestingSmtp(true)
+    setSmtpTestResult(null)
+    try {
+      const response = await fetch("/api/auth/test-smtp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      })
+      const data = await response.json()
+      setSmtpTestResult({
+        success: data.success,
+        message: data.success
+          ? `Test email sent to ${email}. Check inbox (and spam).`
+          : data.error || "Failed to send test email",
+      })
+    } catch (error) {
+      setSmtpTestResult({ success: false, message: "Network error sending test email" })
+    } finally {
+      setTestingSmtp(false)
+    }
+  }
+
+  const handleSendInvite = async (memberList: Array<{ email: string; full_name: string; team_member_id?: string; role?: string; department?: string }>) => {
+    setSendingInvites(true)
+    try {
+      const response = await fetch("/api/team-members/invite-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "invite",
+          users: memberList,
+        }),
+      })
+      const data = await response.json()
+      setInviteResult(data)
+      setShowInviteResult(true)
+      // Refresh data
+      await Promise.all([fetchMembers(), discoverAuthUsers()])
+    } catch (error) {
+      console.error("Error sending invites:", error)
+    } finally {
+      setSendingInvites(false)
+    }
+  }
+
+  const handleSendPasswordReset = async (email: string, fullName: string) => {
+    setSendingReset(email)
+    try {
+      const response = await fetch("/api/team-members/invite-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reset_password",
+          users: [{ email, full_name: fullName }],
+        }),
+      })
+      const data = await response.json()
+      setInviteResult(data)
+      setShowInviteResult(true)
+    } catch (error) {
+      console.error("Error sending password reset:", error)
+    } finally {
+      setSendingReset(null)
+    }
+  }
 
   const fetchMembers = async () => {
     try {
@@ -189,7 +309,8 @@ export function UserAuthManager() {
   useEffect(() => {
     fetchMembers()
     discoverAuthUsers()
-  }, [discoverAuthUsers])
+    checkSmtpStatus()
+  }, [discoverAuthUsers, checkSmtpStatus])
 
   const handleSetupAuth = async () => {
     setSyncing(true)
@@ -326,6 +447,15 @@ export function UserAuthManager() {
           <TabsTrigger value="members" className="gap-2">
             <Shield className="h-4 w-4" />
             All Team Members
+          </TabsTrigger>
+          <TabsTrigger value="email" className="gap-2">
+            <Mail className="h-4 w-4" />
+            Email & SMTP
+            {smtpStatus && (
+              <Badge variant="outline" className="ml-1 text-green-600 border-green-600">
+                Active
+              </Badge>
+            )}
           </TabsTrigger>
         </TabsList>
 
@@ -631,6 +761,7 @@ export function UserAuthManager() {
                     <TableHead>Email</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Auth Account</TableHead>
+                    <TableHead>Email Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -656,12 +787,275 @@ export function UserAuthManager() {
                           </Badge>
                         )}
                       </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1">
+                          {member.hasAuthAccount ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleSendPasswordReset(member.email, member.name)}
+                              disabled={sendingReset === member.email}
+                              className="text-xs"
+                            >
+                              {sendingReset === member.email ? (
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              ) : (
+                                <KeyRound className="mr-1 h-3 w-3" />
+                              )}
+                              Reset Password
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() =>
+                                handleSendInvite([
+                                  { email: member.email, full_name: member.name, team_member_id: member.id },
+                                ])
+                              }
+                              disabled={sendingInvites}
+                              className="text-xs"
+                            >
+                              {sendingInvites ? (
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              ) : (
+                                <Send className="mr-1 h-3 w-3" />
+                              )}
+                              Send Invite
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Email & SMTP Tab */}
+        <TabsContent value="email" className="space-y-4">
+          {/* SMTP Status Card */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Wifi className="h-5 w-5 text-green-600" />
+                    SMTP Configuration Status
+                  </CardTitle>
+                  <CardDescription>
+                    Custom SMTP is configured for sending auth emails via ALFRED (info@mottafinancial.com)
+                  </CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={checkSmtpStatus} disabled={checkingSmtp}>
+                  {checkingSmtp ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                  )}
+                  Refresh Status
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {smtpStatus ? (
+                <div className="space-y-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-semibold">SMTP Details</h4>
+                      <div className="rounded-md border p-3 space-y-1 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Sender</span>
+                          <span className="font-medium">{smtpStatus.smtp_details.sender_name} ({smtpStatus.smtp_details.sender_email})</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">SMTP Host</span>
+                          <span className="font-medium">{smtpStatus.smtp_details.smtp_host}:{smtpStatus.smtp_details.smtp_port}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Rate Limit</span>
+                          <span className="font-medium">{smtpStatus.smtp_details.min_interval} per user</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Status</span>
+                          <Badge variant="outline" className="text-green-600 border-green-600">
+                            <CheckCircle2 className="mr-1 h-3 w-3" />
+                            Active
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-semibold">Auth Summary</h4>
+                      <div className="rounded-md border p-3 space-y-1 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Total Auth Users</span>
+                          <span className="font-medium">{smtpStatus.auth_summary.total_users}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Email Confirmed</span>
+                          <span className="font-medium">{smtpStatus.auth_summary.email_confirmed}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Active (7d)</span>
+                          <span className="font-medium">{smtpStatus.auth_summary.recent_sign_ins_7d}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-semibold">Email Capabilities (via SMTP)</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {smtpStatus.email_capabilities.map((cap, i) => (
+                        <Badge key={i} variant="secondary" className="text-xs">
+                          <Mail className="mr-1 h-3 w-3" />
+                          {cap}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading SMTP status...
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* SMTP Test Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Send className="h-5 w-5" />
+                Test SMTP Email Delivery
+              </CardTitle>
+              <CardDescription>
+                Send a test password reset email to verify SMTP delivery is working through your Outlook SMTP server.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center gap-3">
+                <Select
+                  onValueChange={(email) => handleTestSmtp(email)}
+                  disabled={testingSmtp}
+                >
+                  <SelectTrigger className="w-[300px]">
+                    <SelectValue placeholder="Select a user to test with..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {members
+                      .filter((m) => m.hasAuthAccount)
+                      .map((m) => (
+                        <SelectItem key={m.id} value={m.email}>
+                          {m.name} ({m.email})
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                {testingSmtp && (
+                  <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Sending test email...
+                  </div>
+                )}
+              </div>
+
+              {smtpTestResult && (
+                <Alert variant={smtpTestResult.success ? "default" : "destructive"}>
+                  {smtpTestResult.success ? (
+                    <CheckCircle2 className="h-4 w-4" />
+                  ) : (
+                    <XCircle className="h-4 w-4" />
+                  )}
+                  <AlertTitle>{smtpTestResult.success ? "Test Email Sent" : "Test Failed"}</AlertTitle>
+                  <AlertDescription>{smtpTestResult.message}</AlertDescription>
+                </Alert>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Bulk Invite Card for members without auth */}
+          {withoutAuth.length > 0 && (
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <UserPlus className="h-5 w-5 text-orange-600" />
+                      Invite Unregistered Team Members ({withoutAuth.length})
+                    </CardTitle>
+                    <CardDescription>
+                      Send invite emails via SMTP to team members who don&apos;t have auth accounts yet.
+                      They will receive a branded invitation from ALFRED to set up their password.
+                    </CardDescription>
+                  </div>
+                  <Button
+                    onClick={() =>
+                      handleSendInvite(
+                        withoutAuth.map((m) => ({
+                          email: m.email,
+                          full_name: m.name,
+                          team_member_id: m.id,
+                        })),
+                      )
+                    }
+                    disabled={sendingInvites}
+                  >
+                    {sendingInvites ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Sending Invites...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="mr-2 h-4 w-4" />
+                        Invite All ({withoutAuth.length})
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {withoutAuth.map((member) => (
+                      <TableRow key={member.id}>
+                        <TableCell className="font-medium">{member.name}</TableCell>
+                        <TableCell>{member.email}</TableCell>
+                        <TableCell>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              handleSendInvite([
+                                { email: member.email, full_name: member.name, team_member_id: member.id },
+                              ])
+                            }
+                            disabled={sendingInvites}
+                          >
+                            <Send className="mr-1 h-3 w-3" />
+                            Send Invite
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
       </Tabs>
 
@@ -743,6 +1137,84 @@ export function UserAuthManager() {
                   ))}
                 </TableBody>
               </Table>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Invite / Password Reset Results Dialog */}
+      <Dialog open={showInviteResult} onOpenChange={setShowInviteResult}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail className="h-5 w-5" />
+              Email Delivery Results
+            </DialogTitle>
+            <DialogDescription>
+              Results from sending emails via SMTP (ALFRED / info@mottafinancial.com)
+            </DialogDescription>
+          </DialogHeader>
+
+          {inviteResult && (
+            <div className="space-y-4">
+              {inviteResult.sent.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="font-semibold text-green-600 flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4" />
+                    Successfully Sent ({inviteResult.sent.length})
+                  </h4>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Type</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {inviteResult.sent.map((item, idx) => (
+                        <TableRow key={idx}>
+                          <TableCell className="font-medium">{item.full_name}</TableCell>
+                          <TableCell>{item.email}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className="text-green-600 border-green-600">
+                              {item.action === "invite_sent" ? "Invite Sent" :
+                               item.action === "reset_password_sent" ? "Password Reset Sent" :
+                               item.action === "linked_and_reset_sent" ? "Linked & Reset Sent" :
+                               item.action}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+
+              {inviteResult.failed.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="font-semibold text-red-600 flex items-center gap-2">
+                    <XCircle className="h-4 w-4" />
+                    Failed ({inviteResult.failed.length})
+                  </h4>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Error</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {inviteResult.failed.map((item, idx) => (
+                        <TableRow key={idx}>
+                          <TableCell>{item.email}</TableCell>
+                          <TableCell className="text-red-600">{item.error}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>

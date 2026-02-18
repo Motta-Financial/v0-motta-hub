@@ -23,6 +23,20 @@ const WEBHOOK_ENDPOINTS: Record<string, string> = {
 const WEBHOOK_TYPES = ["Work", "Contact", "Note"] as const
 type WebhookType = (typeof WEBHOOK_TYPES)[number]
 
+// Default webhook handler URLs for each type
+function getDefaultWebhookUrl(webhookType: string): string {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
+
+  const handlerPaths: Record<string, string> = {
+    Work: "/api/webhooks/karbon/work-items",
+    Contact: "/api/webhooks/karbon/contacts",
+    Note: "/api/webhooks/karbon/notes",
+  }
+
+  return `${baseUrl}${handlerPaths[webhookType] || handlerPaths.Work}`
+}
+
 export async function POST(request: NextRequest) {
   try {
     const credentials = getKarbonCredentials()
@@ -33,8 +47,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { webhookType = "Work", targetUrl, signingKey } = body
 
-    // Use provided URL or default to Edge Function
-    const webhookUrl = targetUrl || "https://gylupzxitoebhqjnvzuw.supabase.co/functions/v1/karbon-work-sync"
+    // Use provided URL or default to the correct handler for this webhook type
+    const webhookUrl = targetUrl || getDefaultWebhookUrl(webhookType)
 
     // Ensure URL uses https://
     if (!webhookUrl.startsWith("https://")) {
