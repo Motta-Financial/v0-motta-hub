@@ -33,7 +33,7 @@ function mapKarbonInvoiceToSupabase(invoice: any) {
     issued_date: invoice.IssuedDate ? invoice.IssuedDate.split("T")[0] : null,
     due_date: invoice.DueDate ? invoice.DueDate.split("T")[0] : null,
     paid_date: invoice.PaidDate ? invoice.PaidDate.split("T")[0] : null,
-    line_items: invoice.LineItems ? JSON.stringify(invoice.LineItems) : null,
+    line_items: invoice.LineItems || null,
     karbon_url: invoice.InvoiceKey
       ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/invoices/${invoice.InvoiceKey}`
       : null,
