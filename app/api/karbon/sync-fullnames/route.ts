@@ -1,12 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import { createAdminClient } from "@/lib/supabase/server"
 
 const KARBON_API_BASE = "https://api.karbonhq.com/v3"
-
-// Create Supabase client with service role for admin operations
-function getSupabaseAdmin() {
-  return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
-}
 
 interface KarbonContact {
   ContactKey: string
@@ -145,7 +140,7 @@ function getFullNameFromOrganization(org: KarbonOrganization): string {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = getSupabaseAdmin()
+    const supabase = createAdminClient()
 
     // Fetch all contacts and organizations from Karbon
     console.log("[v0] Fetching contacts from Karbon...")

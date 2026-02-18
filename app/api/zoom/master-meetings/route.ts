@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-
-const supabaseAdmin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createAdminClient } from "@/lib/supabase/server"
 
 async function getServerAccessToken() {
   const clientId = process.env.ZOOM_CLIENT_ID
@@ -130,6 +128,7 @@ export async function GET(request: Request) {
 // POST to sync meetings to Supabase and send notifications
 export async function POST(request: Request) {
   try {
+    const supabaseAdmin = createAdminClient()
     const accessToken = await getServerAccessToken()
 
     // Get all users

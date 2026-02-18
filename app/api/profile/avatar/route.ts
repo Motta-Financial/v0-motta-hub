@@ -1,11 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { put } from "@vercel/blob"
-import { createClient } from "@supabase/supabase-js"
-
-const supabaseAdmin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createAdminClient } from "@/lib/supabase/server"
 
 export async function POST(request: NextRequest) {
   try {
+    const supabaseAdmin = createAdminClient()
     const formData = await request.formData()
     const file = formData.get("file") as File
     const teamMemberId = formData.get("teamMemberId") as string

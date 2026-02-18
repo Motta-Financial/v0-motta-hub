@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import { createAdminClient } from "@/lib/supabase/server"
 import type { FilterView } from "@/lib/view-types"
-
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 
 export async function GET(request: Request) {
   try {
+    const supabase = createAdminClient()
     const { searchParams } = new URL(request.url)
     const type = searchParams.get("type") as "clients" | "workItems" | "teammates" | null
 
@@ -39,6 +38,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const supabase = createAdminClient()
     const body = await request.json()
     const { name, type, filters, isShared, createdBy } = body
 
@@ -83,6 +83,7 @@ export async function POST(request: Request) {
 
 export async function PUT(request: Request) {
   try {
+    const supabase = createAdminClient()
     const body = await request.json()
     const { id, name, filters, isShared } = body
 
@@ -124,6 +125,7 @@ export async function PUT(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    const supabase = createAdminClient()
     const { searchParams } = new URL(request.url)
     const id = searchParams.get("id")
 

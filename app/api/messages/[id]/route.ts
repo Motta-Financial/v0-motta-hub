@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createAdminClient } from "@/lib/supabase/server"
 
 // Add reaction to message
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   try {
+    const supabase = createAdminClient()
     const { id } = params
     const body = await request.json()
     const { action, emoji, teamMemberId, comment } = body

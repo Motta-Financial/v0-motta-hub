@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createAdminClient } from "@/lib/supabase/server"
 
 export async function GET() {
   try {
+    const supabase = createAdminClient()
     // Fetch messages with reactions and comments
     const { data: messages, error } = await supabase
       .from("messages")
@@ -75,6 +74,7 @@ function aggregateReactions(reactions: any[]) {
 
 export async function POST(request: Request) {
   try {
+    const supabase = createAdminClient()
     const body = await request.json()
     const { author, authorInitials, teamMemberId, content, gifUrl } = body
 

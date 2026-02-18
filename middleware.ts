@@ -42,8 +42,15 @@ export async function middleware(request: NextRequest) {
   const isWebhook = pathname.startsWith("/api/webhooks") || pathname.startsWith("/api/karbon/webhooks")
   const isCron = pathname.startsWith("/api/cron")
 
-  // Allow auth callback, public API, webhooks, and cron without auth checks
-  if (isAuthCallback || isPublicApi || isWebhook || isCron) {
+  // Allow internal server-to-server calls (e.g. cron -> /api/karbon/sync -> /api/karbon/contacts)
+  // These pass a shared secret so middleware doesn't block the sync chain.
+  const isInternalCall =
+    pathname.startsWith("/api/karbon/") &&
+    process.env.CRON_SECRET &&
+    request.headers.get("x-internal-secret") === process.env.CRON_SECRET
+
+  // Allow auth callback, public API, webhooks, cron, and internal calls without auth checks
+  if (isAuthCallback || isPublicApi || isWebhook || isCron || isInternalCall) {
     return supabaseResponse
   }
 
