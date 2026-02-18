@@ -35,68 +35,77 @@ export async function POST(request: NextRequest) {
     const supabase = createAdminClient()
     const body = await request.json()
 
-    // Extract core debrief fields that map to the table
+    // Extract the first related client and work item for the main FK columns
+    const relatedClients = body.related_clients || []
+    const relatedWorkItems = body.related_work_items || []
+
+    // Determine contact_id and organization_id from the first related client
+    let contactId: string | null = null
+    let organizationId: string | null = null
+    let organizationName: string | null = null
+    let karbonClientKey: string | null = null
+
+    for (const client of relatedClients) {
+      if (client.type === "contact" && !contactId) {
+        contactId = client.id
+        karbonClientKey = client.karbon_key || null
+      } else if (client.type === "organization" && !organizationId) {
+        organizationId = client.id
+        karbonClientKey = karbonClientKey || client.karbon_key || null
+      }
+    }
+
+    // Look up names/keys from the DB for the linked contact/org
+    if (contactId) {
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("full_name, karbon_contact_key")
+        .eq("id", contactId)
+        .single()
+      if (contact) {
+        karbonClientKey = karbonClientKey || contact.karbon_contact_key
+      }
+    }
+    if (organizationId) {
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("name, karbon_organization_key")
+        .eq("id", organizationId)
+        .single()
+      if (org) {
+        organizationName = org.name
+        karbonClientKey = karbonClientKey || org.karbon_organization_key
+      }
+    }
+
+    // Build the debrief row -- only include columns that exist in the debriefs table
     const debriefData: Record<string, any> = {
       debrief_date: body.debrief_date,
       notes: body.notes || null,
       follow_up_date: body.follow_up_date || null,
-      team_member: body.team_member || null,
+      team_member_id: body.created_by_id || null,
       created_by_id: body.created_by_id || null,
-      contact_id: body.contact_id || null,
-      organization_id: body.organization_id || null,
-      work_item_id: body.work_item_id || null,
-      karbon_work_url: body.karbon_work_url || null,
+      contact_id: contactId,
+      organization_id: organizationId,
+      organization_name: organizationName,
+      work_item_id: relatedWorkItems.length > 0 ? relatedWorkItems[0].id : null,
+      karbon_client_key: karbonClientKey,
       status: body.status || "completed",
       debrief_type: body.debrief_type || "meeting",
     }
 
-    // Store additional data in action_items JSON field
-    if (
-      body.action_items ||
-      body.related_clients ||
-      body.related_work_items ||
-      body.service_lines ||
-      body.research_topics ||
-      body.fee_adjustments
-    ) {
-      debriefData.action_items = {
-        items: body.action_items || [],
-        related_clients: body.related_clients || [],
-        related_work_items: body.related_work_items || [],
-        service_lines: body.service_lines || [],
-        research_topics: body.research_topics || [],
-        fee_adjustments: body.fee_adjustments || null,
-        notify_team: body.notify_team || false,
-        notification_recipients: body.notification_recipients || [],
-      }
-    }
-
-    // Get client names for display
-    if (body.contact_id) {
-      const { data: contact } = await supabase
-        .from("contacts")
-        .select("full_name, karbon_contact_key")
-        .eq("id", body.contact_id)
-        .single()
-
-      if (contact) {
-        debriefData.karbon_client_key = contact.karbon_contact_key
-      }
-    }
-
-    if (body.organization_id) {
-      const { data: org } = await supabase
-        .from("organizations")
-        .select("name, karbon_organization_key")
-        .eq("id", body.organization_id)
-        .single()
-
-      if (org) {
-        debriefData.organization_name = org.name
-        if (!debriefData.karbon_client_key) {
-          debriefData.karbon_client_key = org.karbon_organization_key
-        }
-      }
+    // Store all extra data in the action_items JSONB column
+    debriefData.action_items = {
+      items: body.action_items || [],
+      related_clients: relatedClients,
+      related_work_items: relatedWorkItems,
+      service_lines: body.services || [],
+      research_topics: body.research_topics || "",
+      fee_adjustment: body.fee_adjustment || null,
+      fee_adjustment_reason: body.fee_adjustment_reason || null,
+      notify_team: body.notify_team || false,
+      notification_recipients: body.notification_recipients || [],
+      team_member_name: body.team_member || null,
     }
 
     const { data, error } = await supabase.from("debriefs").insert(debriefData).select()
