@@ -1,18 +1,14 @@
 /**
- * Comprehensive Karbon → Supabase Sync Script
- * 
+ * Comprehensive Karbon -> Supabase Sync Script
+ *
  * Fetches ALL entities from Karbon API and upserts them into Supabase.
- * Entities synced (in dependency order):
- *   1. Team Members (Users)
- *   2. Contacts
- *   3. Organizations
- *   4. Client Groups
- *   5. Work Statuses
- *   6. Work Items
- *   7. Tasks
- *   8. Timesheets
- *   9. Notes
- *  10. Invoices
+ * Fixed for actual Karbon API behavior:
+ *   - No $expand on list endpoints (contacts, orgs, client-groups, work-items)
+ *   - Tasks come from /WorkItems/{key}/Tasks, not /IntegrationTasks
+ *   - Notes via /WorkItems/{key}/Notes
+ *   - Timesheets via /Timesheets (no $expand)
+ *   - Work statuses via /WorkStatuses
+ *   - Duplicate emails handled in team_members
  */
 
 const KARBON_BASE_URL = "https://api.karbonhq.com/v3"
@@ -30,10 +26,10 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   process.exit(1)
 }
 
-// ─── Karbon API Helper ───────────────────────────────────────────────
-async function karbonFetch(endpoint) {
-  const url = endpoint.startsWith("http") ? endpoint : `${KARBON_BASE_URL}${endpoint}`
-  const res = await fetch(url, {
+// ─── Karbon API Helpers ─────────────────────────────────────────────
+async function karbonFetch(url) {
+  const fullUrl = url.startsWith("http") ? url : `${KARBON_BASE_URL}${url}`
+  const res = await fetch(fullUrl, {
     headers: {
       Authorization: `Bearer ${KARBON_BEARER_TOKEN}`,
       AccessKey: KARBON_ACCESS_KEY,
@@ -42,14 +38,14 @@ async function karbonFetch(endpoint) {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => "")
-    throw new Error(`Karbon API ${res.status}: ${url} - ${text.substring(0, 200)}`)
+    throw new Error(`Karbon ${res.status}: ${fullUrl.substring(0, 100)} - ${text.substring(0, 200)}`)
   }
   return res.json()
 }
 
-async function karbonFetchAll(endpoint, queryParams = "") {
+async function karbonFetchAll(endpoint) {
   const allItems = []
-  let url = `${KARBON_BASE_URL}${endpoint}${queryParams ? (endpoint.includes("?") ? "&" : "?") + queryParams : ""}`
+  let url = `${KARBON_BASE_URL}${endpoint}`
   let page = 1
 
   while (url) {
@@ -58,32 +54,39 @@ async function karbonFetchAll(endpoint, queryParams = "") {
     if (Array.isArray(items)) {
       allItems.push(...items)
     }
-    // OData pagination
     url = data["@odata.nextLink"] || data["odata.nextLink"] || null
-    if (page % 5 === 0) console.log(`  ... fetched ${allItems.length} items so far (page ${page})`)
+    if (page % 5 === 0) console.log(`  ... ${allItems.length} items so far (page ${page})`)
     page++
-    // Safety valve
-    if (page > 500) { console.log("  Safety limit hit at 500 pages"); break }
+    if (page > 500) { console.log("  Safety limit 500 pages"); break }
   }
   return allItems
 }
 
-// ─── Supabase REST Helper ────────────────────────────────────────────
+// Safe single-item fetch that returns null on error
+async function karbonFetchSafe(url) {
+  try {
+    return await karbonFetch(url)
+  } catch (e) {
+    return null
+  }
+}
+
+// ─── Supabase REST Helper ───────────────────────────────────────────
 async function supabaseUpsert(table, data, conflictKey) {
   if (!data || data.length === 0) return { synced: 0, errors: 0 }
   let synced = 0
   let errors = 0
-  const BATCH_SIZE = 100
+  const BATCH = 100
 
-  for (let i = 0; i < data.length; i += BATCH_SIZE) {
-    const batch = data.slice(i, i + BATCH_SIZE)
+  for (let i = 0; i < data.length; i += BATCH) {
+    const batch = data.slice(i, i + BATCH)
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
       method: "POST",
       headers: {
         apikey: SUPABASE_KEY,
         Authorization: `Bearer ${SUPABASE_KEY}`,
         "Content-Type": "application/json",
-        Prefer: `resolution=merge-duplicates,return=minimal`,
+        Prefer: "resolution=merge-duplicates,return=minimal",
       },
       body: JSON.stringify(batch),
     })
@@ -91,14 +94,46 @@ async function supabaseUpsert(table, data, conflictKey) {
       synced += batch.length
     } else {
       const errText = await res.text().catch(() => "")
-      console.error(`  ERROR upserting to ${table} (batch ${Math.floor(i / BATCH_SIZE) + 1}): ${res.status} - ${errText.substring(0, 300)}`)
+      console.error(`  ERROR ${table} batch ${Math.floor(i / BATCH) + 1}: ${res.status} - ${errText.substring(0, 300)}`)
       errors += batch.length
     }
   }
   return { synced, errors }
 }
 
-// ─── Mapper Functions ────────────────────────────────────────────────
+// ─── Sync Log Helper ────────────────────────────────────────────────
+// sync_log columns: sync_type, sync_direction, records_fetched, records_created,
+//   records_updated, records_failed, status, started_at, completed_at, error_message
+async function logSync(syncType, status, recordsFetched, errorMessage) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/sync_log`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({
+        sync_type: syncType,
+        sync_direction: "karbon_to_supabase",
+        records_fetched: recordsFetched || 0,
+        records_created: recordsFetched || 0,
+        records_updated: 0,
+        records_failed: 0,
+        status: status,
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        error_message: errorMessage || null,
+        is_manual: true,
+      }),
+    })
+  } catch (e) {
+    // Don't fail the sync if logging fails
+  }
+}
+
+// ─── Mapper Functions ───────────────────────────────────────────────
 
 function mapUser(user) {
   const firstName = user.FirstName || user.Name?.split(" ")[0] || ""
@@ -127,6 +162,7 @@ function mapUser(user) {
 }
 
 function mapContact(contact) {
+  // Contacts fetched without $expand - work with whatever fields are available
   const businessCards = Array.isArray(contact.BusinessCards) ? contact.BusinessCards : []
   const bc = businessCards.find(b => b.IsPrimaryCard) || businessCards[0] || {}
   const acct = contact.AccountingDetail || {}
@@ -139,14 +175,6 @@ function mapContact(contact) {
   const mobilePhone = phones.find(p => p.Label === "Mobile")
   const faxPhone = phones.find(p => p.Label === "Fax")
   const primaryPhone = phones.find(p => p.Label === "Primary") || phones[0]
-
-  const regNumbers = acct.RegistrationNumbers || {}
-  const regArray = Array.isArray(regNumbers) ? regNumbers : regNumbers.Type ? [regNumbers] : []
-  let ein = null, ssnLastFour = null
-  regArray.forEach(reg => {
-    if (reg.Type?.includes("EIN") || reg.Type?.includes("Employer")) ein = reg.RegistrationNumber
-    if (reg.Type?.includes("SSN") || reg.Type?.includes("Social Security")) ssnLastFour = reg.RegistrationNumber?.slice(-4) || null
-  })
 
   const firstName = contact.FirstName || null
   const lastName = contact.LastName || null
@@ -186,8 +214,6 @@ function mapContact(contact) {
     mailing_zip_code: mailAddr.ZipCode || mailAddr.PostalCode || null,
     mailing_country: mailAddr.CountryCode || mailAddr.Country || null,
     date_of_birth: acct.BirthDate ? acct.BirthDate.split("T")[0] : null,
-    ein: ein,
-    ssn_last_four: ssnLastFour,
     occupation: contact.Occupation || acct.Occupation || null,
     employer: contact.Employer || null,
     source: contact.Source || null,
@@ -200,9 +226,8 @@ function mapContact(contact) {
     client_manager_key: contact.ClientManagerKey || null,
     client_partner_key: contact.ClientPartnerKey || null,
     user_defined_identifier: contact.UserDefinedIdentifier || null,
-    registration_numbers: regNumbers,
-    business_cards: businessCards,
-    accounting_detail: acct,
+    business_cards: businessCards.length > 0 ? businessCards : null,
+    accounting_detail: Object.keys(acct).length > 0 ? acct : null,
     assigned_team_members: contact.AssignedTeamMembers || [],
     tags: contact.Tags || [],
     notes: acct.Notes?.Body || contact.Notes || null,
@@ -385,30 +410,21 @@ function mapWorkItem(item) {
   }
 }
 
-function mapTask(task) {
-  const taskKey = task.IntegrationTaskKey || task.TaskKey || task.Data?.TaskKey
+function mapWorkStatus(status, index) {
+  const isInactive = (status.PrimaryStatusName || "").toLowerCase().includes("complet") ||
+    (status.PrimaryStatusName || "").toLowerCase().includes("cancel")
+  const statusName = [status.PrimaryStatusName, status.SecondaryStatusName].filter(Boolean).join(" - ") || `Status ${index}`
   return {
-    karbon_task_key: taskKey,
-    task_definition_key: task.TaskDefinitionKey || null,
-    title: task.Data?.Title || task.Title || null,
-    description: task.Data?.Description || task.Description || null,
-    status: task.Status || null,
-    priority: task.Data?.Priority || task.Priority || "Normal",
-    due_date: task.Data?.DueDate ? task.Data.DueDate.split("T")[0] : (task.DueDate ? task.DueDate.split("T")[0] : null),
-    completed_date: task.Data?.CompletedDate ? task.Data.CompletedDate.split("T")[0] : (task.CompletedDate ? task.CompletedDate.split("T")[0] : null),
-    assignee_key: task.Data?.AssigneeKey || task.AssigneeKey || null,
-    assignee_name: task.Data?.AssigneeName || task.AssigneeName || null,
-    assignee_email: task.Data?.AssigneeEmailAddress || task.AssigneeEmailAddress || null,
-    karbon_work_item_key: task.WorkItemKey || null,
-    karbon_contact_key: task.WorkItemClientKey || task.ContactKey || null,
-    is_blocking: task.Data?.IsBlocking || false,
-    estimated_minutes: task.Data?.EstimatedMinutes || null,
-    actual_minutes: task.Data?.ActualMinutes || null,
-    task_data: task.Data || null,
-    karbon_url: taskKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/tasks/${taskKey}` : null,
-    karbon_created_at: task.CreatedAt || task.CreatedDate || null,
-    karbon_modified_at: task.UpdatedAt || task.LastModifiedDateTime || null,
-    last_synced_at: new Date().toISOString(),
+    karbon_status_key: status.WorkStatusKey,
+    name: statusName,
+    description: status.SecondaryStatusName || null,
+    status_type: status.PrimaryStatusName || null,
+    primary_status_name: status.PrimaryStatusName || null,
+    secondary_status_name: status.SecondaryStatusName || null,
+    work_type_keys: status.WorkTypeKeys || null,
+    display_order: index,
+    is_active: !isInactive,
+    is_default_filter: !isInactive,
     updated_at: new Date().toISOString(),
   }
 }
@@ -473,6 +489,11 @@ function mapNote(note) {
   }
 }
 
+// karbon_invoices columns: karbon_invoice_key, invoice_number, work_item_id,
+//   karbon_work_item_key, work_item_title, client_key, client_name, organization_id,
+//   contact_id, amount, tax, total_amount, currency, status, issued_date, due_date,
+//   paid_date, line_items, karbon_url, karbon_created_at, karbon_modified_at,
+//   last_synced_at, created_at, updated_at
 function mapInvoice(invoice) {
   return {
     karbon_invoice_key: invoice.InvoiceKey || invoice.InvoiceNumber,
@@ -482,16 +503,14 @@ function mapInvoice(invoice) {
     karbon_work_item_key: invoice.WorkItemKey || null,
     work_item_title: invoice.WorkItemTitle || null,
     status: invoice.Status || null,
-    invoice_date: invoice.InvoiceDate ? invoice.InvoiceDate.split("T")[0] : null,
+    issued_date: invoice.InvoiceDate ? invoice.InvoiceDate.split("T")[0] : null,
     due_date: invoice.DueDate ? invoice.DueDate.split("T")[0] : null,
     paid_date: invoice.PaidDate ? invoice.PaidDate.split("T")[0] : null,
-    amount: invoice.TotalAmount || invoice.Amount || null,
-    tax_amount: invoice.TaxAmount || null,
+    amount: invoice.Amount || invoice.SubTotal || null,
+    tax: invoice.TaxAmount || invoice.Tax || null,
     total_amount: invoice.TotalAmount || null,
-    outstanding_amount: invoice.OutstandingAmount || null,
     currency: invoice.Currency || "USD",
     line_items: invoice.LineItems || null,
-    notes: invoice.Notes || null,
     karbon_url: invoice.InvoiceKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/invoices/${invoice.InvoiceKey}` : null,
     karbon_created_at: invoice.CreatedDate || null,
     karbon_modified_at: invoice.LastModifiedDateTime || null,
@@ -500,50 +519,55 @@ function mapInvoice(invoice) {
   }
 }
 
-function mapWorkStatus(status, index) {
-  const isInactive = (status.PrimaryStatusName || "").toLowerCase().includes("complet") ||
-    (status.PrimaryStatusName || "").toLowerCase().includes("cancel")
-  const statusName = [status.PrimaryStatusName, status.SecondaryStatusName].filter(Boolean).join(" - ") || `Status ${index}`
+function mapTask(task, workItemKey) {
+  const taskKey = task.IntegrationTaskKey || task.TaskKey || task.Data?.TaskKey
   return {
-    karbon_status_key: status.WorkStatusKey,
-    name: statusName,
-    description: status.SecondaryStatusName || null,
-    status_type: status.PrimaryStatusName || null,
-    primary_status_name: status.PrimaryStatusName || null,
-    secondary_status_name: status.SecondaryStatusName || null,
-    work_type_keys: status.WorkTypeKeys || null,
-    display_order: index,
-    is_active: !isInactive,
-    is_default_filter: !isInactive,
+    karbon_task_key: taskKey,
+    task_definition_key: task.TaskDefinitionKey || null,
+    title: task.Data?.Title || task.Title || null,
+    description: task.Data?.Description || task.Description || null,
+    status: task.Status || null,
+    priority: task.Data?.Priority || task.Priority || "Normal",
+    due_date: task.Data?.DueDate ? task.Data.DueDate.split("T")[0] : (task.DueDate ? task.DueDate.split("T")[0] : null),
+    completed_date: task.Data?.CompletedDate ? task.Data.CompletedDate.split("T")[0] : (task.CompletedDate ? task.CompletedDate.split("T")[0] : null),
+    assignee_key: task.Data?.AssigneeKey || task.AssigneeKey || null,
+    assignee_name: task.Data?.AssigneeName || task.AssigneeName || null,
+    assignee_email: task.Data?.AssigneeEmailAddress || task.AssigneeEmailAddress || null,
+    karbon_work_item_key: task.WorkItemKey || workItemKey || null,
+    karbon_contact_key: task.WorkItemClientKey || task.ContactKey || null,
+    is_blocking: task.Data?.IsBlocking || false,
+    estimated_minutes: task.Data?.EstimatedMinutes || null,
+    actual_minutes: task.Data?.ActualMinutes || null,
+    task_data: task.Data || null,
+    karbon_url: taskKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/tasks/${taskKey}` : null,
+    karbon_created_at: task.CreatedAt || task.CreatedDate || null,
+    karbon_modified_at: task.UpdatedAt || task.LastModifiedDateTime || null,
+    last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
 }
 
-// ─── Sync Log ────────────────────────────────────────────────────────
-async function logSync(entityType, status, recordCount, errorMessage) {
-  await supabaseUpsert("sync_log", [{
-    entity_type: entityType,
-    status: status,
-    record_count: recordCount,
-    error_message: errorMessage || null,
-    started_at: new Date().toISOString(),
-    completed_at: new Date().toISOString(),
-  }], "id")
-}
-
-// ─── Main Sync ───────────────────────────────────────────────────────
+// ─── Main Sync ──────────────────────────────────────────────────────
 async function main() {
-  console.log("=== COMPREHENSIVE KARBON → SUPABASE SYNC ===")
+  console.log("=== COMPREHENSIVE KARBON -> SUPABASE SYNC ===")
   console.log(`Started at: ${new Date().toISOString()}\n`)
 
   const results = {}
 
-  // 1. Team Members
+  // 1. Team Members (Users)
   try {
     console.log("1/10 Syncing Team Members (Users)...")
     const users = await karbonFetchAll("/Users")
     console.log(`  Fetched ${users.length} users from Karbon`)
-    const mapped = users.map(mapUser)
+    // Dedupe by karbon_user_key (keep first occurrence)
+    const seen = new Set()
+    const deduped = users.filter(u => {
+      const key = u.UserKey || u.MemberKey
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    const mapped = deduped.map(mapUser)
     const result = await supabaseUpsert("team_members", mapped, "karbon_user_key")
     results.team_members = result
     console.log(`  Done: ${result.synced} synced, ${result.errors} errors\n`)
@@ -554,10 +578,10 @@ async function main() {
     await logSync("team_members", "error", 0, err.message)
   }
 
-  // 2. Contacts
+  // 2. Contacts (no $expand on list - base fields only, then we have them)
   try {
     console.log("2/10 Syncing Contacts...")
-    const contacts = await karbonFetchAll("/Contacts", "$expand=BusinessCards,AccountingDetail")
+    const contacts = await karbonFetchAll("/Contacts")
     console.log(`  Fetched ${contacts.length} contacts from Karbon`)
     const mapped = contacts.map(mapContact)
     const result = await supabaseUpsert("contacts", mapped, "karbon_contact_key")
@@ -570,10 +594,10 @@ async function main() {
     await logSync("contacts", "error", 0, err.message)
   }
 
-  // 3. Organizations
+  // 3. Organizations (no $expand on list)
   try {
     console.log("3/10 Syncing Organizations...")
-    const orgs = await karbonFetchAll("/Organizations", "$expand=BusinessCards,AccountingDetail")
+    const orgs = await karbonFetchAll("/Organizations")
     console.log(`  Fetched ${orgs.length} organizations from Karbon`)
     const mapped = orgs.map(mapOrganization)
     const result = await supabaseUpsert("organizations", mapped, "karbon_organization_key")
@@ -586,10 +610,10 @@ async function main() {
     await logSync("organizations", "error", 0, err.message)
   }
 
-  // 4. Client Groups
+  // 4. Client Groups (no $expand on list)
   try {
     console.log("4/10 Syncing Client Groups...")
-    const groups = await karbonFetchAll("/ClientGroups", "$expand=BusinessCard,ClientTeam")
+    const groups = await karbonFetchAll("/ClientGroups")
     console.log(`  Fetched ${groups.length} client groups from Karbon`)
     const mapped = groups.map(mapClientGroup)
     const result = await supabaseUpsert("client_groups", mapped, "karbon_client_group_key")
@@ -602,27 +626,46 @@ async function main() {
     await logSync("client_groups", "error", 0, err.message)
   }
 
-  // 5. Work Statuses
+  // 5. Work Statuses (via /WorkStatuses endpoint)
   try {
     console.log("5/10 Syncing Work Statuses...")
-    const settings = await karbonFetch(`${KARBON_BASE_URL}/TenantSettings`)
-    const statuses = settings.WorkStatuses || settings.value?.WorkStatuses || []
+    const statusData = await karbonFetch(`${KARBON_BASE_URL}/WorkStatuses`)
+    const statuses = statusData.value || statusData || []
     console.log(`  Fetched ${statuses.length} work statuses from Karbon`)
-    const mapped = statuses.map((s, i) => mapWorkStatus(s, i))
-    const result = await supabaseUpsert("work_status", mapped, "karbon_status_key")
-    results.work_statuses = result
-    console.log(`  Done: ${result.synced} synced, ${result.errors} errors\n`)
-    await logSync("work_statuses", result.errors > 0 ? "partial" : "success", result.synced)
+    // Filter out any with null WorkStatusKey
+    const valid = statuses.filter(s => s.WorkStatusKey)
+    const mapped = valid.map((s, i) => mapWorkStatus(s, i))
+    if (mapped.length > 0) {
+      const result = await supabaseUpsert("work_status", mapped, "karbon_status_key")
+      results.work_statuses = result
+      console.log(`  Done: ${result.synced} synced, ${result.errors} errors\n`)
+      await logSync("work_statuses", result.errors > 0 ? "partial" : "success", result.synced)
+    } else {
+      console.log(`  No valid work statuses to sync (all had null keys)\n`)
+      results.work_statuses = { synced: 0, errors: 0 }
+    }
   } catch (err) {
-    console.error(`  FAILED: ${err.message}\n`)
-    results.work_statuses = { synced: 0, errors: 1 }
-    await logSync("work_statuses", "error", 0, err.message)
+    console.error(`  FAILED: ${err.message}`)
+    console.log("  Trying fallback /TenantSettings...")
+    try {
+      const settings = await karbonFetch(`${KARBON_BASE_URL}/TenantSettings`)
+      const statuses = settings.WorkStatuses || []
+      const valid = statuses.filter(s => s.WorkStatusKey)
+      const mapped = valid.map((s, i) => mapWorkStatus(s, i))
+      const result = await supabaseUpsert("work_status", mapped, "karbon_status_key")
+      results.work_statuses = result
+      console.log(`  Fallback done: ${result.synced} synced, ${result.errors} errors\n`)
+    } catch (err2) {
+      console.error(`  Fallback also failed: ${err2.message}\n`)
+      results.work_statuses = { synced: 0, errors: 1 }
+      await logSync("work_statuses", "error", 0, err2.message)
+    }
   }
 
-  // 6. Work Items
+  // 6. Work Items (no $expand on list - base data is sufficient)
   try {
     console.log("6/10 Syncing Work Items...")
-    const items = await karbonFetchAll("/WorkItems", "$expand=FeeSettings,Budget")
+    const items = await karbonFetchAll("/WorkItems")
     console.log(`  Fetched ${items.length} work items from Karbon`)
     const mapped = items.map(mapWorkItem)
     const result = await supabaseUpsert("work_items", mapped, "karbon_work_item_key")
@@ -635,16 +678,37 @@ async function main() {
     await logSync("work_items", "error", 0, err.message)
   }
 
-  // 7. Tasks (via WorkItems' IntegrationTasks)
+  // 7. Tasks (per work item - fetch from each work item)
   try {
-    console.log("7/10 Syncing Tasks...")
-    const tasks = await karbonFetchAll("/IntegrationTasks")
-    console.log(`  Fetched ${tasks.length} tasks from Karbon`)
-    const mapped = tasks.map(mapTask).filter(t => t.karbon_task_key)
-    const result = await supabaseUpsert("karbon_tasks", mapped, "karbon_task_key")
-    results.tasks = result
-    console.log(`  Done: ${result.synced} synced, ${result.errors} errors\n`)
-    await logSync("tasks", result.errors > 0 ? "partial" : "success", result.synced)
+    console.log("7/10 Syncing Tasks (per work item)...")
+    // Get work item keys from what we just synced
+    const wiRes = await fetch(`${SUPABASE_URL}/rest/v1/work_items?select=karbon_work_item_key&limit=5000`, {
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+    })
+    const workItems = await wiRes.json()
+    console.log(`  Fetching tasks for ${workItems.length} work items...`)
+    const allTasks = []
+    let processed = 0
+    for (const wi of workItems) {
+      const tasks = await karbonFetchSafe(`${KARBON_BASE_URL}/WorkItems/${wi.karbon_work_item_key}/Tasks`)
+      if (tasks && Array.isArray(tasks.value || tasks)) {
+        const items = tasks.value || tasks
+        items.forEach(t => allTasks.push(mapTask(t, wi.karbon_work_item_key)))
+      }
+      processed++
+      if (processed % 100 === 0) console.log(`  ... processed ${processed}/${workItems.length} work items, ${allTasks.length} tasks found`)
+    }
+    console.log(`  Total tasks found: ${allTasks.length}`)
+    const valid = allTasks.filter(t => t.karbon_task_key)
+    if (valid.length > 0) {
+      const result = await supabaseUpsert("karbon_tasks", valid, "karbon_task_key")
+      results.tasks = result
+      console.log(`  Done: ${result.synced} synced, ${result.errors} errors\n`)
+      await logSync("tasks", result.errors > 0 ? "partial" : "success", result.synced)
+    } else {
+      console.log(`  No tasks found\n`)
+      results.tasks = { synced: 0, errors: 0 }
+    }
   } catch (err) {
     console.error(`  FAILED: ${err.message}\n`)
     results.tasks = { synced: 0, errors: 1 }
@@ -654,9 +718,8 @@ async function main() {
   // 8. Timesheets
   try {
     console.log("8/10 Syncing Timesheets...")
-    const weeklyTs = await karbonFetchAll("/Timesheets", "$expand=TimeEntries")
+    const weeklyTs = await karbonFetchAll("/Timesheets")
     console.log(`  Fetched ${weeklyTs.length} weekly timesheets from Karbon`)
-    // Flatten TimeEntries
     const allEntries = []
     for (const ts of weeklyTs) {
       if (ts.TimeEntries && Array.isArray(ts.TimeEntries)) {
@@ -668,7 +731,8 @@ async function main() {
       }
     }
     console.log(`  Flattened to ${allEntries.length} time entries`)
-    const result = await supabaseUpsert("karbon_timesheets", allEntries.filter(e => e.karbon_timesheet_key), "karbon_timesheet_key")
+    const valid = allEntries.filter(e => e.karbon_timesheet_key)
+    const result = await supabaseUpsert("karbon_timesheets", valid, "karbon_timesheet_key")
     results.timesheets = result
     console.log(`  Done: ${result.synced} synced, ${result.errors} errors\n`)
     await logSync("timesheets", result.errors > 0 ? "partial" : "success", result.synced)
@@ -678,16 +742,40 @@ async function main() {
     await logSync("timesheets", "error", 0, err.message)
   }
 
-  // 9. Notes
+  // 9. Notes (per work item - no top-level /Notes endpoint)
   try {
-    console.log("9/10 Syncing Notes...")
-    const notes = await karbonFetchAll("/Notes")
-    console.log(`  Fetched ${notes.length} notes from Karbon`)
-    const mapped = notes.map(mapNote).filter(n => n.karbon_note_key)
-    const result = await supabaseUpsert("karbon_notes", mapped, "karbon_note_key")
-    results.notes = result
-    console.log(`  Done: ${result.synced} synced, ${result.errors} errors\n`)
-    await logSync("notes", result.errors > 0 ? "partial" : "success", result.synced)
+    console.log("9/10 Syncing Notes (per work item)...")
+    const wiRes = await fetch(`${SUPABASE_URL}/rest/v1/work_items?select=karbon_work_item_key&limit=5000`, {
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+    })
+    const workItems = await wiRes.json()
+    console.log(`  Fetching notes for ${workItems.length} work items...`)
+    const allNotes = []
+    let processed = 0
+    for (const wi of workItems) {
+      const notes = await karbonFetchSafe(`${KARBON_BASE_URL}/WorkItems/${wi.karbon_work_item_key}/Notes`)
+      if (notes && Array.isArray(notes.value || notes)) {
+        const items = notes.value || notes
+        items.forEach(n => {
+          const mapped = mapNote(n)
+          mapped.karbon_work_item_key = mapped.karbon_work_item_key || wi.karbon_work_item_key
+          allNotes.push(mapped)
+        })
+      }
+      processed++
+      if (processed % 100 === 0) console.log(`  ... processed ${processed}/${workItems.length} work items, ${allNotes.length} notes found`)
+    }
+    console.log(`  Total notes found: ${allNotes.length}`)
+    const valid = allNotes.filter(n => n.karbon_note_key)
+    if (valid.length > 0) {
+      const result = await supabaseUpsert("karbon_notes", valid, "karbon_note_key")
+      results.notes = result
+      console.log(`  Done: ${result.synced} synced, ${result.errors} errors\n`)
+      await logSync("notes", result.errors > 0 ? "partial" : "success", result.synced)
+    } else {
+      console.log(`  No notes found\n`)
+      results.notes = { synced: 0, errors: 0 }
+    }
   } catch (err) {
     console.error(`  FAILED: ${err.message}\n`)
     results.notes = { synced: 0, errors: 1 }
