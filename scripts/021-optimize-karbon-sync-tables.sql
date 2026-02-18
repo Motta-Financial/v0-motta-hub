@@ -4,7 +4,7 @@
 -- This migration:
 --   1. Removes 12 duplicate/redundant indexes (save storage, speed writes)
 --   2. Adds missing columns to 6 tables for full Karbon API field coverage
---   3. Adds 15+ missing indexes for incremental sync & query performance
+--   3. Adds 20+ missing indexes for incremental sync & query performance
 --   4. Adds composite indexes for common query patterns
 -- ============================================================================
 
@@ -15,9 +15,8 @@
 -- contacts: has 4 indexes on karbon_contact_key, only need the UNIQUE constraint
 DROP INDEX IF EXISTS idx_contacts_karbon_contact_key;
 DROP INDEX IF EXISTS idx_contacts_karbon_key;
--- Keep: contacts_karbon_contact_key_key (the UNIQUE constraint)
--- Also drop the partial unique index (redundant with the full UNIQUE)
 DROP INDEX IF EXISTS contacts_karbon_contact_key_idx;
+-- Keep: contacts_karbon_contact_key_key (the UNIQUE constraint)
 
 -- organizations: has 4 indexes on karbon_organization_key, only need 1
 DROP INDEX IF EXISTS idx_organizations_karbon_key;
@@ -39,10 +38,6 @@ DROP INDEX IF EXISTS idx_karbon_notes_contact_key;
 DROP INDEX IF EXISTS idx_karbon_notes_work_item_key;
 -- Keep: idx_karbon_notes_contact, idx_karbon_notes_work_item
 
--- busy_season_work_items: plain index redundant with UNIQUE constraint
-DROP INDEX IF EXISTS idx_busy_season_karbon_key;
--- Keep: busy_season_work_items_karbon_work_key_key (UNIQUE)
-
 -- work_items: plain index redundant with UNIQUE constraint
 DROP INDEX IF EXISTS idx_work_items_karbon_key;
 -- Keep: work_items_karbon_work_item_key_key (UNIQUE)
@@ -52,13 +47,14 @@ DROP INDEX IF EXISTS idx_work_items_karbon_key;
 -- PART 2: ADD MISSING COLUMNS FOR FULL KARBON API COVERAGE
 -- ============================================================================
 
--- --- client_groups: currently missing almost all Karbon fields ---
+-- --- client_groups: currently missing almost all Karbon sync fields ---
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS primary_contact_key text;
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS primary_contact_name text;
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS client_owner_key text;
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS client_owner_name text;
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS client_manager_key text;
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS client_manager_name text;
+ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS contact_type text;
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS members jsonb DEFAULT '[]'::jsonb;
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS restriction_level text DEFAULT 'Public';
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS user_defined_identifier text;
@@ -68,24 +64,31 @@ ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS karbon_created_at timestamptz
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS karbon_modified_at timestamptz;
 ALTER TABLE client_groups ADD COLUMN IF NOT EXISTS last_synced_at timestamptz;
 
--- --- contacts: add missing Karbon API fields ---
-ALTER TABLE contacts ADD COLUMN IF NOT EXISTS middle_name text;
-ALTER TABLE contacts ADD COLUMN IF NOT EXISTS salutation text;
-ALTER TABLE contacts ADD COLUMN IF NOT EXISTS suffix text;
+-- --- contacts: ensure all Karbon sync tracking fields exist ---
+-- (contacts already has: salutation, first_name, middle_name, last_name,
+--  preferred_name, suffix, full_name, contact_type, client_owner_id, client_manager_id,
+--  karbon_created_at, karbon_modified_at, last_synced_at)
+-- Add key references for Karbon sync (text keys alongside uuid FKs)
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS client_owner_key text;
-ALTER TABLE contacts ADD COLUMN IF NOT EXISTS client_manager_key text;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS user_defined_identifier text;
 
 -- --- organizations: add Karbon key references for owner/manager ---
+-- (already has: full_name, contact_type, karbon_created_at, karbon_modified_at)
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS client_owner_key text;
-ALTER TABLE organizations ADD COLUMN IF NOT EXISTS client_manager_key text;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS last_synced_at timestamptz;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS restriction_level text;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS user_defined_identifier text;
 
--- --- work_items: add denormalized display fields and Karbon key references ---
+-- --- work_items: add denormalized display fields ---
+-- (already has: assignee_key, assignee_name, client_group_key, client_group_name,
+--  client_manager_key, client_manager_name, client_partner_key, client_partner_name,
+--  work_status_key, karbon_created_at, karbon_modified_at)
 ALTER TABLE work_items ADD COLUMN IF NOT EXISTS client_name text;
-ALTER TABLE work_items ADD COLUMN IF NOT EXISTS assignee_key text;
-ALTER TABLE work_items ADD COLUMN IF NOT EXISTS assignee_name text;
-ALTER TABLE work_items ADD COLUMN IF NOT EXISTS work_status_key text;
 ALTER TABLE work_items ADD COLUMN IF NOT EXISTS client_owner_key text;
-ALTER TABLE work_items ADD COLUMN IF NOT EXISTS client_manager_key text;
+ALTER TABLE work_items ADD COLUMN IF NOT EXISTS client_owner_name text;
+ALTER TABLE work_items ADD COLUMN IF NOT EXISTS primary_status text;
+ALTER TABLE work_items ADD COLUMN IF NOT EXISTS secondary_status text;
+ALTER TABLE work_items ADD COLUMN IF NOT EXISTS user_defined_identifier text;
 
 -- --- team_members: add sync tracking ---
 ALTER TABLE team_members ADD COLUMN IF NOT EXISTS last_synced_at timestamptz;
@@ -94,6 +97,23 @@ ALTER TABLE team_members ADD COLUMN IF NOT EXISTS karbon_url text;
 -- --- work_status: add the raw Karbon primary/secondary names ---
 ALTER TABLE work_status ADD COLUMN IF NOT EXISTS primary_status_name text;
 ALTER TABLE work_status ADD COLUMN IF NOT EXISTS secondary_status_name text;
+ALTER TABLE work_status ADD COLUMN IF NOT EXISTS work_type_keys jsonb DEFAULT '[]'::jsonb;
+
+-- --- karbon_timesheets: add role tracking ---
+ALTER TABLE karbon_timesheets ADD COLUMN IF NOT EXISTS role_name text;
+ALTER TABLE karbon_timesheets ADD COLUMN IF NOT EXISTS task_type_name text;
+ALTER TABLE karbon_timesheets ADD COLUMN IF NOT EXISTS timesheet_status text;
+
+-- --- karbon_tasks: add integration task tracking ---
+ALTER TABLE karbon_tasks ADD COLUMN IF NOT EXISTS task_definition_key text;
+ALTER TABLE karbon_tasks ADD COLUMN IF NOT EXISTS task_data jsonb;
+
+-- --- karbon_notes: ensure all needed fields ---
+ALTER TABLE karbon_notes ADD COLUMN IF NOT EXISTS assignee_email text;
+ALTER TABLE karbon_notes ADD COLUMN IF NOT EXISTS due_date date;
+ALTER TABLE karbon_notes ADD COLUMN IF NOT EXISTS todo_date date;
+ALTER TABLE karbon_notes ADD COLUMN IF NOT EXISTS timelines jsonb;
+ALTER TABLE karbon_notes ADD COLUMN IF NOT EXISTS comments jsonb;
 
 
 -- ============================================================================
@@ -113,17 +133,7 @@ CREATE INDEX IF NOT EXISTS idx_work_items_karbon_modified
 CREATE INDEX IF NOT EXISTS idx_client_groups_karbon_modified
   ON client_groups (karbon_modified_at DESC) WHERE karbon_modified_at IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_karbon_tasks_modified
-  ON karbon_tasks (karbon_modified_at DESC) WHERE karbon_modified_at IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_karbon_timesheets_modified
-  ON karbon_timesheets (karbon_modified_at DESC) WHERE karbon_modified_at IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_karbon_notes_modified
-  ON karbon_notes (karbon_modified_at DESC) WHERE karbon_modified_at IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_karbon_invoices_modified
-  ON karbon_invoices (karbon_modified_at DESC) WHERE karbon_modified_at IS NOT NULL;
+-- (karbon_tasks, karbon_timesheets, karbon_notes, karbon_invoices already have these from prior migrations)
 
 -- --- Work Items query indexes ---
 CREATE INDEX IF NOT EXISTS idx_work_items_work_status_key
@@ -132,43 +142,49 @@ CREATE INDEX IF NOT EXISTS idx_work_items_work_status_key
 CREATE INDEX IF NOT EXISTS idx_work_items_client_group
   ON work_items (client_group_key) WHERE client_group_key IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_work_items_assignee_key
-  ON work_items (assignee_key) WHERE assignee_key IS NOT NULL;
-
 CREATE INDEX IF NOT EXISTS idx_work_items_client_name
   ON work_items (client_name) WHERE client_name IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_work_items_deadline
-  ON work_items (deadline_date) WHERE deadline_date IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_work_items_primary_status
+  ON work_items (primary_status) WHERE primary_status IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_work_items_start_date
-  ON work_items (start_date) WHERE start_date IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_work_items_workflow_status
+  ON work_items (workflow_status) WHERE workflow_status IS NOT NULL;
 
--- Composite: active work items by type and status (common dashboard query)
+-- Composite: work items by type + status (common dashboard query)
 CREATE INDEX IF NOT EXISTS idx_work_items_type_status
-  ON work_items (work_type, primary_status);
+  ON work_items (work_type, status);
 
--- --- Organizations: full_name for search ---
-CREATE INDEX IF NOT EXISTS idx_organizations_full_name
-  ON organizations (full_name) WHERE full_name IS NOT NULL;
+-- Composite: active work items by assignee + status (team dashboard)
+CREATE INDEX IF NOT EXISTS idx_work_items_assignee_status
+  ON work_items (assignee_key, status) WHERE assignee_key IS NOT NULL;
 
--- --- Team Members: lookup by email and name ---
-CREATE INDEX IF NOT EXISTS idx_team_members_email
-  ON team_members (email) WHERE email IS NOT NULL;
+-- Composite: work items by due date range + status (deadline views)
+CREATE INDEX IF NOT EXISTS idx_work_items_due_status
+  ON work_items (due_date, status) WHERE due_date IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_team_members_name
-  ON team_members (name) WHERE name IS NOT NULL;
+-- --- Contacts: owner/manager key lookups for Karbon sync ---
+CREATE INDEX IF NOT EXISTS idx_contacts_client_owner_key
+  ON contacts (client_owner_key) WHERE client_owner_key IS NOT NULL;
 
--- --- Karbon Invoices: additional lookup ---
-CREATE INDEX IF NOT EXISTS idx_karbon_invoices_client_name
-  ON karbon_invoices (client_name) WHERE client_name IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_contacts_client_manager_key
+  ON contacts (client_manager_key) WHERE client_manager_key IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_karbon_invoices_due_date
-  ON karbon_invoices (due_date) WHERE due_date IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_contacts_contact_type
+  ON contacts (contact_type) WHERE contact_type IS NOT NULL;
 
--- --- Karbon Timesheets: composite for time reporting ---
-CREATE INDEX IF NOT EXISTS idx_karbon_timesheets_date_user
-  ON karbon_timesheets (date, user_key);
+-- --- Organizations: owner/manager key lookups + entity type ---
+CREATE INDEX IF NOT EXISTS idx_organizations_client_owner_key
+  ON organizations (client_owner_key) WHERE client_owner_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_organizations_client_manager_key
+  ON organizations (client_manager_key) WHERE client_manager_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_organizations_entity_type
+  ON organizations (entity_type) WHERE entity_type IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_organizations_contact_type
+  ON organizations (contact_type) WHERE contact_type IS NOT NULL;
 
 -- --- Client Groups: lookup indexes ---
 CREATE INDEX IF NOT EXISTS idx_client_groups_name
@@ -177,20 +193,26 @@ CREATE INDEX IF NOT EXISTS idx_client_groups_name
 CREATE INDEX IF NOT EXISTS idx_client_groups_udi
   ON client_groups (user_defined_identifier) WHERE user_defined_identifier IS NOT NULL;
 
+-- --- Karbon Invoices: additional lookups ---
+CREATE INDEX IF NOT EXISTS idx_karbon_invoices_client_name
+  ON karbon_invoices (client_name) WHERE client_name IS NOT NULL;
+
+-- --- Karbon Timesheets: composite for time reporting ---
+CREATE INDEX IF NOT EXISTS idx_karbon_timesheets_date_user
+  ON karbon_timesheets (date, user_key);
+
+-- --- Karbon Tasks: task definition lookup ---
+CREATE INDEX IF NOT EXISTS idx_karbon_tasks_definition
+  ON karbon_tasks (task_definition_key) WHERE task_definition_key IS NOT NULL;
+
+-- --- Team Members: lookup by email ---
+CREATE INDEX IF NOT EXISTS idx_team_members_email_lower
+  ON team_members (lower(email));
+
 -- --- Sync Log: direction filter ---
 CREATE INDEX IF NOT EXISTS idx_sync_log_direction
   ON sync_log (sync_direction) WHERE sync_direction IS NOT NULL;
 
--- --- Contacts: owner/manager key lookups for linking ---
-CREATE INDEX IF NOT EXISTS idx_contacts_client_owner_key
-  ON contacts (client_owner_key) WHERE client_owner_key IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_contacts_client_manager_key
-  ON contacts (client_manager_key) WHERE client_manager_key IS NOT NULL;
-
--- --- Organizations: owner/manager key lookups ---
-CREATE INDEX IF NOT EXISTS idx_organizations_client_owner_key
-  ON organizations (client_owner_key) WHERE client_owner_key IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_organizations_client_manager_key
-  ON organizations (client_manager_key) WHERE client_manager_key IS NOT NULL;
+-- Composite: sync log by type + status (for checking last successful sync)
+CREATE INDEX IF NOT EXISTS idx_sync_log_type_status
+  ON sync_log (sync_type, status);

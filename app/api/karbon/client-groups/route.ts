@@ -13,16 +13,37 @@ function getSupabaseClient() {
   return createClient(supabaseUrl, supabaseKey)
 }
 
+/**
+ * Maps a Karbon ClientGroup to the Supabase client_groups table.
+ * 
+ * Karbon API fields (GET /v3/ClientGroups/{key}?$expand=BusinessCard,ClientTeam):
+ *   ClientGroupKey, FullName, ContactType, UserDefinedIdentifier,
+ *   RestrictionLevel (Public/Private/Hidden), Members[], EntityDescription,
+ *   ClientOwner (UserKey), ClientManager (UserKey), ClientTeam[]
+ */
 function mapKarbonClientGroupToSupabase(group: any) {
+  // Karbon uses FullName for client groups, not Name
+  const groupName = group.FullName || group.Name || `Group ${group.ClientGroupKey}`
+
   return {
     karbon_client_group_key: group.ClientGroupKey,
-    name: group.Name || `Group ${group.ClientGroupKey}`,
-    description: group.Description || null,
-    group_type: group.GroupType || null,
+    name: groupName,
+    description: group.EntityDescription || group.Description || null,
+    group_type: group.ContactType || group.GroupType || null,
+    contact_type: group.ContactType || null,
     primary_contact_key: group.PrimaryContactKey || null,
     primary_contact_name: group.PrimaryContactName || null,
+    client_owner_key: group.ClientOwner || null,
+    client_owner_name: group.ClientOwnerName || null,
+    client_manager_key: group.ClientManager || null,
+    client_manager_name: group.ClientManagerName || null,
     members: group.Members || [],
-    karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/client-groups/${group.ClientGroupKey}`,
+    restriction_level: group.RestrictionLevel || 'Public',
+    user_defined_identifier: group.UserDefinedIdentifier || null,
+    entity_description: group.EntityDescription || null,
+    karbon_url: group.ClientGroupKey
+      ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/client-groups/${group.ClientGroupKey}`
+      : null,
     karbon_created_at: group.CreatedDate || null,
     karbon_modified_at: group.LastModifiedDateTime || null,
     last_synced_at: new Date().toISOString(),
@@ -46,11 +67,14 @@ export async function GET(request: NextRequest) {
 
     const queryOptions: any = {
       count: true,
-      orderby: "Name asc",
+      orderby: "FullName asc",
     }
 
+    // Always expand BusinessCard and ClientTeam for full data
     if (expand) {
       queryOptions.expand = expand.split(",")
+    } else {
+      queryOptions.expand = ["BusinessCard", "ClientTeam"]
     }
 
     if (top) {
@@ -123,16 +147,16 @@ export async function GET(request: NextRequest) {
 
     const mappedGroups = groups.map((group: any) => ({
       ClientGroupKey: group.ClientGroupKey,
-      Name: group.Name,
-      Description: group.Description,
-      GroupType: group.GroupType,
+      FullName: group.FullName || group.Name,
+      Description: group.EntityDescription || group.Description,
+      ContactType: group.ContactType || group.GroupType,
+      RestrictionLevel: group.RestrictionLevel,
+      UserDefinedIdentifier: group.UserDefinedIdentifier,
       Members: group.Members || [],
-      PrimaryContact: group.PrimaryContactKey
-        ? {
-            ContactKey: group.PrimaryContactKey,
-            Name: group.PrimaryContactName,
-          }
-        : null,
+      ClientOwner: group.ClientOwner,
+      ClientManager: group.ClientManager,
+      ClientTeam: group.ClientTeam || [],
+      BusinessCard: group.BusinessCard || null,
       CreatedDate: group.CreatedDate,
       ModifiedDate: group.LastModifiedDateTime,
     }))
