@@ -38,7 +38,8 @@ export async function middleware(request: NextRequest) {
 
   const isLoginPage = pathname === "/login"
   const isAuthCallback = pathname.startsWith("/auth")
-  const isPublicApi = pathname.startsWith("/api/alfred")
+  // Note: /api/alfred routes are NOT bypassed — they require an authenticated session.
+  // The chat route (/api/alfred/chat) also performs its own auth check as a belt-and-suspenders measure.
   const isWebhook = pathname.startsWith("/api/webhooks") || pathname.startsWith("/api/karbon/webhooks")
   const isCron = pathname.startsWith("/api/cron")
 
@@ -49,8 +50,8 @@ export async function middleware(request: NextRequest) {
     process.env.CRON_SECRET &&
     request.headers.get("x-internal-secret") === process.env.CRON_SECRET
 
-  // Allow auth callback, public API, webhooks, cron, and internal calls without auth checks
-  if (isAuthCallback || isPublicApi || isWebhook || isCron || isInternalCall) {
+  // Allow auth callback, webhooks, cron, and internal calls without auth checks
+  if (isAuthCallback || isWebhook || isCron || isInternalCall) {
     return supabaseResponse
   }
 
