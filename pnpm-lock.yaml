@@ -101,6 +101,9 @@ importers:
       '@supabase/supabase-js':
         specifier: 2.89.0
         version: 2.89.0
+      '@swc/helpers':
+        specifier: ^0.5.15
+        version: 0.5.15
       '@vercel/blob':
         specifier: 2.0.0
         version: 2.0.0
@@ -183,9 +186,6 @@ importers:
         specifier: 3.25.67
         version: 3.25.67
     devDependencies:
-      '@swc/helpers':
-        specifier: ^0.5.15
-        version: 0.5.15
       '@tailwindcss/postcss':
         specifier: ^4.1.9
         version: 4.1.18
