@@ -82,18 +82,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Helper: convert empty strings to null for UUID columns
+    const toUuidOrNull = (val: any): string | null => {
+      if (!val || val === "") return null
+      return val
+    }
+
     // Build the debrief row -- only include columns that exist in the debriefs table
     const debriefData: Record<string, any> = {
       debrief_date: body.debrief_date,
       notes: body.notes || null,
       follow_up_date: body.follow_up_date || null,
-      team_member_id: body.created_by_id || null,
-      created_by_id: body.created_by_id || null,
-      contact_id: contactId,
-      organization_id: organizationId,
-      organization_name: organizationName,
-      work_item_id: relatedWorkItems.length > 0 ? relatedWorkItems[0].id : null,
-      karbon_client_key: karbonClientKey,
+      team_member_id: toUuidOrNull(body.created_by_id),
+      created_by_id: toUuidOrNull(body.created_by_id),
+      contact_id: toUuidOrNull(contactId),
+      organization_id: toUuidOrNull(organizationId),
+      organization_name: organizationName || null,
+      work_item_id: relatedWorkItems.length > 0 ? toUuidOrNull(relatedWorkItems[0].id) : null,
+      karbon_client_key: karbonClientKey || null,
       status: body.status || "completed",
       debrief_type: body.debrief_type || "meeting",
     }
