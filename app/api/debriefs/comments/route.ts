@@ -41,7 +41,6 @@ export async function GET(request: NextRequest) {
       .order("created_at", { ascending: true })
 
     if (error) {
-      console.log("[v0] Supabase error:", JSON.stringify(error, null, 2))
       if (isTableNotFoundError(error)) {
         return NextResponse.json({ comments: [], tableExists: false })
       }
@@ -52,7 +51,6 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ comments: data || [], tableExists: true })
   } catch (error: any) {
-    console.log("[v0] Caught error:", error?.message, error?.code)
     if (isTableNotFoundError(error)) {
       return NextResponse.json({ comments: [], tableExists: false })
     }

@@ -77,12 +77,16 @@ interface Debrief {
   } | null
   follow_up_date: string | null
   created_at: string
-  // Joined data
-  contact?: { full_name: string } | null
-  organization?: { name: string } | null
-  work_item?: { title: string; client_name: string | null } | null
-  team_member_profile?: { full_name: string; avatar_url: string | null } | null
-  created_by_profile?: { full_name: string; avatar_url: string | null } | null
+  // Flat fields from debriefs_full view
+  team_member_full_name?: string | null
+  team_member_avatar_url?: string | null
+  created_by_full_name?: string | null
+  created_by_avatar_url?: string | null
+  contact_full_name?: string | null
+  organization_display_name?: string | null
+  work_item_title?: string | null
+  work_item_client_name?: string | null
+  work_item_karbon_url?: string | null
   comments?: DebriefComment[]
 }
 
@@ -257,37 +261,23 @@ export function ClientServiceDebriefs() {
       .slice(0, 2)
   }
 
-  // Safely extract a join result that may be an object or a single-element array
-  function resolveJoin<T>(value: T | T[] | null | undefined): T | null {
-    if (!value) return null
-    if (Array.isArray(value)) return value[0] || null
-    return value
-  }
-
   function getTeamMemberName(debrief: Debrief): string {
-    const profile = resolveJoin(debrief.team_member_profile)
-    const creator = resolveJoin(debrief.created_by_profile)
-    if (profile?.full_name) return profile.full_name
-    if (creator?.full_name) return creator.full_name
+    if (debrief.team_member_full_name) return debrief.team_member_full_name
+    if (debrief.created_by_full_name) return debrief.created_by_full_name
     if (debrief.client_manager_name) return debrief.client_manager_name
     return "Team Member"
   }
 
   function getTeamMemberAvatar(debrief: Debrief): string | null {
-    const profile = resolveJoin(debrief.team_member_profile)
-    const creator = resolveJoin(debrief.created_by_profile)
-    return profile?.avatar_url || creator?.avatar_url || null
+    return debrief.team_member_avatar_url || debrief.created_by_avatar_url || null
   }
 
   function getClientName(debrief: Debrief): string {
-    const contact = resolveJoin(debrief.contact)
-    const org = resolveJoin(debrief.organization)
-    const workItem = resolveJoin(debrief.work_item)
-    if (contact?.full_name) return contact.full_name
-    if (org?.name) return org.name
+    if (debrief.contact_full_name) return debrief.contact_full_name
+    if (debrief.organization_display_name) return debrief.organization_display_name
     if (debrief.organization_name) return debrief.organization_name
     if (debrief.client_owner_name) return debrief.client_owner_name
-    if (workItem?.client_name) return workItem.client_name
+    if (debrief.work_item_client_name) return debrief.work_item_client_name
     return "Untagged Client"
   }
 
@@ -405,10 +395,10 @@ export function ClientServiceDebriefs() {
                     </Badge>
                   )}
 
-                  {debrief.work_item_id && resolveJoin(debrief.work_item) ? (
+                  {debrief.work_item_id && debrief.work_item_title ? (
                     <Badge variant="secondary" className="flex items-center gap-1">
                       <Briefcase className="h-3 w-3" />
-                      {resolveJoin(debrief.work_item)?.title}
+                      {debrief.work_item_title}
                     </Badge>
                   ) : null}
 
