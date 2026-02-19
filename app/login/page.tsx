@@ -14,8 +14,8 @@ export default function LoginPage() {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-[#8E9B79]" />
+        <div className="min-h-screen bg-[#EAE8E1] flex items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-[#6B745D]" />
         </div>
       }
     >
@@ -127,31 +127,31 @@ function LoginContent() {
 
   if (resetEmailSent) {
     return (
-      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center relative overflow-hidden">
+      <div className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden">
         {/* Background gradients */}
         <div className="absolute inset-0 overflow-hidden">
           <div
-            className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/30 via-[#8E9B79]/20 to-[#6B745D]/30 rounded-full blur-3xl opacity-50"
+            className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/15 via-[#8E9B79]/10 to-[#6B745D]/15 rounded-full blur-3xl opacity-50"
             style={{ animation: "pulse 8s ease-in-out infinite" }}
           />
           <div
-            className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/20 via-[#6B745D]/15 to-[#8E9B79]/20 rounded-full blur-3xl opacity-50"
+            className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/10 via-[#6B745D]/10 to-[#8E9B79]/10 rounded-full blur-3xl opacity-50"
             style={{ animation: "pulse 8s ease-in-out infinite 2s" }}
           />
         </div>
 
         <div className="relative z-10 w-full max-w-md mx-4">
-          <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-20" />
-          <div className="relative bg-[#12121a]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl text-center">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-10" />
+          <div className="relative bg-white/80 backdrop-blur-xl border border-[#6B745D]/10 rounded-2xl p-8 shadow-xl text-center">
             <div className="h-16 w-16 rounded-full bg-[#8E9B79]/20 flex items-center justify-center mx-auto mb-6">
-              <CheckCircle2 className="h-8 w-8 text-[#8E9B79]" />
+              <CheckCircle2 className="h-8 w-8 text-[#6B745D]" />
             </div>
-            <h2 className="text-xl font-semibold text-white mb-2">Check Your Email</h2>
-            <p className="text-gray-400 mb-6">
-              We've sent a password reset link to <span className="text-white font-medium">{email}</span>
+            <h2 className="text-xl font-semibold text-[#2D2D2D] mb-2">Check Your Email</h2>
+            <p className="text-[#5A5A5A] mb-6">
+              {"We've sent a password reset link to "}<span className="text-[#2D2D2D] font-medium">{email}</span>
             </p>
-            <p className="text-gray-500 text-sm mb-6">
-              Click the link in the email to reset your password. If you don't see it, check your spam folder.
+            <p className="text-[#7A7A7A] text-sm mb-6">
+              {"Click the link in the email to reset your password. If you don't see it, check your spam folder."}
             </p>
             <Button
               onClick={() => {
@@ -160,7 +160,7 @@ function LoginContent() {
                 setEmail("")
               }}
               variant="outline"
-              className="w-full bg-white/5 border-white/10 text-white hover:bg-white/10"
+              className="w-full bg-white border-[#6B745D]/20 text-[#2D2D2D] hover:bg-[#6B745D]/5"
             >
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back to Sign In
@@ -173,40 +173,40 @@ function LoginContent() {
 
   if (showForgotPassword) {
     return (
-      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center relative overflow-hidden">
+      <div className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden">
         {/* Background gradients */}
         <div className="absolute inset-0 overflow-hidden">
           <div
-            className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/30 via-[#8E9B79]/20 to-[#6B745D]/30 rounded-full blur-3xl opacity-50"
+            className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/15 via-[#8E9B79]/10 to-[#6B745D]/15 rounded-full blur-3xl opacity-50"
             style={{ animation: "pulse 8s ease-in-out infinite" }}
           />
           <div
-            className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/20 via-[#6B745D]/15 to-[#8E9B79]/20 rounded-full blur-3xl opacity-50"
+            className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/10 via-[#6B745D]/10 to-[#8E9B79]/10 rounded-full blur-3xl opacity-50"
             style={{ animation: "pulse 8s ease-in-out infinite 2s" }}
           />
         </div>
 
         <div className="relative z-10 w-full max-w-md mx-4">
-          <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-20" />
-          <div className="relative bg-[#12121a]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-10" />
+          <div className="relative bg-white/80 backdrop-blur-xl border border-[#6B745D]/10 rounded-2xl p-8 shadow-xl">
             <div className="text-center mb-8">
               <div className="relative inline-flex items-center justify-center mb-6">
                 <img src="/images/alfred-logo.png" alt="ALFRED AI" className="relative h-20 w-auto" />
               </div>
-              <h1 className="text-xl font-bold text-white mb-2">Reset Password</h1>
-              <p className="text-gray-400 text-sm">Enter your email to receive a reset link</p>
+              <h1 className="text-xl font-bold text-[#2D2D2D] mb-2">Reset Password</h1>
+              <p className="text-[#7A7A7A] text-sm">Enter your email to receive a reset link</p>
             </div>
 
             <form onSubmit={handleForgotPassword} className="space-y-5">
               {error && (
-                <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
+                <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-600 text-sm">
                   <AlertCircle className="w-4 h-4 flex-shrink-0" />
                   <span>{error}</span>
                 </div>
               )}
 
               <div className="space-y-2">
-                <Label htmlFor="reset-email" className="text-gray-300 text-sm font-medium">
+                <Label htmlFor="reset-email" className="text-[#4A4A4A] text-sm font-medium">
                   Email Address
                 </Label>
                 <Input
@@ -216,7 +216,7 @@ function LoginContent() {
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@motta.cpa"
                   required
-                  className="bg-white/5 border-white/10 text-white placeholder:text-gray-500 focus:border-[#8E9B79]/50 focus:ring-[#8E9B79]/20 h-11"
+                  className="bg-white border-[#6B745D]/20 text-[#2D2D2D] placeholder:text-[#AAAAAA] focus:border-[#6B745D]/50 focus:ring-[#6B745D]/20 h-11"
                 />
               </div>
 
@@ -242,7 +242,7 @@ function LoginContent() {
                   setError(null)
                 }}
                 variant="ghost"
-                className="w-full text-gray-400 hover:text-white hover:bg-white/5"
+                className="w-full text-[#5A5A5A] hover:text-[#2D2D2D] hover:bg-[#6B745D]/5"
               >
                 <ArrowLeft className="w-4 h-4 mr-2" />
                 Back to Sign In
@@ -255,70 +255,61 @@ function LoginContent() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center relative overflow-hidden">
-      {/* Animated background gradients - reduced animation intensity */}
+    <div className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden">
+      {/* Subtle background gradients */}
       <div className="absolute inset-0 overflow-hidden">
         <div
-          className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/30 via-[#8E9B79]/20 to-[#6B745D]/30 rounded-full blur-3xl opacity-50"
+          className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/15 via-[#8E9B79]/10 to-[#6B745D]/15 rounded-full blur-3xl opacity-50"
           style={{ animation: "pulse 8s ease-in-out infinite" }}
         />
         <div
-          className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/20 via-[#6B745D]/15 to-[#8E9B79]/20 rounded-full blur-3xl opacity-50"
+          className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/10 via-[#6B745D]/10 to-[#8E9B79]/10 rounded-full blur-3xl opacity-50"
           style={{ animation: "pulse 8s ease-in-out infinite 2s" }}
         />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-gradient-to-r from-[#6B745D]/10 via-transparent to-[#8E9B79]/10 rounded-full blur-3xl" />
-
-        {/* Grid pattern overlay */}
-        <div
-          className="absolute inset-0 opacity-[0.03]"
-          style={{
-            backgroundImage: `linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)`,
-            backgroundSize: "50px 50px",
-          }}
-        />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-gradient-to-r from-[#6B745D]/5 via-transparent to-[#8E9B79]/5 rounded-full blur-3xl" />
       </div>
 
       {/* Login card */}
       <div className="relative z-10 w-full max-w-md mx-4">
-        <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-20" />
+        <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-10" />
 
-        <div className="relative bg-[#12121a]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
+        <div className="relative bg-white/80 backdrop-blur-xl border border-[#6B745D]/10 rounded-2xl p-8 shadow-xl">
           <div className="text-center mb-8">
             <div className="relative inline-flex items-center justify-center mb-6">
               <div
-                className="absolute inset-0 w-32 h-32 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-full blur-xl opacity-30"
+                className="absolute inset-0 w-32 h-32 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-full blur-xl opacity-15"
                 style={{ animation: "pulse 4s ease-in-out infinite" }}
               />
               <img src="/images/alfred-logo.png" alt="ALFRED AI" className="relative h-28 w-auto" />
             </div>
 
             {/* Title - updated branding */}
-            <h1 className="text-2xl font-bold text-white mb-2">
-              <span className="bg-gradient-to-r from-[#8E9B79] via-white to-[#8E9B79] bg-clip-text text-transparent">
+            <h1 className="text-2xl font-bold text-[#2D2D2D] mb-2">
+              <span className="bg-gradient-to-r from-[#6B745D] via-[#4A4A4A] to-[#6B745D] bg-clip-text text-transparent">
                 ALFRED AI
               </span>
             </h1>
-            <p className="text-gray-400 text-sm">Motta Hub Portal</p>
+            <p className="text-[#7A7A7A] text-sm">Motta Hub Portal</p>
           </div>
 
           {/* Login form */}
           <form onSubmit={handleLogin} className="space-y-5">
             {successMessage && (
-              <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-green-400 text-sm">
+              <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-green-700 text-sm">
                 <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
                 <span>{successMessage}</span>
               </div>
             )}
 
             {error && (
-              <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
+              <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-600 text-sm">
                 <AlertCircle className="w-4 h-4 flex-shrink-0" />
                 <span>{error}</span>
               </div>
             )}
 
             <div className="space-y-2">
-              <Label htmlFor="email" className="text-gray-300 text-sm font-medium">
+              <Label htmlFor="email" className="text-[#4A4A4A] text-sm font-medium">
                 Email
               </Label>
               <Input
@@ -328,19 +319,19 @@ function LoginContent() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@motta.cpa"
                 required
-                className="bg-white/5 border-white/10 text-white placeholder:text-gray-500 focus:border-[#8E9B79]/50 focus:ring-[#8E9B79]/20 h-11"
+                className="bg-white border-[#6B745D]/20 text-[#2D2D2D] placeholder:text-[#AAAAAA] focus:border-[#6B745D]/50 focus:ring-[#6B745D]/20 h-11"
               />
             </div>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="password" className="text-gray-300 text-sm font-medium">
+                <Label htmlFor="password" className="text-[#4A4A4A] text-sm font-medium">
                   Password
                 </Label>
                 <button
                   type="button"
                   onClick={() => setShowForgotPassword(true)}
-                  className="text-xs text-[#8E9B79] hover:text-[#a8b596] transition-colors"
+                  className="text-xs text-[#6B745D] hover:text-[#8E9B79] transition-colors"
                 >
                   Forgot password?
                 </button>
@@ -353,12 +344,12 @@ function LoginContent() {
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
                   required
-                  className="bg-white/5 border-white/10 text-white placeholder:text-gray-500 focus:border-[#8E9B79]/50 focus:ring-[#8E9B79]/20 h-11 pr-10"
+                  className="bg-white border-[#6B745D]/20 text-[#2D2D2D] placeholder:text-[#AAAAAA] focus:border-[#6B745D]/50 focus:ring-[#6B745D]/20 h-11 pr-10"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#AAAAAA] hover:text-[#5A5A5A] transition-colors"
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -368,7 +359,7 @@ function LoginContent() {
             <Button
               type="submit"
               disabled={isLoading}
-              className="w-full h-11 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] hover:from-[#5a6350] hover:via-[#7d8a6a] hover:to-[#5a6350] text-white font-medium rounded-lg transition-all duration-300 shadow-lg shadow-[#6B745D]/25 hover:shadow-[#6B745D]/40 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full h-11 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] hover:from-[#5a6350] hover:via-[#7d8a6a] hover:to-[#5a6350] text-white font-medium rounded-lg transition-all duration-300 shadow-lg shadow-[#6B745D]/20 hover:shadow-[#6B745D]/30 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isLoading ? (
                 <span className="flex items-center gap-2">
@@ -382,9 +373,9 @@ function LoginContent() {
           </form>
 
           {/* Footer */}
-          <div className="mt-8 pt-6 border-t border-white/10 text-center">
-            <p className="text-gray-500 text-xs">Motta Financial Group &copy; {new Date().getFullYear()}</p>
-            <p className="text-gray-600 text-xs mt-1">Powered by ALFRED AI</p>
+          <div className="mt-8 pt-6 border-t border-[#6B745D]/10 text-center">
+            <p className="text-[#7A7A7A] text-xs">Motta Financial Group &copy; {new Date().getFullYear()}</p>
+            <p className="text-[#AAAAAA] text-xs mt-1">Powered by ALFRED AI</p>
           </div>
         </div>
       </div>

@@ -31,7 +31,7 @@ interface Ballot {
 
 interface Filters {
   year: string
-  weekId: string
+  weekIds: string[]
   teamMemberId: string
 }
 
@@ -53,7 +53,7 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
     try {
       const params = new URLSearchParams({ type: "ballots" })
       if (filters.year && filters.year !== "all") params.append("year", filters.year)
-      if (filters.weekId && filters.weekId !== "all") params.append("week_id", filters.weekId)
+      if (filters.weekIds.length > 0) params.append("week_ids", filters.weekIds.join(","))
       if (filters.teamMemberId && filters.teamMemberId !== "all") params.append("team_member_id", filters.teamMemberId)
 
       const res = await fetch(`/api/tommy-awards?${params}`)
