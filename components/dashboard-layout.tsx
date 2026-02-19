@@ -47,10 +47,10 @@ import {
 import { useRouter } from "next/navigation"
 
 const navigation = [
-  { name: "Dashboard", href: "/", icon: LayoutDashboard, alfredSuggestions: 3 },
-  { name: "Triage", href: "/triage", icon: Inbox, alfredSuggestions: 12 },
-  { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
-  { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
+  { name: "Dashboard", href: "/", icon: LayoutDashboard },
+  { name: "Triage", href: "/triage", icon: Inbox },
+  { name: "Work Items", href: "/work-items", icon: CheckSquare },
+  { name: "Clients", href: "/clients", icon: Users },
   { name: "Debriefs", href: "/debriefs/new", icon: MessageSquare },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
@@ -58,7 +58,6 @@ const navigation = [
     name: "Service Pipelines",
     href: "/pipelines",
     icon: ClipboardList,
-    alfredSuggestions: 15,
     children: [
       {
         name: "Accounting",
@@ -87,7 +86,7 @@ const navigation = [
       { name: "Payments", href: "/payments", icon: CreditCard },
     ],
   },
-  { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
+  { name: "Calendar", href: "/calendar", icon: Calendar },
   { name: "Karbon Data", href: "/karbon-data", icon: Database },
   {
     name: "Settings",
@@ -268,14 +267,6 @@ function Sidebar() {
                           aria-hidden="true"
                         />
                         <span className="flex-1">{item.name}</span>
-                        {item.alfredSuggestions && (
-                          <Badge
-                            variant="secondary"
-                            className="ml-auto text-xs px-1.5 py-0.5 bg-orange-100 text-orange-700 hover:bg-orange-200"
-                          >
-                            {item.alfredSuggestions}
-                          </Badge>
-                        )}
                       </a>
                       {hasChildren && (
                         <button
@@ -337,14 +328,6 @@ function Sidebar() {
                                     aria-hidden="true"
                                   />
                                   <span className="flex-1">{child.name}</span>
-                                  {child.alfredSuggestions && (
-                                    <Badge
-                                      variant="secondary"
-                                      className="ml-auto text-xs px-1.5 py-0.5 bg-orange-100 text-orange-700 hover:bg-orange-200"
-                                    >
-                                      {child.alfredSuggestions}
-                                    </Badge>
-                                  )}
                                 </a>
                                 {hasGrandchildren && (
                                   <button

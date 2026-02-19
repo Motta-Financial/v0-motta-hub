@@ -68,30 +68,9 @@ export function TeamsChat() {
           <div className="space-y-4">
             <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
               <p className="text-sm text-gray-600 mb-3">Recent Conversations</p>
-              <div className="space-y-3">
-                {[
-                  { name: "Motta Team", message: "Q4 planning meeting notes", time: "10m ago", unread: 2 },
-                  { name: "Client Services", message: "Drew Humphreys inquiry", time: "1h ago", unread: 0 },
-                  { name: "Tax Department", message: "2025 filing updates", time: "2h ago", unread: 1 },
-                ].map((chat, index) => (
-                  <div
-                    key={index}
-                    className="flex items-center justify-between p-2 hover:bg-white rounded cursor-pointer transition-colors"
-                  >
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-gray-900">{chat.name}</p>
-                      <p className="text-xs text-gray-600">{chat.message}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs text-gray-500">{chat.time}</p>
-                      {chat.unread > 0 && (
-                        <Badge variant="secondary" className="bg-blue-600 text-white text-xs mt-1">
-                          {chat.unread}
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                ))}
+              <div className="text-center py-4">
+                <MessageSquare className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+                <p className="text-sm text-gray-500">Your Teams conversations will appear here.</p>
               </div>
             </div>
             <div className="flex gap-2">
