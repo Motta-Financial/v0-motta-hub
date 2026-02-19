@@ -49,100 +49,9 @@ interface ApiKey {
   fullKey: string
 }
 
-const MOCK_PROJECTS: Project[] = [
-  {
-    id: "1",
-    name: "Alfred AI",
-    description: "AI-powered assistant for automating firm workflows",
-    status: "Active",
-    assignedTo: "Dat",
-    assignmentColor: "bg-green-100 text-green-700 border-green-200",
-    currentVersion: "v2.3.1",
-    nextVersion: "v2.4.0",
-    githubUrl: "https://github.com/motta-firm/alfred-ai/releases/v2...",
-    lastUpdatedBy: "Dat",
-    lastUpdatedAt: "2 hours ago",
-    nextSteps: [
-      "Implement natural language processing for client queries",
-      "Update documentation for new API endpoints",
-    ],
-  },
-  {
-    id: "2",
-    name: "SHIN",
-    description: "Smart Hub for Internal Notifications",
-    status: "Testing",
-    assignedTo: "Grace",
-    assignmentColor: "bg-orange-100 text-orange-700 border-orange-200",
-    currentVersion: "v1.5.2",
-    nextVersion: "v1.6.0",
-    githubUrl: "https://github.com/motta-firm/shin/releases/v1.5...",
-    lastUpdatedBy: "Grace",
-    lastUpdatedAt: "5 hours ago",
-    nextSteps: [
-      "Fix notification delivery delays for mobile devices",
-      "Test on iOS and Android devices",
-    ],
-  },
-  {
-    id: "3",
-    name: "Motta Hub Nexus",
-    description: "Central dashboard for all firm operations",
-    status: "Active",
-    assignedTo: "Dat",
-    assignmentColor: "bg-green-100 text-green-700 border-green-200",
-    currentVersion: "v3.1.0",
-    nextVersion: "v3.2.0",
-    githubUrl: "https://github.com/motta-firm/motta-hub-nexus...",
-    lastUpdatedBy: "Dat",
-    lastUpdatedAt: "1 day ago",
-    nextSteps: [
-      "Add busy season tracker integration with real-time updates",
-      "Create API endpoints for tax return data",
-    ],
-  },
-  {
-    id: "4",
-    name: "G Plus",
-    description: "Enhanced Google Workspace integration suite",
-    status: "In Review",
-    assignedTo: "Grace",
-    assignmentColor: "bg-purple-100 text-purple-700 border-purple-200",
-    currentVersion: "v1.2.0",
-    nextVersion: "v1.3.0",
-    githubUrl: "https://github.com/motta-firm/g-plus...",
-    lastUpdatedBy: "Grace",
-    lastUpdatedAt: "3 days ago",
-    nextSteps: ["Update OAuth scopes documentation"],
-  },
-]
+const MOCK_PROJECTS: Project[] = []
 
-const MOCK_API_KEYS: ApiKey[] = [
-  {
-    id: "1",
-    name: "OpenAI API Key",
-    description: "For Alfred AI natural language processing",
-    addedBy: "Dat",
-    maskedKey: "sk-p••••••••34yz",
-    fullKey: "sk-proj-abcdefghijklmnop34yz",
-  },
-  {
-    id: "2",
-    name: "Firebase Cloud Messaging",
-    description: "For SHIN push notifications",
-    addedBy: "Grace",
-    maskedKey: "AIza••••••••wxyz",
-    fullKey: "AIzaSyBcDefGhIjKlMnOpQrStUvWxyz",
-  },
-  {
-    id: "3",
-    name: "Google Workspace API",
-    description: "For G Plus integration",
-    addedBy: "Dat",
-    maskedKey: "1234••••••••.com",
-    fullKey: "1234567890-abcdefghij.apps.googleusercontent.com",
-  },
-]
+const MOCK_API_KEYS: ApiKey[] = []
 
 const getStatusColor = (status: Project["status"]) => {
   switch (status) {
@@ -305,11 +214,18 @@ export function SpecialTeamsDashboard() {
           <h2 className="text-xl font-semibold">Active Projects</h2>
           <span className="text-sm text-muted-foreground">{projects.length} Projects</span>
         </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          {projects.map((project) => (
-            <ProjectCard key={project.id} project={project} />
-          ))}
-        </div>
+        {projects.length === 0 ? (
+          <Card className="p-8 text-center">
+            <Code2 className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
+            <p className="text-muted-foreground">No projects yet. Add a project to get started.</p>
+          </Card>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">
+            {projects.map((project) => (
+              <ProjectCard key={project.id} project={project} />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Shared API Keys */}
@@ -356,9 +272,16 @@ export function SpecialTeamsDashboard() {
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          {apiKeys.map((apiKey) => (
-            <ApiKeyRow key={apiKey.id} apiKey={apiKey} />
-          ))}
+          {apiKeys.length === 0 ? (
+            <div className="text-center py-6">
+              <Key className="h-10 w-10 text-muted-foreground mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">No API keys stored yet. Add one to get started.</p>
+            </div>
+          ) : (
+            apiKeys.map((apiKey) => (
+              <ApiKeyRow key={apiKey.id} apiKey={apiKey} />
+            ))
+          )}
         </CardContent>
       </Card>
     </div>

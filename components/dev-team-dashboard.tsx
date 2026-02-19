@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -38,7 +38,7 @@ import {
 
 type ProjectStatus = "Active" | "In Review" | "Blocked" | "Testing" | "Deployed"
 
-const TEAM_MEMBERS = ["Dat", "Grace"] as const
+const TEAM_MEMBERS: string[] = []
 
 interface HandoffHistory {
   id: string
@@ -83,173 +83,9 @@ interface ApiKey {
   addedOn: string
 }
 
-const initialProjects: Project[] = [
-  {
-    id: "1",
-    name: "Alfred AI",
-    description: "AI-powered assistant for automating firm workflows",
-    status: "Active",
-    currentVersion: "v2.3.1",
-    nextVersion: "v2.4.0",
-    versionLink: "https://github.com/motta-firm/alfred-ai/releases/v2.3.1",
-    lastWorkedOn: "2 hours ago",
-    lastWorkedBy: "Dat",
-    notes: "API integration is complete. Need to test edge cases with multi-step workflows.",
-    nextSteps: [
-      {
-        id: "1",
-        text: "Implement natural language processing for client queries",
-        completed: false,
-        assignedTo: "Dat", // Added assignment example
-      },
-      {
-        id: "2",
-        text: "Test edge cases with multi-step workflows",
-        completed: true,
-        comment: "Tested with 5 different scenarios, all passed",
-        assignedTo: "Dat",
-      },
-      {
-        id: "3",
-        text: "Update documentation for new API endpoints",
-        completed: false,
-        assignedTo: "Grace", // Added assignment example
-      },
-    ],
-    assignedTo: "Dat",
-    inHandoffQueue: false,
-    handoffHistory: [
-      {
-        id: "1",
-        from: "Grace",
-        to: "Dat",
-        timestamp: "2025-01-20 14:30",
-        notes: "Completed API integration, ready for NLP implementation",
-        status: "Active",
-      },
-    ],
-  },
-  {
-    id: "2",
-    name: "SHIN",
-    description: "Smart Hub for Internal Notifications",
-    status: "Testing",
-    currentVersion: "v1.5.2",
-    nextVersion: "v1.6.0",
-    versionLink: "https://github.com/motta-firm/shin/releases/v1.5.2",
-    lastWorkedOn: "5 hours ago",
-    lastWorkedBy: "Grace",
-    notes: "Desktop notifications working perfectly. Mobile push needs debugging - check Firebase config.",
-    nextSteps: [
-      {
-        id: "1",
-        text: "Fix notification delivery delays for mobile devices",
-        completed: false,
-        comment: "Issue seems to be with Firebase config - checking credentials",
-      },
-      {
-        id: "2",
-        text: "Test on iOS and Android devices",
-        completed: false,
-        assignedTo: "Grace", // Added assignment example
-      },
-      {
-        id: "3",
-        text: "Update Firebase configuration",
-        completed: false,
-      },
-    ],
-    assignedTo: null,
-    inHandoffQueue: true,
-    handoffHistory: [],
-  },
-  {
-    id: "3",
-    name: "Motta Hub Nexus",
-    description: "Central dashboard for all firm operations",
-    status: "Active",
-    currentVersion: "v3.1.0",
-    nextVersion: "v3.2.0",
-    versionLink: "https://github.com/motta-firm/nexus/releases/v3.1.0",
-    lastWorkedOn: "1 hour ago",
-    lastWorkedBy: "Dat",
-    notes: "Dashboard layout is finalized. Ready to integrate tax return tracking API endpoints.",
-    nextSteps: [
-      {
-        id: "1",
-        text: "Add busy season tracker integration with real-time updates",
-        completed: false,
-      },
-      {
-        id: "2",
-        text: "Create API endpoints for tax return data",
-        completed: false,
-      },
-      {
-        id: "3",
-        text: "Test real-time sync functionality",
-        completed: false,
-      },
-    ],
-    assignedTo: "Dat",
-    inHandoffQueue: false,
-    handoffHistory: [],
-  },
-  {
-    id: "4",
-    name: "G Plus",
-    description: "Enhanced Google Workspace integration suite",
-    status: "In Review",
-    currentVersion: "v1.2.0",
-    nextVersion: "v1.3.0",
-    versionLink: "https://github.com/motta-firm/g-plus/releases/v1.2.0",
-    lastWorkedOn: "1 day ago",
-    lastWorkedBy: "Grace",
-    notes: "All features implemented. Waiting on security team approval for OAuth scopes.",
-    nextSteps: [
-      {
-        id: "1",
-        text: "Code review and security audit before deployment",
-        completed: true,
-      },
-      {
-        id: "2",
-        text: "Update OAuth scopes documentation",
-        completed: false,
-      },
-    ],
-    assignedTo: "Grace",
-    inHandoffQueue: false,
-    handoffHistory: [],
-  },
-]
+const initialProjects: Project[] = []
 
-const initialApiKeys: ApiKey[] = [
-  {
-    id: "1",
-    name: "OpenAI API Key",
-    key: "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
-    description: "For Alfred AI natural language processing",
-    addedBy: "Dat",
-    addedOn: "2025-01-15",
-  },
-  {
-    id: "2",
-    name: "Firebase Cloud Messaging",
-    key: "AIzaSyB1234567890abcdefghijklmnopqrstuvwxyz",
-    description: "For SHIN push notifications",
-    addedBy: "Grace",
-    addedOn: "2025-01-10",
-  },
-  {
-    id: "3",
-    name: "Google Workspace API",
-    key: "1234567890-abcdefghijklmnopqrstuvwxyz.apps.googleusercontent.com",
-    description: "For G Plus integration",
-    addedBy: "Dat",
-    addedOn: "2025-01-08",
-  },
-]
+const initialApiKeys: ApiKey[] = []
 
 const statusColors: Record<ProjectStatus, string> = {
   Active: "bg-green-500/10 text-green-500 border-green-500/20",
@@ -259,44 +95,9 @@ const statusColors: Record<ProjectStatus, string> = {
   Deployed: "bg-purple-500/10 text-purple-500 border-purple-500/20",
 }
 
-const STORAGE_VERSION = "1.0"
-const PROJECTS_STORAGE_KEY = "special-teams-projects-v" + STORAGE_VERSION
-const API_KEYS_STORAGE_KEY = "special-teams-api-keys-v" + STORAGE_VERSION
-
 export function DevTeamDashboard() {
-  const [projects, setProjects] = useState<Project[]>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const saved = localStorage.getItem(PROJECTS_STORAGE_KEY)
-        if (saved) {
-          const parsedProjects = JSON.parse(saved)
-          console.log("[v0] Loaded projects from localStorage:", parsedProjects.length, "projects")
-          return parsedProjects
-        }
-      } catch (e) {
-        console.error("[v0] Failed to parse saved projects:", e)
-      }
-    }
-    console.log("[v0] Using initial projects")
-    return initialProjects
-  })
-
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const saved = localStorage.getItem(API_KEYS_STORAGE_KEY)
-        if (saved) {
-          const parsedKeys = JSON.parse(saved)
-          console.log("[v0] Loaded API keys from localStorage:", parsedKeys.length, "keys")
-          return parsedKeys
-        }
-      } catch (e) {
-        console.error("[v0] Failed to parse saved API keys:", e)
-      }
-    }
-    console.log("[v0] Using initial API keys")
-    return initialApiKeys
-  })
+  const [projects, setProjects] = useState<Project[]>(initialProjects)
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>(initialApiKeys)
 
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
@@ -308,19 +109,7 @@ export function DevTeamDashboard() {
   const [newNextStep, setNewNextStep] = useState<string>("")
   const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set())
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects))
-      console.log("[v0] Projects saved to localStorage (version", STORAGE_VERSION, ")")
-    }
-  }, [projects])
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(apiKeys))
-      console.log("[v0] API keys saved to localStorage (version", STORAGE_VERSION, ")")
-    }
-  }, [apiKeys])
 
   const toggleKeyVisibility = (keyId: string) => {
     setVisibleKeys((prev) => {
@@ -352,7 +141,6 @@ export function DevTeamDashboard() {
   }
 
   const handleUpdateProject = (updatedProject: Project) => {
-    console.log("[v0] Saving project changes:", updatedProject)
     setProjects((prev) => prev.map((p) => (p.id === updatedProject.id ? updatedProject : p)))
     setIsEditDialogOpen(false)
     setSelectedProject(null)
@@ -491,6 +279,12 @@ export function DevTeamDashboard() {
           </Badge>
         </div>
 
+        {projects.length === 0 ? (
+          <Card className="p-8 text-center">
+            <Code2 className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
+            <p className="text-muted-foreground">No projects yet. Add a project to get started.</p>
+          </Card>
+        ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {projects.map((project) => (
             <Card
@@ -608,6 +402,7 @@ export function DevTeamDashboard() {
             </Card>
           ))}
         </div>
+        )}
       </div>
 
       {/* API Keys Section */}
@@ -650,36 +445,43 @@ export function DevTeamDashboard() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="space-y-3">
-            {apiKeys.map((apiKey) => (
-              <div key={apiKey.id} className="flex items-center justify-between p-3 rounded-lg border bg-card">
-                <div className="flex-1 space-y-1">
-                  <div className="flex items-center gap-2">
-                    <p className="font-medium">{apiKey.name}</p>
-                    <Badge variant="secondary" className="text-xs">
-                      {apiKey.addedBy}
-                    </Badge>
+          {apiKeys.length === 0 ? (
+            <div className="text-center py-6">
+              <Key className="h-10 w-10 text-muted-foreground mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">No API keys stored yet. Add one to get started.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {apiKeys.map((apiKey) => (
+                <div key={apiKey.id} className="flex items-center justify-between p-3 rounded-lg border bg-card">
+                  <div className="flex-1 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium">{apiKey.name}</p>
+                      <Badge variant="secondary" className="text-xs">
+                        {apiKey.addedBy}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground">{apiKey.description}</p>
+                    <p className="text-xs text-muted-foreground font-mono">
+                      {visibleKeys.has(apiKey.id) ? apiKey.key : maskKey(apiKey.key)}
+                    </p>
                   </div>
-                  <p className="text-sm text-muted-foreground">{apiKey.description}</p>
-                  <p className="text-xs text-muted-foreground font-mono">
-                    {visibleKeys.has(apiKey.id) ? apiKey.key : maskKey(apiKey.key)}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button variant="ghost" size="icon" onClick={() => toggleKeyVisibility(apiKey.id)}>
+                      {visibleKeys.has(apiKey.id) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => copyToClipboard(apiKey.key, apiKey.id)}>
+                      {copiedKey === apiKey.id ? (
+                        <Check className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="icon" onClick={() => toggleKeyVisibility(apiKey.id)}>
-                    {visibleKeys.has(apiKey.id) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </Button>
-                  <Button variant="ghost" size="icon" onClick={() => copyToClipboard(apiKey.key, apiKey.id)}>
-                    {copiedKey === apiKey.id ? (
-                      <Check className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )}
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -701,22 +503,22 @@ export function DevTeamDashboard() {
                   <p className="text-sm text-muted-foreground">
                     Claim this project to assign it to yourself and start working on it.
                   </p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      className="flex-1 bg-transparent"
-                      onClick={() => handleClaimProject(selectedProject, "Dat")}
-                    >
-                      Claim as Dat
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="flex-1 bg-transparent"
-                      onClick={() => handleClaimProject(selectedProject, "Grace")}
-                    >
-                      Claim as Grace
-                    </Button>
-                  </div>
+                  {TEAM_MEMBERS.length > 0 ? (
+                    <div className="flex gap-2">
+                      {TEAM_MEMBERS.map((member) => (
+                        <Button
+                          key={member}
+                          variant="outline"
+                          className="flex-1 bg-transparent"
+                          onClick={() => handleClaimProject(selectedProject, member)}
+                        >
+                          Claim as {member}
+                        </Button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No team members configured. Add members to the TEAM_MEMBERS list to enable claiming.</p>
+                  )}
                 </div>
               )}
 
@@ -831,8 +633,9 @@ export function DevTeamDashboard() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="Unassigned">Unassigned</SelectItem>
-                              <SelectItem value="Dat">Dat</SelectItem>
-                              <SelectItem value="Grace">Grace</SelectItem>
+                              {TEAM_MEMBERS.map((member) => (
+                                <SelectItem key={member} value={member}>{member}</SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
@@ -898,8 +701,9 @@ export function DevTeamDashboard() {
                         <SelectValue placeholder="Select team member or queue" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="Dat">Dat</SelectItem>
-                        <SelectItem value="Grace">Grace</SelectItem>
+                        {TEAM_MEMBERS.map((member) => (
+                          <SelectItem key={member} value={member}>{member}</SelectItem>
+                        ))}
                         <SelectItem value="Handoff Queue">Handoff Queue</SelectItem>
                       </SelectContent>
                     </Select>

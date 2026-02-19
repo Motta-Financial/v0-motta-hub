@@ -1,5 +1,5 @@
-import { createServerClient } from "@supabase/ssr"
-import { NextResponse, type NextRequest } from "next/server"
+import { updateSession } from "@/lib/supabase/middleware"
+import { type NextRequest, NextResponse } from "next/server"
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname
@@ -13,28 +13,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next()
   }
 
-  let supabaseResponse = NextResponse.next({
-    request,
-  })
+  const result = await updateSession(request)
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll()
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
-          supabaseResponse = NextResponse.next({
-            request,
-          })
-          cookiesToSet.forEach(({ name, value, options }) => supabaseResponse.cookies.set(name, value, options))
-        },
-      },
-    },
-  )
+  // If updateSession returns a plain NextResponse (env vars missing), pass through
+  if (result instanceof NextResponse) {
+    return result
+  }
+
+  const { supabaseResponse, user } = result
 
   const isLoginPage = pathname === "/login"
   const isAuthCallback = pathname.startsWith("/auth")
@@ -53,10 +39,6 @@ export async function middleware(request: NextRequest) {
   if (isAuthCallback || isPublicApi || isWebhook || isCron || isInternalCall) {
     return supabaseResponse
   }
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
 
   // API routes require authentication
   const isApiRoute = pathname.startsWith("/api")
