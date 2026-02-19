@@ -189,7 +189,7 @@ export function ClientServiceDebriefs() {
       if (!response.ok) {
         if (response.status === 404) {
           alert(
-            "Comments feature is not available yet. Please run the migration script: scripts/create-debrief-comments-table.sql",
+            "Comments feature is not available yet. Please run the migration script: scripts/001-consolidate-and-index.sql",
           )
           return
         }
