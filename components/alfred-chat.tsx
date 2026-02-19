@@ -36,12 +36,14 @@ interface AlfredChatProps {
 }
 
 const suggestedQueries = [
-  { icon: Users, text: "Show team workload", query: "What's the current workload for each team member?" },
+  { icon: Users, text: "Team workload", query: "What's the current workload for each team member?" },
   { icon: Calendar, text: "Upcoming deadlines", query: "What work items are due in the next 7 days?" },
   { icon: Search, text: "Find a client", query: "Search for client " },
   { icon: FileText, text: "Recent debriefs", query: "Show me recent client debriefs from this week" },
   { icon: DollarSign, text: "Financial summary", query: "What's our current financial summary?" },
   { icon: Database, text: "Work items by status", query: "Summarize work items by status" },
+  { icon: Calendar, text: "Calendly meetings", query: "What meetings are scheduled in Calendly this week?" },
+  { icon: Users, text: "Leads pipeline", query: "Show me our current leads and their status" },
 ]
 
 export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className }: AlfredChatProps) {

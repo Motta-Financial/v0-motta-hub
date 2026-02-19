@@ -80,24 +80,88 @@ export async function POST(req: Request) {
     // ── READ TOOLS ──────────────────────────────────────────────────────────
 
     queryDatabase: tool({
-      description: `Query any table in the Motta Hub database. Available tables include:
-    - team_members: Staff information (id, full_name, email, role, department, is_active)
-    - contacts: Client contact information (id, full_name, primary_email, contact_type, status)
-    - organizations: Business/organization records (id, name, entity_type, industry, primary_email, status)
-    - client_groups: Groups of related clients
-    - work_items: Karbon work items (title, status, work_type, due_date, assignee_name, client_group_name, tax_year)
-    - debriefs: Meeting debriefs and notes
-    - tasks: Internal team tasks and assignments
-    - invoices: Client invoices
-    - time_entries: Time tracking records
-    - meeting_notes: Notes from client meetings
-    - notifications: User notifications
-    - services: Available services with pricing
-    - tax_returns: Tax return records
-    - karbon_notes, karbon_tasks, karbon_timesheets: Karbon synced data
-    - tommy_award_ballots, tommy_award_points, tommy_award_yearly_totals: Tommy Awards data
-    - work_status: Work item status definitions (name, is_active)
-    Use this to answer questions about clients, work items, team members, finances, etc.`,
+      description: `Query any table in the Motta Hub Supabase database. Use this for every data question.
+
+CLIENTS & CONTACTS
+- contacts           id, full_name, first_name, last_name, primary_email, contact_type, status, client_manager_id, client_owner_id, phone_numbers (JSONB), addresses (JSONB)
+- organizations      id, name, legal_name, entity_type, industry, ein, status, primary_email, client_since, referral_source, client_manager_id, client_owner_id
+- client_groups      id, name, group_type, client_manager_id, client_owner_id, primary_contact_id
+- client_group_members  links contacts/organizations to client_groups (client_group_id, contact_id, organization_id, is_primary)
+- contact_organizations links contacts to organizations (contact_id, organization_id, role_or_title, is_primary_contact)
+
+WORK & PROJECTS (synced from Karbon)
+- work_items         id, title, status, workflow_status, work_type, due_date, start_date, completed_date, deadline_date, tax_year, assignee_id, assignee_name, client_group_id, client_group_name, contact_id, organization_id, client_name, primary_status, secondary_status, fee_type, fee_value
+- work_status        id, name, is_active, is_default_filter, primary_status_name, secondary_status_name
+- work_types         id, name, description
+- work_item_assignees  links work items to additional assignees
+
+KARBON SYNCED DATA (periodic sync from Karbon practice management)
+- karbon_notes       id, subject, body, author_name, work_item_title, contact_name, created_at
+- karbon_tasks       id, title, status, assignee_name, due_date, priority, task_data (JSONB)
+- karbon_timesheets  id, user_name, minutes, work_item_title, client_name, date, is_billable, role_name, timesheet_status
+- karbon_invoices    id, invoice_number, amount, tax, total_amount, status, issued_date, due_date, paid_date, line_items (JSONB)
+
+TEAM MEMBERS
+- team_members       id, full_name, email, role, department, is_active, auth_user_id, billable_rate, capacity_minutes_per_week, avatar_url, phone, permissions (text[]), roles (text[]), teams (text[])
+- time_entries       id, team_member_id, minutes, description, date, is_billable
+
+MEETINGS & NOTES
+- meeting_notes      id, client_name, meeting_date, meeting_type, attendees, agenda, notes, action_items, status (includes ALFRED Notes)
+- meeting_attendees  links team members to meetings
+- debriefs           id, debrief_date, debrief_type, team_member, organization_name, contact_name, notes, action_items, follow_up_date, tax_year, status, contact_id, organization_id, work_item_id, client_group_id
+- debrief_comments   id, debrief_id, comment, team_member_id, created_at
+
+FINANCIAL
+- invoices           id, invoice_number, total_amount, amount_paid, status, due_date, invoice_date, organization_id, contact_id
+- invoice_line_items id, invoice_id, description, quantity, unit_price, total
+- payments           id, invoice_id, amount, payment_date, payment_method, notes
+- recurring_revenue  id, service_type, monthly_amount, annual_amount, is_active, organization_id
+- services           id, name, category, price, description, ignition_id
+- service_agreements id, organization_id, service_id, start_date, end_date, monthly_amount, status
+- service_lines      id, name, description
+- tax_returns        id, tax_year, form_type, filing_status, status, contact_id, organization_id
+
+TASKS & INTERNAL
+- tasks              id, title, description, status (todo/in_progress/completed), assignee_id, due_date, priority, is_completed
+- notes              id, title, body, entity_type, entity_id, visibility, created_at
+- messages           id, subject, body, sender_id, created_at
+- message_comments   id, message_id, body, team_member_id
+- notifications      id, team_member_id, message, type, is_read, created_at
+- emails             id, subject, body, from_email, to_email, sent_at
+- activity_log       id, entity_type, action, team_member_id, created_at
+- alfred_audit_log   id, actor_name, action_type, entity_type, description, payload (JSONB), created_at
+
+CALENDLY (synced from Calendly)
+- calendly_events    id, event_name, start_time, end_time, status, event_type, invitee_email, invitee_name, location, cancel_reason
+- calendly_invitees  id, event_id, name, email, created_at
+
+BUSINESS DEVELOPMENT
+- leads              id, first_name, last_name, email, company_name, status, source, notes, assigned_to
+- pipelines          id, name, description, stages (JSONB)
+- pipeline_stages    id, pipeline_id, name, order, probability
+
+DASHBOARDS & VIEWS
+- dashboards         id, name, team_member_id, widgets (JSONB)
+- dashboard_widgets  id, dashboard_id, widget_type, config (JSONB), position (JSONB)
+- saved_views        id, name, entity_type, filters (JSONB), team_member_id
+
+BUSY SEASON (annual tax deadline management)
+- busy_season_work_items      id, work_item_id, assignee_id, status, priority, notes
+- busy_season_assignment_history  change log for busy season reassignments
+- busy_season_overrides       manual overrides to busy season rules
+
+TOMMY AWARDS (weekly team recognition program)
+- tommy_award_ballots         id, voter_name, week_date, first_place_name, second_place_name, third_place_name, notes
+- tommy_award_points          id, team_member_name, week_date, total_points
+- tommy_award_weeks           id, week_date, is_finalized
+- tommy_award_yearly_totals   id, team_member_name, year, total_points, current_rank
+
+SYSTEM
+- sync_log           id, sync_type, status, records_fetched, records_created, records_updated, records_failed, started_at, completed_at, error_message
+- documents          id, name, entity_type, entity_id, url, created_at
+- tags               id, name, color, entity_type
+- ignition_proposals id, proposal_name, status, client_id, amount, created_at
+- app_settings       id, key, value (system configuration key/value pairs)`,
       inputSchema: z.object({
         table: z.string().describe("The table name to query"),
         select: z.string().optional().describe("Columns to select, defaults to *"),
@@ -840,13 +904,55 @@ MANDATORY WORKFLOW:
 ## What you can do
 
 ### Read (always available)
-- Look up clients, contacts, and organizations
-- Find and summarize work items by status, assignee, due date, or tax year
-- Check team workload and upcoming deadlines
-- Review meeting notes, debriefs, and recent activity
-- Access invoice and recurring revenue data
-- Check Tommy Awards standings
-- Look up services and pricing
+
+**Clients & Relationships**
+- Look up contacts (individuals) and organizations (businesses) — search by name, email, entity type, or manager
+- Browse client groups and the contacts/organizations that belong to each group
+- Find the client manager and client owner for any client
+
+**Work Items & Projects (Karbon)**
+- Find and filter work items by status, work type, assignee, due date, deadline, or tax year
+- Summarize work item counts by status, assignee, or client
+- Find overdue or upcoming deadline items across any team member or client
+- Access Karbon-synced notes, tasks, timesheets, and invoices for any work item
+
+**Team**
+- See all team members, their roles, departments, billable rates, and capacity
+- Check individual or team-wide workload (open items, overdue, upcoming)
+- View time entries by team member, date, or billability
+
+**Meetings & Notes**
+- Search meeting notes and debriefs by client name, date, type, or content
+- View debrief comments and follow-up actions
+- Retrieve notes added by ALFRED or the team for any client
+
+**Financial**
+- Look up invoices, payments, and outstanding balances
+- Check recurring revenue by client or service type
+- Review service agreements and pricing
+- Search tax return records by year, form type, filing status, or client
+
+**Calendly**
+- See scheduled meetings from Calendly (event name, time, invitee, status)
+
+**Internal Operations**
+- View and filter internal tasks by status, assignee, or due date
+- Search messages and message comments
+- Check team notifications
+- Review the activity log and ALFRED audit log
+- Look up busy season work item assignments and overrides
+
+**Business Development**
+- Browse leads by status, source, or assigned team member
+- View pipeline stages and deal progress
+
+**Recognition**
+- Tommy Awards leaderboard, weekly ballots, and points history
+
+**System**
+- Sync log (check last Karbon sync status and results)
+- App settings
+- Saved views and dashboard configurations
 
 ### Write (with mandatory user confirmation)
 You have three write tools. **Every single write action requires a two-step dry-run → confirm flow. No exceptions.**
@@ -880,7 +986,19 @@ You have three write tools. **Every single write action requires a two-step dry-
 - When showing lists, lead with the most actionable information
 
 ## Company context
-Motta Financial is a San Francisco-based CPA firm specializing in tax, accounting, and advisory services. Data syncs from Karbon (practice management) into Supabase.`
+Motta Financial is a San Francisco-based CPA firm specializing in tax, accounting, and advisory services.
+
+**Data sources you can query:**
+- Karbon (practice management) → work_items, karbon_notes, karbon_tasks, karbon_timesheets, karbon_invoices — synced periodically via webhooks and cron
+- Calendly → calendly_events, calendly_invitees — synced on demand
+- All internal Motta Hub data (contacts, organizations, invoices, tasks, etc.) — live
+
+**Data sources you cannot query (not synced to Supabase):**
+- Zoom meetings (integration incomplete)
+- Ignition proposals (integration incomplete)
+- Raw document file contents (metadata only)
+
+**If data seems stale**, it may be because the Karbon sync hasn't run recently. You can check sync_log to see when the last sync completed.`
 
   // ── 7. Stream response ─────────────────────────────────────────────────────
   const result = streamText({
