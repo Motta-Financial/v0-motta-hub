@@ -19,7 +19,7 @@ interface LeaderboardEntry {
 
 interface Filters {
   year: string
-  weekId: string
+  weekIds: string[]
   teamMemberId: string
 }
 
@@ -43,7 +43,7 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
     try {
       const params = new URLSearchParams({ type: "leaderboard" })
       if (filters.year && filters.year !== "all") params.append("year", filters.year)
-      if (filters.weekId && filters.weekId !== "all") params.append("week_id", filters.weekId)
+      if (filters.weekIds.length > 0) params.append("week_ids", filters.weekIds.join(","))
 
       const res = await fetch(`/api/tommy-awards?${params}`)
       const data = await res.json()
@@ -95,7 +95,8 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
   const getFilterDescription = () => {
     const parts: string[] = []
     if (filters.year && filters.year !== "all") parts.push(filters.year)
-    if (filters.weekId && filters.weekId !== "all") parts.push("Selected Week")
+    if (filters.weekIds.length === 1) parts.push("1 Week")
+    else if (filters.weekIds.length > 1) parts.push(`${filters.weekIds.length} Weeks`)
     return parts.length > 0 ? parts.join(" - ") : "All Time"
   }
 

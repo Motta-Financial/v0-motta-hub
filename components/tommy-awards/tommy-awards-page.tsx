@@ -6,6 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Trophy,
   Flame,
@@ -42,7 +44,7 @@ interface TeamMember {
 
 interface Filters {
   year: string
-  weekId: string
+  weekIds: string[]
   teamMemberId: string
 }
 
@@ -51,10 +53,11 @@ export function TommyAwardsPage() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const [filters, setFilters] = useState<Filters>({
     year: new Date().getFullYear().toString(),
-    weekId: "",
+    weekIds: [],
     teamMemberId: "",
   })
   const [filteredWeeks, setFilteredWeeks] = useState<Week[]>([])
+  const [currentWeekId, setCurrentWeekId] = useState<string | null>(null)
 
   const is2026OrLater = filters.year === "all" ? false : Number.parseInt(filters.year) >= 2026
 
@@ -63,25 +66,58 @@ export function TommyAwardsPage() {
   }, [])
 
   useEffect(() => {
-    // Filter weeks by selected year
-    if (filters.year) {
+    // Filter weeks by selected year, sort with current week first then most recent
+    if (filters.year && filters.year !== "all") {
       const yearWeeks = weeks.filter((week) => week.week_date.startsWith(filters.year))
-      setFilteredWeeks(yearWeeks)
-      // Reset week selection if not in filtered year
-      if (filters.weekId && !yearWeeks.find((w) => w.id === filters.weekId)) {
-        setFilters((prev) => ({ ...prev, weekId: "" }))
+      const sorted = sortWeeksWithCurrentFirst(yearWeeks)
+      setFilteredWeeks(sorted)
+      // Reset week selections if none are in filtered year
+      if (filters.weekIds.length > 0) {
+        const validIds = filters.weekIds.filter((id) => yearWeeks.find((w) => w.id === id))
+        if (validIds.length !== filters.weekIds.length) {
+          setFilters((prev) => ({ ...prev, weekIds: validIds }))
+        }
       }
     } else {
-      setFilteredWeeks(weeks)
+      setFilteredWeeks(sortWeeksWithCurrentFirst(weeks))
     }
-  }, [filters.year, weeks])
+  }, [filters.year, weeks, currentWeekId])
+
+  const getCurrentWeekDate = () => {
+    const today = new Date()
+    const day = today.getDay()
+    const diff = day <= 5 ? 5 - day : 5 - day + 7
+    const friday = new Date(today)
+    friday.setDate(today.getDate() + diff)
+    return friday.toISOString().split("T")[0]
+  }
+
+  const sortWeeksWithCurrentFirst = (weeksList: Week[]) => {
+    const currentFriday = getCurrentWeekDate()
+    return [...weeksList].sort((a, b) => {
+      // Current week always first
+      if (a.week_date === currentFriday) return -1
+      if (b.week_date === currentFriday) return 1
+      // Then sort by date descending (most recent first)
+      return b.week_date.localeCompare(a.week_date)
+    })
+  }
 
   const fetchFilterData = async () => {
     try {
       // Fetch weeks
       const weeksRes = await fetch("/api/tommy-awards?type=weeks")
       const weeksData = await weeksRes.json()
-      setWeeks(weeksData.weeks || [])
+      const fetchedWeeks: Week[] = weeksData.weeks || []
+      setWeeks(fetchedWeeks)
+
+      // Detect current week and set it as default
+      const currentFriday = getCurrentWeekDate()
+      const currentWeek = fetchedWeeks.find((w) => w.week_date === currentFriday)
+      if (currentWeek) {
+        setCurrentWeekId(currentWeek.id)
+        setFilters((prev) => ({ ...prev, weekIds: [currentWeek.id] }))
+      }
 
       // Fetch team members
       const membersRes = await fetch("/api/tommy-awards?type=team_members")
@@ -92,16 +128,31 @@ export function TommyAwardsPage() {
     }
   }
 
+  const toggleWeek = (weekId: string) => {
+    setFilters((prev) => {
+      const isSelected = prev.weekIds.includes(weekId)
+      return {
+        ...prev,
+        weekIds: isSelected
+          ? prev.weekIds.filter((id) => id !== weekId)
+          : [...prev.weekIds, weekId],
+      }
+    })
+  }
+
   const clearFilters = () => {
     setFilters({
       year: new Date().getFullYear().toString(),
-      weekId: "",
+      weekIds: currentWeekId ? [currentWeekId] : [],
       teamMemberId: "",
     })
   }
 
   const hasActiveFilters =
-    filters.weekId || filters.teamMemberId || filters.year !== new Date().getFullYear().toString()
+    filters.weekIds.length > (currentWeekId ? 1 : 0) ||
+    (currentWeekId && filters.weekIds.length === 1 && filters.weekIds[0] !== currentWeekId) ||
+    filters.teamMemberId ||
+    filters.year !== new Date().getFullYear().toString()
 
   // Get unique years from weeks
   const years = [...new Set(weeks.map((w) => w.week_date.substring(0, 4)))].sort((a, b) => b.localeCompare(a))
@@ -271,31 +322,70 @@ export function TommyAwardsPage() {
               </Select>
             </div>
 
-            {/* Week Filter */}
+            {/* Week Filter (Multi-Select) */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">Week</label>
-              <Select
-                value={filters.weekId}
-                onValueChange={(value) => setFilters((prev) => ({ ...prev, weekId: value }))}
-              >
-                <SelectTrigger>
-                  <Calendar className="h-4 w-4 mr-2 text-muted-foreground" />
-                  <SelectValue placeholder="All Weeks" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Weeks</SelectItem>
-                  {filteredWeeks.map((week) => (
-                    <SelectItem key={week.id} value={week.id}>
-                      {week.week_name}
-                      {week.is_active && (
-                        <Badge variant="outline" className="ml-2 text-xs">
-                          Current
-                        </Badge>
-                      )}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="w-full justify-start font-normal h-10">
+                    <Calendar className="h-4 w-4 mr-2 text-muted-foreground" />
+                    {filters.weekIds.length === 0 ? (
+                      <span className="text-muted-foreground">All Weeks</span>
+                    ) : filters.weekIds.length === 1 ? (
+                      <span className="truncate">
+                        {filteredWeeks.find((w) => w.id === filters.weekIds[0])?.week_name || "1 week"}
+                      </span>
+                    ) : (
+                      <span>{filters.weekIds.length} weeks selected</span>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[320px] p-0" align="start">
+                  <div className="p-3 border-b border-border">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium text-foreground">Select Weeks</p>
+                      <div className="flex gap-2">
+                        {filters.weekIds.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => setFilters((prev) => ({ ...prev, weekIds: [] }))}
+                          >
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="max-h-[280px] overflow-y-auto p-2">
+                    {filteredWeeks.map((week) => {
+                      const isCurrentWeek = week.id === currentWeekId
+                      const isSelected = filters.weekIds.includes(week.id)
+                      return (
+                        <button
+                          key={week.id}
+                          onClick={() => toggleWeek(week.id)}
+                          className={`flex items-center gap-3 w-full px-3 py-2 rounded-lg text-left text-sm transition-colors ${
+                            isSelected ? "bg-accent" : "hover:bg-muted"
+                          }`}
+                        >
+                          <Checkbox checked={isSelected} className="pointer-events-none" />
+                          <span className="flex-1 truncate">{week.week_name}</span>
+                          {isCurrentWeek && (
+                            <Badge variant="outline" className="text-xs flex-shrink-0 border-green-300 text-green-700 bg-green-50">
+                              Current
+                            </Badge>
+                          )}
+                        </button>
+                      )
+                    })}
+                    {filteredWeeks.length === 0 && (
+                      <p className="text-sm text-muted-foreground text-center py-4">No weeks found</p>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
 
             {/* Team Member Filter */}

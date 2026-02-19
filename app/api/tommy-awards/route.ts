@@ -6,7 +6,9 @@ export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
 
   const year = searchParams.get("year")
-  const weekId = searchParams.get("week_id")
+  const weekId = searchParams.get("week_id") // single week (legacy)
+  const weekIds = searchParams.get("week_ids") // comma-separated week IDs (multi-select)
+  const weekIdList = weekIds ? weekIds.split(",").filter(Boolean) : weekId ? [weekId] : []
   const teamMemberId = searchParams.get("team_member_id")
   const voterName = searchParams.get("voter_name")
   const type = searchParams.get("type") || "ballots" // ballots, weeks, leaderboard, team_members
@@ -50,8 +52,8 @@ export async function GET(request: NextRequest) {
         ballotsQuery = ballotsQuery.gte("week_date", startDate).lte("week_date", endDate)
       }
 
-      if (weekId) {
-        ballotsQuery = ballotsQuery.eq("week_id", weekId)
+      if (weekIdList.length > 0) {
+        ballotsQuery = ballotsQuery.in("week_id", weekIdList)
       }
 
       const { data: ballots, error } = await ballotsQuery
@@ -182,8 +184,8 @@ export async function GET(request: NextRequest) {
       query = query.gte("week_date", startDate).lte("week_date", endDate)
     }
 
-    if (weekId) {
-      query = query.eq("week_id", weekId)
+    if (weekIdList.length > 0) {
+      query = query.in("week_id", weekIdList)
     }
 
     if (teamMemberId) {
