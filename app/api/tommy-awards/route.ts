@@ -32,13 +32,20 @@ export async function GET(request: NextRequest) {
 
     // Get team members for filter dropdown
     if (type === "team_members") {
+      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
+      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      
       const { data, error } = await supabase
         .from("team_members")
         .select("id, full_name, first_name, last_name, is_active")
         .order("full_name")
 
       if (error) throw error
-      return NextResponse.json({ team_members: data })
+      
+      const filteredMembers = (data || []).filter(
+        (m) => !HIDDEN_MEMBERS.includes(m.full_name)
+      )
+      return NextResponse.json({ team_members: filteredMembers })
     }
 
     // Get leaderboard data
@@ -161,7 +168,11 @@ export async function GET(request: NextRequest) {
         }
       })
 
+      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
+      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      
       const leaderboard = Object.values(pointsMap)
+        .filter((entry) => !HIDDEN_MEMBERS.includes(entry.name))
         .sort((a, b) => b.total_points - a.total_points)
         .map((entry, index) => ({ ...entry, rank: index + 1 }))
 

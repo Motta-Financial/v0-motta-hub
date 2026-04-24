@@ -54,6 +54,9 @@ export function TommyVotingForm() {
     const supabase = createClient()
 
     try {
+      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
+      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      
       const { data: members, error: membersError } = await supabase
         .from("team_members")
         .select("id, full_name, email, avatar_url, role")
@@ -63,7 +66,11 @@ export function TommyVotingForm() {
         .order("full_name")
 
       if (membersError) throw membersError
-      setTeamMembers(members || [])
+      
+      const filteredMembers = (members || []).filter(
+        (m) => !HIDDEN_MEMBERS.includes(m.full_name)
+      )
+      setTeamMembers(filteredMembers)
 
       const today = new Date()
       setCurrentYear(today.getFullYear())
