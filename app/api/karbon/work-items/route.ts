@@ -1,17 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { categorizeServiceLine } from "@/lib/service-lines"
 import { getKarbonCredentials, karbonFetchAll } from "@/lib/karbon-api"
-import { createClient } from "@supabase/supabase-js"
+import { tryCreateAdminClient } from "@/lib/supabase/server"
 
 function getSupabaseClient() {
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-  if (!supabaseUrl || !supabaseKey) {
-    return null
-  }
-
-  return createClient(supabaseUrl, supabaseKey)
+  return tryCreateAdminClient()
 }
 
 function parseTaxYear(item: any): number | null {

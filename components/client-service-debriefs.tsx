@@ -58,12 +58,14 @@ interface Debrief {
   id: string
   debrief_date: string
   notes: string
-  team_member: string
+  team_member_id: string | null
   created_by_id: string
   contact_id: string | null
   organization_id: string | null
   work_item_id: string | null
   organization_name: string | null
+  client_owner_name: string | null
+  client_manager_name: string | null
   karbon_client_key: string | null
   karbon_work_url: string | null
   status: string
@@ -75,10 +77,16 @@ interface Debrief {
   } | null
   follow_up_date: string | null
   created_at: string
-  // Joined data
-  contact?: { full_name: string } | null
-  organization?: { name: string } | null
-  work_item?: { title: string } | null
+  // Flat fields from debriefs_full view
+  team_member_full_name?: string | null
+  team_member_avatar_url?: string | null
+  created_by_full_name?: string | null
+  created_by_avatar_url?: string | null
+  contact_full_name?: string | null
+  organization_display_name?: string | null
+  work_item_title?: string | null
+  work_item_client_name?: string | null
+  work_item_karbon_url?: string | null
   comments?: DebriefComment[]
 }
 
@@ -181,7 +189,7 @@ export function ClientServiceDebriefs() {
       if (!response.ok) {
         if (response.status === 404) {
           alert(
-            "Comments feature is not available yet. Please run the migration script: scripts/create-debrief-comments-table.sql",
+            "Comments feature is not available yet. Please run the migration script: scripts/001-consolidate-and-index.sql",
           )
           return
         }
@@ -253,10 +261,23 @@ export function ClientServiceDebriefs() {
       .slice(0, 2)
   }
 
+  function getTeamMemberName(debrief: Debrief): string {
+    if (debrief.team_member_full_name) return debrief.team_member_full_name
+    if (debrief.created_by_full_name) return debrief.created_by_full_name
+    if (debrief.client_manager_name) return debrief.client_manager_name
+    return "Team Member"
+  }
+
+  function getTeamMemberAvatar(debrief: Debrief): string | null {
+    return debrief.team_member_avatar_url || debrief.created_by_avatar_url || null
+  }
+
   function getClientName(debrief: Debrief): string {
-    if (debrief.contact?.full_name) return debrief.contact.full_name
-    if (debrief.organization?.name) return debrief.organization.name
+    if (debrief.contact_full_name) return debrief.contact_full_name
+    if (debrief.organization_display_name) return debrief.organization_display_name
     if (debrief.organization_name) return debrief.organization_name
+    if (debrief.client_owner_name) return debrief.client_owner_name
+    if (debrief.work_item_client_name) return debrief.work_item_client_name
     return "Untagged Client"
   }
 
@@ -333,12 +354,16 @@ export function ClientServiceDebriefs() {
                 <div className="flex items-start justify-between">
                   <div className="flex items-start gap-3">
                     <Avatar className="h-10 w-10">
-                      <AvatarFallback className="bg-blue-100 text-blue-700">
-                        {getInitials(debrief.team_member || "TM")}
-                      </AvatarFallback>
+                      {getTeamMemberAvatar(debrief) ? (
+                        <img src={getTeamMemberAvatar(debrief)!} alt={getTeamMemberName(debrief)} className="h-10 w-10 rounded-full object-cover" />
+                      ) : (
+                        <AvatarFallback className="bg-blue-100 text-blue-700">
+                          {getInitials(getTeamMemberName(debrief))}
+                        </AvatarFallback>
+                      )}
                     </Avatar>
                     <div>
-                      <p className="font-medium text-gray-900">{debrief.team_member || "Team Member"}</p>
+                      <p className="font-medium text-gray-900">{getTeamMemberName(debrief)}</p>
                       <div className="flex items-center gap-2 text-sm text-gray-500">
                         <Clock className="h-3 w-3" />
                         {formatDistanceToNow(new Date(debrief.created_at), { addSuffix: true })}
@@ -370,10 +395,10 @@ export function ClientServiceDebriefs() {
                     </Badge>
                   )}
 
-                  {debrief.work_item_id && debrief.work_item ? (
+                  {debrief.work_item_id && debrief.work_item_title ? (
                     <Badge variant="secondary" className="flex items-center gap-1">
                       <Briefcase className="h-3 w-3" />
-                      {debrief.work_item.title}
+                      {debrief.work_item_title}
                     </Badge>
                   ) : null}
 

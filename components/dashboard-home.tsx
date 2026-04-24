@@ -62,13 +62,17 @@ export function DashboardHome() {
 
         if (data.activity && data.activity.length > 0) {
           setActivity(
-            data.activity.map((item: any) => ({
-              type: item.action || "update",
-              message: item.description || "Activity logged",
-              time: formatTimeAgo(new Date(item.created_at)),
-              user: item.team_member?.full_name || "Team Member",
-              avatar: item.team_member?.avatar_url || null,
-            })),
+            data.activity.map((item: any) => {
+              // Handle both object and array join results from Supabase
+              const member = Array.isArray(item.team_member) ? item.team_member[0] : item.team_member
+              return {
+                type: item.action || "update",
+                message: item.description || "Activity logged",
+                time: formatTimeAgo(new Date(item.created_at)),
+                user: member?.full_name || "Team Member",
+                avatar: member?.avatar_url || null,
+              }
+            }),
           )
         } else {
           setActivity([
