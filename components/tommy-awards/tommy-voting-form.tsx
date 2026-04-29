@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Trophy, Medal, Award, Star, Sparkles, Send, Users, Info } from "lucide-react"
+import { Trophy, Medal, Award, Star, Sparkles, Send, Users, Info, Calendar, Edit3 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 
 interface TeamMember {
@@ -27,15 +27,26 @@ interface VoteSelection {
   notes: string
 }
 
+interface WeekOption {
+  id: string
+  week_date: string
+  week_name: string
+  is_active: boolean
+}
+
 export function TommyVotingForm() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
+  const [availableWeeks, setAvailableWeeks] = useState<WeekOption[]>([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [currentWeekId, setCurrentWeekId] = useState<string | null>(null)
+  const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null)
+  const [selectedWeekDate, setSelectedWeekDate] = useState<string | null>(null)
   const [currentVoter, setCurrentVoter] = useState<string>("")
   const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear())
+  const [isAmendment, setIsAmendment] = useState(false)
+  const [existingBallotId, setExistingBallotId] = useState<string | null>(null)
 
   const [firstPlace, setFirstPlace] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
   const [secondPlace, setSecondPlace] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
@@ -50,10 +61,20 @@ export function TommyVotingForm() {
     fetchData()
   }, [])
 
+  // When voter or week changes, check for existing ballot
+  useEffect(() => {
+    if (currentVoter && selectedWeekId) {
+      checkExistingBallot()
+    }
+  }, [currentVoter, selectedWeekId])
+
   const fetchData = async () => {
     const supabase = createClient()
 
     try {
+      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
+      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      
       const { data: members, error: membersError } = await supabase
         .from("team_members")
         .select("id, full_name, email, avatar_url, role")
@@ -63,19 +84,30 @@ export function TommyVotingForm() {
         .order("full_name")
 
       if (membersError) throw membersError
-      setTeamMembers(members || [])
+      
+      const filteredMembers = (members || []).filter(
+        (m) => !HIDDEN_MEMBERS.includes(m.full_name)
+      )
+      setTeamMembers(filteredMembers)
 
       const today = new Date()
       setCurrentYear(today.getFullYear())
       const friday = getFridayOfWeek(today)
       const fridayStr = friday.toISOString().split("T")[0]
 
-      let { data: currentWeek } = await supabase
+      // Fetch all weeks from the current year for the dropdown
+      const startOfYear = `${today.getFullYear()}-01-01`
+      const { data: weeks, error: weeksError } = await supabase
         .from("tommy_award_weeks")
-        .select("*")
-        .eq("week_date", fridayStr)
-        .single()
+        .select("id, week_date, week_name, is_active")
+        .gte("week_date", startOfYear)
+        .order("week_date", { ascending: false })
 
+      if (weeksError) throw weeksError
+
+      // Ensure current week exists
+      let currentWeek = weeks?.find((w) => w.week_date === fridayStr)
+      
       if (!currentWeek) {
         const { data: newWeek, error: createError } = await supabase
           .from("tommy_award_weeks")
@@ -89,15 +121,99 @@ export function TommyVotingForm() {
 
         if (createError) throw createError
         currentWeek = newWeek
+        // Add to weeks list
+        setAvailableWeeks([currentWeek, ...(weeks || [])])
+      } else {
+        setAvailableWeeks(weeks || [])
       }
 
-      setCurrentWeekId(currentWeek.id)
+      // Default to current week
+      setSelectedWeekId(currentWeek.id)
+      setSelectedWeekDate(currentWeek.week_date)
     } catch (err) {
       console.error("Error fetching data:", err)
       setError("Failed to load data. Please refresh the page.")
     } finally {
       setLoading(false)
     }
+  }
+
+  const checkExistingBallot = async () => {
+    if (!currentVoter || !selectedWeekId) return
+
+    const supabase = createClient()
+    
+    try {
+      const { data: existingBallot, error } = await supabase
+        .from("tommy_award_ballots")
+        .select("*")
+        .eq("voter_id", currentVoter)
+        .eq("week_id", selectedWeekId)
+        .single()
+
+      if (error && error.code !== "PGRST116") {
+        // PGRST116 = no rows returned, which is fine
+        console.error("Error checking existing ballot:", error)
+        return
+      }
+
+      if (existingBallot) {
+        // Pre-fill the form with existing ballot data
+        setIsAmendment(true)
+        setExistingBallotId(existingBallot.id)
+        
+        setFirstPlace({
+          memberId: existingBallot.first_place_id,
+          memberName: existingBallot.first_place_name || "",
+          notes: existingBallot.first_place_notes || "",
+        })
+        setSecondPlace({
+          memberId: existingBallot.second_place_id,
+          memberName: existingBallot.second_place_name || "",
+          notes: existingBallot.second_place_notes || "",
+        })
+        setThirdPlace({
+          memberId: existingBallot.third_place_id,
+          memberName: existingBallot.third_place_name || "",
+          notes: existingBallot.third_place_notes || "",
+        })
+        setHonorableMention({
+          memberId: existingBallot.honorable_mention_id,
+          memberName: existingBallot.honorable_mention_name || "",
+          notes: existingBallot.honorable_mention_notes || "",
+        })
+        if (existingBallot.partner_vote_id) {
+          setIsPartner(true)
+          setPartnerVote({
+            memberId: existingBallot.partner_vote_id,
+            memberName: existingBallot.partner_vote_name || "",
+            notes: existingBallot.partner_vote_notes || "",
+          })
+        }
+      } else {
+        // Reset form for new ballot
+        setIsAmendment(false)
+        setExistingBallotId(null)
+        resetForm()
+      }
+    } catch (err) {
+      console.error("Error checking existing ballot:", err)
+    }
+  }
+
+  const resetForm = () => {
+    setFirstPlace({ memberId: null, memberName: "", notes: "" })
+    setSecondPlace({ memberId: null, memberName: "", notes: "" })
+    setThirdPlace({ memberId: null, memberName: "", notes: "" })
+    setHonorableMention({ memberId: null, memberName: "", notes: "" })
+    setPartnerVote({ memberId: null, memberName: "", notes: "" })
+    setIsPartner(false)
+  }
+
+  const handleWeekChange = (weekId: string) => {
+    const week = availableWeeks.find((w) => w.id === weekId)
+    setSelectedWeekId(weekId)
+    setSelectedWeekDate(week?.week_date || null)
   }
 
   const getFridayOfWeek = (date: Date) => {
@@ -135,7 +251,7 @@ export function TommyVotingForm() {
   }
 
   const handleSubmit = async () => {
-    if (!currentWeekId || !currentVoter) {
+    if (!selectedWeekId || !currentVoter) {
       setError("Please select your name before submitting")
       return
     }
@@ -152,11 +268,10 @@ export function TommyVotingForm() {
 
     try {
       const voter = teamMembers.find((m) => m.id === currentVoter)
-      const friday = getFridayOfWeek(new Date())
 
       const ballotData: Record<string, unknown> = {
-        week_id: currentWeekId,
-        week_date: friday.toISOString().split("T")[0],
+        week_id: selectedWeekId,
+        week_date: selectedWeekDate,
         voter_id: currentVoter,
         voter_name: voter?.full_name || "Unknown",
         first_place_id: firstPlace.memberId,
@@ -186,11 +301,26 @@ export function TommyVotingForm() {
         ballotData.partner_vote_notes = null
       }
 
-      const { error: submitError } = await supabase.from("tommy_award_ballots").insert(ballotData)
+      let submitError
+
+      if (isAmendment && existingBallotId) {
+        // Update existing ballot
+        const { error } = await supabase
+          .from("tommy_award_ballots")
+          .update(ballotData)
+          .eq("id", existingBallotId)
+        submitError = error
+      } else {
+        // Insert new ballot
+        const { error } = await supabase
+          .from("tommy_award_ballots")
+          .insert(ballotData)
+        submitError = error
+      }
 
       if (submitError) {
         if (submitError.code === "23505") {
-          setError("You have already submitted a ballot this week")
+          setError("You have already submitted a ballot for this week. Select your name again to load it for amendment.")
         } else {
           throw submitError
         }
@@ -221,12 +351,16 @@ export function TommyVotingForm() {
       <Card className="border-border bg-gradient-to-br from-[#0a1628] to-[#1a2744] text-white">
         <CardContent className="flex flex-col items-center justify-center py-16">
           <div className="w-20 h-20 rounded-full bg-[#c62828]/20 flex items-center justify-center mb-6 border-2 border-[#c62828]">
-            <Trophy className="h-10 w-10 text-[#c62828]" />
+            {isAmendment ? <Edit3 className="h-10 w-10 text-[#c62828]" /> : <Trophy className="h-10 w-10 text-[#c62828]" />}
           </div>
-          <h3 className="text-2xl font-bold mb-2">Championship Ballot Submitted!</h3>
+          <h3 className="text-2xl font-bold mb-2">
+            {isAmendment ? "Ballot Updated!" : "Championship Ballot Submitted!"}
+          </h3>
           <p className="text-slate-300 text-center max-w-md">
-            Thank you for recognizing your teammates' championship-level performance. Your votes have been recorded for
-            this week's Tommy Awards.
+            {isAmendment 
+              ? "Your ballot has been successfully amended. The leaderboard will reflect your updated votes."
+              : "Thank you for recognizing your teammates' championship-level performance. Your votes have been recorded for this week's Tommy Awards."
+            }
           </p>
           <Button
             variant="outline"
@@ -268,24 +402,56 @@ export function TommyVotingForm() {
           </Alert>
         )}
 
-        <div className="p-4 rounded-xl bg-muted/50 border border-border">
-          <Label className="flex items-center gap-2 mb-3 text-foreground font-medium">
-            <Users className="h-4 w-4" />
-            Your Name
-          </Label>
-          <Select value={currentVoter} onValueChange={setCurrentVoter}>
-            <SelectTrigger className="bg-background">
-              <SelectValue placeholder="Select your name" />
-            </SelectTrigger>
-            <SelectContent>
-              {teamMembers.map((member) => (
-                <SelectItem key={member.id} value={member.id}>
-                  {member.full_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="p-4 rounded-xl bg-muted/50 border border-border">
+            <Label className="flex items-center gap-2 mb-3 text-foreground font-medium">
+              <Users className="h-4 w-4" />
+              Your Name
+            </Label>
+            <Select value={currentVoter} onValueChange={setCurrentVoter}>
+              <SelectTrigger className="bg-background">
+                <SelectValue placeholder="Select your name" />
+              </SelectTrigger>
+              <SelectContent>
+                {teamMembers.map((member) => (
+                  <SelectItem key={member.id} value={member.id}>
+                    {member.full_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="p-4 rounded-xl bg-muted/50 border border-border">
+            <Label className="flex items-center gap-2 mb-3 text-foreground font-medium">
+              <Calendar className="h-4 w-4" />
+              Week
+            </Label>
+            <Select value={selectedWeekId || ""} onValueChange={handleWeekChange}>
+              <SelectTrigger className="bg-background">
+                <SelectValue placeholder="Select week" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableWeeks.map((week) => (
+                  <SelectItem key={week.id} value={week.id}>
+                    {week.week_name}
+                    {week.is_active && " (Current)"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
+
+        {isAmendment && (
+          <Alert className="bg-amber-50 border-amber-200">
+            <Edit3 className="h-4 w-4 text-amber-600" />
+            <AlertDescription className="text-amber-800">
+              <strong>Amending Previous Ballot:</strong> You already submitted a ballot for this week. 
+              Your changes will update your existing vote.
+            </AlertDescription>
+          </Alert>
+        )}
 
         <VoteCard
           icon={<Trophy className="h-5 w-5 text-amber-600" />}
@@ -376,18 +542,18 @@ export function TommyVotingForm() {
 
         <Button
           onClick={handleSubmit}
-          disabled={submitting || !currentVoter || !firstPlace.memberId}
+          disabled={submitting || !currentVoter || !firstPlace.memberId || !selectedWeekId}
           className="w-full h-12 text-lg font-semibold bg-[#c62828] hover:bg-[#b71c1c] text-white"
         >
           {submitting ? (
             <span className="flex items-center gap-2">
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-              Submitting...
+              {isAmendment ? "Updating..." : "Submitting..."}
             </span>
           ) : (
             <span className="flex items-center gap-2">
-              <Trophy className="h-5 w-5" />
-              Submit Championship Ballot
+              {isAmendment ? <Edit3 className="h-5 w-5" /> : <Trophy className="h-5 w-5" />}
+              {isAmendment ? "Update Ballot" : "Submit Championship Ballot"}
             </span>
           )}
         </Button>
