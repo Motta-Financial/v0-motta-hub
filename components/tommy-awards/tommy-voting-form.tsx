@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Trophy, Medal, Award, Star, Sparkles, Send, Users, Info, Calendar, Edit3 } from "lucide-react"
+import { Trophy, Medal, Award, Star, Sparkles, Send, Users, Info, Calendar, Edit3, History, Clock } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 
 interface TeamMember {
@@ -34,6 +34,38 @@ interface WeekOption {
   is_active: boolean
 }
 
+interface BallotSnapshot {
+  first_place_id: string | null
+  first_place_name: string
+  first_place_notes: string
+  second_place_id: string | null
+  second_place_name: string
+  second_place_notes: string
+  third_place_id: string | null
+  third_place_name: string
+  third_place_notes: string
+  honorable_mention_id: string | null
+  honorable_mention_name: string
+  honorable_mention_notes: string
+  partner_vote_id: string | null
+  partner_vote_name: string
+  partner_vote_notes: string
+}
+
+interface BallotHistoryEntry {
+  id: string
+  change_type: string
+  changed_at: string
+  changed_by_name: string
+  change_summary: {
+    changes: Array<{
+      field: string
+      from: string
+      to: string
+    }>
+  } | null
+}
+
 export function TommyVotingForm() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const [availableWeeks, setAvailableWeeks] = useState<WeekOption[]>([])
@@ -47,6 +79,9 @@ export function TommyVotingForm() {
   const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear())
   const [isAmendment, setIsAmendment] = useState(false)
   const [existingBallotId, setExistingBallotId] = useState<string | null>(null)
+  const [originalBallot, setOriginalBallot] = useState<BallotSnapshot | null>(null)
+  const [ballotHistory, setBallotHistory] = useState<BallotHistoryEntry[]>([])
+  const [showHistory, setShowHistory] = useState(false)
 
   const [firstPlace, setFirstPlace] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
   const [secondPlace, setSecondPlace] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
@@ -162,6 +197,26 @@ export function TommyVotingForm() {
         setIsAmendment(true)
         setExistingBallotId(existingBallot.id)
         
+        // Store original ballot for comparison when submitting amendment
+        const snapshot: BallotSnapshot = {
+          first_place_id: existingBallot.first_place_id,
+          first_place_name: existingBallot.first_place_name || "",
+          first_place_notes: existingBallot.first_place_notes || "",
+          second_place_id: existingBallot.second_place_id,
+          second_place_name: existingBallot.second_place_name || "",
+          second_place_notes: existingBallot.second_place_notes || "",
+          third_place_id: existingBallot.third_place_id,
+          third_place_name: existingBallot.third_place_name || "",
+          third_place_notes: existingBallot.third_place_notes || "",
+          honorable_mention_id: existingBallot.honorable_mention_id,
+          honorable_mention_name: existingBallot.honorable_mention_name || "",
+          honorable_mention_notes: existingBallot.honorable_mention_notes || "",
+          partner_vote_id: existingBallot.partner_vote_id,
+          partner_vote_name: existingBallot.partner_vote_name || "",
+          partner_vote_notes: existingBallot.partner_vote_notes || "",
+        }
+        setOriginalBallot(snapshot)
+        
         setFirstPlace({
           memberId: existingBallot.first_place_id,
           memberName: existingBallot.first_place_name || "",
@@ -190,15 +245,74 @@ export function TommyVotingForm() {
             notes: existingBallot.partner_vote_notes || "",
           })
         }
+        
+        // Fetch ballot history
+        await fetchBallotHistory(existingBallot.id)
       } else {
         // Reset form for new ballot
         setIsAmendment(false)
         setExistingBallotId(null)
+        setOriginalBallot(null)
+        setBallotHistory([])
         resetForm()
       }
     } catch (err) {
       console.error("Error checking existing ballot:", err)
     }
+  }
+
+  const fetchBallotHistory = async (ballotId: string) => {
+    const supabase = createClient()
+    
+    try {
+      const { data, error } = await supabase
+        .from("tommy_award_ballot_history")
+        .select("id, change_type, changed_at, changed_by_name, change_summary")
+        .eq("ballot_id", ballotId)
+        .order("changed_at", { ascending: false })
+
+      if (error) {
+        // Table might not exist yet - gracefully handle
+        if (error.code !== "42P01" && !error.message.includes("does not exist")) {
+          console.error("Error fetching ballot history:", error)
+        }
+        setBallotHistory([])
+        return
+      }
+
+      setBallotHistory(data || [])
+    } catch (err) {
+      console.error("Error fetching ballot history:", err)
+      setBallotHistory([])
+    }
+  }
+
+  const calculateChanges = (): Array<{ field: string; from: string; to: string }> => {
+    if (!originalBallot) return []
+    
+    const changes: Array<{ field: string; from: string; to: string }> = []
+    
+    if (originalBallot.first_place_name !== firstPlace.memberName) {
+      changes.push({ field: "1st Place", from: originalBallot.first_place_name || "(none)", to: firstPlace.memberName || "(none)" })
+    }
+    if (originalBallot.second_place_name !== secondPlace.memberName) {
+      changes.push({ field: "2nd Place", from: originalBallot.second_place_name || "(none)", to: secondPlace.memberName || "(none)" })
+    }
+    if (originalBallot.third_place_name !== thirdPlace.memberName) {
+      changes.push({ field: "3rd Place", from: originalBallot.third_place_name || "(none)", to: thirdPlace.memberName || "(none)" })
+    }
+    if (!is2026OrLater) {
+      if (originalBallot.honorable_mention_name !== honorableMention.memberName) {
+        changes.push({ field: "Honorable Mention", from: originalBallot.honorable_mention_name || "(none)", to: honorableMention.memberName || "(none)" })
+      }
+      const originalPartner = originalBallot.partner_vote_name || ""
+      const newPartner = isPartner ? partnerVote.memberName : ""
+      if (originalPartner !== newPartner) {
+        changes.push({ field: "Partner Vote", from: originalPartner || "(none)", to: newPartner || "(none)" })
+      }
+    }
+    
+    return changes
   }
 
   const resetForm = () => {
@@ -302,8 +416,43 @@ export function TommyVotingForm() {
       }
 
       let submitError
+      let newBallotId: string | null = null
 
       if (isAmendment && existingBallotId) {
+        // Calculate what changed for the audit trail
+        const changes = calculateChanges()
+        
+        // Record the PREVIOUS state in history before updating
+        if (originalBallot && changes.length > 0) {
+          try {
+            await supabase.from("tommy_award_ballot_history").insert({
+              ballot_id: existingBallotId,
+              changed_by_id: currentVoter,
+              changed_by_name: voter?.full_name || "Unknown",
+              change_type: "amended",
+              first_place_id: originalBallot.first_place_id,
+              first_place_name: originalBallot.first_place_name,
+              first_place_notes: originalBallot.first_place_notes,
+              second_place_id: originalBallot.second_place_id,
+              second_place_name: originalBallot.second_place_name,
+              second_place_notes: originalBallot.second_place_notes,
+              third_place_id: originalBallot.third_place_id,
+              third_place_name: originalBallot.third_place_name,
+              third_place_notes: originalBallot.third_place_notes,
+              honorable_mention_id: originalBallot.honorable_mention_id,
+              honorable_mention_name: originalBallot.honorable_mention_name,
+              honorable_mention_notes: originalBallot.honorable_mention_notes,
+              partner_vote_id: originalBallot.partner_vote_id,
+              partner_vote_name: originalBallot.partner_vote_name,
+              partner_vote_notes: originalBallot.partner_vote_notes,
+              change_summary: { changes },
+            })
+          } catch (historyErr) {
+            // History table might not exist yet - continue anyway
+            console.log("Audit history not recorded (table may not exist)")
+          }
+        }
+
         // Update existing ballot
         const { error } = await supabase
           .from("tommy_award_ballots")
@@ -312,10 +461,44 @@ export function TommyVotingForm() {
         submitError = error
       } else {
         // Insert new ballot
-        const { error } = await supabase
+        const { data: newBallot, error } = await supabase
           .from("tommy_award_ballots")
           .insert(ballotData)
+          .select("id")
+          .single()
         submitError = error
+        newBallotId = newBallot?.id || null
+
+        // Record initial creation in history
+        if (newBallotId) {
+          try {
+            await supabase.from("tommy_award_ballot_history").insert({
+              ballot_id: newBallotId,
+              changed_by_id: currentVoter,
+              changed_by_name: voter?.full_name || "Unknown",
+              change_type: "created",
+              first_place_id: firstPlace.memberId,
+              first_place_name: firstPlace.memberName,
+              first_place_notes: firstPlace.notes,
+              second_place_id: secondPlace.memberId,
+              second_place_name: secondPlace.memberName,
+              second_place_notes: secondPlace.notes,
+              third_place_id: thirdPlace.memberId,
+              third_place_name: thirdPlace.memberName,
+              third_place_notes: thirdPlace.notes,
+              honorable_mention_id: !is2026OrLater ? honorableMention.memberId : null,
+              honorable_mention_name: !is2026OrLater ? honorableMention.memberName : null,
+              honorable_mention_notes: !is2026OrLater ? honorableMention.notes : null,
+              partner_vote_id: !is2026OrLater && isPartner ? partnerVote.memberId : null,
+              partner_vote_name: !is2026OrLater && isPartner ? partnerVote.memberName : null,
+              partner_vote_notes: !is2026OrLater && isPartner ? partnerVote.notes : null,
+              change_summary: null,
+            })
+          } catch (historyErr) {
+            // History table might not exist yet - continue anyway
+            console.log("Audit history not recorded (table may not exist)")
+          }
+        }
       }
 
       if (submitError) {
@@ -447,10 +630,83 @@ export function TommyVotingForm() {
           <Alert className="bg-amber-50 border-amber-200">
             <Edit3 className="h-4 w-4 text-amber-600" />
             <AlertDescription className="text-amber-800">
-              <strong>Amending Previous Ballot:</strong> You already submitted a ballot for this week. 
-              Your changes will update your existing vote.
+              <div className="flex items-center justify-between">
+                <div>
+                  <strong>Amending Previous Ballot:</strong> You already submitted a ballot for this week. 
+                  Your changes will update your existing vote.
+                </div>
+                {ballotHistory.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowHistory(!showHistory)}
+                    className="ml-2 text-amber-700 hover:text-amber-900 hover:bg-amber-100"
+                  >
+                    <History className="h-4 w-4 mr-1" />
+                    {showHistory ? "Hide" : "View"} History ({ballotHistory.length})
+                  </Button>
+                )}
+              </div>
             </AlertDescription>
           </Alert>
+        )}
+
+        {isAmendment && showHistory && ballotHistory.length > 0 && (
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+            <h4 className="font-semibold text-slate-700 flex items-center gap-2">
+              <Clock className="h-4 w-4" />
+              Ballot Change History
+            </h4>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {ballotHistory.map((entry) => (
+                <div key={entry.id} className="p-3 bg-white rounded-lg border border-slate-100 text-sm">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      entry.change_type === "created" 
+                        ? "bg-green-100 text-green-700" 
+                        : "bg-blue-100 text-blue-700"
+                    }`}>
+                      {entry.change_type === "created" ? "Original Submission" : "Amendment"}
+                    </span>
+                    <span className="text-slate-500 text-xs">
+                      {new Date(entry.changed_at).toLocaleString()}
+                    </span>
+                  </div>
+                  {entry.change_type === "amended" && entry.change_summary?.changes && (
+                    <div className="space-y-1">
+                      {entry.change_summary.changes.map((change, idx) => (
+                        <div key={idx} className="text-slate-600">
+                          <span className="font-medium">{change.field}:</span>{" "}
+                          <span className="text-red-600 line-through">{change.from}</span>
+                          {" → "}
+                          <span className="text-green-600">{change.to}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {entry.change_type === "created" && (
+                    <div className="text-slate-500 text-xs">
+                      Initial ballot submitted by {entry.changed_by_name}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {isAmendment && originalBallot && (
+          <PendingChangesPreview
+            originalBallot={originalBallot}
+            currentBallot={{
+              firstPlace,
+              secondPlace,
+              thirdPlace,
+              honorableMention: !is2026OrLater ? honorableMention : { memberId: null, memberName: "", notes: "" },
+              partnerVote: !is2026OrLater && isPartner ? partnerVote : { memberId: null, memberName: "", notes: "" },
+            }}
+            is2026OrLater={is2026OrLater}
+          />
         )}
 
         <VoteCard
@@ -559,6 +815,69 @@ export function TommyVotingForm() {
         </Button>
       </CardContent>
     </Card>
+  )
+}
+
+// Component to show pending changes before submitting an amendment
+function PendingChangesPreview({
+  originalBallot,
+  currentBallot,
+  is2026OrLater,
+}: {
+  originalBallot: BallotSnapshot
+  currentBallot: {
+    firstPlace: VoteSelection
+    secondPlace: VoteSelection
+    thirdPlace: VoteSelection
+    honorableMention: VoteSelection
+    partnerVote: VoteSelection
+  }
+  is2026OrLater: boolean
+}) {
+  const changes: Array<{ field: string; from: string; to: string }> = []
+
+  if (originalBallot.first_place_name !== currentBallot.firstPlace.memberName) {
+    changes.push({ field: "1st Place", from: originalBallot.first_place_name || "(none)", to: currentBallot.firstPlace.memberName || "(none)" })
+  }
+  if (originalBallot.second_place_name !== currentBallot.secondPlace.memberName) {
+    changes.push({ field: "2nd Place", from: originalBallot.second_place_name || "(none)", to: currentBallot.secondPlace.memberName || "(none)" })
+  }
+  if (originalBallot.third_place_name !== currentBallot.thirdPlace.memberName) {
+    changes.push({ field: "3rd Place", from: originalBallot.third_place_name || "(none)", to: currentBallot.thirdPlace.memberName || "(none)" })
+  }
+  if (!is2026OrLater) {
+    if (originalBallot.honorable_mention_name !== currentBallot.honorableMention.memberName) {
+      changes.push({ field: "Honorable Mention", from: originalBallot.honorable_mention_name || "(none)", to: currentBallot.honorableMention.memberName || "(none)" })
+    }
+    if (originalBallot.partner_vote_name !== currentBallot.partnerVote.memberName) {
+      changes.push({ field: "Partner Vote", from: originalBallot.partner_vote_name || "(none)", to: currentBallot.partnerVote.memberName || "(none)" })
+    }
+  }
+
+  if (changes.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="p-4 rounded-xl bg-blue-50 border border-blue-200">
+      <h4 className="font-semibold text-blue-800 mb-2 flex items-center gap-2">
+        <Edit3 className="h-4 w-4" />
+        Pending Changes
+      </h4>
+      <p className="text-sm text-blue-600 mb-3">
+        The following changes will be recorded when you submit:
+      </p>
+      <div className="space-y-1">
+        {changes.map((change, idx) => (
+          <div key={idx} className="text-sm bg-white/50 rounded px-2 py-1">
+            <span className="font-medium text-blue-800">{change.field}:</span>{" "}
+            <span className="text-red-600 line-through">{change.from}</span>
+            {" → "}
+            <span className="text-green-600 font-medium">{change.to}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
