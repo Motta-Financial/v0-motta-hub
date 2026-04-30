@@ -128,7 +128,9 @@ export function TommyVotingForm() {
       const today = new Date()
       setCurrentYear(today.getFullYear())
       const friday = getFridayOfWeek(today)
-      const fridayStr = friday.toISOString().split("T")[0]
+      // Format as YYYY-MM-DD in LOCAL time to avoid timezone shifts
+      // (toISOString() converts to UTC which can shift Friday → Saturday for negative offsets)
+      const fridayStr = formatLocalDate(friday)
 
       // Fetch all weeks from the current year for the dropdown
       const startOfYear = `${today.getFullYear()}-01-01`
@@ -140,8 +142,12 @@ export function TommyVotingForm() {
 
       if (weeksError) throw weeksError
 
+      // Deduplicate weeks by week_name (in case the database still has any duplicates)
+      // Prefer entries whose week_date falls on a Friday
+      const dedupedWeeks = dedupeWeekList(weeks || [])
+
       // Ensure current week exists
-      let currentWeek = weeks?.find((w) => w.week_date === fridayStr)
+      let currentWeek = dedupedWeeks.find((w) => w.week_date === fridayStr)
       
       if (!currentWeek) {
         const { data: newWeek, error: createError } = await supabase
@@ -157,9 +163,9 @@ export function TommyVotingForm() {
         if (createError) throw createError
         currentWeek = newWeek
         // Add to weeks list
-        setAvailableWeeks([currentWeek, ...(weeks || [])])
+        setAvailableWeeks([currentWeek, ...dedupedWeeks])
       } else {
-        setAvailableWeeks(weeks || [])
+        setAvailableWeeks(dedupedWeeks)
       }
 
       // Default to current week
@@ -336,6 +342,44 @@ export function TommyVotingForm() {
     const friday = new Date(date)
     friday.setDate(date.getDate() + diff)
     return friday
+  }
+
+  // Format a date as YYYY-MM-DD in local time (avoids UTC timezone shifts)
+  const formatLocalDate = (date: Date) => {
+    const yyyy = date.getFullYear()
+    const mm = String(date.getMonth() + 1).padStart(2, "0")
+    const dd = String(date.getDate()).padStart(2, "0")
+    return `${yyyy}-${mm}-${dd}`
+  }
+
+  // Remove duplicate weeks (same week_name), preferring Friday-dated entries
+  const dedupeWeekList = (weeks: WeekOption[]): WeekOption[] => {
+    const groups: Record<string, WeekOption[]> = {}
+    for (const w of weeks) {
+      if (!groups[w.week_name]) groups[w.week_name] = []
+      groups[w.week_name].push(w)
+    }
+    
+    const result: WeekOption[] = []
+    for (const items of Object.values(groups)) {
+      if (items.length === 1) {
+        result.push(items[0])
+        continue
+      }
+      // Prefer Friday-dated week (parse as local date to check day-of-week)
+      const friday = items.find((it) => {
+        const [y, m, d] = it.week_date.split("-").map(Number)
+        const localDate = new Date(y, m - 1, d)
+        return localDate.getDay() === 5
+      })
+      // Prefer active over inactive as tiebreaker
+      const active = items.find((it) => it.is_active)
+      result.push(friday || active || items[0])
+    }
+    
+    // Sort by week_date descending
+    result.sort((a, b) => b.week_date.localeCompare(a.week_date))
+    return result
   }
 
   const handleMemberSelect = (value: string, setter: React.Dispatch<React.SetStateAction<VoteSelection>>) => {

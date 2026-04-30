@@ -66,13 +66,13 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
   const getRankIcon = (rank: number) => {
     switch (rank) {
       case 1:
-        return <Trophy className="h-6 w-6 text-amber-500" />
+        return <Trophy className="h-5 w-5 text-amber-500" />
       case 2:
-        return <Medal className="h-6 w-6 text-slate-400" />
+        return <Medal className="h-5 w-5 text-slate-400" />
       case 3:
-        return <Award className="h-6 w-6 text-amber-700" />
+        return <Award className="h-5 w-5 text-amber-700" />
       default:
-        return <span className="text-lg font-bold text-muted-foreground">#{rank}</span>
+        return <span className="text-sm font-bold text-muted-foreground">#{rank}</span>
     }
   }
 
@@ -92,7 +92,7 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
   if (loading) {
     return (
       <Card className="border-border">
-        <CardContent className="flex items-center justify-center h-64">
+        <CardContent className="flex items-center justify-center h-48">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-foreground"></div>
         </CardContent>
       </Card>
@@ -101,91 +101,123 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
 
   return (
     <Card className="border-border bg-card">
-      <CardHeader className="pb-4">
-        <div className="flex items-start justify-between gap-4">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-emerald-100 rounded-lg">
               <TrendingUp className="h-5 w-5 text-emerald-600" />
             </div>
             <div>
               <CardTitle className="text-foreground">{displayYear} Year-to-Date Standings</CardTitle>
-              <CardDescription>Season-long standings with weekly podium tracking</CardDescription>
+              <CardDescription>Season-long standings & scoring system</CardDescription>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-1 text-right">
+          <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
               <Calendar className="h-3 w-3 mr-1" />
-              {totalWeeks} {totalWeeks === 1 ? "week" : "weeks"} scored
+              {totalWeeks} {totalWeeks === 1 ? "week" : "weeks"}
             </Badge>
-            <span className="text-xs text-muted-foreground">{totalBallots} ballots cast</span>
+            <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+              {totalBallots} ballots
+            </Badge>
+          </div>
+        </div>
+
+        {/* Embedded Scoring System */}
+        <div className="mt-3 pt-3 border-t border-border">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide mr-1">
+              Scoring:
+            </span>
+            <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 text-xs">
+              <Trophy className="h-3 w-3 mr-1" />
+              1st: 3 pts
+            </Badge>
+            <Badge variant="outline" className="bg-slate-50 text-slate-600 border-slate-200 text-xs">
+              <Medal className="h-3 w-3 mr-1" />
+              2nd: 2 pts
+            </Badge>
+            <Badge variant="outline" className="bg-orange-50 text-orange-600 border-orange-200 text-xs">
+              <Award className="h-3 w-3 mr-1" />
+              3rd: 1 pt
+            </Badge>
+            {!isYear2026OrLater && (
+              <>
+                <Badge variant="outline" className="bg-blue-50 text-blue-600 border-blue-200 text-xs opacity-75">
+                  HM: 0.5 pts
+                </Badge>
+                <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs opacity-75">
+                  Partner: 5 pts
+                </Badge>
+              </>
+            )}
+            {isYear2026OrLater && (
+              <span className="text-xs text-muted-foreground italic ml-1">
+                (Top 3 only — streamlined for 2026+)
+              </span>
+            )}
           </div>
         </div>
       </CardHeader>
+
       <CardContent>
         {entries.length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground">
-            <Trophy className="h-12 w-12 mx-auto mb-3 opacity-30" />
-            <p>No votes recorded for {displayYear} yet</p>
+          <div className="text-center py-8 text-muted-foreground">
+            <Trophy className="h-10 w-10 mx-auto mb-2 opacity-30" />
+            <p className="text-sm">No votes recorded for {displayYear} yet</p>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {entries.map((entry) => (
               <div
                 key={entry.name}
-                className={`flex items-center gap-4 p-4 rounded-xl border transition-all hover:shadow-md ${getRankBg(entry.rank)}`}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all hover:shadow-sm ${getRankBg(entry.rank)}`}
               >
-                <div className="w-10 flex justify-center flex-shrink-0">{getRankIcon(entry.rank)}</div>
+                <div className="w-7 flex justify-center flex-shrink-0">{getRankIcon(entry.rank)}</div>
 
-                <Avatar className="h-12 w-12 border-2 border-white shadow-sm flex-shrink-0">
-                  <AvatarFallback className="bg-gradient-to-br from-[#c62828] to-[#b71c1c] text-white font-semibold">
+                <Avatar className="h-9 w-9 border-2 border-white shadow-sm flex-shrink-0">
+                  <AvatarFallback className="bg-gradient-to-br from-[#c62828] to-[#b71c1c] text-white font-semibold text-xs">
                     {getInitials(entry.name)}
                   </AvatarFallback>
                 </Avatar>
 
                 <div className="flex-1 min-w-0">
-                  <p className="font-semibold text-foreground truncate">{entry.name}</p>
-
-                  {/* Weekly podium stats */}
-                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-semibold text-foreground text-sm truncate">{entry.name}</p>
+                    {/* Inline weekly podium pills */}
                     {entry.weeks_in_first > 0 && (
-                      <Badge
-                        variant="outline"
-                        className="text-xs bg-amber-50 text-amber-700 border-amber-200 font-medium"
-                      >
-                        <Trophy className="h-3 w-3 mr-1" />
-                        {entry.weeks_in_first} {entry.weeks_in_first === 1 ? "week" : "weeks"} 1st
-                      </Badge>
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-medium whitespace-nowrap">
+                        {entry.weeks_in_first}× 1st
+                      </span>
                     )}
                     {entry.weeks_in_second > 0 && (
-                      <Badge variant="outline" className="text-xs bg-slate-50 text-slate-600 border-slate-200">
-                        <Medal className="h-3 w-3 mr-1" />
-                        {entry.weeks_in_second} {entry.weeks_in_second === 1 ? "week" : "weeks"} 2nd
-                      </Badge>
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-medium whitespace-nowrap">
+                        {entry.weeks_in_second}× 2nd
+                      </span>
                     )}
                     {entry.weeks_in_third > 0 && (
-                      <Badge variant="outline" className="text-xs bg-orange-50 text-orange-600 border-orange-200">
-                        <Award className="h-3 w-3 mr-1" />
-                        {entry.weeks_in_third} {entry.weeks_in_third === 1 ? "week" : "weeks"} 3rd
-                      </Badge>
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-800 font-medium whitespace-nowrap">
+                        {entry.weeks_in_third}× 3rd
+                      </span>
                     )}
-                    {entry.weeks_in_first === 0 &&
-                      entry.weeks_in_second === 0 &&
-                      entry.weeks_in_third === 0 && (
-                        <span className="text-xs text-muted-foreground italic">No podium finishes yet</span>
-                      )}
                   </div>
 
-                  {/* Total vote counts */}
-                  <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground">
+                  {/* Vote counts on second line */}
+                  <div className="flex items-center gap-x-3 gap-y-0.5 mt-0.5 text-[11px] text-muted-foreground flex-wrap">
                     <span>
-                      <strong className="text-foreground">{entry.first_place_votes}</strong> 1st votes
+                      <strong className="text-foreground">{entry.first_place_votes}</strong> 1st
                     </span>
                     <span>
-                      <strong className="text-foreground">{entry.second_place_votes}</strong> 2nd votes
+                      <strong className="text-foreground">{entry.second_place_votes}</strong> 2nd
                     </span>
                     <span>
-                      <strong className="text-foreground">{entry.third_place_votes}</strong> 3rd votes
+                      <strong className="text-foreground">{entry.third_place_votes}</strong> 3rd
                     </span>
+                    {!isYear2026OrLater && entry.honorable_mention_votes > 0 && (
+                      <span>
+                        <strong className="text-foreground">{entry.honorable_mention_votes}</strong> HM
+                      </span>
+                    )}
                     {!isYear2026OrLater && entry.partner_votes > 0 && (
                       <span>
                         <strong className="text-foreground">{entry.partner_votes}</strong> partner
@@ -194,9 +226,9 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
                   </div>
                 </div>
 
-                <div className="text-right flex-shrink-0">
-                  <p className="text-3xl font-bold text-foreground">{entry.total_points}</p>
-                  <p className="text-xs text-muted-foreground">points</p>
+                <div className="text-right flex-shrink-0 ml-2">
+                  <p className="text-xl font-bold text-foreground leading-none">{entry.total_points}</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">pts</p>
                 </div>
               </div>
             ))}
