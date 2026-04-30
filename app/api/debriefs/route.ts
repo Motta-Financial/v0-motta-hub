@@ -168,56 +168,43 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
     }
 
     // ============================================
-    // 1. Team-wide debrief notification
+    // 1. Team-wide debrief notification — UNCONDITIONAL
     // ============================================
-    // Honors:
-    //   - body.notify_team: when false, skip team broadcast entirely
-    //     (action item notifications below still fire — those are direct assignments)
-    //   - body.notification_recipients: when non-empty, scope to those team_member ids
-    //     instead of broadcasting to everyone
-    //   - per-user opt-out preferences (notification_preferences table, "debrief" category)
-    const notifyTeam = body?.notify_team !== false // default TRUE for backwards compat
-    const explicitRecipientIds: string[] = Array.isArray(body?.notification_recipients)
-      ? body.notification_recipients.filter((id: unknown) => typeof id === "string" && id)
-      : []
+    // Per firm policy: every debrief is broadcast to ALL active teammates
+    // (excluding Company / Alumni roles and the debrief author). The form's
+    // notify_team toggle and notification_recipients picker are intentionally
+    // ignored here, and the per-user "debrief" email opt-out is bypassed for
+    // this specific broadcast so no one misses a client debrief.
+    const { data: activeTeam } = await supabase
+      .from("team_members")
+      .select("id, full_name, email, role")
+      .eq("is_active", true)
+      .not("role", "eq", "Company")
+      .not("role", "eq", "Alumni")
 
-    if (notifyTeam) {
-      // Fetch the candidate team-member pool (active, excluding Company / Alumni)
-      let candidateQuery = supabase
-        .from("team_members")
-        .select("id, full_name, email, role")
-        .eq("is_active", true)
-        .not("role", "eq", "Company")
-        .not("role", "eq", "Alumni")
+    const targetMembers = (activeTeam || []).filter((tm) => tm.id !== debrief.created_by_id)
 
-      if (explicitRecipientIds.length > 0) {
-        candidateQuery = candidateQuery.in("id", explicitRecipientIds)
-      }
+    if (targetMembers.length > 0) {
+      // 1a. In-app notification row for every active teammate
+      const notifications = targetMembers.map((tm) => ({
+        team_member_id: tm.id,
+        notification_type: "debrief",
+        entity_type: "debrief",
+        entity_id: debrief.id,
+        title: "New Client Debrief",
+        message: `${authorName || "A team member"} submitted a debrief for ${clientName}`,
+        action_url: `/?tab=debriefs&id=${debrief.id}`,
+        is_read: false,
+      }))
+      await supabase.from("notifications").insert(notifications)
 
-      const { data: candidates } = await candidateQuery
-      const targetMembers = (candidates || []).filter((tm) => tm.id !== debrief.created_by_id)
+      // 1b. Email every active teammate who has an email address.
+      //     No opt-out check — debriefs are mandatory firm-wide visibility.
+      const recipientEmails = targetMembers
+        .filter((tm) => !!tm.email)
+        .map((tm) => tm.email as string)
 
-      // 1a. Always create the in-app notification row for every targeted member,
-      //     regardless of email preferences. Email opt-out only suppresses the email.
-      if (targetMembers.length > 0) {
-        const notifications = targetMembers.map((tm) => ({
-          team_member_id: tm.id,
-          notification_type: "debrief",
-          entity_type: "debrief",
-          entity_id: debrief.id,
-          title: "New Client Debrief",
-          message: `${authorName || "A team member"} submitted a debrief for ${clientName}`,
-          action_url: `/?tab=debriefs&id=${debrief.id}`,
-          is_read: false,
-        }))
-        await supabase.from("notifications").insert(notifications)
-      }
-
-      // 1b. Email — preference-aware via resolveRecipientsForCategory("debrief")
-      const targetIds = targetMembers.map((m) => m.id)
-      const optedIn = await resolveRecipientsForCategory(targetIds, "debrief")
-
-      if (optedIn.length > 0) {
+      if (recipientEmails.length > 0) {
         const html = buildDebriefEmailHtml({
           authorName: authorName || "A team member",
           clientName,
@@ -237,7 +224,7 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         })
 
         const emailResult = await sendEmail({
-          to: optedIn.map((r) => r.email),
+          to: recipientEmails,
           subject: `New Debrief: ${clientName} - ${authorName || "Team Member"}`,
           html,
         })
@@ -245,11 +232,7 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         if (!emailResult.success) {
           console.warn("[debrief] Team email failed:", emailResult.error)
         } else {
-          console.log(
-            `[debrief] Team email sent to ${optedIn.length} of ${targetIds.length} target members (${
-              targetIds.length - optedIn.length
-            } opted out)`,
-          )
+          console.log(`[debrief] Team email sent to all ${recipientEmails.length} active teammates`)
         }
       }
     }
