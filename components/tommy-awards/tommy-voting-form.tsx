@@ -577,19 +577,19 @@ export function TommyVotingForm() {
               changed_by_id: isGT ? null : currentVoter,
               changed_by_name: voterName,
               change_type: "created",
-              first_place_id: firstPlace.memberId,
+              first_place_id: idForPlacement(firstPlace.memberId),
               first_place_name: firstPlace.memberName,
               first_place_notes: firstPlace.notes,
-              second_place_id: secondPlace.memberId,
+              second_place_id: idForPlacement(secondPlace.memberId),
               second_place_name: secondPlace.memberName,
               second_place_notes: secondPlace.notes,
-              third_place_id: thirdPlace.memberId,
+              third_place_id: idForPlacement(thirdPlace.memberId),
               third_place_name: thirdPlace.memberName,
               third_place_notes: thirdPlace.notes,
-              honorable_mention_id: !is2026OrLater ? honorableMention.memberId : null,
+              honorable_mention_id: !is2026OrLater ? idForPlacement(honorableMention.memberId) : null,
               honorable_mention_name: !is2026OrLater ? honorableMention.memberName : null,
               honorable_mention_notes: !is2026OrLater ? honorableMention.notes : null,
-              partner_vote_id: !is2026OrLater && isPartner ? partnerVote.memberId : null,
+              partner_vote_id: !is2026OrLater && isPartner ? idForPlacement(partnerVote.memberId) : null,
               partner_vote_name: !is2026OrLater && isPartner ? partnerVote.memberName : null,
               partner_vote_notes: !is2026OrLater && isPartner ? partnerVote.notes : null,
               change_summary: null,
@@ -785,7 +785,7 @@ export function TommyVotingForm() {
                         <div key={idx} className="text-slate-600">
                           <span className="font-medium">{change.field}:</span>{" "}
                           <span className="text-red-600 line-through">{change.from}</span>
-                          {" → "}
+                          {" ��� "}
                           <span className="text-green-600">{change.to}</span>
                         </div>
                       ))}
