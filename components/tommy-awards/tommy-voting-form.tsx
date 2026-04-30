@@ -467,146 +467,112 @@ export function TommyVotingForm() {
     setSubmitting(true)
     setError(null)
 
-    const supabase = createClient()
-
     try {
       const voter = teamMembers.find((m) => m.id === currentVoter)
-      
-      // For the combined "G&T" voter, voter_id must be NULL because the column is
-      // a uuid with FK to team_members - we identify them by voter_name="G&T" instead.
       const isGT = currentVoter === "G&T"
-      const voterId = isGT ? null : currentVoter
       const voterName = isGT ? "G&T" : (voter?.full_name || "Unknown")
 
-      // Helper: when "G&T" is picked as a placement winner, the *_place_id columns
-      // are uuid with FK to team_members and cannot store the literal "G&T".
-      // Store NULL for the id and rely on *_place_name="G&T" for aggregations.
-      const idForPlacement = (memberId: string) => (memberId === "G&T" ? null : memberId || null)
-
-      const ballotData: Record<string, unknown> = {
-        week_id: selectedWeekId,
-        week_date: selectedWeekDate,
-        voter_id: voterId,
-        voter_name: voterName,
-        first_place_id: idForPlacement(firstPlace.memberId),
-        first_place_name: firstPlace.memberName,
-        first_place_notes: firstPlace.notes,
-        second_place_id: idForPlacement(secondPlace.memberId),
-        second_place_name: secondPlace.memberName,
-        second_place_notes: secondPlace.notes,
-        third_place_id: idForPlacement(thirdPlace.memberId),
-        third_place_name: thirdPlace.memberName,
-        third_place_notes: thirdPlace.notes,
+      // Build payload. We POST to our own /api/tommy-awards/ballot endpoint
+      // (same-origin, motta.cpa) instead of writing to Supabase directly so that
+      // corporate web filters (e.g. Zscaler) don't intercept the request and
+      // return an HTML block page.
+      const payload: Record<string, unknown> = {
+        weekId: selectedWeekId,
+        weekDate: selectedWeekDate,
+        voterId: currentVoter,
+        voterName,
+        firstPlace: {
+          memberId: firstPlace.memberId,
+          memberName: firstPlace.memberName,
+          notes: firstPlace.notes,
+        },
+        secondPlace: {
+          memberId: secondPlace.memberId,
+          memberName: secondPlace.memberName,
+          notes: secondPlace.notes,
+        },
+        thirdPlace: {
+          memberId: thirdPlace.memberId,
+          memberName: thirdPlace.memberName,
+          notes: thirdPlace.notes,
+        },
+        honorableMention: !is2026OrLater
+          ? {
+              memberId: honorableMention.memberId,
+              memberName: honorableMention.memberName,
+              notes: honorableMention.notes,
+            }
+          : null,
+        partnerVote:
+          !is2026OrLater && isPartner
+            ? {
+                memberId: partnerVote.memberId,
+                memberName: partnerVote.memberName,
+                notes: partnerVote.notes,
+              }
+            : null,
+        isPartner,
+        is2026OrLater,
+        amendment:
+          isAmendment && existingBallotId && originalBallot
+            ? {
+                existingBallotId,
+                originalBallot,
+                changes: calculateChanges(),
+              }
+            : null,
       }
 
-      if (!is2026OrLater) {
-        ballotData.honorable_mention_id = idForPlacement(honorableMention.memberId)
-        ballotData.honorable_mention_name = honorableMention.memberName
-        ballotData.honorable_mention_notes = honorableMention.notes
-        ballotData.partner_vote_id = isPartner ? idForPlacement(partnerVote.memberId) : null
-        ballotData.partner_vote_name = isPartner ? partnerVote.memberName : null
-        ballotData.partner_vote_notes = isPartner ? partnerVote.notes : null
-      } else {
-        ballotData.honorable_mention_id = null
-        ballotData.honorable_mention_name = null
-        ballotData.honorable_mention_notes = null
-        ballotData.partner_vote_id = null
-        ballotData.partner_vote_name = null
-        ballotData.partner_vote_notes = null
-      }
+      const res = await fetch("/api/tommy-awards/ballot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
 
-      let submitError
-      let newBallotId: string | null = null
-
-      if (isAmendment && existingBallotId) {
-        // Calculate what changed for the audit trail
-        const changes = calculateChanges()
-        
-        // Record the PREVIOUS state in history before updating
-        if (originalBallot && changes.length > 0) {
-          try {
-            await supabase.from("tommy_award_ballot_history").insert({
-              ballot_id: existingBallotId,
-              changed_by_id: isGT ? null : currentVoter,
-              changed_by_name: voterName,
-              change_type: "amended",
-              first_place_id: originalBallot.first_place_id,
-              first_place_name: originalBallot.first_place_name,
-              first_place_notes: originalBallot.first_place_notes,
-              second_place_id: originalBallot.second_place_id,
-              second_place_name: originalBallot.second_place_name,
-              second_place_notes: originalBallot.second_place_notes,
-              third_place_id: originalBallot.third_place_id,
-              third_place_name: originalBallot.third_place_name,
-              third_place_notes: originalBallot.third_place_notes,
-              honorable_mention_id: originalBallot.honorable_mention_id,
-              honorable_mention_name: originalBallot.honorable_mention_name,
-              honorable_mention_notes: originalBallot.honorable_mention_notes,
-              partner_vote_id: originalBallot.partner_vote_id,
-              partner_vote_name: originalBallot.partner_vote_name,
-              partner_vote_notes: originalBallot.partner_vote_notes,
-              change_summary: { changes },
-            })
-          } catch (historyErr) {
-            // History table might not exist yet - continue anyway
-            console.log("Audit history not recorded (table may not exist)")
-          }
-        }
-
-        // Update existing ballot
-        const { error } = await supabase
-          .from("tommy_award_ballots")
-          .update(ballotData)
-          .eq("id", existingBallotId)
-        submitError = error
-      } else {
-        // Insert new ballot
-        const { data: newBallot, error } = await supabase
-          .from("tommy_award_ballots")
-          .insert(ballotData)
-          .select("id")
-          .single()
-        submitError = error
-        newBallotId = newBallot?.id || null
-
-        // Record initial creation in history
-        if (newBallotId) {
-          try {
-            await supabase.from("tommy_award_ballot_history").insert({
-              ballot_id: newBallotId,
-              changed_by_id: isGT ? null : currentVoter,
-              changed_by_name: voterName,
-              change_type: "created",
-              first_place_id: firstPlace.memberId,
-              first_place_name: firstPlace.memberName,
-              first_place_notes: firstPlace.notes,
-              second_place_id: secondPlace.memberId,
-              second_place_name: secondPlace.memberName,
-              second_place_notes: secondPlace.notes,
-              third_place_id: thirdPlace.memberId,
-              third_place_name: thirdPlace.memberName,
-              third_place_notes: thirdPlace.notes,
-              honorable_mention_id: !is2026OrLater ? honorableMention.memberId : null,
-              honorable_mention_name: !is2026OrLater ? honorableMention.memberName : null,
-              honorable_mention_notes: !is2026OrLater ? honorableMention.notes : null,
-              partner_vote_id: !is2026OrLater && isPartner ? partnerVote.memberId : null,
-              partner_vote_name: !is2026OrLater && isPartner ? partnerVote.memberName : null,
-              partner_vote_notes: !is2026OrLater && isPartner ? partnerVote.notes : null,
-              change_summary: null,
-            })
-          } catch (historyErr) {
-            // History table might not exist yet - continue anyway
-            console.log("Audit history not recorded (table may not exist)")
-          }
-        }
-      }
-
-      if (submitError) {
-        console.log("[v0] Submit error code:", submitError.code, "message:", submitError.message, "details:", submitError.details, "hint:", submitError.hint)
-        if (submitError.code === "23505") {
-          setError("You have already submitted a ballot for this week. Select your name again to load it for amendment.")
+      // The request might be intercepted by a corporate proxy and return HTML.
+      // Detect that and surface a helpful message instead of trying to parse JSON.
+      const contentType = res.headers.get("content-type") || ""
+      if (!contentType.includes("application/json")) {
+        const text = await res.text()
+        const looksLikeBlockPage =
+          /zscaler|forcepoint|<\!doctype html|<html/i.test(text.slice(0, 500))
+        console.log("[v0] non-JSON response from ballot endpoint:", text.slice(0, 500))
+        if (looksLikeBlockPage) {
+          setError(
+            "Your network is blocking the submission. Please try a different network (or a hotspot) and submit again, or ask IT to allow motta.cpa.",
+          )
         } else {
-          throw submitError
+          setError(`Failed to submit ballot (HTTP ${res.status}). Please try again.`)
+        }
+        return
+      }
+
+      const result = (await res.json()) as {
+        success?: boolean
+        ballotId?: string | null
+        error?: string
+        code?: string
+        details?: string
+        hint?: string
+      }
+
+      if (!res.ok || !result.success) {
+        console.log(
+          "[v0] Submit error code:",
+          result.code,
+          "message:",
+          result.error,
+          "details:",
+          result.details,
+          "hint:",
+          result.hint,
+        )
+        if (result.code === "23505") {
+          setError(
+            "You have already submitted a ballot for this week. Select your name again to load it for amendment.",
+          )
+        } else {
+          setError(`Failed to submit ballot: ${result.error || "Unknown error"}`)
         }
         return
       }
@@ -614,12 +580,12 @@ export function TommyVotingForm() {
       setSubmitted(true)
     } catch (err) {
       console.error("[v0] Error submitting ballot:", err)
-      // Surface the real error message to help with debugging
-      const errorMessage = err instanceof Error 
-        ? err.message 
-        : (typeof err === "object" && err !== null && "message" in err)
-          ? String((err as { message: unknown }).message)
-          : "Unknown error"
+      const errorMessage =
+        err instanceof Error
+          ? err.message
+          : typeof err === "object" && err !== null && "message" in err
+            ? String((err as { message: unknown }).message)
+            : "Unknown error"
       setError(`Failed to submit ballot: ${errorMessage}`)
     } finally {
       setSubmitting(false)
@@ -785,7 +751,7 @@ export function TommyVotingForm() {
                         <div key={idx} className="text-slate-600">
                           <span className="font-medium">{change.field}:</span>{" "}
                           <span className="text-red-600 line-through">{change.from}</span>
-                          {" → "}
+                          {" ��� "}
                           <span className="text-green-600">{change.to}</span>
                         </div>
                       ))}
