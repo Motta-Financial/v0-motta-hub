@@ -45,6 +45,10 @@ export function TommyAwardsPage() {
   })
   const [filteredWeeks, setFilteredWeeks] = useState<Week[]>([])
   const [currentWeekId, setCurrentWeekId] = useState<string | null>(null)
+  // The week ID auto-selected on initial load (current week if it has ballots,
+  // otherwise the most recent week with ballots). Used as the "default" baseline
+  // for clearFilters() and hasActiveFilters detection.
+  const [defaultWeekId, setDefaultWeekId] = useState<string | null>(null)
 
   useEffect(() => {
     fetchFilterData()
@@ -118,22 +122,40 @@ export function TommyAwardsPage() {
 
   const fetchFilterData = async () => {
     try {
-      // Fetch weeks
-      const weeksRes = await fetch("/api/tommy-awards?type=weeks")
+      // Fetch weeks and most recent ballot in parallel
+      const [weeksRes, latestBallotRes, membersRes] = await Promise.all([
+        fetch("/api/tommy-awards?type=weeks"),
+        fetch("/api/tommy-awards?type=latest_ballot_week"),
+        fetch("/api/tommy-awards?type=team_members"),
+      ])
+
       const weeksData = await weeksRes.json()
       const fetchedWeeks: Week[] = dedupeWeeks(weeksData.weeks || [])
       setWeeks(fetchedWeeks)
 
-      // Detect current week and set it as default
+      // Detect current week (for "Current" badge)
       const currentFriday = getCurrentWeekDate()
       const currentWeek = fetchedWeeks.find((w) => w.week_date === currentFriday)
       if (currentWeek) {
         setCurrentWeekId(currentWeek.id)
+      }
+
+      // Default the week filter to the most recent week that actually has ballots.
+      // This prevents the Leaderboard & Ballots widgets from being empty when the
+      // current week is brand new and has no submissions yet.
+      const latestBallotData = await latestBallotRes.json()
+      const latestWeekId: string | null = latestBallotData.week_id || null
+
+      if (latestWeekId && fetchedWeeks.some((w) => w.id === latestWeekId)) {
+        setDefaultWeekId(latestWeekId)
+        setFilters((prev) => ({ ...prev, weekIds: [latestWeekId] }))
+      } else if (currentWeek) {
+        // Fall back to current week if no ballots exist anywhere yet
+        setDefaultWeekId(currentWeek.id)
         setFilters((prev) => ({ ...prev, weekIds: [currentWeek.id] }))
       }
 
-      // Fetch team members
-      const membersRes = await fetch("/api/tommy-awards?type=team_members")
+      // Team members
       const membersData = await membersRes.json()
       setTeamMembers(membersData.team_members || [])
     } catch (error) {
@@ -156,15 +178,19 @@ export function TommyAwardsPage() {
   const clearFilters = () => {
     setFilters({
       year: new Date().getFullYear().toString(),
-      weekIds: currentWeekId ? [currentWeekId] : [],
+      weekIds: defaultWeekId ? [defaultWeekId] : [],
       teamMemberId: "",
     })
   }
 
+  // Active filter detection: any deviation from the auto-selected default
+  const isDefaultWeekSelection =
+    defaultWeekId !== null &&
+    filters.weekIds.length === 1 &&
+    filters.weekIds[0] === defaultWeekId
   const hasActiveFilters =
-    filters.weekIds.length > (currentWeekId ? 1 : 0) ||
-    (currentWeekId && filters.weekIds.length === 1 && filters.weekIds[0] !== currentWeekId) ||
-    filters.teamMemberId ||
+    !isDefaultWeekSelection ||
+    !!filters.teamMemberId ||
     filters.year !== new Date().getFullYear().toString()
 
   // Get unique years from weeks

@@ -14,6 +14,22 @@ export async function GET(request: NextRequest) {
   const type = searchParams.get("type") || "ballots" // ballots, weeks, leaderboard, team_members
 
   try {
+    // Get the week_id of the most recently submitted ballot.
+    // Used to default the filter so widgets show data even if the current
+    // week has no votes yet.
+    if (type === "latest_ballot_week") {
+      const { data, error } = await supabase
+        .from("tommy_award_ballots")
+        .select("week_id, week_date")
+        .order("week_date", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (error) throw error
+      return NextResponse.json({ week_id: data?.week_id || null, week_date: data?.week_date || null })
+    }
+
     // Get weeks for filter dropdown
     if (type === "weeks") {
       let query = supabase.from("tommy_award_weeks").select("*").order("week_date", { ascending: false })
