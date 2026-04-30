@@ -595,25 +595,10 @@ export function DebriefForm() {
         }
       }
 
-      // Send notifications if enabled
-      if (formData.notify_team) {
-        await fetch("/api/notifications/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: "debrief_created",
-            title: "New Meeting Debrief",
-            // Changed to use related_clients to get names
-            message: `${formData.team_member_name} created a debrief for ${formData.related_clients.map((c) => c.name).join(", ") || "a meeting"}`,
-            recipients:
-              formData.notification_recipients.length > 0
-                ? formData.notification_recipients
-                : teamMembers.map((t) => t.id),
-            entity_type: "debrief",
-            entity_id: result.debrief?.id,
-          }),
-        })
-      }
+      // Note: Team notifications (in-app + email, preference-aware) are now
+      // created server-side in POST /api/debriefs based on the notify_team
+      // and notification_recipients fields included in the debrief payload above.
+      // This avoids duplicate emails / duplicate in-app rows.
 
       alert("Debrief created successfully!")
 

@@ -1,6 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
-import { sendEmail, buildDebriefEmailHtml } from "@/lib/email"
+import {
+  buildDebriefEmailHtml,
+  buildNotificationEmailHtml,
+  resolveRecipientsForCategory,
+  sendEmail,
+} from "@/lib/email"
 
 export async function GET(request: NextRequest) {
   const supabase = createAdminClient()
@@ -144,17 +149,10 @@ export async function POST(request: NextRequest) {
 async function createDebriefNotifications(debrief: any, authorName: string, body: any) {
   try {
     const supabase = createAdminClient()
-    // Fetch all active team members (excluding Company and Alumni roles)
-    const { data: teamMembers } = await supabase
-      .from("team_members")
-      .select("id, full_name, email, role")
-      .eq("is_active", true)
-      .not("role", "eq", "Company")
-      .not("role", "eq", "Alumni")
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://mottahub-motta.vercel.app"
+    const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
-    if (!teamMembers || teamMembers.length === 0) return
-
-    // Get client name for notification message
+    // Resolve client name for messages/subject
     let clientName = debrief.organization_name || "a client"
     if (debrief.contact_id) {
       const { data: contact } = await supabase
@@ -164,74 +162,106 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         .single()
       if (contact) clientName = contact.full_name
     }
-
-    // Also use related_clients from body for better naming
     const relatedClientNames = (body?.related_clients || []).map((c: any) => c.name).filter(Boolean)
     if (relatedClientNames.length > 0) {
       clientName = relatedClientNames.join(", ")
     }
 
-    // Create in-app notification for all team members (except the author)
-    const notifications = teamMembers
-      .filter((tm) => tm.id !== debrief.created_by_id)
-      .map((tm) => ({
-        team_member_id: tm.id,
-        notification_type: "debrief",
-        entity_type: "debrief",
-        entity_id: debrief.id,
-        title: "New Client Debrief",
-        message: `${authorName || "A team member"} submitted a debrief for ${clientName}`,
-        action_url: `/?tab=debriefs&id=${debrief.id}`,
-        is_read: false,
-      }))
+    // ============================================
+    // 1. Team-wide debrief notification
+    // ============================================
+    // Honors:
+    //   - body.notify_team: when false, skip team broadcast entirely
+    //     (action item notifications below still fire — those are direct assignments)
+    //   - body.notification_recipients: when non-empty, scope to those team_member ids
+    //     instead of broadcasting to everyone
+    //   - per-user opt-out preferences (notification_preferences table, "debrief" category)
+    const notifyTeam = body?.notify_team !== false // default TRUE for backwards compat
+    const explicitRecipientIds: string[] = Array.isArray(body?.notification_recipients)
+      ? body.notification_recipients.filter((id: unknown) => typeof id === "string" && id)
+      : []
 
-    if (notifications.length > 0) {
-      await supabase.from("notifications").insert(notifications)
-    }
+    if (notifyTeam) {
+      // Fetch the candidate team-member pool (active, excluding Company / Alumni)
+      let candidateQuery = supabase
+        .from("team_members")
+        .select("id, full_name, email, role")
+        .eq("is_active", true)
+        .not("role", "eq", "Company")
+        .not("role", "eq", "Alumni")
 
-    // Send EMAIL to all active team members (except author)
-    const recipientEmails = teamMembers
-      .filter((tm) => tm.id !== debrief.created_by_id && tm.email)
-      .map((tm) => tm.email)
+      if (explicitRecipientIds.length > 0) {
+        candidateQuery = candidateQuery.in("id", explicitRecipientIds)
+      }
 
-    if (recipientEmails.length > 0) {
-      const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://mottahub-motta.vercel.app"
-      const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
+      const { data: candidates } = await candidateQuery
+      const targetMembers = (candidates || []).filter((tm) => tm.id !== debrief.created_by_id)
 
-      const html = buildDebriefEmailHtml({
-        authorName: authorName || "A team member",
-        clientName,
-        debriefDate: debrief.debrief_date
-          ? new Date(debrief.debrief_date).toLocaleDateString("en-US", {
-              month: "long",
-              day: "numeric",
-              year: "numeric",
-            })
-          : "N/A",
-        notes: body?.notes || debrief.notes || undefined,
-        actionItems: debrief.action_items?.items || body?.action_items || [],
-        services: body?.services || [],
-        researchTopics: body?.research_topics || undefined,
-        feeAdjustment: body?.fee_adjustment || undefined,
-        debriefUrl,
-      })
+      // 1a. Always create the in-app notification row for every targeted member,
+      //     regardless of email preferences. Email opt-out only suppresses the email.
+      if (targetMembers.length > 0) {
+        const notifications = targetMembers.map((tm) => ({
+          team_member_id: tm.id,
+          notification_type: "debrief",
+          entity_type: "debrief",
+          entity_id: debrief.id,
+          title: "New Client Debrief",
+          message: `${authorName || "A team member"} submitted a debrief for ${clientName}`,
+          action_url: `/?tab=debriefs&id=${debrief.id}`,
+          is_read: false,
+        }))
+        await supabase.from("notifications").insert(notifications)
+      }
 
-      const emailResult = await sendEmail({
-        to: recipientEmails,
-        subject: `New Debrief: ${clientName} - ${authorName || "Team Member"}`,
-        html,
-      })
+      // 1b. Email — preference-aware via resolveRecipientsForCategory("debrief")
+      const targetIds = targetMembers.map((m) => m.id)
+      const optedIn = await resolveRecipientsForCategory(targetIds, "debrief")
 
-      if (!emailResult.success) {
-        console.warn("[debrief] Email send failed (in-app notifications still created):", emailResult.error)
-      } else {
-        console.log(`[debrief] Email sent to ${recipientEmails.length} active team members`)
+      if (optedIn.length > 0) {
+        const html = buildDebriefEmailHtml({
+          authorName: authorName || "A team member",
+          clientName,
+          debriefDate: debrief.debrief_date
+            ? new Date(debrief.debrief_date).toLocaleDateString("en-US", {
+                month: "long",
+                day: "numeric",
+                year: "numeric",
+              })
+            : "N/A",
+          notes: body?.notes || debrief.notes || undefined,
+          actionItems: debrief.action_items?.items || body?.action_items || [],
+          services: body?.services || [],
+          researchTopics: body?.research_topics || undefined,
+          feeAdjustment: body?.fee_adjustment || undefined,
+          debriefUrl,
+        })
+
+        const emailResult = await sendEmail({
+          to: optedIn.map((r) => r.email),
+          subject: `New Debrief: ${clientName} - ${authorName || "Team Member"}`,
+          html,
+        })
+
+        if (!emailResult.success) {
+          console.warn("[debrief] Team email failed:", emailResult.error)
+        } else {
+          console.log(
+            `[debrief] Team email sent to ${optedIn.length} of ${targetIds.length} target members (${
+              targetIds.length - optedIn.length
+            } opted out)`,
+          )
+        }
       }
     }
 
-    // Action item assignment notifications
+    // ============================================
+    // 2. Action-item assignee notifications (always sent, even if notify_team=false —
+    //    direct assignments are personal and shouldn't be silenceable via the team toggle).
+    //    Uses the "action_item" category for email opt-out.
+    // ============================================
     const actionItems = debrief.action_items?.items || []
     const actionNotifications: any[] = []
+    const assigneeEmailMap = new Map<string, { description: string; assigneeName?: string }>()
 
     for (const item of actionItems) {
       if (item.assignee_id && item.assignee_id !== debrief.created_by_id) {
@@ -245,11 +275,46 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
           action_url: `/?tab=debriefs&id=${debrief.id}`,
           is_read: false,
         })
+        // Keep the most recent assignment description per assignee (in case of duplicates)
+        assigneeEmailMap.set(item.assignee_id, {
+          description: item.description,
+          assigneeName: item.assignee_name,
+        })
       }
     }
 
     if (actionNotifications.length > 0) {
       await supabase.from("notifications").insert(actionNotifications)
+    }
+
+    if (assigneeEmailMap.size > 0) {
+      const optedInAssignees = await resolveRecipientsForCategory(
+        Array.from(assigneeEmailMap.keys()),
+        "action_item",
+      )
+
+      // Send a personalized email per assignee with their specific item description
+      await Promise.all(
+        optedInAssignees.map(async (recipient) => {
+          const item = assigneeEmailMap.get(recipient.team_member_id)
+          if (!item) return
+          const html = buildNotificationEmailHtml({
+            recipientName: recipient.full_name?.split(" ")[0] || "there",
+            title: "New Action Item Assigned",
+            message: `${authorName || "A team member"} assigned you an action item from a debrief on ${clientName}:\n\n"${item.description}"`,
+            actionUrl: debriefUrl,
+            actionLabel: "View Debrief",
+          })
+          const res = await sendEmail({
+            to: recipient.email,
+            subject: `Action item: ${item.description.slice(0, 60)}${item.description.length > 60 ? "…" : ""}`,
+            html,
+          })
+          if (!res.success) {
+            console.warn(`[debrief] Action-item email to ${recipient.email} failed:`, res.error)
+          }
+        }),
+      )
     }
   } catch (error) {
     console.error("Error creating debrief notifications:", error)
