@@ -1,158 +1,161 @@
-import { type NextRequest, NextResponse } from "next/server"
-import { createAdminClient } from "@/lib/supabase/server"
-
 /**
  * GET /api/karbon/sync
- * Comprehensive sync endpoint that syncs all Karbon data to Supabase.
- * Now with sync_log audit trail for tracking all sync operations.
+ *
+ * Bulk reconciliation orchestrator. Fans out to the per-entity import routes
+ * (which still own the Karbon → Supabase mapping for list-based syncs) and
+ * records a sync_log row for the run.
+ *
+ * In the new architecture, the **webhook receiver** is the primary path for
+ * keeping Supabase fresh. This endpoint exists for:
+ *   - Initial backfill (`?source=backfill`)
+ *   - Watchdog-triggered drift reconciliation from the cron (`?source=cron`)
+ *   - Manual full re-sync from the admin UI (`?source=manual`)
  *
  * Query params:
- * - incremental=true: Only sync records modified since last sync (default: true)
- * - expand=true: Fetch expanded details (BusinessCards, AccountingDetail) for contacts/orgs
- * - entities=contacts,organizations,work-items,users,client-groups,tasks,timesheets
- * - manual=true: Mark this sync as manually triggered (vs cron)
- * 
- * NOTE: "notes" removed from default sync - Karbon API does NOT have a list endpoint
- * for notes. Notes are synced via webhooks or individual fetches.
+ *   - incremental=true (default)         only modified-since-last-sync
+ *   - expand=true                        fetch BusinessCards/AccountingDetail for contacts/orgs
+ *   - entities=contacts,organizations,…  comma-separated; default = all
+ *   - source=manual|cron|backfill|webhook-replay  recorded in sync_log
+ *   - manual=true                        legacy alias for source=manual
+ *
+ * Notes:
+ *   - "notes" is intentionally excluded — Karbon has no list endpoint for it.
+ *     Notes are only synced via webhooks (Note / NoteComment events).
+ *   - The response includes `webhookBacklog` so callers can spot a stalled
+ *     webhook pipeline that the cron should drain before re-running this.
  */
+import { type NextRequest, NextResponse } from "next/server"
+import { tryCreateAdminClient } from "@/lib/supabase/server"
+
+const DEFAULT_ENTITIES = [
+  "users",
+  "contacts",
+  "organizations",
+  "client-groups",
+  "work-items",
+  "tasks",
+  "timesheets",
+  "invoices",
+] as const
+
+type SyncSource = "manual" | "cron" | "backfill" | "webhook-replay"
+
+function resolveBaseUrl(request: NextRequest): string {
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
+  // Last resort: use the request's own origin so dev still works
+  return new URL(request.url).origin
+}
+
 export async function GET(request: NextRequest) {
   const startTime = Date.now()
-  const searchParams = request.nextUrl.searchParams
-  const incremental = searchParams.get("incremental") !== "false" // Default to true
-  const expand = searchParams.get("expand") === "true"
-  const isManual = searchParams.get("manual") === "true"
-  const entitiesParam = searchParams.get("entities")
+  const sp = request.nextUrl.searchParams
 
-  // Default entities to sync (notes removed - no list endpoint in Karbon API)
-  const defaultEntities = [
-    "contacts",
-    "organizations",
-    "work-items",
-    "users",
-    "client-groups",
-    "tasks",
-    "timesheets",
-    "invoices",
-  ]
-  const entities = entitiesParam ? entitiesParam.split(",") : defaultEntities
+  const incremental = sp.get("incremental") !== "false"
+  const expand = sp.get("expand") === "true"
+  const entitiesParam = sp.get("entities")
+  const entities = entitiesParam ? entitiesParam.split(",").map((s) => s.trim()) : [...DEFAULT_ENTITIES]
 
-  const baseUrl =
-    process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3000")
-
-  const results: Record<string, any> = {}
-  const errors: string[] = []
-
-  // Create sync_log entry to track this sync operation
-  let supabase: ReturnType<typeof createAdminClient> | null = null
-  let syncLogId: string | null = null
-
-  try {
-    supabase = createAdminClient()
-  } catch {
-    // If env vars missing, continue without logging
+  // Source attribution
+  let source: SyncSource = "manual"
+  const explicit = sp.get("source") as SyncSource | null
+  if (explicit && ["manual", "cron", "backfill", "webhook-replay"].includes(explicit)) {
+    source = explicit
+  } else if (sp.get("manual") === "true") {
+    source = "manual"
+  } else if (request.headers.get("x-vercel-cron")) {
+    source = "cron"
   }
 
+  const baseUrl = resolveBaseUrl(request)
+  const results: Record<string, any> = {}
+  const errors: string[] = []
+  const supabase = tryCreateAdminClient()
+
+  // ---- Sync log: open ------------------------------------------------------
+  let syncLogId: string | null = null
   if (supabase) {
-    const { data: logEntry } = await supabase
+    const { data: row } = await supabase
       .from("sync_log")
       .insert({
         sync_type: incremental ? "incremental" : "full",
         sync_direction: "karbon_to_supabase",
         status: "running",
-        is_manual: isManual,
+        is_manual: source === "manual",
         started_at: new Date().toISOString(),
+        error_details: { source, entities, expand },
       })
       .select("id")
       .single()
-
-    syncLogId = logEntry?.id || null
+    syncLogId = row?.id || null
   }
 
-  // Helper function to call sync endpoints
-  // Passes x-internal-secret so middleware allows server-to-server calls
-  async function syncEntity(entity: string, endpoint: string, extraParams = "") {
+  // ---- Webhook backlog snapshot (pre) -------------------------------------
+  // If there are many unprocessed events, the sync may overwrite stale rows
+  // before the events are replayed. We surface this so callers can decide.
+  let webhookBacklog: { pending: number; failed: number } | null = null
+  if (supabase) {
+    const [{ count: pending }, { count: failed }] = await Promise.all([
+      supabase
+        .from("karbon_webhook_events")
+        .select("id", { count: "exact", head: true })
+        .eq("processing_status", "pending"),
+      supabase
+        .from("karbon_webhook_events")
+        .select("id", { count: "exact", head: true })
+        .eq("processing_status", "failed"),
+    ])
+    webhookBacklog = { pending: pending || 0, failed: failed || 0 }
+  }
+
+  // ---- Fan-out helper ------------------------------------------------------
+  async function syncEntity(name: string, path: string, extraQs = "") {
     try {
-      const url = `${baseUrl}${endpoint}?import=true&incremental=${incremental}${extraParams}`
-      const response = await fetch(url, {
+      const url = `${baseUrl}${path}?import=true&incremental=${incremental}${extraQs}`
+      const res = await fetch(url, {
         headers: {
           "Content-Type": "application/json",
           ...(process.env.CRON_SECRET ? { "x-internal-secret": process.env.CRON_SECRET } : {}),
         },
       })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }))
-        errors.push(`${entity}: ${errorData.error || response.statusText}`)
-        return { error: errorData.error || response.statusText }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: res.statusText }))
+        const msg = data.error || res.statusText
+        errors.push(`${name}: ${msg}`)
+        return { error: msg }
       }
-
-      const data = await response.json()
+      const data = await res.json()
       return data.importResult || { synced: data.count || 0 }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error"
-      errors.push(`${entity}: ${message}`)
-      return { error: message }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      errors.push(`${name}: ${msg}`)
+      return { error: msg }
     }
   }
 
-  // Sync entities in optimal order (users/contacts/orgs first, then dependent entities)
+  // ---- Execute in dependency order ----------------------------------------
+  // users → contacts/organizations → client-groups → work-items → tasks/timesheets/invoices
+  const expandQs = expand ? "&expand=true" : ""
 
-  // 1. Users (team members) - no dependencies
-  if (entities.includes("users")) {
-    results.users = await syncEntity("users", "/api/karbon/users")
-  }
-
-  // 2. Contacts - no dependencies (but expand optional)
-  if (entities.includes("contacts")) {
-    const expandParam = expand ? "&expand=true" : ""
-    results.contacts = await syncEntity("contacts", "/api/karbon/contacts", expandParam)
-  }
-
-  // 3. Organizations - no dependencies (but expand optional)
-  if (entities.includes("organizations")) {
-    const expandParam = expand ? "&expand=true" : ""
-    results.organizations = await syncEntity("organizations", "/api/karbon/organizations", expandParam)
-  }
-
-  // 4. Client Groups - depends on contacts/orgs for linking
-  if (entities.includes("client-groups")) {
+  if (entities.includes("users")) results.users = await syncEntity("users", "/api/karbon/users")
+  if (entities.includes("contacts")) results.contacts = await syncEntity("contacts", "/api/karbon/contacts", expandQs)
+  if (entities.includes("organizations"))
+    results.organizations = await syncEntity("organizations", "/api/karbon/organizations", expandQs)
+  if (entities.includes("client-groups"))
     results.clientGroups = await syncEntity("client-groups", "/api/karbon/client-groups")
-  }
-
-  // 5. Work Items - depends on contacts/orgs for client linking
-  if (entities.includes("work-items")) {
-    results.workItems = await syncEntity("work-items", "/api/karbon/work-items")
-  }
-
-  // 6. Tasks (IntegrationTasks) - depends on work items for linking
-  if (entities.includes("tasks")) {
-    results.tasks = await syncEntity("tasks", "/api/karbon/tasks")
-  }
-
-  // 7. Timesheets - depends on work items for linking
-  if (entities.includes("timesheets")) {
-    results.timesheets = await syncEntity("timesheets", "/api/karbon/timesheets")
-  }
-
-  // 8. Invoices - depends on work items/clients for linking
-  if (entities.includes("invoices")) {
-    results.invoices = await syncEntity("invoices", "/api/karbon/invoices")
-  }
-
-  // Work statuses from TenantSettings (always sync)
-  if (entities.includes("work-statuses") || !entitiesParam) {
+  if (entities.includes("work-items")) results.workItems = await syncEntity("work-items", "/api/karbon/work-items")
+  if (entities.includes("tasks")) results.tasks = await syncEntity("tasks", "/api/karbon/tasks")
+  if (entities.includes("timesheets")) results.timesheets = await syncEntity("timesheets", "/api/karbon/timesheets")
+  if (entities.includes("invoices")) results.invoices = await syncEntity("invoices", "/api/karbon/invoices")
+  if (entities.includes("work-statuses") || !entitiesParam)
     results.workStatuses = await syncEntity("work-statuses", "/api/karbon/work-statuses", "&sync=true")
-  }
 
   const duration = Date.now() - startTime
+  const totalSynced = Object.values(results).reduce((s: number, r: any) => s + (r?.synced || 0), 0)
+  const totalErrors = Object.values(results).reduce((s: number, r: any) => s + (r?.errors || 0), 0)
 
-  // Calculate totals
-  const totalSynced = Object.values(results).reduce((sum: number, r: any) => sum + (r?.synced || 0), 0)
-  const totalErrors = Object.values(results).reduce((sum: number, r: any) => sum + (r?.errors || 0), 0)
-
-  // Update sync_log with results
+  // ---- Sync log: close -----------------------------------------------------
   if (supabase && syncLogId) {
     await supabase
       .from("sync_log")
@@ -163,23 +166,21 @@ export async function GET(request: NextRequest) {
         records_updated: 0,
         records_failed: totalErrors,
         completed_at: new Date().toISOString(),
-        error_message: errors.length > 0 ? errors.join("; ") : null,
-        error_details: errors.length > 0 ? { errors, results } : null,
+        error_message: errors.length > 0 ? errors.slice(0, 5).join("; ").slice(0, 1000) : null,
+        error_details: { source, entities, expand, errors, results, webhookBacklog },
       })
       .eq("id", syncLogId)
   }
 
   return NextResponse.json({
     success: errors.length === 0,
+    source,
     syncType: incremental ? "incremental" : "full",
     expandedDetails: expand,
     duration: `${(duration / 1000).toFixed(2)}s`,
     syncLogId,
-    summary: {
-      totalSynced,
-      totalErrors,
-      entitiesSynced: entities.length,
-    },
+    summary: { totalSynced, totalErrors, entitiesSynced: entities.length },
+    webhookBacklog,
     results,
     errors: errors.length > 0 ? errors : undefined,
     timestamp: new Date().toISOString(),

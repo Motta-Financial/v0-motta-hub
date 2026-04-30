@@ -105,6 +105,12 @@ const settingsCategories = [
         href: "/admin/broadcast",
         icon: Megaphone,
       },
+      {
+        name: "Karbon Live Sync",
+        description: "Webhook subscriptions, event log, and reconciliation watchdog",
+        href: "/admin/karbon-sync",
+        icon: Webhook,
+      },
     ],
   },
 ]
