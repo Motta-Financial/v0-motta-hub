@@ -179,6 +179,170 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ leaderboard, total_ballots: ballots?.length || 0 })
     }
 
+    // Year-to-date stats: tracks weeks finished 1st/2nd/3rd based on weekly point totals
+    if (type === "ytd_stats") {
+      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      const targetYear = year || new Date().getFullYear().toString()
+      const isYear2026OrLater = Number.parseInt(targetYear) >= 2026
+
+      // Fetch all ballots for the year
+      const startDate = `${targetYear}-01-01`
+      const endDate = `${targetYear}-12-31`
+      const { data: ballots, error: ballotsError } = await supabase
+        .from("tommy_award_ballots")
+        .select("*")
+        .gte("week_date", startDate)
+        .lte("week_date", endDate)
+
+      if (ballotsError) throw ballotsError
+
+      // Group ballots by week
+      const weekBuckets: Record<string, typeof ballots> = {}
+      ballots?.forEach((ballot) => {
+        if (!weekBuckets[ballot.week_date]) {
+          weekBuckets[ballot.week_date] = []
+        }
+        weekBuckets[ballot.week_date]!.push(ballot)
+      })
+
+      // Calculate per-member stats across the year
+      const memberStats: Record<
+        string,
+        {
+          name: string
+          total_points: number
+          first_place_votes: number
+          second_place_votes: number
+          third_place_votes: number
+          honorable_mention_votes: number
+          partner_votes: number
+          weeks_in_first: number
+          weeks_in_second: number
+          weeks_in_third: number
+          weeks_participated: number
+        }
+      > = {}
+
+      const ensureMember = (name: string) => {
+        if (!memberStats[name]) {
+          memberStats[name] = {
+            name,
+            total_points: 0,
+            first_place_votes: 0,
+            second_place_votes: 0,
+            third_place_votes: 0,
+            honorable_mention_votes: 0,
+            partner_votes: 0,
+            weeks_in_first: 0,
+            weeks_in_second: 0,
+            weeks_in_third: 0,
+            weeks_participated: 0,
+          }
+        }
+        return memberStats[name]!
+      }
+
+      // Process each week to determine podium finishers and aggregate vote counts
+      Object.entries(weekBuckets).forEach(([weekDate, weekBallots]) => {
+        const weeklyPoints: Record<string, number> = {}
+        const weeklyParticipants = new Set<string>()
+
+        weekBallots.forEach((ballot) => {
+          // 1st place: 3 points
+          if (ballot.first_place_name) {
+            const m = ensureMember(ballot.first_place_name)
+            m.first_place_votes++
+            m.total_points += 3
+            weeklyPoints[ballot.first_place_name] = (weeklyPoints[ballot.first_place_name] || 0) + 3
+            weeklyParticipants.add(ballot.first_place_name)
+          }
+          // 2nd place: 2 points
+          if (ballot.second_place_name) {
+            const m = ensureMember(ballot.second_place_name)
+            m.second_place_votes++
+            m.total_points += 2
+            weeklyPoints[ballot.second_place_name] = (weeklyPoints[ballot.second_place_name] || 0) + 2
+            weeklyParticipants.add(ballot.second_place_name)
+          }
+          // 3rd place: 1 point
+          if (ballot.third_place_name) {
+            const m = ensureMember(ballot.third_place_name)
+            m.third_place_votes++
+            m.total_points += 1
+            weeklyPoints[ballot.third_place_name] = (weeklyPoints[ballot.third_place_name] || 0) + 1
+            weeklyParticipants.add(ballot.third_place_name)
+          }
+          // Honorable mention: 0.5 points (pre-2026 only)
+          if (!isYear2026OrLater && ballot.honorable_mention_name) {
+            const m = ensureMember(ballot.honorable_mention_name)
+            m.honorable_mention_votes++
+            m.total_points += 0.5
+            weeklyPoints[ballot.honorable_mention_name] =
+              (weeklyPoints[ballot.honorable_mention_name] || 0) + 0.5
+            weeklyParticipants.add(ballot.honorable_mention_name)
+          }
+          // Partner vote: 5 points (pre-2026 only)
+          if (!isYear2026OrLater && ballot.partner_vote_name) {
+            const m = ensureMember(ballot.partner_vote_name)
+            m.partner_votes++
+            m.total_points += 5
+            weeklyPoints[ballot.partner_vote_name] = (weeklyPoints[ballot.partner_vote_name] || 0) + 5
+            weeklyParticipants.add(ballot.partner_vote_name)
+          }
+        })
+
+        // Mark weeks participated
+        weeklyParticipants.forEach((name) => {
+          ensureMember(name).weeks_participated++
+        })
+
+        // Determine podium finishers for this week (handle ties with shared rank)
+        const sorted = Object.entries(weeklyPoints)
+          .map(([name, points]) => ({ name, points }))
+          .sort((a, b) => b.points - a.points)
+
+        if (sorted.length === 0) return
+
+        // Build rank groups: members with the same point total share the same rank
+        let currentRank = 1
+        let lastPoints: number | null = null
+        let positionsFilled = 0
+        for (const entry of sorted) {
+          if (lastPoints === null || entry.points < lastPoints) {
+            currentRank = positionsFilled + 1
+            lastPoints = entry.points
+          }
+          if (currentRank > 3) break
+          if (currentRank === 1) ensureMember(entry.name).weeks_in_first++
+          else if (currentRank === 2) ensureMember(entry.name).weeks_in_second++
+          else if (currentRank === 3) ensureMember(entry.name).weeks_in_third++
+          positionsFilled++
+        }
+      })
+
+      const totalWeeks = Object.keys(weekBuckets).length
+
+      const ytdLeaderboard = Object.values(memberStats)
+        .filter((entry) => !HIDDEN_MEMBERS.includes(entry.name))
+        .sort((a, b) => {
+          // Primary: total points
+          if (b.total_points !== a.total_points) return b.total_points - a.total_points
+          // Tiebreak: weeks in first
+          if (b.weeks_in_first !== a.weeks_in_first) return b.weeks_in_first - a.weeks_in_first
+          // Then weeks in second, then third
+          if (b.weeks_in_second !== a.weeks_in_second) return b.weeks_in_second - a.weeks_in_second
+          return b.weeks_in_third - a.weeks_in_third
+        })
+        .map((entry, index) => ({ ...entry, rank: index + 1 }))
+
+      return NextResponse.json({
+        ytd_leaderboard: ytdLeaderboard,
+        total_weeks: totalWeeks,
+        total_ballots: ballots?.length || 0,
+        year: targetYear,
+      })
+    }
+
     // Get ballots with filters
     let query = supabase
       .from("tommy_award_ballots")
