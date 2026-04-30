@@ -46,8 +46,6 @@ export function TommyAwardsPage() {
   const [filteredWeeks, setFilteredWeeks] = useState<Week[]>([])
   const [currentWeekId, setCurrentWeekId] = useState<string | null>(null)
 
-  const is2026OrLater = filters.year === "all" ? false : Number.parseInt(filters.year) >= 2026
-
   useEffect(() => {
     fetchFilterData()
   }, [])
@@ -76,7 +74,35 @@ export function TommyAwardsPage() {
     const diff = day <= 5 ? 5 - day : 5 - day + 7
     const friday = new Date(today)
     friday.setDate(today.getDate() + diff)
-    return friday.toISOString().split("T")[0]
+    // Format in local time to avoid UTC shift bugs (Friday → Saturday)
+    const yyyy = friday.getFullYear()
+    const mm = String(friday.getMonth() + 1).padStart(2, "0")
+    const dd = String(friday.getDate()).padStart(2, "0")
+    return `${yyyy}-${mm}-${dd}`
+  }
+
+  // Defensive: dedupe weeks by week_name in case the database has any duplicates
+  const dedupeWeeks = (list: Week[]): Week[] => {
+    const groups: Record<string, Week[]> = {}
+    for (const w of list) {
+      if (!groups[w.week_name]) groups[w.week_name] = []
+      groups[w.week_name].push(w)
+    }
+    const result: Week[] = []
+    for (const items of Object.values(groups)) {
+      if (items.length === 1) {
+        result.push(items[0])
+        continue
+      }
+      // Prefer Friday-dated entry
+      const friday = items.find((it) => {
+        const [y, m, d] = it.week_date.split("-").map(Number)
+        return new Date(y, m - 1, d).getDay() === 5
+      })
+      const active = items.find((it) => it.is_active)
+      result.push(friday || active || items[0])
+    }
+    return result
   }
 
   const sortWeeksWithCurrentFirst = (weeksList: Week[]) => {
@@ -95,7 +121,7 @@ export function TommyAwardsPage() {
       // Fetch weeks
       const weeksRes = await fetch("/api/tommy-awards?type=weeks")
       const weeksData = await weeksRes.json()
-      const fetchedWeeks: Week[] = weeksData.weeks || []
+      const fetchedWeeks: Week[] = dedupeWeeks(weeksData.weeks || [])
       setWeeks(fetchedWeeks)
 
       // Detect current week and set it as default
@@ -357,63 +383,7 @@ export function TommyAwardsPage() {
         </CardContent>
       </Card>
 
-      <Card className="border-border bg-card">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-lg">Scoring System</CardTitle>
-              <CardDescription>
-                {is2026OrLater
-                  ? "2026+ Simplified Scoring - Top 3 only"
-                  : filters.year === "2025" || filters.year === "all"
-                    ? "How points are awarded each week"
-                    : "How points are awarded each week"}
-              </CardDescription>
-            </div>
-            {(filters.year === "all" || Number.parseInt(filters.year) < 2026) &&
-              Number.parseInt(filters.year || "2026") !== 2026 && (
-                <Badge variant="outline" className="text-xs">
-                  {filters.year === "all" ? "Legacy + Current" : filters.year + " Rules"}
-                </Badge>
-              )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-3">
-            <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 px-3 py-1.5">
-              🥇 1st Place: 3 Points
-            </Badge>
-            <Badge variant="outline" className="bg-slate-50 text-slate-600 border-slate-200 px-3 py-1.5">
-              🥈 2nd Place: 2 Points
-            </Badge>
-            <Badge variant="outline" className="bg-orange-50 text-orange-600 border-orange-200 px-3 py-1.5">
-              🥉 3rd Place: 1 Point
-            </Badge>
-            {!is2026OrLater && (filters.year === "all" || Number.parseInt(filters.year) <= 2025) && (
-              <>
-                <Badge variant="outline" className="bg-blue-50 text-blue-600 border-blue-200 px-3 py-1.5 opacity-75">
-                  Honorable Mention: 0.5 Points
-                  <span className="ml-1 text-xs">(2025 only)</span>
-                </Badge>
-                <Badge
-                  variant="outline"
-                  className="bg-emerald-50 text-emerald-700 border-emerald-200 px-3 py-1.5 opacity-75"
-                >
-                  Partner Vote: 5 Points
-                  <span className="ml-1 text-xs">(2025 only)</span>
-                </Badge>
-              </>
-            )}
-          </div>
-          {is2026OrLater && (
-            <p className="text-sm text-muted-foreground mt-3">
-              Starting in 2026, Tommy Awards uses a streamlined scoring system with 1st, 2nd, and 3rd place votes only.
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Year-to-Date Standings - full width */}
+      {/* Year-to-Date Standings (with embedded Scoring System) */}
       <TommyYTDLeaderboard year={filters.year} />
 
       {/* Main Content Grid */}
