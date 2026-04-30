@@ -49,7 +49,9 @@ export async function GET(request: NextRequest) {
     // Get team members for filter dropdown
     if (type === "team_members") {
       // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
+      // Ganesh Vasan and Thameem JA are combined as "G&T"
       const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
       
       const { data, error } = await supabase
         .from("team_members")
@@ -58,10 +60,26 @@ export async function GET(request: NextRequest) {
 
       if (error) throw error
       
+      // Filter out hidden members and combined voters
       const filteredMembers = (data || []).filter(
-        (m) => !HIDDEN_MEMBERS.includes(m.full_name)
+        (m) => !HIDDEN_MEMBERS.includes(m.full_name) && !COMBINED_VOTERS.includes(m.full_name)
       )
-      return NextResponse.json({ team_members: filteredMembers })
+      
+      // Add the combined "G&T" entry
+      const gtEntry = {
+        id: "G&T",
+        full_name: "G&T",
+        first_name: "G&T",
+        last_name: "",
+        is_active: true,
+      }
+      
+      // Insert G&T in alphabetical order
+      const allMembers = [...filteredMembers, gtEntry].sort((a, b) =>
+        a.full_name.localeCompare(b.full_name)
+      )
+      
+      return NextResponse.json({ team_members: allMembers })
     }
 
     // Get leaderboard data
@@ -83,6 +101,10 @@ export async function GET(request: NextRequest) {
 
       if (error) throw error
 
+      // Ganesh Vasan and Thameem JA are combined as "G&T"
+      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
+      const normalizeName = (name: string) => COMBINED_VOTERS.includes(name) ? "G&T" : name
+
       // Calculate points per team member
       const pointsMap: Record<
         string,
@@ -97,90 +119,56 @@ export async function GET(request: NextRequest) {
         }
       > = {}
 
+      const ensureEntry = (name: string) => {
+        const normalized = normalizeName(name)
+        if (!pointsMap[normalized]) {
+          pointsMap[normalized] = {
+            name: normalized,
+            first_place_votes: 0,
+            second_place_votes: 0,
+            third_place_votes: 0,
+            honorable_mention_votes: 0,
+            partner_votes: 0,
+            total_points: 0,
+          }
+        }
+        return pointsMap[normalized]
+      }
+
       ballots?.forEach((ballot) => {
         // First place: 3 points
         if (ballot.first_place_name) {
-          if (!pointsMap[ballot.first_place_name]) {
-            pointsMap[ballot.first_place_name] = {
-              name: ballot.first_place_name,
-              first_place_votes: 0,
-              second_place_votes: 0,
-              third_place_votes: 0,
-              honorable_mention_votes: 0,
-              partner_votes: 0,
-              total_points: 0,
-            }
-          }
-          pointsMap[ballot.first_place_name].first_place_votes++
-          pointsMap[ballot.first_place_name].total_points += 3
+          const entry = ensureEntry(ballot.first_place_name)
+          entry.first_place_votes++
+          entry.total_points += 3
         }
 
         // Second place: 2 points
         if (ballot.second_place_name) {
-          if (!pointsMap[ballot.second_place_name]) {
-            pointsMap[ballot.second_place_name] = {
-              name: ballot.second_place_name,
-              first_place_votes: 0,
-              second_place_votes: 0,
-              third_place_votes: 0,
-              honorable_mention_votes: 0,
-              partner_votes: 0,
-              total_points: 0,
-            }
-          }
-          pointsMap[ballot.second_place_name].second_place_votes++
-          pointsMap[ballot.second_place_name].total_points += 2
+          const entry = ensureEntry(ballot.second_place_name)
+          entry.second_place_votes++
+          entry.total_points += 2
         }
 
         // Third place: 1 point
         if (ballot.third_place_name) {
-          if (!pointsMap[ballot.third_place_name]) {
-            pointsMap[ballot.third_place_name] = {
-              name: ballot.third_place_name,
-              first_place_votes: 0,
-              second_place_votes: 0,
-              third_place_votes: 0,
-              honorable_mention_votes: 0,
-              partner_votes: 0,
-              total_points: 0,
-            }
-          }
-          pointsMap[ballot.third_place_name].third_place_votes++
-          pointsMap[ballot.third_place_name].total_points += 1
+          const entry = ensureEntry(ballot.third_place_name)
+          entry.third_place_votes++
+          entry.total_points += 1
         }
 
         // Honorable mention: 0.5 points
         if (ballot.honorable_mention_name) {
-          if (!pointsMap[ballot.honorable_mention_name]) {
-            pointsMap[ballot.honorable_mention_name] = {
-              name: ballot.honorable_mention_name,
-              first_place_votes: 0,
-              second_place_votes: 0,
-              third_place_votes: 0,
-              honorable_mention_votes: 0,
-              partner_votes: 0,
-              total_points: 0,
-            }
-          }
-          pointsMap[ballot.honorable_mention_name].honorable_mention_votes++
-          pointsMap[ballot.honorable_mention_name].total_points += 0.5
+          const entry = ensureEntry(ballot.honorable_mention_name)
+          entry.honorable_mention_votes++
+          entry.total_points += 0.5
         }
 
         // Partner vote: 5 points
         if (ballot.partner_vote_name) {
-          if (!pointsMap[ballot.partner_vote_name]) {
-            pointsMap[ballot.partner_vote_name] = {
-              name: ballot.partner_vote_name,
-              first_place_votes: 0,
-              second_place_votes: 0,
-              third_place_votes: 0,
-              honorable_mention_votes: 0,
-              partner_votes: 0,
-              total_points: 0,
-            }
-          }
-          pointsMap[ballot.partner_vote_name].partner_votes++
-          pointsMap[ballot.partner_vote_name].total_points += 5
+          const entry = ensureEntry(ballot.partner_vote_name)
+          entry.partner_votes++
+          entry.total_points += 5
         }
       })
 
@@ -198,6 +186,10 @@ export async function GET(request: NextRequest) {
     // Year-to-date stats: tracks weeks finished 1st/2nd/3rd based on weekly point totals
     if (type === "ytd_stats") {
       const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      // Ganesh Vasan and Thameem JA are combined as "G&T"
+      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
+      const normalizeName = (name: string) => COMBINED_VOTERS.includes(name) ? "G&T" : name
+      
       const targetYear = year || new Date().getFullYear().toString()
       const isYear2026OrLater = Number.parseInt(targetYear) >= 2026
 
@@ -239,7 +231,8 @@ export async function GET(request: NextRequest) {
         }
       > = {}
 
-      const ensureMember = (name: string) => {
+      const ensureMember = (rawName: string) => {
+        const name = normalizeName(rawName)
         if (!memberStats[name]) {
           memberStats[name] = {
             name,
@@ -266,50 +259,54 @@ export async function GET(request: NextRequest) {
         weekBallots.forEach((ballot) => {
           // 1st place: 3 points
           if (ballot.first_place_name) {
+            const normalized = normalizeName(ballot.first_place_name)
             const m = ensureMember(ballot.first_place_name)
             m.first_place_votes++
             m.total_points += 3
-            weeklyPoints[ballot.first_place_name] = (weeklyPoints[ballot.first_place_name] || 0) + 3
-            weeklyParticipants.add(ballot.first_place_name)
+            weeklyPoints[normalized] = (weeklyPoints[normalized] || 0) + 3
+            weeklyParticipants.add(normalized)
           }
           // 2nd place: 2 points
           if (ballot.second_place_name) {
+            const normalized = normalizeName(ballot.second_place_name)
             const m = ensureMember(ballot.second_place_name)
             m.second_place_votes++
             m.total_points += 2
-            weeklyPoints[ballot.second_place_name] = (weeklyPoints[ballot.second_place_name] || 0) + 2
-            weeklyParticipants.add(ballot.second_place_name)
+            weeklyPoints[normalized] = (weeklyPoints[normalized] || 0) + 2
+            weeklyParticipants.add(normalized)
           }
           // 3rd place: 1 point
           if (ballot.third_place_name) {
+            const normalized = normalizeName(ballot.third_place_name)
             const m = ensureMember(ballot.third_place_name)
             m.third_place_votes++
             m.total_points += 1
-            weeklyPoints[ballot.third_place_name] = (weeklyPoints[ballot.third_place_name] || 0) + 1
-            weeklyParticipants.add(ballot.third_place_name)
+            weeklyPoints[normalized] = (weeklyPoints[normalized] || 0) + 1
+            weeklyParticipants.add(normalized)
           }
           // Honorable mention: 0.5 points (pre-2026 only)
           if (!isYear2026OrLater && ballot.honorable_mention_name) {
+            const normalized = normalizeName(ballot.honorable_mention_name)
             const m = ensureMember(ballot.honorable_mention_name)
             m.honorable_mention_votes++
             m.total_points += 0.5
-            weeklyPoints[ballot.honorable_mention_name] =
-              (weeklyPoints[ballot.honorable_mention_name] || 0) + 0.5
-            weeklyParticipants.add(ballot.honorable_mention_name)
+            weeklyPoints[normalized] = (weeklyPoints[normalized] || 0) + 0.5
+            weeklyParticipants.add(normalized)
           }
           // Partner vote: 5 points (pre-2026 only)
           if (!isYear2026OrLater && ballot.partner_vote_name) {
+            const normalized = normalizeName(ballot.partner_vote_name)
             const m = ensureMember(ballot.partner_vote_name)
             m.partner_votes++
             m.total_points += 5
-            weeklyPoints[ballot.partner_vote_name] = (weeklyPoints[ballot.partner_vote_name] || 0) + 5
-            weeklyParticipants.add(ballot.partner_vote_name)
+            weeklyPoints[normalized] = (weeklyPoints[normalized] || 0) + 5
+            weeklyParticipants.add(normalized)
           }
         })
 
-        // Mark weeks participated
-        weeklyParticipants.forEach((name) => {
-          ensureMember(name).weeks_participated++
+        // Mark weeks participated (already normalized in weeklyParticipants)
+        weeklyParticipants.forEach((normalizedName) => {
+          memberStats[normalizedName]!.weeks_participated++
         })
 
         // Determine podium finishers for this week (handle ties with shared rank)
