@@ -478,27 +478,32 @@ export function TommyVotingForm() {
       const voterId = isGT ? null : currentVoter
       const voterName = isGT ? "G&T" : (voter?.full_name || "Unknown")
 
+      // Helper: when "G&T" is picked as a placement winner, the *_place_id columns
+      // are uuid with FK to team_members and cannot store the literal "G&T".
+      // Store NULL for the id and rely on *_place_name="G&T" for aggregations.
+      const idForPlacement = (memberId: string) => (memberId === "G&T" ? null : memberId || null)
+
       const ballotData: Record<string, unknown> = {
         week_id: selectedWeekId,
         week_date: selectedWeekDate,
         voter_id: voterId,
         voter_name: voterName,
-        first_place_id: firstPlace.memberId,
+        first_place_id: idForPlacement(firstPlace.memberId),
         first_place_name: firstPlace.memberName,
         first_place_notes: firstPlace.notes,
-        second_place_id: secondPlace.memberId,
+        second_place_id: idForPlacement(secondPlace.memberId),
         second_place_name: secondPlace.memberName,
         second_place_notes: secondPlace.notes,
-        third_place_id: thirdPlace.memberId,
+        third_place_id: idForPlacement(thirdPlace.memberId),
         third_place_name: thirdPlace.memberName,
         third_place_notes: thirdPlace.notes,
       }
 
       if (!is2026OrLater) {
-        ballotData.honorable_mention_id = honorableMention.memberId
+        ballotData.honorable_mention_id = idForPlacement(honorableMention.memberId)
         ballotData.honorable_mention_name = honorableMention.memberName
         ballotData.honorable_mention_notes = honorableMention.notes
-        ballotData.partner_vote_id = isPartner ? partnerVote.memberId : null
+        ballotData.partner_vote_id = isPartner ? idForPlacement(partnerVote.memberId) : null
         ballotData.partner_vote_name = isPartner ? partnerVote.memberName : null
         ballotData.partner_vote_notes = isPartner ? partnerVote.notes : null
       } else {
