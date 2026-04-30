@@ -472,9 +472,11 @@ export function TommyVotingForm() {
     try {
       const voter = teamMembers.find((m) => m.id === currentVoter)
       
-      // For the combined "G&T" voter, use "G&T" as both the ID and name
-      const voterId = currentVoter === "G&T" ? "G&T" : currentVoter
-      const voterName = currentVoter === "G&T" ? "G&T" : (voter?.full_name || "Unknown")
+      // For the combined "G&T" voter, voter_id must be NULL because the column is
+      // a uuid with FK to team_members - we identify them by voter_name="G&T" instead.
+      const isGT = currentVoter === "G&T"
+      const voterId = isGT ? null : currentVoter
+      const voterName = isGT ? "G&T" : (voter?.full_name || "Unknown")
 
       const ballotData: Record<string, unknown> = {
         week_id: selectedWeekId,
@@ -520,8 +522,8 @@ export function TommyVotingForm() {
           try {
             await supabase.from("tommy_award_ballot_history").insert({
               ballot_id: existingBallotId,
-              changed_by_id: currentVoter,
-              changed_by_name: voter?.full_name || "Unknown",
+              changed_by_id: isGT ? null : currentVoter,
+              changed_by_name: voterName,
               change_type: "amended",
               first_place_id: originalBallot.first_place_id,
               first_place_name: originalBallot.first_place_name,
@@ -567,8 +569,8 @@ export function TommyVotingForm() {
           try {
             await supabase.from("tommy_award_ballot_history").insert({
               ballot_id: newBallotId,
-              changed_by_id: currentVoter,
-              changed_by_name: voter?.full_name || "Unknown",
+              changed_by_id: isGT ? null : currentVoter,
+              changed_by_name: voterName,
               change_type: "created",
               first_place_id: firstPlace.memberId,
               first_place_name: firstPlace.memberName,
@@ -595,6 +597,7 @@ export function TommyVotingForm() {
       }
 
       if (submitError) {
+        console.log("[v0] Submit error code:", submitError.code, "message:", submitError.message, "details:", submitError.details, "hint:", submitError.hint)
         if (submitError.code === "23505") {
           setError("You have already submitted a ballot for this week. Select your name again to load it for amendment.")
         } else {
@@ -605,8 +608,14 @@ export function TommyVotingForm() {
 
       setSubmitted(true)
     } catch (err) {
-      console.error("Error submitting ballot:", err)
-      setError("Failed to submit ballot. Please try again.")
+      console.error("[v0] Error submitting ballot:", err)
+      // Surface the real error message to help with debugging
+      const errorMessage = err instanceof Error 
+        ? err.message 
+        : (typeof err === "object" && err !== null && "message" in err)
+          ? String((err as { message: unknown }).message)
+          : "Unknown error"
+      setError(`Failed to submit ballot: ${errorMessage}`)
     } finally {
       setSubmitting(false)
     }
