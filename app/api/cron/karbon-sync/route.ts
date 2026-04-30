@@ -104,9 +104,13 @@ async function replayPendingEvents(db: NonNullable<ReturnType<typeof tryCreateAd
     stats.attempted++
     try {
       const result = await processWebhookEvent(row)
-      if (result.status === "succeeded") stats.succeeded++
-      else if (result.status === "skipped") stats.skipped++
-      else stats.failed++
+      if (result.ok && (result.action === "upserted" || result.action === "soft-deleted" || result.action === "no-op")) {
+        stats.succeeded++
+      } else if (result.ok && result.action === "skipped") {
+        stats.skipped++
+      } else {
+        stats.failed++
+      }
     } catch (e) {
       stats.failed++
       console.error("[karbon-cron] replay error for event", row.id, (e as Error).message)
