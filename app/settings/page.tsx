@@ -12,6 +12,7 @@ import {
   Shield,
   Palette,
   ChevronRight,
+  Megaphone,
 } from "lucide-react"
 import Link from "next/link"
 
@@ -91,6 +92,18 @@ const settingsCategories = [
         description: "Customize the look and feel of Motta Hub",
         href: "/settings/appearance",
         icon: Palette,
+      },
+    ],
+  },
+  {
+    title: "Admin Tools",
+    description: "Partner & admin actions",
+    items: [
+      {
+        name: "Broadcast Email",
+        description: "Send a custom announcement to the team",
+        href: "/admin/broadcast",
+        icon: Megaphone,
       },
     ],
   },
