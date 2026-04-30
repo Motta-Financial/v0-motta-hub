@@ -121,7 +121,7 @@ export function TommyVotingForm() {
       if (membersError) throw membersError
       
       const filteredMembers = (members || []).filter(
-        (m) => !HIDDEN_MEMBERS.includes(m.full_name)
+        (m: { full_name: string }) => !HIDDEN_MEMBERS.includes(m.full_name)
       )
       setTeamMembers(filteredMembers)
 
@@ -147,7 +147,7 @@ export function TommyVotingForm() {
       const dedupedWeeks = dedupeWeekList(weeks || [])
 
       // Ensure current week exists
-      let currentWeek = dedupedWeeks.find((w) => w.week_date === fridayStr)
+      let currentWeek: WeekOption | null = dedupedWeeks.find((w) => w.week_date === fridayStr) ?? null
       
       if (!currentWeek) {
         const { data: newWeek, error: createError } = await supabase
@@ -161,16 +161,20 @@ export function TommyVotingForm() {
           .single()
 
         if (createError) throw createError
-        currentWeek = newWeek
+        currentWeek = newWeek as WeekOption
         // Add to weeks list
-        setAvailableWeeks([currentWeek, ...dedupedWeeks])
+        if (currentWeek) {
+          setAvailableWeeks([currentWeek, ...dedupedWeeks])
+        }
       } else {
         setAvailableWeeks(dedupedWeeks)
       }
 
       // Default to current week
-      setSelectedWeekId(currentWeek.id)
-      setSelectedWeekDate(currentWeek.week_date)
+      if (currentWeek) {
+        setSelectedWeekId(currentWeek.id)
+        setSelectedWeekDate(currentWeek.week_date)
+      }
     } catch (err) {
       console.error("Error fetching data:", err)
       setError("Failed to load data. Please refresh the page.")

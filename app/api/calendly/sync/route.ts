@@ -312,6 +312,7 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
+  const supabase = createAdminClient()
   const { data, error } = await supabase
     .from("calendly_sync_log")
     .select("*")
