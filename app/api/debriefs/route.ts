@@ -171,10 +171,11 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
     // 1. Team-wide debrief notification — UNCONDITIONAL
     // ============================================
     // Per firm policy: every debrief is broadcast to ALL active teammates
-    // (excluding Company / Alumni roles and the debrief author). The form's
-    // notify_team toggle and notification_recipients picker are intentionally
-    // ignored here, and the per-user "debrief" email opt-out is bypassed for
-    // this specific broadcast so no one misses a client debrief.
+    // (excluding Company / Alumni roles). The author IS included so they
+    // receive their own confirmation copy that the debrief was submitted and
+    // the team email went out. The form's notify_team toggle and recipient
+    // picker are intentionally ignored, and the per-user "debrief" email
+    // opt-out is bypassed for this broadcast so no one misses a client debrief.
     const { data: activeTeam } = await supabase
       .from("team_members")
       .select("id, full_name, email, role")
@@ -182,23 +183,30 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
       .not("role", "eq", "Company")
       .not("role", "eq", "Alumni")
 
-    const targetMembers = (activeTeam || []).filter((tm) => tm.id !== debrief.created_by_id)
+    const targetMembers = activeTeam || []
 
     if (targetMembers.length > 0) {
-      // 1a. In-app notification row for every active teammate
-      const notifications = targetMembers.map((tm) => ({
-        team_member_id: tm.id,
-        notification_type: "debrief",
-        entity_type: "debrief",
-        entity_id: debrief.id,
-        title: "New Client Debrief",
-        message: `${authorName || "A team member"} submitted a debrief for ${clientName}`,
-        action_url: `/?tab=debriefs&id=${debrief.id}`,
-        is_read: false,
-      }))
+      // 1a. In-app notification row for every active teammate.
+      //     The author gets a confirmation-styled message instead of the
+      //     generic team announcement so they can verify it went through.
+      const notifications = targetMembers.map((tm) => {
+        const isAuthor = tm.id === debrief.created_by_id
+        return {
+          team_member_id: tm.id,
+          notification_type: "debrief",
+          entity_type: "debrief",
+          entity_id: debrief.id,
+          title: isAuthor ? "Debrief Submitted" : "New Client Debrief",
+          message: isAuthor
+            ? `Your debrief for ${clientName} was submitted and emailed to the team.`
+            : `${authorName || "A team member"} submitted a debrief for ${clientName}`,
+          action_url: `/?tab=debriefs&id=${debrief.id}`,
+          is_read: false,
+        }
+      })
       await supabase.from("notifications").insert(notifications)
 
-      // 1b. Email every active teammate who has an email address.
+      // 1b. Email every active teammate who has an email address — author included.
       //     No opt-out check — debriefs are mandatory firm-wide visibility.
       const recipientEmails = targetMembers
         .filter((tm) => !!tm.email)
@@ -232,7 +240,9 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         if (!emailResult.success) {
           console.warn("[debrief] Team email failed:", emailResult.error)
         } else {
-          console.log(`[debrief] Team email sent to all ${recipientEmails.length} active teammates`)
+          console.log(
+            `[debrief] Team email sent to all ${recipientEmails.length} active teammates (author included)`,
+          )
         }
       }
     }
