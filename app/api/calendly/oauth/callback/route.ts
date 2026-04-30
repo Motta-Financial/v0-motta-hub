@@ -3,7 +3,11 @@ import { createClient } from "@/lib/supabase/server"
 
 const CALENDLY_CLIENT_ID = process.env.CALENDLY_CLIENT_ID!
 const CALENDLY_CLIENT_SECRET = process.env.CALENDLY_CLIENT_SECRET!
-const CALENDLY_REDIRECT_URI = process.env.CALENDLY_REDIRECT_URI || "https://motta.cpa/api/calendly/oauth/callback"
+// Accept either env var name (URI/URL) for resilience — current Vercel env uses CALENDLY_REDIRECT_URL
+const CALENDLY_REDIRECT_URI =
+  process.env.CALENDLY_REDIRECT_URI ||
+  process.env.CALENDLY_REDIRECT_URL ||
+  "https://motta.cpa/api/calendly/oauth/callback"
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams

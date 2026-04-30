@@ -1,4 +1,4 @@
-import { convertToModelMessages, streamText, tool, type UIMessage } from "ai"
+import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from "ai"
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/server"
 
@@ -520,7 +520,7 @@ export async function POST(req: Request) {
     system: SYSTEM_PROMPT,
     messages: modelMessages,
     tools: alfredTools,
-    maxSteps: 10,
+    stopWhen: stepCountIs(10),
     abortSignal: req.signal,
   })
 
