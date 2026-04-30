@@ -78,6 +78,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 // Delete message
 export async function DELETE(request: Request, { params }: { params: { id: string } }) {
   try {
+    const supabase = createAdminClient()
     const { id } = params
 
     const { error } = await supabase.from("messages").delete().eq("id", id)

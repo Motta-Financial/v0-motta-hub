@@ -377,12 +377,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Handle aggregations
-    let aggregateResult = null
+    let aggregateResult: Record<string, unknown> | null = null
     if (aggregate) {
       const { count: doCount, sum, avg } = aggregate
       if (doCount) {
         const { count } = await supabase.from(table).select("*", { count: "exact", head: true })
-        aggregateResult = { ...aggregateResult, count }
+        aggregateResult = { ...(aggregateResult || {}), count }
       }
       // Note: sum and avg would require raw SQL which we'll skip for security
     }

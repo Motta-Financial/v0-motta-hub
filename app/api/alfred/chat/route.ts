@@ -1,4 +1,4 @@
-import { convertToModelMessages, streamText, tool, type UIMessage } from "ai"
+import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from "ai"
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/server"
 
@@ -512,12 +512,15 @@ You work for Motta Financial, a San Francisco-based CPA firm specializing in tax
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json()
 
+  // AI SDK 6: convertToModelMessages returns Promise<ModelMessage[]>
+  const modelMessages = await convertToModelMessages(messages)
+
   const result = streamText({
     model: "openai/gpt-4o",
     system: SYSTEM_PROMPT,
-    messages: convertToModelMessages(messages),
+    messages: modelMessages,
     tools: alfredTools,
-    maxSteps: 10,
+    stopWhen: stepCountIs(10),
     abortSignal: req.signal,
   })
 

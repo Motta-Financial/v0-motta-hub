@@ -255,7 +255,7 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
     }
 
     // Build client info
-    const firstItem = uniqueWorkItems[0]
+    const firstItem = uniqueWorkItems[0] as any
     const clientInfo = {
       clientKey: clientKey,
       clientName: clientName || firstItem?.ClientName || "Unknown",
