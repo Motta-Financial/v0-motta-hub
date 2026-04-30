@@ -35,7 +35,10 @@ export async function GET(request: Request) {
 
     // Fetch all active team members; we exclude members who are hidden from
     // the Tommy Awards experience to keep the email list clean.
+    // Ganesh Vasan and Thameem JA vote together as "G&T" - they get a combined email.
     const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+    const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
+    
     const { data: members, error } = await supabase
       .from("team_members")
       .select("id, full_name, email")
@@ -43,14 +46,21 @@ export async function GET(request: Request) {
 
     if (error) throw error
 
-    const eligible = (members || []).filter(
-      (m) => m.email && !HIDDEN_MEMBERS.includes(m.full_name),
+    // Separate out the combined voters (G&T) and the regular voters
+    const gtMembers = (members || []).filter(
+      (m) => m.email && COMBINED_VOTERS.includes(m.full_name),
+    )
+    const regularMembers = (members || []).filter(
+      (m) => m.email && !HIDDEN_MEMBERS.includes(m.full_name) && !COMBINED_VOTERS.includes(m.full_name),
     )
 
     // Send one personalized email per recipient so the greeting is correct.
     const ballotUrl = `${appUrl}/tommy-awards`
-    const results = await Promise.all(
-      eligible.map(async (m) => {
+    const results: boolean[] = []
+    
+    // Send to regular voters
+    await Promise.all(
+      regularMembers.map(async (m) => {
         const html = buildTommyReminderHtml({
           recipientName: m.full_name?.split(" ")[0] || "there",
           weekLabel,
@@ -62,16 +72,33 @@ export async function GET(request: Request) {
           subject: `Tommy Awards — Vote for the Week of ${weekLabel}`,
           html,
         })
-        return r.sent > 0
+        results.push(r.sent > 0)
       }),
     )
+    
+    // Send a single combined email to G&T (both Ganesh and Thameem)
+    if (gtMembers.length > 0) {
+      const html = buildTommyReminderHtml({
+        recipientName: "G&T",
+        weekLabel,
+        ballotUrl,
+      })
+      const r = await sendCategoryEmail({
+        category: "tommy_reminder",
+        teamMemberIds: gtMembers.map((m) => m.id),
+        subject: `Tommy Awards — Vote for the Week of ${weekLabel}`,
+        html,
+      })
+      results.push(r.sent > 0)
+    }
 
     const sent = results.filter(Boolean).length
-    const skipped = eligible.length - sent
+    const totalEligible = regularMembers.length + (gtMembers.length > 0 ? 1 : 0)
+    const skipped = totalEligible - sent
 
     return NextResponse.json({
       success: true,
-      total_eligible: eligible.length,
+      total_eligible: totalEligible,
       sent,
       skipped_due_to_preferences: skipped,
       week_label: weekLabel,

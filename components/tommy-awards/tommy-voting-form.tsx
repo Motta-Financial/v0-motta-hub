@@ -108,7 +108,9 @@ export function TommyVotingForm() {
 
     try {
       // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
+      // Ganesh Vasan and Thameem JA vote together as "G&T"
       const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
       
       const { data: members, error: membersError } = await supabase
         .from("team_members")
@@ -120,10 +122,28 @@ export function TommyVotingForm() {
 
       if (membersError) throw membersError
       
+      // Filter out hidden members and the combined voters (they'll be replaced by G&T)
       const filteredMembers = (members || []).filter(
-        (m: { full_name: string }) => !HIDDEN_MEMBERS.includes(m.full_name)
+        (m: { full_name: string }) => 
+          !HIDDEN_MEMBERS.includes(m.full_name) && 
+          !COMBINED_VOTERS.includes(m.full_name)
       )
-      setTeamMembers(filteredMembers)
+      
+      // Add the combined "G&T" voter entry (uses a special composite ID)
+      const gtVoter: TeamMember = {
+        id: "G&T",
+        full_name: "G&T",
+        email: "",
+        avatar_url: null,
+        role: "Combined Voter",
+      }
+      
+      // Insert G&T in alphabetical position
+      const membersWithGT = [...filteredMembers, gtVoter].sort((a, b) => 
+        a.full_name.localeCompare(b.full_name)
+      )
+      
+      setTeamMembers(membersWithGT)
 
       const today = new Date()
       setCurrentYear(today.getFullYear())
@@ -189,12 +209,30 @@ export function TommyVotingForm() {
     const supabase = createClient()
     
     try {
-      const { data: existingBallot, error } = await supabase
-        .from("tommy_award_ballots")
-        .select("*")
-        .eq("voter_id", currentVoter)
-        .eq("week_id", selectedWeekId)
-        .single()
+      // For the combined "G&T" voter, look up ballots by voter_name instead of voter_id
+      // since G&T isn't a real team_member row
+      let existingBallot = null
+      let error = null
+      
+      if (currentVoter === "G&T") {
+        const result = await supabase
+          .from("tommy_award_ballots")
+          .select("*")
+          .eq("voter_name", "G&T")
+          .eq("week_id", selectedWeekId)
+          .single()
+        existingBallot = result.data
+        error = result.error
+      } else {
+        const result = await supabase
+          .from("tommy_award_ballots")
+          .select("*")
+          .eq("voter_id", currentVoter)
+          .eq("week_id", selectedWeekId)
+          .single()
+        existingBallot = result.data
+        error = result.error
+      }
 
       if (error && error.code !== "PGRST116") {
         // PGRST116 = no rows returned, which is fine
@@ -430,12 +468,16 @@ export function TommyVotingForm() {
 
     try {
       const voter = teamMembers.find((m) => m.id === currentVoter)
+      
+      // For the combined "G&T" voter, use "G&T" as both the ID and name
+      const voterId = currentVoter === "G&T" ? "G&T" : currentVoter
+      const voterName = currentVoter === "G&T" ? "G&T" : (voter?.full_name || "Unknown")
 
       const ballotData: Record<string, unknown> = {
         week_id: selectedWeekId,
         week_date: selectedWeekDate,
-        voter_id: currentVoter,
-        voter_name: voter?.full_name || "Unknown",
+        voter_id: voterId,
+        voter_name: voterName,
         first_place_id: firstPlace.memberId,
         first_place_name: firstPlace.memberName,
         first_place_notes: firstPlace.notes,
