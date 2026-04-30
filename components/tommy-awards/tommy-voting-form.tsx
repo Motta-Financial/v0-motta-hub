@@ -152,12 +152,10 @@ export function TommyVotingForm() {
       // (toISOString() converts to UTC which can shift Friday → Saturday for negative offsets)
       const fridayStr = formatLocalDate(friday)
 
-      // Fetch all weeks from the current year for the dropdown
-      const startOfYear = `${today.getFullYear()}-01-01`
+      // Fetch ALL weeks for the dropdown - no time restrictions on submitting/editing ballots
       const { data: weeks, error: weeksError } = await supabase
         .from("tommy_award_weeks")
         .select("id, week_date, week_name, is_active")
-        .gte("week_date", startOfYear)
         .order("week_date", { ascending: false })
 
       if (weeksError) throw weeksError
@@ -376,6 +374,11 @@ export function TommyVotingForm() {
     const week = availableWeeks.find((w) => w.id === weekId)
     setSelectedWeekId(weekId)
     setSelectedWeekDate(week?.week_date || null)
+    // Update the year based on selected week (affects 2026+ rule for honorable mentions/partner votes)
+    if (week?.week_date) {
+      const yearFromWeek = parseInt(week.week_date.split("-")[0], 10)
+      setCurrentYear(yearFromWeek)
+    }
   }
 
   const getFridayOfWeek = (date: Date) => {
