@@ -8,24 +8,11 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Checkbox } from "@/components/ui/checkbox"
-import {
-  Trophy,
-  Flame,
-  Target,
-  Users,
-  Zap,
-  Calendar,
-  Filter,
-  X,
-  Instagram,
-  Twitter,
-  Youtube,
-  ExternalLink,
-} from "lucide-react"
+import { Trophy, Flame, Target, Users, Zap, Calendar, Filter, X } from "lucide-react"
 import { TommyLeaderboard } from "./tommy-leaderboard"
+import { TommyYTDLeaderboard } from "./tommy-ytd-leaderboard"
 import { TommyVotingForm } from "./tommy-voting-form"
 import { TommyRecentBallots } from "./tommy-recent-ballots"
-import Image from "next/image"
 
 interface Week {
   id: string
@@ -160,123 +147,64 @@ export function TommyAwardsPage() {
   return (
     <div className="space-y-8">
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#0a1628] via-[#1a2744] to-[#0d1e36] text-white">
-        {/* Patriots/Brady inspired background pattern */}
         <div className="absolute inset-0 opacity-10">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(198,40,40,0.3),transparent_50%)]" />
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_80%,rgba(0,59,111,0.4),transparent_50%)]" />
           <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#c62828] via-[#d32f2f] to-[#c62828]" />
         </div>
 
-        <div className="relative z-10 p-8">
-          <div className="flex flex-col lg:flex-row items-start lg:items-center gap-8">
-            {/* Tom Brady Image */}
+        <div className="relative z-10 p-8 lg:p-10">
+          <div className="flex flex-col lg:flex-row items-start gap-8">
+            {/* Trophy Icon */}
             <div className="relative flex-shrink-0">
-              <div className="w-32 h-32 lg:w-40 lg:h-40 rounded-full overflow-hidden border-4 border-[#c62828] shadow-2xl shadow-red-900/30">
-                <Image
-                  src="/images/tom-20brady.jpg"
-                  alt="Tom Brady"
-                  width={160}
-                  height={160}
-                  className="object-cover w-full h-full"
-                />
-              </div>
-              <div className="absolute -bottom-2 -right-2 bg-[#c62828] rounded-full p-2 shadow-lg">
-                <Trophy className="h-6 w-6 text-white" />
+              <div className="w-24 h-24 lg:w-28 lg:h-28 rounded-2xl bg-gradient-to-br from-[#c62828] to-[#8b1c1c] flex items-center justify-center shadow-2xl shadow-red-900/30 border border-white/10">
+                <Trophy className="h-12 w-12 lg:h-14 lg:w-14 text-white" />
               </div>
             </div>
 
             {/* Header Content */}
             <div className="flex-1">
-              <div className="flex items-center gap-3 mb-2">
+              <div className="flex items-center gap-3 mb-3">
                 <Badge className="bg-[#c62828] hover:bg-[#b71c1c] text-white border-0 text-xs uppercase tracking-wider">
-                  7x Super Bowl Champion
+                  Weekly Peer Recognition
                 </Badge>
                 <Badge variant="outline" className="border-slate-500 text-slate-300 text-xs uppercase tracking-wider">
-                  TB12
+                  Motta Financial
                 </Badge>
               </div>
-              <h1 className="text-4xl lg:text-5xl font-bold tracking-tight mb-2">Tommy Awards</h1>
-              <p className="text-slate-300 text-lg mb-4">
-                Weekly recognition for demonstrating championship characteristics
+              <h1 className="text-4xl lg:text-5xl font-bold tracking-tight mb-3 text-balance">Tommy Awards</h1>
+              <p className="text-slate-200 text-base lg:text-lg leading-relaxed max-w-3xl text-pretty">
+                A weekly vote among all team members of the firm to vote for who they thought represents Tom Brady the
+                best — whether with their contributions from a work standpoint, going the extra mile, client wins, and
+                most importantly being a good teammate and representing firm culture.
               </p>
-
-              {/* Tom Brady Quote */}
-              <blockquote className="border-l-4 border-[#c62828] pl-4 italic text-slate-400 mb-6">
-                "I didn't come this far to only come this far."
-                <span className="block text-sm mt-1 text-slate-500 not-italic">— Tom Brady</span>
-              </blockquote>
-
-              {/* Social Links */}
-              <div className="flex items-center gap-3">
-                <a
-                  href="https://www.instagram.com/tombrady/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors group"
-                >
-                  <Instagram className="h-5 w-5 text-slate-300 group-hover:text-white" />
-                </a>
-                <a
-                  href="https://twitter.com/TomBrady"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors group"
-                >
-                  <Twitter className="h-5 w-5 text-slate-300 group-hover:text-white" />
-                </a>
-                <a
-                  href="https://www.youtube.com/@TomBrady"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors group"
-                >
-                  <Youtube className="h-5 w-5 text-slate-300 group-hover:text-white" />
-                </a>
-                <a
-                  href="https://tb12sports.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors group text-sm"
-                >
-                  <span className="text-slate-300 group-hover:text-white">TB12 Method</span>
-                  <ExternalLink className="h-4 w-4 text-slate-400 group-hover:text-white" />
-                </a>
-              </div>
             </div>
           </div>
 
-          {/* Tom Brady Characteristics */}
+          {/* Core Characteristics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-8">
             <CharacteristicBadge
               icon={<Flame className="h-5 w-5" />}
-              label="Leadership"
-              description="Lead by example"
+              label="Going the Extra Mile"
+              description="Above & beyond"
             />
             <CharacteristicBadge
               icon={<Target className="h-5 w-5" />}
-              label="Excellence"
-              description="Relentless pursuit"
+              label="Client Wins"
+              description="Delivering results"
             />
-            <CharacteristicBadge icon={<Users className="h-5 w-5" />} label="Teamwork" description="Elevate others" />
-            <CharacteristicBadge icon={<Zap className="h-5 w-5" />} label="Dedication" description="Outwork everyone" />
+            <CharacteristicBadge
+              icon={<Users className="h-5 w-5" />}
+              label="Great Teammate"
+              description="Lifting others up"
+            />
+            <CharacteristicBadge
+              icon={<Zap className="h-5 w-5" />}
+              label="Firm Culture"
+              description="Living our values"
+            />
           </div>
         </div>
-      </div>
-
-      <div className="relative overflow-hidden rounded-xl bg-gradient-to-r from-[#0a1628] to-[#1a2744] p-6 text-center">
-        <div className="absolute inset-0 opacity-5">
-          <div
-            className="absolute inset-0"
-            style={{
-              backgroundImage: "url(/placeholder.svg?height=200&width=1200&query=football field lines pattern)",
-              backgroundSize: "cover",
-            }}
-          />
-        </div>
-        <p className="relative z-10 text-xl lg:text-2xl font-medium text-white italic">
-          "You wanna know which ring is my favorite? The next one."
-        </p>
-        <p className="relative z-10 text-sm text-slate-400 mt-2">— Tom Brady</p>
       </div>
 
       <Card className="border-border bg-card">
@@ -485,6 +413,9 @@ export function TommyAwardsPage() {
         </CardContent>
       </Card>
 
+      {/* Year-to-Date Standings - full width */}
+      <TommyYTDLeaderboard year={filters.year} />
+
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* Left Column - Voting Form */}
@@ -492,7 +423,7 @@ export function TommyAwardsPage() {
           <TommyVotingForm />
         </div>
 
-        {/* Right Column - Leaderboard & Recent */}
+        {/* Right Column - Filtered Leaderboard & Recent */}
         <div className="space-y-8">
           <TommyLeaderboard filters={filters} />
           <TommyRecentBallots filters={filters} />
