@@ -6,7 +6,7 @@ export async function GET(request: Request) {
     const supabase = createAdminClient()
     const { searchParams } = new URL(request.url)
     const search = searchParams.get("search")
-    const limit = Number.parseInt(searchParams.get("limit") || "50")
+    const limit = Number.parseInt(searchParams.get("limit") || "5000")
     const entityType = searchParams.get("entity_type")
     const isProspect = searchParams.get("is_prospect")
     const karbonKey = searchParams.get("karbon_key")
