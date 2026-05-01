@@ -3,41 +3,80 @@ import { createAdminClient } from "@/lib/supabase/server"
 
 const KARBON_API_BASE = "https://api.karbonhq.com/v3"
 
-interface KarbonContact {
+interface KarbonListContact {
   ContactKey: string
-  FullName?: string
-  FirstName?: string
-  LastName?: string
-  MiddleName?: string
-  PreferredName?: string
-  BusinessCards?: Array<{
-    FullName?: string
-    FirstName?: string
-    LastName?: string
-    EmailAddress?: string
-    PhoneNumber?: string
-  }>
+  FullName?: string | null
+  PreferredName?: string | null
+  Salutation?: string | null
+  EmailAddress?: string | null
+  PhoneNumber?: string | null
+  ContactType?: string | null
+  UserDefinedIdentifier?: string | null
+  LastModifiedDateTime?: string | null
 }
 
-interface KarbonOrganization {
+interface KarbonListOrganization {
   OrganizationKey: string
-  Name?: string
-  FullName?: string
-  BusinessCards?: Array<{
-    FullName?: string
-    FirstName?: string
-    LastName?: string
-    EmailAddress?: string
-    PhoneNumber?: string
-  }>
+  FullName?: string | null
+  Name?: string | null
+  EmailAddress?: string | null
+  PhoneNumber?: string | null
+  Website?: string | null
+  ContactType?: string | null
+  LastModifiedDateTime?: string | null
 }
 
-async function fetchKarbonContacts(): Promise<KarbonContact[]> {
-  const contacts: KarbonContact[] = []
-  let nextUrl = `${KARBON_API_BASE}/Contacts?$expand=BusinessCards&$top=100`
+/**
+ * Karbon's /Contacts list endpoint returns FullName formatted as
+ * "LastName, FirstName" (or just an org/business name with no comma).
+ * Parse it back into structured first_name / last_name.
+ *
+ * Examples we've observed:
+ *   "Vincent, Hank"        -> { first: "Hank", last: "Vincent" }
+ *   "A. Bass, Michael"     -> { first: "Michael", last: "A. Bass" }
+ *   "- Business, Citizens" -> { first: "Citizens", last: "- Business" }
+ *   "365, Microsoft"       -> { first: "Microsoft", last: "365" }
+ *   "Doe Jr., John"        -> { first: "John", last: "Doe Jr." }
+ */
+function parseContactFullName(
+  fullName: string | null | undefined,
+  preferredName?: string | null,
+): { first: string | null; last: string | null } {
+  if (!fullName || !fullName.trim()) {
+    // No FullName from Karbon — at least preserve the preferred name as last_name
+    // so the row at least shows *something* instead of "Unknown Contact".
+    return { first: null, last: preferredName?.trim() || null }
+  }
 
-  while (nextUrl) {
-    const response = await fetch(nextUrl, {
+  const trimmed = fullName.trim()
+  const commaIdx = trimmed.indexOf(",")
+
+  if (commaIdx === -1) {
+    // No comma — treat the entire string as the display name (last_name).
+    return { first: null, last: trimmed }
+  }
+
+  const last = trimmed.slice(0, commaIdx).trim()
+  const first = trimmed.slice(commaIdx + 1).trim()
+
+  return {
+    first: first || null,
+    last: last || null,
+  }
+}
+
+/**
+ * Karbon's list endpoints DO NOT return @odata.nextLink. They cap $top at 100
+ * and expose @odata.count for the total. Use offset-based pagination via $skip
+ * until we have all rows.
+ */
+async function fetchAllPages<T>(baseUrl: string, pageSize = 100): Promise<T[]> {
+  const all: T[] = []
+  let skip = 0
+
+  while (true) {
+    const url = `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}$top=${pageSize}&$skip=${skip}`
+    const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${process.env.KARBON_BEARER_TOKEN}`,
         AccessKey: process.env.KARBON_ACCESS_KEY!,
@@ -46,155 +85,101 @@ async function fetchKarbonContacts(): Promise<KarbonContact[]> {
     })
 
     if (!response.ok) {
-      console.error(`[v0] Karbon API error: ${response.status}`)
-      break
+      const body = await response.text()
+      throw new Error(`Karbon API ${response.status}: ${body.slice(0, 300)}`)
     }
 
-    const data = await response.json()
-    contacts.push(...(data.value || []))
-    nextUrl = data["@odata.nextLink"] || null
+    const data = (await response.json()) as {
+      value?: T[]
+      "@odata.count"?: number
+    }
+    const batch = Array.isArray(data.value) ? data.value : []
+    all.push(...batch)
+    if (batch.length < pageSize) break
+    skip += pageSize
+    // Defensive cap so we never spin forever if Karbon misbehaves.
+    if (skip > 50_000) break
   }
 
-  return contacts
+  return all
 }
 
-async function fetchKarbonOrganizations(): Promise<KarbonOrganization[]> {
-  const organizations: KarbonOrganization[] = []
-  let nextUrl = `${KARBON_API_BASE}/Organizations?$expand=BusinessCards&$top=100`
-
-  while (nextUrl) {
-    const response = await fetch(nextUrl, {
-      headers: {
-        Authorization: `Bearer ${process.env.KARBON_BEARER_TOKEN}`,
-        AccessKey: process.env.KARBON_ACCESS_KEY!,
-        Accept: "application/json",
-      },
-    })
-
-    if (!response.ok) {
-      console.error(`[v0] Karbon API error: ${response.status}`)
-      break
-    }
-
-    const data = await response.json()
-    organizations.push(...(data.value || []))
-    nextUrl = data["@odata.nextLink"] || null
-  }
-
-  return organizations
-}
-
-function getFullNameFromContact(contact: KarbonContact): string {
-  // Priority 1: Direct FullName field from contact
-  if (contact.FullName && contact.FullName.trim()) {
-    return contact.FullName.trim()
-  }
-
-  // Priority 2: FullName from primary business card
-  if (contact.BusinessCards && contact.BusinessCards.length > 0) {
-    const primaryCard = contact.BusinessCards[0]
-    if (primaryCard.FullName && primaryCard.FullName.trim()) {
-      return primaryCard.FullName.trim()
-    }
-    // Try to construct from business card name parts
-    const cardParts = [primaryCard.FirstName, primaryCard.LastName].filter(Boolean)
-    if (cardParts.length > 0) {
-      return cardParts.join(" ").trim()
-    }
-  }
-
-  // Priority 3: Construct from contact name parts
-  const nameParts = [contact.FirstName, contact.MiddleName, contact.LastName].filter(Boolean)
-
-  if (nameParts.length > 0) {
-    return nameParts.join(" ").trim()
-  }
-
-  // Priority 4: Use PreferredName
-  if (contact.PreferredName && contact.PreferredName.trim()) {
-    return contact.PreferredName.trim()
-  }
-
-  return ""
-}
-
-function getFullNameFromOrganization(org: KarbonOrganization): string {
-  // Priority 1: Direct FullName or Name field
-  if (org.FullName && org.FullName.trim()) {
-    return org.FullName.trim()
-  }
-  if (org.Name && org.Name.trim()) {
-    return org.Name.trim()
-  }
-
-  // Priority 2: FullName from primary business card
-  if (org.BusinessCards && org.BusinessCards.length > 0) {
-    const primaryCard = org.BusinessCards[0]
-    if (primaryCard.FullName && primaryCard.FullName.trim()) {
-      return primaryCard.FullName.trim()
-    }
-  }
-
-  return ""
-}
-
-export async function POST(request: NextRequest) {
+export async function POST(_request: NextRequest) {
   try {
     const supabase = createAdminClient()
 
-    // Fetch all contacts and organizations from Karbon
-    console.log("[v0] Fetching contacts from Karbon...")
-    const karbonContacts = await fetchKarbonContacts()
-    console.log(`[v0] Fetched ${karbonContacts.length} contacts from Karbon`)
+    console.log("[v0] sync-fullnames: fetching contacts list from Karbon...")
+    const karbonContacts = await fetchAllPages<KarbonListContact>(
+      `${KARBON_API_BASE}/Contacts`,
+    )
+    console.log(`[v0] sync-fullnames: fetched ${karbonContacts.length} contacts`)
 
-    console.log("[v0] Fetching organizations from Karbon...")
-    const karbonOrganizations = await fetchKarbonOrganizations()
-    console.log(`[v0] Fetched ${karbonOrganizations.length} organizations from Karbon`)
+    console.log("[v0] sync-fullnames: fetching organizations list from Karbon...")
+    const karbonOrgs = await fetchAllPages<KarbonListOrganization>(
+      `${KARBON_API_BASE}/Organizations`,
+    )
+    console.log(`[v0] sync-fullnames: fetched ${karbonOrgs.length} organizations`)
 
     let contactsUpdated = 0
+    let contactsSkipped = 0
     let organizationsUpdated = 0
     const errors: string[] = []
 
-    // Update contacts in Supabase
+    // ---------- CONTACTS ----------
+    // contacts.full_name is GENERATED ALWAYS (TRIM(first_name || ' ' || last_name)),
+    // so we MUST write to first_name / last_name only, never full_name itself.
     for (const contact of karbonContacts) {
-      const fullName = getFullNameFromContact(contact)
+      if (!contact.ContactKey) continue
+      const { first, last } = parseContactFullName(contact.FullName, contact.PreferredName)
 
-      if (fullName && contact.ContactKey) {
-        const { error } = await supabase
-          .from("contacts")
-          .update({
-            full_name: fullName,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("karbon_contact_key", contact.ContactKey)
+      if (!first && !last) {
+        contactsSkipped++
+        continue
+      }
 
-        if (error) {
-          errors.push(`Contact ${contact.ContactKey}: ${error.message}`)
-        } else {
-          contactsUpdated++
-        }
+      const update: Record<string, unknown> = {
+        first_name: first,
+        last_name: last,
+        preferred_name: contact.PreferredName || null,
+        karbon_modified_at: contact.LastModifiedDateTime || null,
+        last_synced_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+
+      const { error } = await supabase
+        .from("contacts")
+        .update(update)
+        .eq("karbon_contact_key", contact.ContactKey)
+
+      if (error) {
+        errors.push(`Contact ${contact.ContactKey} (${contact.FullName}): ${error.message}`)
+      } else {
+        contactsUpdated++
       }
     }
 
-    // Update organizations in Supabase
-    for (const org of karbonOrganizations) {
-      const fullName = getFullNameFromOrganization(org)
+    // ---------- ORGANIZATIONS ----------
+    // organizations table has no generated columns — both name and full_name are writable.
+    for (const org of karbonOrgs) {
+      if (!org.OrganizationKey) continue
+      const orgName = (org.FullName || org.Name || "").trim()
+      if (!orgName) continue
 
-      if (fullName && org.OrganizationKey) {
-        const { error } = await supabase
-          .from("organizations")
-          .update({
-            full_name: fullName,
-            name: org.Name || fullName,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("karbon_organization_key", org.OrganizationKey)
+      const { error } = await supabase
+        .from("organizations")
+        .update({
+          name: orgName,
+          full_name: orgName,
+          karbon_modified_at: org.LastModifiedDateTime || null,
+          last_synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("karbon_organization_key", org.OrganizationKey)
 
-        if (error) {
-          errors.push(`Organization ${org.OrganizationKey}: ${error.message}`)
-        } else {
-          organizationsUpdated++
-        }
+      if (error) {
+        errors.push(`Organization ${org.OrganizationKey} (${orgName}): ${error.message}`)
+      } else {
+        organizationsUpdated++
       }
     }
 
@@ -202,23 +187,27 @@ export async function POST(request: NextRequest) {
       success: true,
       summary: {
         karbonContactsFetched: karbonContacts.length,
-        karbonOrganizationsFetched: karbonOrganizations.length,
+        karbonOrganizationsFetched: karbonOrgs.length,
         contactsUpdated,
+        contactsSkipped,
         organizationsUpdated,
-        errors: errors.length,
+        errorCount: errors.length,
       },
-      errors: errors.slice(0, 20), // Return first 20 errors
+      errors: errors.slice(0, 20),
     })
   } catch (error) {
-    console.error("[v0] Error syncing fullnames:", error)
-    return NextResponse.json({ error: "Failed to sync fullnames", details: String(error) }, { status: 500 })
+    console.error("[v0] sync-fullnames error:", error)
+    return NextResponse.json(
+      { error: "Failed to sync names from Karbon", details: String(error) },
+      { status: 500 },
+    )
   }
 }
 
 export async function GET() {
   return NextResponse.json({
-    message: "POST to this endpoint to sync FullName from Karbon to Supabase",
+    message: "POST to sync contact + organization names from Karbon to Supabase",
     description:
-      "This will fetch all contacts and organizations from Karbon API with BusinessCard details and update the full_name field in Supabase.",
+      "Pulls /Contacts and /Organizations list endpoints from Karbon (no $expand, which is rejected by the list endpoint), parses the 'Last, First' FullName format on contacts, and updates only writable columns. The contacts.full_name column is GENERATED ALWAYS in Postgres and is recomputed automatically from first_name + last_name.",
   })
 }
