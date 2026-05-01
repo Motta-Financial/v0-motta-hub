@@ -18,6 +18,11 @@ export async function GET(request: Request) {
     const periodMonth = searchParams.get("periodMonth") // Format: "2024-01" for January 2024
     const periodYear = searchParams.get("periodYear")
 
+    // Per-route override (?includeDeleted=true) is supported for audit views;
+    // every other call gets a clean "live in Karbon" feed by default.
+    const includeDeleted = searchParams.get("includeDeleted") === "true"
+    const search = searchParams.get("search") || searchParams.get("q")
+
     let query = supabase
       .from("work_items")
       .select(`
@@ -47,11 +52,27 @@ export async function GET(request: Request) {
         karbon_url,
         karbon_created_at,
         karbon_modified_at,
+        deleted_in_karbon_at,
         contact_id,
         organization_id,
         client_group_id
       `)
       .order("karbon_modified_at", { ascending: false })
+
+    if (!includeDeleted) {
+      query = query.is("deleted_in_karbon_at", null)
+    }
+
+    if (search && search.trim().length >= 3) {
+      // Hit the GIN-indexed search_vector for fast multi-column text search.
+      query = query.textSearch("search_vector", search.trim(), {
+        type: "websearch",
+        config: "simple",
+      })
+    } else if (search && search.trim()) {
+      const t = search.trim()
+      query = query.or(`title.ilike.%${t}%,karbon_work_item_key.ilike.%${t}%`)
+    }
 
     if (workType) {
       // Exact match (case-insensitive) on work_type — preferred for the

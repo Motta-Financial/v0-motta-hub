@@ -121,10 +121,32 @@ function mapKarbonToSupabase(item: any) {
     custom_fields: item.CustomFields || {},
     related_work_keys: item.RelatedWorkKeys || [],
 
-    // Karbon URL and sync timestamps
+    // Karbon URL and sync timestamps.
+    //
+    // Note: Karbon's /WorkItems LIST endpoint does NOT expose CreatedDate or
+    // LastModifiedDateTime. The fields it returns are: WorkItemKey, Title,
+    // ClientKey/Type/Name, RelatedClientGroup*, AssigneeKey/Name/Email, Start/Due/
+    // Deadline/Completed dates, WorkType, WorkStatus, Primary/SecondaryStatus,
+    // WorkTemplate*, EstimatedBudget, plus DueDateFilingDeadline + DueDateResolveType.
+    //
+    // To approximate "modified at" we fall back to:
+    //   1. CompletedDate (set when the item finishes)
+    //   2. StartDate (set when work begins)
+    // This is good enough for ordering and "freshly synced" tracking, but we
+    // intentionally don't pretend we have real change-detection — the work-item
+    // sync is therefore a full upsert every time (cheap because we're only at
+    // ~3,300 rows and Karbon is fast).
     karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/work/${item.WorkItemKey}`,
-    karbon_created_at: item.CreatedDate || item.CreatedDateTime || null,
-    karbon_modified_at: item.LastModifiedDateTime || item.ModifiedDate || null,
+    karbon_created_at: item.CreatedDate || item.CreatedDateTime || item.StartDate || null,
+    karbon_modified_at:
+      item.LastModifiedDateTime ||
+      item.ModifiedDate ||
+      item.CompletedDate ||
+      item.StartDate ||
+      null,
+    // If Karbon is returning this item, by definition it is NOT deleted. Clear
+    // any stale soft-delete flag (covers the "deleted then restored" case).
+    deleted_in_karbon_at: null,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }
@@ -223,23 +245,14 @@ export async function GET(request: NextRequest) {
 
     const filters: string[] = []
 
-    let lastSyncTimestamp: string | null = null
-    if (incrementalSync && importToSupabase) {
-      const supabase = getSupabaseClient()
-      if (supabase) {
-        const { data: lastSync } = await supabase
-          .from("work_items")
-          .select("karbon_modified_at")
-          .not("karbon_modified_at", "is", null)
-          .order("karbon_modified_at", { ascending: false })
-          .limit(1)
-          .maybeSingle()
-
-        if (lastSync?.karbon_modified_at) {
-          lastSyncTimestamp = lastSync.karbon_modified_at
-        }
-      }
-    }
+    // NOTE: Karbon's /WorkItems list endpoint does not expose
+    // LastModifiedDateTime, so the "incremental via OData $filter" trick we use
+    // for Contacts/Organizations doesn't work here. We always do a full pull —
+    // it's cheap (one network round per ~100 rows) and the upsert on
+    // karbon_work_item_key is idempotent. The `incrementalSync` flag is kept
+    // for API back-compat but no longer changes behavior for work items.
+    const lastSyncTimestamp: string | null = null
+    void incrementalSync // intentionally unused — see note above
 
     if (workType) {
       const types = workType.split(",").map((t) => t.trim())
@@ -319,6 +332,10 @@ export async function GET(request: NextRequest) {
       if (!supabase) {
         importResult = { error: "Supabase not configured" }
       } else {
+        // Capture the timestamp BEFORE we start upserting so we can identify
+        // any row whose `last_synced_at` predates this run as a Karbon-side
+        // deletion (a row that did not come back in this full pull).
+        const syncRunStartedAt = new Date().toISOString()
         let synced = 0
         let errors = 0
         const skipped = 0
@@ -346,12 +363,45 @@ export async function GET(request: NextRequest) {
           }
         }
 
+        // Detect drift between Karbon and Supabase. If Karbon's @odata.count
+        // disagrees with what we just upserted, surface it so the caller (cron,
+        // admin UI, watchdog) can act. This is the primary signal that a sync
+        // is "complete" or not.
+        const karbonReported = totalCount ?? allWorkItems.length
+        const missing = Math.max(0, karbonReported - synced)
+
+        // Soft-delete: any row not touched by this run is a Karbon deletion.
+        // Only do this when the pull succeeded (otherwise a transient Karbon
+        // outage would wipe our entire table). We require errors === 0 AND
+        // synced reasonably matches Karbon's reported count (tolerates a 5%
+        // disagreement between OData @odata.count and what we actually paged).
+        let softDeleted = 0
+        const safeToMarkGhosts =
+          errors === 0 && synced > 0 && synced >= Math.floor(karbonReported * 0.95)
+        if (safeToMarkGhosts) {
+          const { data: ghostRows, error: ghostErr } = await supabase
+            .from("work_items")
+            .update({ deleted_in_karbon_at: new Date().toISOString() })
+            .lt("last_synced_at", syncRunStartedAt)
+            .is("deleted_in_karbon_at", null)
+            .select("id")
+
+          if (ghostErr) {
+            console.warn("[v0] Ghost soft-delete failed:", ghostErr.message)
+          } else {
+            softDeleted = ghostRows?.length || 0
+          }
+        }
+
         importResult = {
-          success: errors === 0,
+          success: errors === 0 && missing === 0,
           synced,
           errors,
           skipped,
-          incrementalSync,
+          karbonReported,
+          missing,
+          softDeleted,
+          incrementalSync: false, // forced — see note above on Karbon limitations
           lastSyncTimestamp,
           errorDetails: errorDetails.length > 0 ? errorDetails.slice(0, 5) : undefined,
         }

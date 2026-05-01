@@ -45,6 +45,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useRouter } from "next/navigation"
+import { WorkItemSearchTrigger } from "@/components/work-item-search"
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -129,6 +130,16 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
       {/* Main content */}
       <div className="md:pl-64">
+        {/* Sticky topbar — gives every page a global Cmd+K work-item search.
+            Lives outside <main> so its sticky behavior survives any page that
+            applies its own positioning context. */}
+        <div className="sticky top-0 z-30 border-b border-stone-200/70 bg-[#EAE6E1]/85 backdrop-blur supports-[backdrop-filter]:bg-[#EAE6E1]/60">
+          <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 pl-14 sm:px-6 lg:px-8 md:pl-6">
+            <div className="flex-1 max-w-xl">
+              <WorkItemSearchTrigger />
+            </div>
+          </div>
+        </div>
         <main className="py-6">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">{children}</div>
         </main>
