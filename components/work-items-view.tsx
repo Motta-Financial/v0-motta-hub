@@ -65,7 +65,7 @@ interface WorkItem {
   ClientGroupName?: string
 }
 
-export function WorkItemsView() {
+export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}) {
   // Use shared context for Karbon work items
   const { allWorkItems, isLoading: loading, error: contextError, refresh } = useKarbonWorkItems()
   
@@ -73,9 +73,15 @@ export function WorkItemsView() {
   const workItems = useMemo(() => allWorkItems as unknown as WorkItem[], [allWorkItems])
   const error = contextError
   
-  const [activeTab, setActiveTab] = useState("active")
+  // Default activeTab to "all" when an explicit search is passed in via the
+  // global Cmd+K palette — otherwise the default "active" tab would hide
+  // the result if the user searched for a completed item.
+  const [activeTab, setActiveTab] = useState(initialSearch ? "all" : "active")
   const [selectedServiceLines, setSelectedServiceLines] = useState<string[]>(["all"])
-  const [searchQuery, setSearchQuery] = useState("")
+  // `initialSearch` lets the global Cmd+K palette deep-link directly to a
+  // pre-filtered view: navigate to /work-items?q=<query> and the search input
+  // (and therefore the visible rows) start scoped to that query.
+  const [searchQuery, setSearchQuery] = useState(initialSearch || "")
   const [selectedFiscalYear, setSelectedFiscalYear] = useState<string>("all")
   const [currentUserEmail, setCurrentUserEmail] = useState<string>("")
   const [showAssignedToMe, setShowAssignedToMe] = useState(false)
