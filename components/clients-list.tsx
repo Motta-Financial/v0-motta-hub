@@ -46,6 +46,7 @@ interface Contact {
   full_name: string | null
   first_name: string | null
   last_name: string | null
+  preferred_name: string | null
   entity_type: string | null
   contact_type: string | null
   primary_email: string | null
@@ -300,7 +301,14 @@ export function ClientsList() {
       id: contact.id,
       clientKey: contact.karbon_contact_key,
       clientName:
-        contact.full_name || `${contact.first_name || ""} ${contact.last_name || ""}`.trim() || "Unknown Contact",
+        contact.full_name?.trim() ||
+        `${contact.first_name || ""} ${contact.last_name || ""}`.trim() ||
+        contact.preferred_name ||
+        // Last-resort fallbacks so the row never reads "Unknown Contact"
+        // for a contact that legitimately has an email/phone but no name in Karbon.
+        contact.primary_email ||
+        contact.phone_primary ||
+        "Unnamed Contact",
       clientType: "individual" as const,
       clientGroup: null,
       entityType: contact.entity_type,
