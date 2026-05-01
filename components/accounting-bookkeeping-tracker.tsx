@@ -134,9 +134,11 @@ export function AccountingBookkeepingTracker() {
 
       console.log("[v0] Fetching bookkeeping data from Supabase for:", formatMonthYear(selectedMonth))
 
-      // Fetch ACCT | Bookkeeping work items from Supabase for active clients
+      // Fetch active ACCT | Bookkeeping work items by work_type (Karbon's
+      // canonical category) so we don't miss legacy rows whose titles use
+      // "BKPG | ..." or other variants. Period filter narrows to the selected month.
       const response = await fetch(
-        `/api/supabase/work-items?titleFilter=ACCT | Bookkeeping&status=active&periodMonth=${monthNum}&periodYear=${yearNum}`,
+        `/api/supabase/work-items?workType=${encodeURIComponent("ACCT | Bookkeeping")}&status=active&periodMonth=${monthNum}&periodYear=${yearNum}`,
       )
 
       if (!response.ok) {

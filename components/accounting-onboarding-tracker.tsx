@@ -28,7 +28,11 @@ export function AccountingOnboardingTracker() {
 
   const fetchOnboardingClients = async () => {
     try {
-      const response = await fetch("/api/supabase/work-items?titleFilter=onboarding&status=active")
+      // Pull every active onboarding work item — both Bookkeeping (BKPG) and
+      // Payroll (PYRL) onboarding flows live under "ACCT | Onboarding (...)".
+      const response = await fetch(
+        `/api/supabase/work-items?workTypePrefix=${encodeURIComponent("ACCT | Onboarding")}&status=active`,
+      )
 
       if (!response.ok) {
         console.error("Failed to fetch onboarding clients")
@@ -38,14 +42,27 @@ export function AccountingOnboardingTracker() {
 
       const data = await response.json()
 
-      // Map work items to onboarding client format
+      // Map work items to onboarding client format. The work-items route
+      // exposes `clientName` (resolved against contacts/organizations) plus
+      // `client_group_name` for grouped Karbon work. Use those rather than
+      // raw foreign keys.
       const onboardingClients = data.workItems.map((item: any) => ({
         id: item.id,
-        name: item.client_name || item.organization_name || "Unknown Client",
+        name:
+          item.clientName ||
+          item.client_group_name ||
+          item.client?.full_name ||
+          item.client?.name ||
+          "Unknown Client",
         status: item.status || "N/A",
-        projectType: item.work_type || "Bookkeeping",
-        phase: item.category || "Onboarding",
-        notes: item.notes || "",
+        projectType: item.work_type || "ACCT | Onboarding",
+        phase:
+          (item.work_type || "").includes("PYRL")
+            ? "Payroll Onboarding"
+            : (item.work_type || "").includes("BKPG")
+              ? "Bookkeeping Onboarding"
+              : "Onboarding",
+        notes: item.description || "",
         dueDate: item.due_date,
       }))
 
