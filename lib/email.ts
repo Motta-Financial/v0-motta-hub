@@ -12,6 +12,7 @@ export const EMAIL_CATEGORIES = {
   debrief: { label: "Debriefs", description: "When a debrief is submitted that involves you" },
   work_item: { label: "Work Items", description: "When a Karbon work item is assigned to you or its status changes" },
   tommy_reminder: { label: "Tommy Awards Reminder", description: "Weekly Friday reminder to submit your Tommy Awards ballot" },
+  tommy_recap: { label: "Tommy Awards Weekly Recap", description: "Weekly Monday recap of Tommy Awards results, written by ALFRED Ai" },
   meeting_summary: { label: "Meeting Summary", description: "Daily / weekly digest of upcoming and recent Calendly & Zoom meetings" },
   broadcast: { label: "Firm Announcements", description: "Custom announcement emails sent by partners or admins" },
   general: { label: "General Notifications", description: "Other in-app notifications not in a more specific category" },
@@ -28,6 +29,7 @@ export function mapNotificationTypeToCategory(notificationType?: string | null):
   if (t.includes("mention") || t === "comment_mention") return "mention"
   if (t.includes("debrief")) return "debrief"
   if (t.includes("work_item") || t.includes("workitem") || t === "assignment") return "work_item"
+  if (t.includes("tommy_recap") || t.includes("tommy-recap")) return "tommy_recap"
   if (t.includes("tommy")) return "tommy_reminder"
   if (t.includes("meeting") || t.includes("calendly") || t.includes("zoom")) return "meeting_summary"
   if (t.includes("broadcast") || t.includes("announcement")) return "broadcast"
