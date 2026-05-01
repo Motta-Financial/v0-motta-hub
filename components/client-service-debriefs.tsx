@@ -118,6 +118,18 @@ export function ClientServiceDebriefs() {
   const [selectedClient, setSelectedClient] = useState<string>("")
   const [selectedWorkItem, setSelectedWorkItem] = useState<string>("")
   const [isTagging, setIsTagging] = useState(false)
+  const [clientSearch, setClientSearch] = useState("")
+  const [workItemSearch, setWorkItemSearch] = useState("")
+
+  // Filter the loaded clients/work-items by the in-dialog search term so users
+  // can find any of the ~1,800 clients without scrolling. Done client-side
+  // because the API now returns the full set in one shot (~100KB payload).
+  const filteredClients = clientSearch
+    ? clients.filter((c) => c.name.toLowerCase().includes(clientSearch.toLowerCase()))
+    : clients
+  const filteredWorkItems = workItemSearch
+    ? workItems.filter((w) => w.title.toLowerCase().includes(workItemSearch.toLowerCase()))
+    : workItems
 
   useEffect(() => {
     fetchDebriefs()
@@ -420,41 +432,82 @@ export function ClientServiceDebriefs() {
                       </DialogHeader>
                       <div className="space-y-4 py-4">
                         <div className="space-y-2">
-                          <Label>Client</Label>
+                          <Label>
+                            Client{" "}
+                            <span className="text-xs font-normal text-gray-500">
+                              ({filteredClients.length} of {clients.length})
+                            </span>
+                          </Label>
+                          <input
+                            type="text"
+                            value={clientSearch}
+                            onChange={(e) => setClientSearch(e.target.value)}
+                            placeholder="Search clients by name or email..."
+                            className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                          />
                           <Select value={selectedClient} onValueChange={setSelectedClient}>
                             <SelectTrigger>
                               <SelectValue placeholder="Select a client..." />
                             </SelectTrigger>
-                            <SelectContent>
-                              {clients.map((client) => (
-                                <SelectItem key={client.id} value={client.id}>
-                                  <div className="flex items-center gap-2">
-                                    <User className="h-3 w-3" />
-                                    {client.name}
-                                    <Badge variant="outline" className="text-xs ml-1">
-                                      {client.type}
-                                    </Badge>
-                                  </div>
-                                </SelectItem>
-                              ))}
+                            <SelectContent className="max-h-72">
+                              {filteredClients.length === 0 ? (
+                                <div className="px-2 py-3 text-sm text-gray-500 text-center">
+                                  No clients match &quot;{clientSearch}&quot;
+                                </div>
+                              ) : (
+                                filteredClients.slice(0, 200).map((client) => (
+                                  <SelectItem key={client.id} value={client.id}>
+                                    <div className="flex items-center gap-2">
+                                      <User className="h-3 w-3" />
+                                      {client.name}
+                                      <Badge variant="outline" className="text-xs ml-1">
+                                        {client.type}
+                                      </Badge>
+                                    </div>
+                                  </SelectItem>
+                                ))
+                              )}
+                              {filteredClients.length > 200 && (
+                                <div className="px-2 py-2 text-xs text-gray-500 text-center border-t">
+                                  Showing first 200. Refine your search to narrow further.
+                                </div>
+                              )}
                             </SelectContent>
                           </Select>
                         </div>
                         <div className="space-y-2">
-                          <Label>Work Item</Label>
+                          <Label>
+                            Work Item{" "}
+                            <span className="text-xs font-normal text-gray-500">
+                              ({filteredWorkItems.length} of {workItems.length})
+                            </span>
+                          </Label>
+                          <input
+                            type="text"
+                            value={workItemSearch}
+                            onChange={(e) => setWorkItemSearch(e.target.value)}
+                            placeholder="Search work items by title..."
+                            className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                          />
                           <Select value={selectedWorkItem} onValueChange={setSelectedWorkItem}>
                             <SelectTrigger>
                               <SelectValue placeholder="Select a work item..." />
                             </SelectTrigger>
-                            <SelectContent>
-                              {workItems.map((item) => (
-                                <SelectItem key={item.id} value={item.id}>
-                                  <div className="flex items-center gap-2">
-                                    <Briefcase className="h-3 w-3" />
-                                    {item.title}
-                                  </div>
-                                </SelectItem>
-                              ))}
+                            <SelectContent className="max-h-72">
+                              {filteredWorkItems.length === 0 ? (
+                                <div className="px-2 py-3 text-sm text-gray-500 text-center">
+                                  No work items match &quot;{workItemSearch}&quot;
+                                </div>
+                              ) : (
+                                filteredWorkItems.slice(0, 200).map((item) => (
+                                  <SelectItem key={item.id} value={item.id}>
+                                    <div className="flex items-center gap-2">
+                                      <Briefcase className="h-3 w-3" />
+                                      {item.title}
+                                    </div>
+                                  </SelectItem>
+                                ))
+                              )}
                             </SelectContent>
                           </Select>
                         </div>

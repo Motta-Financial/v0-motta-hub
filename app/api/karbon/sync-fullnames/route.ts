@@ -123,7 +123,14 @@ export async function POST(_request: NextRequest) {
     let contactsUpdated = 0
     let contactsSkipped = 0
     let organizationsUpdated = 0
+    let workItemsRefreshed = 0
     const errors: string[] = []
+
+    // Build maps from karbon_*_key -> resolved display name. We populate them as
+    // we walk the Karbon contacts/organizations so we can also use them later to
+    // refresh denormalized name columns on linked tables (work_items).
+    const contactKeyToFullName = new Map<string, string>()
+    const orgKeyToFullName = new Map<string, string>()
 
     // ---------- CONTACTS ----------
     // contacts.full_name is GENERATED ALWAYS (TRIM(first_name || ' ' || last_name)),
@@ -155,6 +162,8 @@ export async function POST(_request: NextRequest) {
         errors.push(`Contact ${contact.ContactKey} (${contact.FullName}): ${error.message}`)
       } else {
         contactsUpdated++
+        const computed = [first, last].filter(Boolean).join(" ").trim()
+        if (computed) contactKeyToFullName.set(contact.ContactKey, computed)
       }
     }
 
@@ -180,7 +189,64 @@ export async function POST(_request: NextRequest) {
         errors.push(`Organization ${org.OrganizationKey} (${orgName}): ${error.message}`)
       } else {
         organizationsUpdated++
+        orgKeyToFullName.set(org.OrganizationKey, orgName)
       }
+    }
+
+    // ---------- WORK_ITEMS (denormalized client_name refresh) ----------
+    // Several pages (Tax Estimates, Triage, Service-line dashboards, BusySeason)
+    // read work_items.client_name directly. Karbon originally stored it in
+    // "Last, First" format and it goes stale every time a contact's name
+    // changes upstream. Re-derive it from the just-synced contacts/organizations.
+    console.log("[v0] sync-fullnames: refreshing work_items.client_name...")
+    const { data: workItems, error: wiErr } = await supabase
+      .from("work_items")
+      .select("id, karbon_client_key, client_type, client_name")
+      .not("karbon_client_key", "is", null)
+
+    if (wiErr) {
+      errors.push(`work_items fetch failed: ${wiErr.message}`)
+    } else if (workItems) {
+      const stale: { id: string; client_name: string }[] = []
+      for (const wi of workItems) {
+        if (!wi.karbon_client_key) continue
+        // Prefer org match for "Organization" rows, contact match otherwise.
+        // Fall back to the other map if the primary lookup is empty so that
+        // mis-typed Karbon rows still resolve.
+        const orgName = orgKeyToFullName.get(wi.karbon_client_key)
+        const contactName = contactKeyToFullName.get(wi.karbon_client_key)
+        const expected =
+          wi.client_type === "Organization"
+            ? orgName || contactName
+            : contactName || orgName
+        if (expected && expected !== wi.client_name) {
+          stale.push({ id: wi.id, client_name: expected })
+        }
+      }
+
+      // Run updates with bounded concurrency to keep the route responsive.
+      const CONCURRENCY = 25
+      for (let i = 0; i < stale.length; i += CONCURRENCY) {
+        const batch = stale.slice(i, i + CONCURRENCY)
+        const results = await Promise.all(
+          batch.map((row) =>
+            supabase
+              .from("work_items")
+              .update({ client_name: row.client_name, updated_at: new Date().toISOString() })
+              .eq("id", row.id),
+          ),
+        )
+        for (const res of results) {
+          if (res.error) {
+            errors.push(`work_items update: ${res.error.message}`)
+          } else {
+            workItemsRefreshed++
+          }
+        }
+      }
+      console.log(
+        `[v0] sync-fullnames: refreshed ${workItemsRefreshed} of ${stale.length} stale work_items.client_name`,
+      )
     }
 
     return NextResponse.json({
@@ -191,6 +257,7 @@ export async function POST(_request: NextRequest) {
         contactsUpdated,
         contactsSkipped,
         organizationsUpdated,
+        workItemsRefreshed,
         errorCount: errors.length,
       },
       errors: errors.slice(0, 20),
