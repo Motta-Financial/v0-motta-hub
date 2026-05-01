@@ -53,8 +53,11 @@ function err(message: string): UpsertResult {
 
 export async function upsertContactByKey(key: string): Promise<UpsertResult> {
   const creds = getCreds()
+  // NOTE: AccountingDetail is NOT a navigation property on ContactDTO and
+  // cannot be expanded — Karbon returns 400 if you try. The mapper still reads
+  // contact.AccountingDetail safely (defaults to {}) when the field is absent.
   const { data, error } = await karbonFetch<any>(
-    `/Contacts/${key}?$expand=BusinessCards,AccountingDetail`,
+    `/Contacts/${key}?$expand=BusinessCards`,
     creds,
   )
   if (error || !data) return { ok: false, action: "not-found", error: error || "no data" }
