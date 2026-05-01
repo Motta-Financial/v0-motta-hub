@@ -119,13 +119,22 @@ export async function karbonFetch<T>(
 }
 
 /**
- * Fetch all pages of a paginated endpoint
+ * Fetch all pages of a paginated endpoint.
+ *
+ * `maxPages` defaults to 1,000 (a safety net to prevent infinite loops, not a
+ * functional cap). At Karbon's typical 100/page that's 100,000 records — well
+ * beyond any single Motta entity volume. Pass an explicit number to override.
+ *
+ * Previously this defaulted to 50 (= ~5,000 records), which silently truncated
+ * once we approached that volume — easy way to ship a "complete" sync that's
+ * actually missing rows. The drift sync uses no override now, so it gets the
+ * full 1,000-page ceiling.
  */
 export async function karbonFetchAll<T>(
   endpoint: string,
   config: KarbonApiConfig,
   queryOptions?: ODataQueryOptions,
-  maxPages = 50,
+  maxPages = 1000,
 ): Promise<{ data: T[]; error: string | null; totalCount?: number }> {
   const allItems: T[] = []
   let nextUrl: string | null = `${KARBON_BASE_URL}${endpoint}${queryOptions ? buildODataQuery(queryOptions) : ""}`
@@ -182,6 +191,14 @@ export async function karbonFetchAll<T>(
       }
 
       nextUrl = data["@odata.nextLink"] || null
+      // Surface a loud warning if we hit the cap with more pages remaining —
+      // that's a signal to bump `maxPages` rather than silently truncate.
+      if (nextUrl && pageCount >= maxPages) {
+        console.warn(
+          `[Karbon API] Hit maxPages=${maxPages} for ${endpoint} with @odata.nextLink still set. ` +
+            `Fetched ${allItems.length} of ${totalCount ?? "?"}. Increase maxPages to avoid truncation.`,
+        )
+      }
     } catch (error) {
       // Check if it's a 404 error (common for Tasks/Notes endpoints that don't exist)
       const errorMessage = error instanceof Error ? error.message : String(error)
