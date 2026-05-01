@@ -9,6 +9,11 @@ export async function GET(request: Request) {
     // Get filter parameters
     const serviceLine = searchParams.get("serviceLine")
     const titleFilter = searchParams.get("titleFilter")
+    // work_type filtering — much more accurate than title-matching because Karbon
+    // populates work_type consistently (e.g. "ACCT | Bookkeeping") even when titles
+    // vary across years/clients (e.g. "BKPG | Bookkeeping | Acme | Jan 2025").
+    const workType = searchParams.get("workType") // exact match, e.g. "ACCT | Bookkeeping"
+    const workTypePrefix = searchParams.get("workTypePrefix") // starts-with, e.g. "ACCT | "
     const status = searchParams.get("status")
     const periodMonth = searchParams.get("periodMonth") // Format: "2024-01" for January 2024
     const periodYear = searchParams.get("periodYear")
@@ -47,6 +52,19 @@ export async function GET(request: Request) {
         client_group_id
       `)
       .order("karbon_modified_at", { ascending: false })
+
+    if (workType) {
+      // Exact match (case-insensitive) on work_type — preferred for the
+      // Accounting / Tax / Payroll dashboards because it's the canonical
+      // categorization Karbon ships with each work item.
+      query = query.ilike("work_type", workType)
+    } else if (workTypePrefix) {
+      // Starts-with match for grouping multiple work types under one umbrella
+      // (e.g. all "ACCT | *" rows for the Accounting overview).
+      // Escape `%` and `_` so user-supplied prefixes can't break the LIKE pattern.
+      const escaped = workTypePrefix.replace(/([%_\\])/g, "\\$1")
+      query = query.ilike("work_type", `${escaped}%`)
+    }
 
     if (titleFilter) {
       query = query.ilike("title", `%${titleFilter}%`)

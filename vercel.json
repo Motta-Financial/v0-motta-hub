@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/meeting-summary",
       "schedule": "0 13 * * 1"
+    },
+    {
+      "path": "/api/cron/tommy-weekly-recap",
+      "schedule": "0 16 * * 1"
     }
   ]
 }

@@ -13,8 +13,12 @@ import {
   Pause,
   FileText,
   Users,
-  Calendar,
+  Calculator,
   RefreshCw,
+  Briefcase,
+  Receipt,
+  TrendingUp,
+  type LucideIcon,
 } from "lucide-react"
 
 interface DashboardOverviewProps {
@@ -22,146 +26,163 @@ interface DashboardOverviewProps {
   onNavigateToOnboarding: () => void
 }
 
+interface SupabaseWorkItem {
+  id: string
+  title: string | null
+  status: string | null
+  workflow_status: string | null
+  work_type: string | null
+  due_date: string | null
+  period_start: string | null
+}
+
+// Karbon ships every accounting work item under one of these six work_type
+// values. We render a breakdown card for each so the Overview tab covers the
+// full "ACCT | %" universe — not just the Bookkeeping subset. Order matters:
+// it controls the display order of the per-type breakdown.
+const ACCT_WORK_TYPES: Array<{
+  workType: string
+  label: string
+  icon: LucideIcon
+  color: string
+  bg: string
+  border: string
+}> = [
+  {
+    workType: "ACCT | Bookkeeping",
+    label: "Bookkeeping",
+    icon: FileText,
+    color: "text-blue-600",
+    bg: "bg-blue-50",
+    border: "border-blue-200",
+  },
+  {
+    workType: "ACCT | Payroll",
+    label: "Payroll",
+    icon: Receipt,
+    color: "text-green-600",
+    bg: "bg-green-50",
+    border: "border-green-200",
+  },
+  {
+    workType: "ACCT | 1099s",
+    label: "1099s",
+    icon: FileText,
+    color: "text-amber-600",
+    bg: "bg-amber-50",
+    border: "border-amber-200",
+  },
+  {
+    workType: "ACCT | FP&A",
+    label: "FP&A",
+    icon: TrendingUp,
+    color: "text-indigo-600",
+    bg: "bg-indigo-50",
+    border: "border-indigo-200",
+  },
+  {
+    workType: "ACCT | Onboarding (BKPG)",
+    label: "Onboarding (BKPG)",
+    icon: Users,
+    color: "text-purple-600",
+    bg: "bg-purple-50",
+    border: "border-purple-200",
+  },
+  {
+    workType: "ACCT | Onboarding (PYRL)",
+    label: "Onboarding (PYRL)",
+    icon: Briefcase,
+    color: "text-pink-600",
+    bg: "bg-pink-50",
+    border: "border-pink-200",
+  },
+]
+
+interface WorkTypeStats {
+  workType: string
+  total: number
+  inProgress: number
+  readyToStart: number
+  planned: number
+  waiting: number
+  other: number
+}
+
+type StatusBucket = "inProgress" | "readyToStart" | "planned" | "waiting" | "other"
+
+function bucketStatus(status: string | null | undefined): StatusBucket {
+  const s = (status || "").toLowerCase()
+  if (s.includes("progress")) return "inProgress"
+  if (s.includes("ready")) return "readyToStart"
+  if (s.includes("plan")) return "planned"
+  if (s.includes("wait") || s.includes("hold") || s.includes("info")) return "waiting"
+  return "other"
+}
+
 export function AccountingDashboardOverview({
   onNavigateToBookkeeping,
   onNavigateToOnboarding,
 }: DashboardOverviewProps) {
-  const [currentMonth, setCurrentMonth] = useState("")
   const [loading, setLoading] = useState(true)
-  const [bookkeepingStats, setBookkeepingStats] = useState({
-    total: 0,
-    byStatus: {
-      complete: 0,
-      needInfo: 0,
-      onHold: 0,
-      notReady: 0,
-      review: 0,
-    },
-    avgProgress: 0,
-  })
-
-  const [onboardingStats, setOnboardingStats] = useState({
-    total: 0,
-    byPhase: {
-      proposal: 0,
-      discovery: 0,
-      reconciliation: 0,
-      quality: 0,
-    },
-    byStatus: {
-      accepted: 0,
-      awaiting: 0,
-      draft: 0,
-      na: 0,
-    },
-  })
+  const [refreshing, setRefreshing] = useState(false)
+  const [allItems, setAllItems] = useState<SupabaseWorkItem[]>([])
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const now = new Date()
-    setCurrentMonth(now.toLocaleDateString("en-US", { month: "long", year: "numeric" }))
-    fetchStats()
+    void fetchStats()
   }, [])
 
   const fetchStats = async () => {
-    setLoading(true)
+    setRefreshing(true)
     try {
-      const now = new Date()
-      const monthNum = now.getMonth() + 1
-      const yearNum = now.getFullYear()
-
-      // Fetch ACCT | Bookkeeping work items for current month
-      const bookkeepingResponse = await fetch(
-        `/api/supabase/work-items?titleFilter=ACCT | Bookkeeping&status=active&periodMonth=${monthNum}&periodYear=${yearNum}`,
-      )
-
-      if (bookkeepingResponse.ok) {
-        const data = await bookkeepingResponse.json()
-        const workItems = data.workItems || []
-
-        // Calculate stats from work items
-        let complete = 0
-        let needInfo = 0
-        let onHold = 0
-        let notReady = 0
-        let review = 0
-
-        workItems.forEach((item: any) => {
-          const status = item.workflow_status?.toLowerCase() || ""
-          if (status.includes("complete")) {
-            complete++
-          } else if (status.includes("hold") || status.includes("waiting")) {
-            onHold++
-          } else if (status.includes("review")) {
-            review++
-          } else if (status.includes("info") || status.includes("pending")) {
-            needInfo++
-          } else {
-            notReady++
-          }
-        })
-
-        setBookkeepingStats({
-          total: workItems.length,
-          byStatus: { complete, needInfo, onHold, notReady, review },
-          avgProgress: workItems.length > 0 ? Math.round((complete / workItems.length) * 100) : 0,
-        })
+      // Pull ALL active ACCT | * work items in one request. The new
+      // `workTypePrefix` filter on /api/supabase/work-items matches by
+      // work_type column (Karbon's canonical categorization) — much more
+      // accurate than the prior title-matching which missed Payroll, 1099s,
+      // FP&A, and both onboarding subtypes.
+      const response = await fetch(`/api/supabase/work-items?workTypePrefix=ACCT | &status=active`)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
       }
-
-      // Fetch onboarding work items (work items with "Onboarding" in title)
-      const onboardingResponse = await fetch(`/api/supabase/work-items?titleFilter=Onboarding&status=active`)
-
-      if (onboardingResponse.ok) {
-        const data = await onboardingResponse.json()
-        const workItems = data.workItems || []
-
-        let proposal = 0
-        let discovery = 0
-        let reconciliation = 0
-        let quality = 0
-        let accepted = 0
-        let awaiting = 0
-        let draft = 0
-        let na = 0
-
-        workItems.forEach((item: any) => {
-          const status = item.workflow_status?.toLowerCase() || ""
-          const title = item.title?.toLowerCase() || ""
-
-          // Phase detection
-          if (title.includes("proposal") || status.includes("proposal")) {
-            proposal++
-          } else if (title.includes("discovery") || status.includes("discovery")) {
-            discovery++
-          } else if (title.includes("reconciliation") || status.includes("reconciliation")) {
-            reconciliation++
-          } else if (title.includes("quality") || status.includes("quality")) {
-            quality++
-          }
-
-          // Status detection
-          if (status.includes("accept")) {
-            accepted++
-          } else if (status.includes("await") || status.includes("pending")) {
-            awaiting++
-          } else if (status.includes("draft")) {
-            draft++
-          } else {
-            na++
-          }
-        })
-
-        setOnboardingStats({
-          total: workItems.length,
-          byPhase: { proposal, discovery, reconciliation, quality },
-          byStatus: { accepted, awaiting, draft, na },
-        })
-      }
-    } catch (error) {
-      console.error("[v0] Error fetching accounting stats:", error)
+      const data = await response.json()
+      setAllItems(data.workItems || [])
+      setError(null)
+    } catch (err) {
+      console.error("[v0] Error fetching accounting overview:", err)
+      setError(err instanceof Error ? err.message : "Failed to load accounting data")
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }
+
+  // Build per-work_type stats. We compare case-insensitively because Karbon
+  // occasionally varies casing on legacy rows.
+  const statsByType: Record<string, WorkTypeStats> = {}
+  for (const cfg of ACCT_WORK_TYPES) {
+    statsByType[cfg.workType] = {
+      workType: cfg.workType,
+      total: 0,
+      inProgress: 0,
+      readyToStart: 0,
+      planned: 0,
+      waiting: 0,
+      other: 0,
+    }
+  }
+  for (const item of allItems) {
+    const wt = (item.work_type || "").trim()
+    const match = ACCT_WORK_TYPES.find((c) => c.workType.toLowerCase() === wt.toLowerCase())
+    if (!match) continue
+    const bucket = statsByType[match.workType]
+    bucket.total += 1
+    bucket[bucketStatus(item.status)] += 1
+  }
+
+  const totalCount = allItems.length
+  const totalInProgress = allItems.filter((i) => bucketStatus(i.status) === "inProgress").length
+  const totalReady = allItems.filter((i) => bucketStatus(i.status) === "readyToStart").length
+  const totalWaiting = allItems.filter((i) => bucketStatus(i.status) === "waiting").length
 
   if (loading) {
     return (
@@ -178,7 +199,84 @@ export function AccountingDashboardOverview({
 
   return (
     <div className="space-y-6">
-      {/* Monthly Bookkeeping Overview */}
+      {/* Top-level: every active ACCT | * work item */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Calculator className="h-5 w-5 text-blue-600" />
+                All Accounting Work
+              </CardTitle>
+              <CardDescription>
+                {totalCount} active work item{totalCount === 1 ? "" : "s"} across all ACCT | * work types
+              </CardDescription>
+            </div>
+            <Button onClick={fetchStats} variant="outline" size="sm" disabled={refreshing}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              <AlertCircle className="inline h-4 w-4 mr-1" />
+              {error}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <SummaryStat label="Total Active" value={totalCount} tone="default" />
+            <SummaryStat label="In Progress" value={totalInProgress} tone="blue" icon={Clock} />
+            <SummaryStat label="Ready to Start" value={totalReady} tone="green" icon={CheckCircle2} />
+            <SummaryStat label="Waiting / Hold" value={totalWaiting} tone="amber" icon={Pause} />
+          </div>
+
+          <div>
+            <p className="text-sm font-medium mb-3">Breakdown by Work Type</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {ACCT_WORK_TYPES.map((cfg) => {
+                const s = statsByType[cfg.workType]
+                const Icon = cfg.icon
+                const completionRate = s.total > 0 ? Math.round((s.inProgress / s.total) * 100) : 0
+                return (
+                  <div
+                    key={cfg.workType}
+                    className={`p-4 rounded-lg border ${cfg.border} ${cfg.bg} hover:shadow-sm transition-shadow`}
+                  >
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Icon className={`h-4 w-4 ${cfg.color}`} />
+                        <p className="font-medium text-sm">{cfg.label}</p>
+                      </div>
+                      <Badge variant="outline" className="bg-white">
+                        {s.total}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      <StatusPill label="In Progress" value={s.inProgress} />
+                      <StatusPill label="Ready" value={s.readyToStart} />
+                      <StatusPill label="Waiting" value={s.waiting + s.planned} />
+                    </div>
+                    {s.total > 0 && (
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                          <span>Active progress</span>
+                          <span className="font-semibold">{completionRate}%</span>
+                        </div>
+                        <Progress value={completionRate} className="h-1.5" />
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Drill-in cards: Monthly Bookkeeping */}
       <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={onNavigateToBookkeeping}>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -188,9 +286,8 @@ export function AccountingDashboardOverview({
               </div>
               <div>
                 <CardTitle className="text-lg">Monthly Bookkeeping</CardTitle>
-                <CardDescription className="flex items-center gap-2">
-                  <Calendar className="h-3 w-3" />
-                  {currentMonth} - ACCT | Bookkeeping Work Items
+                <CardDescription>
+                  {statsByType["ACCT | Bookkeeping"]?.total || 0} active ACCT | Bookkeeping work items
                 </CardDescription>
               </div>
             </div>
@@ -198,79 +295,14 @@ export function AccountingDashboardOverview({
           </div>
         </CardHeader>
         <CardContent>
-          <div className="space-y-4">
-            {/* Stats Grid */}
-            <div className="grid grid-cols-4 gap-4">
-              <div className="text-center p-3 bg-muted/50 rounded-lg">
-                <p className="text-2xl font-bold">{bookkeepingStats.total}</p>
-                <p className="text-xs text-muted-foreground">Total Clients</p>
-              </div>
-              <div className="text-center p-3 bg-green-50 rounded-lg">
-                <p className="text-2xl font-bold text-green-600">{bookkeepingStats.byStatus.complete}</p>
-                <p className="text-xs text-muted-foreground">Complete</p>
-              </div>
-              <div className="text-center p-3 bg-yellow-50 rounded-lg">
-                <p className="text-2xl font-bold text-yellow-600">{bookkeepingStats.byStatus.needInfo}</p>
-                <p className="text-xs text-muted-foreground">Need Info</p>
-              </div>
-              <div className="text-center p-3 bg-blue-50 rounded-lg">
-                <p className="text-2xl font-bold text-blue-600">{bookkeepingStats.avgProgress}%</p>
-                <p className="text-xs text-muted-foreground">Completion</p>
-              </div>
-            </div>
-
-            {/* Status Breakdown */}
-            <div className="space-y-2">
-              <p className="text-sm font-medium">Status Breakdown</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex items-center justify-between p-2 bg-green-50 rounded">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-green-600" />
-                    <span className="text-sm">Complete</span>
-                  </div>
-                  <Badge variant="secondary" className="bg-green-100 text-green-800">
-                    {bookkeepingStats.byStatus.complete}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between p-2 bg-yellow-50 rounded">
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4 text-yellow-600" />
-                    <span className="text-sm">Need Info</span>
-                  </div>
-                  <Badge variant="secondary" className="bg-yellow-100 text-yellow-800">
-                    {bookkeepingStats.byStatus.needInfo}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between p-2 bg-orange-50 rounded">
-                  <div className="flex items-center gap-2">
-                    <Pause className="h-4 w-4 text-orange-600" />
-                    <span className="text-sm">On Hold</span>
-                  </div>
-                  <Badge variant="secondary" className="bg-orange-100 text-orange-800">
-                    {bookkeepingStats.byStatus.onHold}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between p-2 bg-red-50 rounded">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="h-4 w-4 text-red-600" />
-                    <span className="text-sm">Not Ready</span>
-                  </div>
-                  <Badge variant="secondary" className="bg-red-100 text-red-800">
-                    {bookkeepingStats.byStatus.notReady}
-                  </Badge>
-                </div>
-              </div>
-            </div>
-
-            <Button variant="outline" className="w-full bg-transparent" onClick={onNavigateToBookkeeping}>
-              View Full Tracker
-              <ChevronRight className="h-4 w-4 ml-2" />
-            </Button>
-          </div>
+          <Button variant="outline" className="w-full bg-transparent" onClick={onNavigateToBookkeeping}>
+            View Full Tracker
+            <ChevronRight className="h-4 w-4 ml-2" />
+          </Button>
         </CardContent>
       </Card>
 
-      {/* Onboarding Clients Overview */}
+      {/* Drill-in cards: Onboarding (covers BKPG + PYRL) */}
       <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={onNavigateToOnboarding}>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -280,94 +312,63 @@ export function AccountingDashboardOverview({
               </div>
               <div>
                 <CardTitle className="text-lg">Onboarding Clients</CardTitle>
-                <CardDescription>Clients in proposal and setup stages</CardDescription>
+                <CardDescription>
+                  {(statsByType["ACCT | Onboarding (BKPG)"]?.total || 0) +
+                    (statsByType["ACCT | Onboarding (PYRL)"]?.total || 0)}{" "}
+                  active ACCT | Onboarding work items (Bookkeeping + Payroll)
+                </CardDescription>
               </div>
             </div>
             <ChevronRight className="h-5 w-5 text-muted-foreground" />
           </div>
         </CardHeader>
         <CardContent>
-          <div className="space-y-4">
-            {/* Stats Grid */}
-            <div className="grid grid-cols-4 gap-4">
-              <div className="text-center p-3 bg-muted/50 rounded-lg">
-                <p className="text-2xl font-bold">{onboardingStats.total}</p>
-                <p className="text-xs text-muted-foreground">Total Clients</p>
-              </div>
-              <div className="text-center p-3 bg-green-50 rounded-lg">
-                <p className="text-2xl font-bold text-green-600">{onboardingStats.byStatus.accepted}</p>
-                <p className="text-xs text-muted-foreground">Accepted</p>
-              </div>
-              <div className="text-center p-3 bg-yellow-50 rounded-lg">
-                <p className="text-2xl font-bold text-yellow-600">{onboardingStats.byStatus.awaiting}</p>
-                <p className="text-xs text-muted-foreground">Awaiting</p>
-              </div>
-              <div className="text-center p-3 bg-blue-50 rounded-lg">
-                <p className="text-2xl font-bold text-blue-600">{onboardingStats.byStatus.draft}</p>
-                <p className="text-xs text-muted-foreground">Draft</p>
-              </div>
-            </div>
-
-            {/* Phase Breakdown */}
-            <div className="space-y-2">
-              <p className="text-sm font-medium">Phase Breakdown</p>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm">Proposal Stage</span>
-                      <span className="text-sm font-semibold">{onboardingStats.byPhase.proposal}</span>
-                    </div>
-                    <Progress
-                      value={
-                        onboardingStats.total > 0 ? (onboardingStats.byPhase.proposal / onboardingStats.total) * 100 : 0
-                      }
-                      className="h-2"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm">Discovery</span>
-                      <span className="text-sm font-semibold">{onboardingStats.byPhase.discovery}</span>
-                    </div>
-                    <Progress
-                      value={
-                        onboardingStats.total > 0
-                          ? (onboardingStats.byPhase.discovery / onboardingStats.total) * 100
-                          : 0
-                      }
-                      className="h-2"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm">Reconciliation</span>
-                      <span className="text-sm font-semibold">{onboardingStats.byPhase.reconciliation}</span>
-                    </div>
-                    <Progress
-                      value={
-                        onboardingStats.total > 0
-                          ? (onboardingStats.byPhase.reconciliation / onboardingStats.total) * 100
-                          : 0
-                      }
-                      className="h-2"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <Button variant="outline" className="w-full bg-transparent" onClick={onNavigateToOnboarding}>
-              View Full Tracker
-              <ChevronRight className="h-4 w-4 ml-2" />
-            </Button>
-          </div>
+          <Button variant="outline" className="w-full bg-transparent" onClick={onNavigateToOnboarding}>
+            View Full Tracker
+            <ChevronRight className="h-4 w-4 ml-2" />
+          </Button>
         </CardContent>
       </Card>
     </div>
   )
 }
+
+// ----- presentation helpers -----
+
+function SummaryStat({
+  label,
+  value,
+  tone,
+  icon: Icon,
+}: {
+  label: string
+  value: number
+  tone: "default" | "blue" | "green" | "amber"
+  icon?: LucideIcon
+}) {
+  const toneClass = {
+    default: "bg-muted/50 text-foreground",
+    blue: "bg-blue-50 text-blue-700",
+    green: "bg-green-50 text-green-700",
+    amber: "bg-amber-50 text-amber-700",
+  }[tone]
+  return (
+    <div className={`text-center p-3 rounded-lg ${toneClass}`}>
+      <div className="flex items-center justify-center gap-1.5 mb-1">
+        {Icon ? <Icon className="h-3.5 w-3.5" /> : null}
+        <p className="text-xs font-medium">{label}</p>
+      </div>
+      <p className="text-2xl font-bold">{value}</p>
+    </div>
+  )
+}
+
+function StatusPill({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="bg-white/60 rounded px-2 py-1 text-center">
+      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{label}</p>
+      <p className="text-sm font-semibold">{value}</p>
+    </div>
+  )
+}
+
