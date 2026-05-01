@@ -69,14 +69,15 @@ export function mapKarbonContactToSupabase(contact: any) {
   const firstName = contact.FirstName || null
   const lastName = contact.LastName || null
   const middleName = contact.MiddleName || null
-  const fullName =
-    contact.FullName || [firstName, middleName, lastName].filter(Boolean).join(" ") || null
+  // NOTE: contacts.full_name is a GENERATED ALWAYS column in Supabase
+  // (TRIM(first_name || ' ' || last_name)) — we must NOT write to it. Postgres
+  // rejects "non-DEFAULT value" inserts. Just persist the parts and let the
+  // database compute the full name.
 
   const primaryEmail = contact.EmailAddress || primaryEmailFromCard || null
 
   return {
     karbon_contact_key: contact.ContactKey,
-    full_name: fullName,
     first_name: firstName,
     last_name: lastName,
     middle_name: middleName,
