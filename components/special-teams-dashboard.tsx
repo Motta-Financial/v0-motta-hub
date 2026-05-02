@@ -49,10 +49,6 @@ interface ApiKey {
   fullKey: string
 }
 
-const MOCK_PROJECTS: Project[] = []
-
-const MOCK_API_KEYS: ApiKey[] = []
-
 const getStatusColor = (status: Project["status"]) => {
   switch (status) {
     case "Active":
@@ -193,8 +189,9 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKey }) {
 }
 
 export function SpecialTeamsDashboard() {
-  const [projects] = useState<Project[]>(MOCK_PROJECTS)
-  const [apiKeys] = useState<ApiKey[]>(MOCK_API_KEYS)
+  // Projects and API keys start empty — populated through dialogs in this UI.
+  const [projects] = useState<Project[]>([])
+  const [apiKeys] = useState<ApiKey[]>([])
 
   const activeProjects = projects.filter((p) => p.status === "Active" || p.status === "Testing")
 

@@ -38,6 +38,9 @@ import {
 
 type ProjectStatus = "Active" | "In Review" | "Blocked" | "Testing" | "Deployed"
 
+// TEAM_MEMBERS is intentionally empty — this dashboard renders an
+// "add members" empty-state until real users wire in the team list.
+// We keep the const so the JSX (which reads .length and .map) stays valid.
 const TEAM_MEMBERS: string[] = []
 
 interface HandoffHistory {
@@ -83,10 +86,6 @@ interface ApiKey {
   addedOn: string
 }
 
-const initialProjects: Project[] = []
-
-const initialApiKeys: ApiKey[] = []
-
 const statusColors: Record<ProjectStatus, string> = {
   Active: "bg-green-500/10 text-green-500 border-green-500/20",
   "In Review": "bg-blue-500/10 text-blue-500 border-blue-500/20",
@@ -96,8 +95,10 @@ const statusColors: Record<ProjectStatus, string> = {
 }
 
 export function DevTeamDashboard() {
-  const [projects, setProjects] = useState<Project[]>(initialProjects)
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>(initialApiKeys)
+  // Projects and API keys start empty — the user populates them through the
+  // dialogs in this dashboard. No placeholder data is preloaded.
+  const [projects, setProjects] = useState<Project[]>([])
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
 
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)

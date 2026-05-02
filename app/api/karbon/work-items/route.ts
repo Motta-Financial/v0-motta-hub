@@ -78,8 +78,15 @@ function mapKarbonToSupabase(item: any) {
     completed_date: item.CompletedDate ? item.CompletedDate.split("T")[0] : null,
     year_end: item.YearEnd ? item.YearEnd.split("T")[0] : null,
     tax_year: parseTaxYear(item),
-    period_start: item.PeriodStart ? item.PeriodStart.split("T")[0] : null,
-    period_end: item.PeriodEnd ? item.PeriodEnd.split("T")[0] : null,
+    // NOTE on period_start / period_end:
+    // Karbon's /WorkItems list does NOT return PeriodStart or PeriodEnd, so
+    // sending `null` on every upsert would clobber the values our
+    // `work_items_derive_period` Postgres trigger derives from the title
+    // (e.g. "| Aug 2025" -> 2025-08-01..2025-08-31).
+    // We only include these fields when Karbon actually surfaces them — the
+    // trigger handles the rest (see scripts/032_work_items_derive_period_from_title.sql).
+    ...(item.PeriodStart ? { period_start: item.PeriodStart.split("T")[0] } : {}),
+    ...(item.PeriodEnd ? { period_end: item.PeriodEnd.split("T")[0] } : {}),
     internal_due_date: item.InternalDueDate ? item.InternalDueDate.split("T")[0] : null,
     regulatory_deadline: item.RegulatoryDeadline ? item.RegulatoryDeadline.split("T")[0] : null,
     client_deadline: item.ClientDeadline ? item.ClientDeadline.split("T")[0] : null,

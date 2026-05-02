@@ -13,6 +13,7 @@
  */
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { getClientType } from "@/lib/client-type"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -118,6 +119,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       karbonTasksRes,
       karbonTimesheetsRes,
       karbonInvoicesRes,
+      ignitionInvoicesRes,
+      ignitionProposalsRes,
       documentsRes,
       meetingsRes,
       debriefsRes,
@@ -209,6 +212,47 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
           .limit(100)
       })(),
 
+      // Ignition invoices — covers both native Ignition syncs (future) and the
+      // historical HubSpot import (ignition_invoice_id LIKE 'hubspot:%').
+      // Linked via the same contact_id / organization_id FK pattern.
+      (() => {
+        const fkClause = `${idCol}.eq.${entityId}`
+        return supabase
+          .from("ignition_invoices")
+          .select(
+            `ignition_invoice_id, invoice_number, status, amount, amount_paid,
+             amount_outstanding, currency, invoice_date, due_date, paid_at,
+             voided_at, sent_at, raw_payload, last_event_at`,
+          )
+          .or(fkClause)
+          .order("invoice_date", { ascending: false, nullsFirst: false })
+          .limit(200)
+      })(),
+
+      // Ignition proposals — linked via FK (organization_id / contact_id).
+      // Embeds the active service line items (ignition_proposal_services) so the
+      // UI can show recurring cadence and per-service price breakdowns under
+      // each proposal without an extra round-trip.
+      (() => {
+        const fkClause = `${idCol}.eq.${entityId}`
+        return supabase
+          .from("ignition_proposals")
+          .select(
+            `proposal_id, proposal_number, title, status, client_name, client_email,
+             total_value, one_time_total, recurring_total, recurring_frequency, currency,
+             sent_at, accepted_at, completed_at, lost_at, lost_reason, archived_at, revoked_at,
+             signed_url, client_manager, client_partner, proposal_sent_by,
+             billing_starts_on, effective_start_date, last_event_at, created_at, updated_at,
+             services:ignition_proposal_services (
+               id, service_name, description, quantity, unit_price, total_amount,
+               currency, billing_frequency, billing_type, status, ordinal
+             )`,
+          )
+          .or(fkClause)
+          .order("created_at", { ascending: false, nullsFirst: false })
+          .limit(100)
+      })(),
+
       // Documents
       supabase
         .from("documents")
@@ -273,6 +317,79 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const karbonTasks = karbonTasksRes.data || []
     const karbonTimesheets = karbonTimesheetsRes.data || []
     const karbonInvoices = karbonInvoicesRes.data || []
+    const ignitionInvoices = ignitionInvoicesRes.data || []
+    const ignitionProposals = ignitionProposalsRes.data || []
+
+    // ── Unified Invoices ─────────────────────────────────────────────────
+    // Normalizes Karbon and Ignition (incl. legacy HubSpot) invoices into a
+    // single shape so the UI can render one list. The original arrays remain
+    // available for any downstream consumer that needs source-specific fields.
+    type UnifiedInvoice = {
+      id: string
+      source: "karbon" | "ignition" | "hubspot"
+      invoice_number: string | null
+      status: string | null
+      amount: number
+      amount_paid: number
+      amount_outstanding: number
+      currency: string
+      issued_date: string | null
+      due_date: string | null
+      paid_date: string | null
+      work_item_title: string | null
+      external_url: string | null
+      sort_key: number
+    }
+    const dateMs = (d: any) =>
+      d ? new Date(d).getTime() || 0 : 0
+    const unifiedInvoices: UnifiedInvoice[] = [
+      ...karbonInvoices.map((inv: any): UnifiedInvoice => ({
+        id: `karbon:${inv.id}`,
+        source: "karbon",
+        invoice_number: inv.invoice_number ?? null,
+        status: (inv.status || "").toLowerCase() || null,
+        amount: Number(inv.total_amount) || 0,
+        amount_paid:
+          inv.status?.toLowerCase() === "paid" ? Number(inv.total_amount) || 0 : 0,
+        amount_outstanding:
+          inv.status?.toLowerCase() === "paid" ? 0 : Number(inv.total_amount) || 0,
+        currency: inv.currency || "USD",
+        issued_date: inv.issued_date ?? null,
+        due_date: inv.due_date ?? null,
+        paid_date: inv.paid_date ?? null,
+        work_item_title: inv.work_item_title ?? null,
+        external_url: inv.karbon_url ?? null,
+        sort_key: dateMs(inv.issued_date) || dateMs(inv.due_date),
+      })),
+      ...ignitionInvoices.map((inv: any): UnifiedInvoice => {
+        // HubSpot rows are flagged via the ignition_invoice_id namespace;
+        // raw_payload.associated_deal preserves the original deal title for
+        // display so users see context that's missing from the bare invoice.
+        const isHubspot =
+          typeof inv.ignition_invoice_id === "string" &&
+          inv.ignition_invoice_id.startsWith("hubspot:")
+        const dealTitle =
+          inv.raw_payload && typeof inv.raw_payload === "object"
+            ? (inv.raw_payload.associated_deal as string | null) || null
+            : null
+        return {
+          id: inv.ignition_invoice_id,
+          source: isHubspot ? "hubspot" : "ignition",
+          invoice_number: inv.invoice_number ?? null,
+          status: inv.status || null,
+          amount: Number(inv.amount) || 0,
+          amount_paid: Number(inv.amount_paid) || 0,
+          amount_outstanding: Number(inv.amount_outstanding) || 0,
+          currency: inv.currency || "USD",
+          issued_date: inv.invoice_date ?? null,
+          due_date: inv.due_date ?? null,
+          paid_date: inv.paid_at ?? null,
+          work_item_title: dealTitle,
+          external_url: null, // HubSpot URLs aren't exported; native Ignition has no public URL
+          sort_key: dateMs(inv.invoice_date) || dateMs(inv.due_date),
+        }
+      }),
+    ].sort((a, b) => b.sort_key - a.sort_key)
     const documents = documentsRes.data || []
     const meetings = meetingsRes.data || []
     const debriefs = debriefsRes.data || []
@@ -331,12 +448,24 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       totalDocuments: documents.length,
       totalMeetings: meetings.length,
       totalDebriefs: debriefs.length,
-      totalInvoices: karbonInvoices.length,
-      totalInvoicedAmount: karbonInvoices.reduce(
-        (sum: number, inv: any) => sum + (Number(inv.total_amount) || 0),
+      // Unified invoice stats span Karbon + Ignition + legacy HubSpot.
+      totalInvoices: unifiedInvoices.length,
+      totalInvoicedAmount: unifiedInvoices.reduce(
+        (sum, inv) => sum + inv.amount,
         0,
       ),
-      totalUnpaidAmount: karbonInvoices
+      totalPaidAmount: unifiedInvoices.reduce(
+        (sum, inv) => sum + inv.amount_paid,
+        0,
+      ),
+      totalUnpaidAmount: unifiedInvoices.reduce(
+        (sum, inv) => sum + inv.amount_outstanding,
+        0,
+      ),
+      // Legacy field kept for any downstream consumers still referencing only
+      // Karbon-sourced billing. Will go away once the UI is fully migrated.
+      totalKarbonInvoices: karbonInvoices.length,
+      totalKarbonUnpaid: karbonInvoices
         .filter(
           (inv: any) =>
             inv.status &&
@@ -345,6 +474,21 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         .reduce((sum: number, inv: any) => sum + (Number(inv.total_amount) || 0), 0),
       totalBillableMinutes: karbonTimesheets.reduce(
         (sum: number, t: any) => sum + (Number(t.minutes) || 0),
+        0,
+      ),
+      totalProposals: ignitionProposals.length,
+      activeProposals: ignitionProposals.filter(
+        (p: any) =>
+          !p.archived_at &&
+          !p.revoked_at &&
+          !p.lost_at &&
+          (p.status || "").toLowerCase() !== "lost",
+      ).length,
+      acceptedProposals: ignitionProposals.filter(
+        (p: any) => (p.status || "").toLowerCase() === "accepted",
+      ).length,
+      totalProposalValue: ignitionProposals.reduce(
+        (sum: number, p: any) => sum + (Number(p.total_value) || 0),
         0,
       ),
     }
@@ -404,6 +548,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       type: isOrg ? "Business" : "Individual",
       entityType: row.entity_type || row.contact_type || null,
       contactType: row.contact_type || null,
+      clientType: getClientType(kind, row.entity_type),
       status: row.status || "Active",
       isProspect: !!row.is_prospect || row.contact_type === "Prospect",
 
@@ -544,6 +689,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       karbonTasks,
       karbonTimesheets,
       karbonInvoices,
+      ignitionInvoices,
+      unifiedInvoices,
+      ignitionProposals,
       documents,
       meetings,
       debriefs,

@@ -6,6 +6,25 @@ import {
   resolveRecipientsForCategory,
   sendEmail,
 } from "@/lib/email"
+import { postDebriefNoteToKarbon } from "@/lib/karbon/post-debrief-note"
+
+const KARBON_TENANT_BASE = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
+
+/**
+ * Build the same `https://app2.karbonhq.com/<tenant>#/...` URLs we already
+ * persist on contacts/organizations/work_items, derived directly from the
+ * Karbon entity key. Used for email deep-link rendering when the related
+ * record was passed in from the form (which only carries the key, not the URL).
+ */
+function buildKarbonUrl(
+  type: "contact" | "organization" | "work",
+  key?: string | null,
+): string | null {
+  if (!key) return null
+  if (type === "contact") return `${KARBON_TENANT_BASE}/contacts/${key}`
+  if (type === "organization") return `${KARBON_TENANT_BASE}/organizations/${key}`
+  return `${KARBON_TENANT_BASE}/work/${key}`
+}
 
 export async function GET(request: NextRequest) {
   const supabase = createAdminClient()
@@ -138,6 +157,28 @@ export async function POST(request: NextRequest) {
 
     await createDebriefNotifications(createdDebrief, body.team_member, body)
 
+    // Push the debrief into Karbon as a Note attached to every related work
+    // item AND every related contact/organization timeline. This is best-effort
+    // — a Karbon outage or credential issue must NOT block the debrief or the
+    // team email. We log success/failure for the admin Karbon sync dashboard.
+    try {
+      const karbonResult = await postDebriefNoteToKarbon(createdDebrief, body)
+      if (karbonResult.ok) {
+        console.log(
+          `[v0] Karbon note created (${karbonResult.noteKey}) attached to ${karbonResult.attachedTimelines} timeline(s)`,
+        )
+      } else if (karbonResult.skipped) {
+        console.log(`[v0] Karbon note push skipped: ${karbonResult.skipped}`)
+      } else if (karbonResult.error) {
+        console.warn(`[v0] Karbon note push failed: ${karbonResult.error}`)
+      }
+    } catch (karbonErr) {
+      console.warn(
+        "[v0] Unexpected error pushing debrief to Karbon:",
+        karbonErr instanceof Error ? karbonErr.message : karbonErr,
+      )
+    }
+
     return NextResponse.json({ debrief: createdDebrief })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error"
@@ -213,6 +254,36 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         .map((tm) => tm.email as string)
 
       if (recipientEmails.length > 0) {
+        // Build Karbon deep-link arrays from the related entities that came in
+        // with the form payload. The URLs use the tenant-scoped Karbon UI
+        // pattern that matches what we already store on the contacts /
+        // organizations / work_items tables.
+        const relatedClientsForEmail = (body?.related_clients || [])
+          .filter((c: any) => c?.name)
+          .map((c: any) => ({
+            name: c.name,
+            type: c.type,
+            karbonUrl: buildKarbonUrl(
+              c.type === "organization" ? "organization" : "contact",
+              c.karbon_key,
+            ),
+          }))
+        const relatedWorkItemsForEmail = (body?.related_work_items || [])
+          .filter((w: any) => w?.title)
+          .map((w: any) => ({
+            title: w.title,
+            workType: w.work_type || null,
+            karbonUrl: buildKarbonUrl("work", w.karbon_key),
+          }))
+
+        const followUpDateLabel = debrief.follow_up_date
+          ? new Date(debrief.follow_up_date).toLocaleDateString("en-US", {
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
+          : undefined
+
         const html = buildDebriefEmailHtml({
           authorName: authorName || "A team member",
           clientName,
@@ -228,6 +299,10 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
           services: body?.services || [],
           researchTopics: body?.research_topics || undefined,
           feeAdjustment: body?.fee_adjustment || undefined,
+          feeAdjustmentReason: body?.fee_adjustment_reason || undefined,
+          followUpDate: followUpDateLabel,
+          relatedClients: relatedClientsForEmail,
+          relatedWorkItems: relatedWorkItemsForEmail,
           debriefUrl,
         })
 

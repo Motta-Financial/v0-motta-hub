@@ -61,6 +61,14 @@ interface ClientBundle {
     type: string
     entityType: string | null
     contactType: string | null
+    /**
+     * Unified, filing-form-aware client type label derived on the server via
+     * `lib/client-type.getClientType()`. Examples: "Individual (1040)",
+     * "Partnership (1065)", "S-Corp (1120-S)", "C-Corp (1120)", "Trust (1041)",
+     * "Non-Profit (990)", "Sole Proprietor (Schedule C)", or "Business" /
+     * "Individual" when the source data is too sparse to classify.
+     */
+    clientType: string
     status: string | null
     isProspect: boolean
     contactInfo: {
@@ -178,6 +186,73 @@ interface ClientBundle {
     work_item_title: string | null
     karbon_url: string | null
   }>
+  /**
+   * Server-merged invoice list spanning Karbon, Ignition, and the legacy
+   * HubSpot import. Use this in the Invoices tab — the source-specific
+   * arrays (karbonInvoices) remain available only for backward compat.
+   */
+  unifiedInvoices: Array<{
+    id: string
+    source: "karbon" | "ignition" | "hubspot"
+    invoice_number: string | null
+    status: string | null
+    amount: number
+    amount_paid: number
+    amount_outstanding: number
+    currency: string
+    issued_date: string | null
+    due_date: string | null
+    paid_date: string | null
+    work_item_title: string | null
+    external_url: string | null
+  }>
+  ignitionProposals: Array<{
+    proposal_id: string
+    proposal_number: string | null
+    title: string | null
+    status: string | null
+    client_name: string | null
+    client_email: string | null
+    total_value: number | null
+    one_time_total: number | null
+    recurring_total: number | null
+    recurring_frequency: string | null
+    currency: string | null
+    sent_at: string | null
+    accepted_at: string | null
+    completed_at: string | null
+    lost_at: string | null
+    lost_reason: string | null
+    archived_at: string | null
+    revoked_at: string | null
+    signed_url: string | null
+    client_manager: string | null
+    client_partner: string | null
+    proposal_sent_by: string | null
+    billing_starts_on: string | null
+    effective_start_date: string | null
+    last_event_at: string | null
+    created_at: string | null
+    updated_at: string | null
+    /**
+     * Live recurring service line items from ignition_proposal_services. Only
+     * present on accepted proposals — drafts/sent proposals don't yet have an
+     * "active services" snapshot in Ignition.
+     */
+    services?: Array<{
+      id: string
+      service_name: string
+      description: string | null
+      quantity: number | null
+      unit_price: number | null
+      total_amount: number | null
+      currency: string | null
+      billing_frequency: string | null
+      billing_type: string | null
+      status: string | null
+      ordinal: number | null
+    }> | null
+  }>
   documents: Array<{
     id: string
     name: string | null
@@ -247,12 +322,16 @@ interface ClientBundle {
     totalInvoicedAmount: number
     totalUnpaidAmount: number
     totalBillableMinutes: number
+    totalProposals: number
+    activeProposals: number
+    acceptedProposals: number
+    totalProposalValue: number
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────���────────────────────────────────────
 
 function formatDate(iso: string | null | undefined, pattern = "MMM d, yyyy"): string | null {
   if (!iso) return null
@@ -450,7 +529,39 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     )
   }
 
-  const { client, workItems, karbonTasks, karbonInvoices, documents, karbonTimesheets, stats } = data
+  const {
+    client,
+    workItems,
+    karbonTasks,
+    karbonInvoices,
+    unifiedInvoices,
+    ignitionProposals,
+    documents,
+    karbonTimesheets,
+    stats,
+  } = data
+  // Use the server-merged unified list when present. Older API responses
+  // didn't include it — in that case we synthesize the same shape from
+  // karbonInvoices so the Invoices tab still renders something useful.
+  const invoices =
+    unifiedInvoices ??
+    karbonInvoices.map((inv) => ({
+      id: `karbon:${inv.id}`,
+      source: "karbon" as const,
+      invoice_number: inv.invoice_number,
+      status: inv.status,
+      amount: Number(inv.total_amount) || 0,
+      amount_paid:
+        inv.status?.toLowerCase() === "paid" ? Number(inv.total_amount) || 0 : 0,
+      amount_outstanding:
+        inv.status?.toLowerCase() === "paid" ? 0 : Number(inv.total_amount) || 0,
+      currency: inv.currency || "USD",
+      issued_date: inv.issued_date,
+      due_date: inv.due_date,
+      paid_date: inv.paid_date,
+      work_item_title: inv.work_item_title,
+      external_url: inv.karbon_url,
+    }))
 
   return (
     <div className="flex flex-col gap-6 pb-12">
@@ -475,9 +586,17 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                   )}
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <Badge variant="secondary">{client.type}</Badge>
-                  {client.entityType ? <Badge variant="outline">{client.entityType}</Badge> : null}
-                  {client.contactType ? <Badge variant="outline">{client.contactType}</Badge> : null}
+                  {/*
+                   * Single, filing-form-aware Client Type badge replaces the
+                   * old triple-stack of {type, entityType, contactType}. The
+                   * server resolves a unified label like "Partnership (1065)"
+                   * via lib/client-type so the badge is consistent with the
+                   * Clients list and any future filters.
+                   */}
+                  <Badge variant="secondary">{client.clientType || client.type}</Badge>
+                  {client.contactType && client.contactType !== client.clientType ? (
+                    <Badge variant="outline">{client.contactType}</Badge>
+                  ) : null}
                   {client.status ? (
                     <Badge variant={statusVariant(client.status)}>{client.status}</Badge>
                   ) : null}
@@ -528,8 +647,20 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
       </Card>
 
       {/* ═════ Stats row ═════ */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
         <StatCard icon={Briefcase} label="Active Work" value={stats.activeWorkItems} sub={`${stats.totalWorkItems} total`} />
+        <StatCard
+          icon={ClipboardList}
+          label="Proposals"
+          value={stats.totalProposals}
+          sub={
+            stats.acceptedProposals
+              ? `${stats.acceptedProposals} accepted`
+              : stats.activeProposals
+              ? `${stats.activeProposals} active`
+              : undefined
+          }
+        />
         <StatCard icon={CheckSquare} label="Open Tasks" value={stats.openTasks} sub={`${stats.totalTasks} total`} />
         <StatCard icon={Mail} label="Emails" value={stats.totalEmails} />
         <StatCard icon={StickyNote} label="Notes" value={stats.totalNotes} />
@@ -575,6 +706,14 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
             {stats.totalNotes > 0 ? (
               <Badge variant="secondary" className="ml-2 h-5 px-1.5">
                 {stats.totalNotes}
+              </Badge>
+            ) : null}
+          </TabsTrigger>
+          <TabsTrigger value="proposals">
+            Proposals
+            {stats.totalProposals > 0 ? (
+              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
+                {stats.totalProposals}
               </Badge>
             ) : null}
           </TabsTrigger>
@@ -1027,11 +1166,160 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         </TabsContent>
 
         {/* ── Invoices ──────────────────────────────────────────────────── */}
+        {/* ── Proposals (Ignition) ──────────────────────────────────────── */}
+        <TabsContent value="proposals" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center justify-between">
+                <span>Proposals ({ignitionProposals.length})</span>
+                <span className="text-sm font-normal text-muted-foreground">
+                  {stats.acceptedProposals > 0 ? (
+                    <>
+                      Accepted: {stats.acceptedProposals}
+                      <span className="mx-2">•</span>
+                    </>
+                  ) : null}
+                  Total Value: {formatCurrency(stats.totalProposalValue)}
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {ignitionProposals.length === 0 ? (
+                <EmptyState message="No proposals synced from Ignition for this client." />
+              ) : (
+                <ScrollArea className="max-h-[600px]">
+                  <div className="divide-y">
+                    {ignitionProposals.map((p) => {
+                      // Resolve the most informative status label and a date stamp
+                      // describing the most recent state transition. Lifecycle
+                      // priority: revoked > archived > lost > completed > accepted > sent > draft.
+                      const lifecycle =
+                        p.revoked_at
+                          ? { label: "Revoked", date: p.revoked_at, variant: "destructive" as const }
+                          : p.archived_at
+                          ? { label: "Archived", date: p.archived_at, variant: "outline" as const }
+                          : p.lost_at || (p.status || "").toLowerCase() === "lost"
+                          ? { label: "Lost", date: p.lost_at, variant: "destructive" as const }
+                          : p.completed_at
+                          ? { label: "Completed", date: p.completed_at, variant: "default" as const }
+                          : p.accepted_at || (p.status || "").toLowerCase() === "accepted"
+                          ? { label: "Accepted", date: p.accepted_at, variant: "default" as const }
+                          : p.sent_at || (p.status || "").toLowerCase() === "sent"
+                          ? { label: "Sent", date: p.sent_at, variant: "secondary" as const }
+                          : { label: p.status || "Draft", date: p.created_at, variant: "outline" as const }
+
+                      return (
+                        <div key={p.proposal_id} className="p-4 flex items-start justify-between gap-4 hover:bg-muted/30 transition-colors">
+                          <div className="flex flex-col gap-1.5 min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3 className="font-medium text-sm truncate">
+                                {p.title || `Proposal ${p.proposal_number || p.proposal_id.slice(0, 8)}`}
+                              </h3>
+                              <Badge variant={lifecycle.variant} className="text-xs">
+                                {lifecycle.label}
+                              </Badge>
+                              {p.proposal_number && p.title ? (
+                                <span className="text-xs text-muted-foreground">#{p.proposal_number}</span>
+                              ) : null}
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                              {lifecycle.date ? (
+                                <span>
+                                  {lifecycle.label} {formatDate(lifecycle.date)}
+                                </span>
+                              ) : null}
+                              {p.billing_starts_on ? (
+                                <>
+                                  <span>•</span>
+                                  <span>Billing starts {formatDate(p.billing_starts_on)}</span>
+                                </>
+                              ) : null}
+                              {p.client_partner ? (
+                                <>
+                                  <span>•</span>
+                                  <span>Partner: {p.client_partner}</span>
+                                </>
+                              ) : null}
+                              {p.client_manager && p.client_manager !== p.client_partner ? (
+                                <>
+                                  <span>•</span>
+                                  <span>Manager: {p.client_manager}</span>
+                                </>
+                              ) : null}
+                            </div>
+                            {p.lost_reason ? (
+                              <p className="text-xs text-muted-foreground italic">
+                                Reason: {p.lost_reason}
+                              </p>
+                            ) : null}
+                            {/*
+                             * Inline service line items. We sort by ordinal to
+                             * preserve the proposal's original line order and
+                             * suppress the section entirely when there are no
+                             * services (typical for non-accepted proposals).
+                             */}
+                            {p.services && p.services.length > 0 ? (
+                              <ul className="mt-1.5 flex flex-col gap-1 rounded-md border bg-muted/30 px-2.5 py-1.5">
+                                {[...p.services]
+                                  .sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0))
+                                  .map((s) => (
+                                    <li
+                                      key={s.id}
+                                      className="flex items-center justify-between gap-3 text-xs"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <span className="truncate font-medium">{s.service_name}</span>
+                                        {s.billing_frequency ? (
+                                          <Badge variant="outline" className="h-4 px-1 text-[10px] font-normal capitalize">
+                                            {s.billing_frequency.replace(/_/g, " ")}
+                                          </Badge>
+                                        ) : null}
+                                      </div>
+                                      <span className="text-muted-foreground shrink-0">
+                                        {formatCurrency(s.total_amount, s.currency || p.currency || "USD")}
+                                        {s.quantity && s.quantity > 1 ? (
+                                          <span className="ml-1 text-[10px]">x{s.quantity}</span>
+                                        ) : null}
+                                      </span>
+                                    </li>
+                                  ))}
+                              </ul>
+                            ) : null}
+                          </div>
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <span className="font-semibold">
+                              {formatCurrency(p.total_value, p.currency || "USD")}
+                            </span>
+                            {p.recurring_total && p.recurring_total > 0 ? (
+                              <span className="text-xs text-muted-foreground">
+                                {formatCurrency(p.recurring_total, p.currency || "USD")}/
+                                {(p.recurring_frequency || "month").toLowerCase()}
+                              </span>
+                            ) : null}
+                            {p.signed_url ? (
+                              <Button asChild variant="ghost" size="sm" className="h-7 px-2 -mr-2">
+                                <a href={p.signed_url} target="_blank" rel="noreferrer">
+                                  <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                                  View
+                                </a>
+                              </Button>
+                            ) : null}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </ScrollArea>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="invoices" className="mt-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center justify-between">
-                <span>Invoices ({karbonInvoices.length})</span>
+                <span>Invoices ({invoices.length})</span>
                 <span className="text-sm font-normal text-muted-foreground">
                   Unpaid: {formatCurrency(stats.totalUnpaidAmount)}
                   <span className="mx-2">•</span>
@@ -1040,27 +1328,44 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              {karbonInvoices.length === 0 ? (
-                <EmptyState message="No invoices synced for this client." />
+              {invoices.length === 0 ? (
+                <EmptyState message="No invoices on file for this client." />
               ) : (
                 <ScrollArea className="max-h-[600px]">
                   <div className="divide-y">
-                    {karbonInvoices.map((inv) => (
-                      <div key={inv.id} className="p-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition-colors">
+                    {invoices.map((inv) => (
+                      <div
+                        key={inv.id}
+                        className="p-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition-colors"
+                      >
                         <div className="flex flex-col gap-1 min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
                             <h3 className="font-medium text-sm">
-                              #{inv.invoice_number || inv.id.slice(0, 8)}
+                              #{inv.invoice_number || inv.id.split(":").pop()?.slice(0, 8)}
                             </h3>
-                            <Badge variant={statusVariant(inv.status)} className="text-xs capitalize">
+                            <Badge
+                              variant={statusVariant(inv.status)}
+                              className="text-xs capitalize"
+                            >
                               {inv.status || "draft"}
+                            </Badge>
+                            {/*
+                             * Source pill — distinguishes Karbon (current),
+                             * Ignition (current proposals → invoices), and
+                             * HubSpot (legacy pre-Ignition billing).
+                             */}
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] h-4 px-1 font-normal capitalize text-muted-foreground"
+                            >
+                              {inv.source}
                             </Badge>
                           </div>
                           <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
                             {inv.work_item_title ? <span>{inv.work_item_title}</span> : null}
                             {inv.issued_date ? (
                               <>
-                                <span>•</span>
+                                {inv.work_item_title ? <span>•</span> : null}
                                 <span>Issued {formatDate(inv.issued_date)}</span>
                               </>
                             ) : null}
@@ -1079,12 +1384,26 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                           </div>
                         </div>
                         <div className="flex items-center gap-3 shrink-0">
-                          <span className="font-semibold">
-                            {formatCurrency(inv.total_amount, inv.currency || "USD")}
-                          </span>
-                          {inv.karbon_url ? (
+                          <div className="flex flex-col items-end">
+                            <span className="font-semibold">
+                              {formatCurrency(inv.amount, inv.currency || "USD")}
+                            </span>
+                            {inv.amount_outstanding > 0 &&
+                            inv.amount_outstanding < inv.amount ? (
+                              <span className="text-xs text-muted-foreground">
+                                {formatCurrency(inv.amount_outstanding, inv.currency || "USD")}{" "}
+                                outstanding
+                              </span>
+                            ) : null}
+                          </div>
+                          {inv.external_url ? (
                             <Button asChild variant="ghost" size="icon" className="h-7 w-7">
-                              <a href={inv.karbon_url} target="_blank" rel="noreferrer" aria-label="Open in Karbon">
+                              <a
+                                href={inv.external_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                aria-label="Open invoice"
+                              >
                                 <ExternalLink className="h-3.5 w-3.5" />
                               </a>
                             </Button>

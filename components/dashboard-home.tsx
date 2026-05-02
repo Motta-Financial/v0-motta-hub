@@ -75,27 +75,13 @@ export function DashboardHome() {
             }),
           )
         } else {
-          setActivity([
-            {
-              type: "system",
-              message: "Welcome to Motta Hub! Your activity will appear here.",
-              time: "Just now",
-              user: displayName,
-              avatar: teamMember?.avatar_url || null,
-            },
-          ])
+          // Empty real state — the activity feed renders its own
+          // "no recent activity" message rather than a fake welcome row.
+          setActivity([])
         }
       } catch (error) {
         console.error("Error fetching dashboard data:", error)
-        setActivity([
-          {
-            type: "system",
-            message: "Welcome to Motta Hub!",
-            time: "Just now",
-            user: displayName,
-            avatar: teamMember?.avatar_url || null,
-          },
-        ])
+        setActivity([])
       } finally {
         setIsLoading(false)
       }
@@ -104,7 +90,7 @@ export function DashboardHome() {
     if (!userLoading) {
       fetchDashboardData()
     }
-  }, [teamMember?.id, userLoading, displayName, teamMember?.avatar_url])
+  }, [teamMember?.id, userLoading])
 
   function formatTimeAgo(date: Date): string {
     const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000)
@@ -226,30 +212,36 @@ export function DashboardHome() {
         defaultExpanded={true}
       >
         <div className="space-y-4">
-          {activity.map((item, index) => (
-            <div key={index} className="flex items-start space-x-3">
-              <Avatar className="h-8 w-8">
-                <AvatarImage src={item.avatar || "/placeholder.svg"} alt={item.user} />
-                <AvatarFallback>
-                  {item.user
-                    .split(" ")
-                    .map((n) => n[0])
-                    .join("")}
-                </AvatarFallback>
-              </Avatar>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-gray-900">{item.message}</p>
-                <div className="flex items-center space-x-2 mt-1">
-                  <p className="text-xs text-gray-500">{item.user}</p>
-                  <span className="text-xs text-gray-400">•</span>
-                  <p className="text-xs text-gray-500">{item.time}</p>
-                </div>
-              </div>
-              <Badge variant="secondary" className="text-xs">
-                {item.type.replace("_", " ")}
-              </Badge>
+          {activity.length === 0 ? (
+            <div className="text-center py-8 text-sm text-gray-500">
+              No recent activity yet. Updates from your team and clients will appear here.
             </div>
-          ))}
+          ) : (
+            activity.map((item, index) => (
+              <div key={index} className="flex items-start space-x-3">
+                <Avatar className="h-8 w-8">
+                  <AvatarImage src={item.avatar || "/placeholder.svg"} alt={item.user} />
+                  <AvatarFallback>
+                    {item.user
+                      .split(" ")
+                      .map((n) => n[0])
+                      .join("")}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gray-900">{item.message}</p>
+                  <div className="flex items-center space-x-2 mt-1">
+                    <p className="text-xs text-gray-500">{item.user}</p>
+                    <span className="text-xs text-gray-400">•</span>
+                    <p className="text-xs text-gray-500">{item.time}</p>
+                  </div>
+                </div>
+                <Badge variant="secondary" className="text-xs">
+                  {item.type.replace("_", " ")}
+                </Badge>
+              </div>
+            ))
+          )}
         </div>
       </ExpandableCard>
     </div>
