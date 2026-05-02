@@ -126,6 +126,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       debriefsRes,
       groupMembersRes,
       contactOrgsRes,
+      ignitionClientsRes,
     ] = await Promise.all([
       // Work items: filter by karbon_client_key (always populated) — covers both
       // contact and organization clients in one query.
@@ -308,6 +309,21 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
               "id, role_or_title, ownership_percentage, is_primary_contact, start_date, end_date, organization:organizations(id, karbon_organization_key, name, full_name, primary_email, phone, industry)",
             )
             .eq("contact_id", entityId),
+
+      // Ignition clients — billing/contact records from Ignition that have been
+      // linked to this organization/contact. Contains address + phone from the
+      // billing platform which may differ from the Karbon-sourced data.
+      supabase
+        .from("ignition_clients")
+        .select(
+          `ignition_client_id, name, email, phone, business_name, client_type,
+           address_line1, address_line2, city, state, zip_code, country,
+           match_status, match_confidence, match_method, match_notes,
+           ignition_created_at, ignition_updated_at, last_event_at`,
+        )
+        .or(`${idCol}.eq.${entityId}`)
+        .order("ignition_updated_at", { ascending: false, nullsFirst: false })
+        .limit(20),
     ])
 
     const workItems = workItemsRes.data || []
@@ -319,6 +335,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const karbonInvoices = karbonInvoicesRes.data || []
     const ignitionInvoices = ignitionInvoicesRes.data || []
     const ignitionProposals = ignitionProposalsRes.data || []
+    const ignitionClients = ignitionClientsRes.data || []
 
     // ── Unified Invoices ─────────────────────────────────────────────────
     // Normalizes Karbon and Ignition (incl. legacy HubSpot) invoices into a
@@ -692,6 +709,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       ignitionInvoices,
       unifiedInvoices,
       ignitionProposals,
+      ignitionClients,
       documents,
       meetings,
       debriefs,
