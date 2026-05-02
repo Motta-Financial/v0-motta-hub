@@ -36,6 +36,7 @@ import {
   Flame,
   DollarSign,
   Workflow,
+  BarChart3,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -50,6 +51,10 @@ import { WorkItemSearchTrigger } from "@/components/work-item-search"
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
+  // Sales Dashboard sits up top because it cuts across all the other data
+  // sources (proposals, services, clients, geography) and is a daily-touch
+  // surface for partners reviewing pipeline.
+  { name: "Sales", href: "/sales", icon: BarChart3 },
   { name: "Triage", href: "/triage", icon: Inbox },
   { name: "Work Items", href: "/work-items", icon: CheckSquare },
   { name: "Clients", href: "/clients", icon: Users },
