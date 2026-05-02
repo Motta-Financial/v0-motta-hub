@@ -202,10 +202,31 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   )
 }
 
+// Walk the navigation tree and seed every collapsible section as expanded
+// so the sidebar reveals the complete site map on first paint. Users can
+// still collapse a section if they want; their explicit choice wins because
+// `toggleSection` simply flips the boolean for that name.
+function buildInitialExpandedState(items: typeof navigation): Record<string, boolean> {
+  const expanded: Record<string, boolean> = {}
+  const walk = (nodes: any[]) => {
+    for (const node of nodes) {
+      if (node.children && node.children.length > 0) {
+        expanded[node.name] = true
+        walk(node.children)
+      }
+    }
+  }
+  walk(items as any[])
+  return expanded
+}
+
 function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({})
+  // Default every section open so all pages are immediately discoverable.
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() =>
+    buildInitialExpandedState(navigation),
+  )
 
   const { teamMember, user } = useUser()
   const displayName = useDisplayName()
