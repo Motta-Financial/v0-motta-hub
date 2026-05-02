@@ -17,9 +17,8 @@ const alfredTools = {
     - tasks: Team tasks and assignments
     - invoices: Client invoices
     - time_entries: Time tracking records
-    - meetings: Scheduled meetings
-    - meeting_notes: Notes from client meetings
-    - notifications: User notifications
+  - meetings: Scheduled meetings
+  - notifications: User notifications
     - services: Available services with pricing
     - tax_returns: Tax return records
     - karbon_notes, karbon_tasks, karbon_timesheets: Karbon synced data
@@ -336,10 +335,10 @@ const alfredTools = {
 
   // Get recent activity
   getRecentActivity: tool({
-    description: "Get recent activity including debriefs, meeting notes, and tasks",
+    description: "Get recent activity including debriefs and tasks",
     inputSchema: z.object({
       days: z.number().optional().describe("Number of days to look back, default 7"),
-      type: z.enum(["debriefs", "meeting_notes", "tasks", "all"]).optional(),
+      type: z.enum(["debriefs", "tasks", "all"]).optional(),
     }),
     execute: async ({ days = 7, type = "all" }) => {
       try {
@@ -355,16 +354,6 @@ const alfredTools = {
             .order("created_at", { ascending: false })
             .limit(20)
           results.debriefs = data || []
-        }
-
-        if (type === "all" || type === "meeting_notes") {
-          const { data } = await supabase
-            .from("meeting_notes")
-            .select("*")
-            .gte("created_at", cutoffDate)
-            .order("created_at", { ascending: false })
-            .limit(20)
-          results.meeting_notes = data || []
         }
 
         if (type === "all" || type === "tasks") {
@@ -495,7 +484,7 @@ const SYSTEM_PROMPT = `You are ALFRED, the AI assistant for Motta Hub - Motta Fi
 3. **Team Management**: View team workload, assignments, and capacity
 4. **Deadlines & Tasks**: Track upcoming deadlines, overdue items, and task assignments
 5. **Financial Data**: Access invoice information, recurring revenue, and billing details
-6. **Meeting Notes & Debriefs**: Review recent client meetings and debrief notes
+6. **Debriefs**: Review recent client debriefs and meeting notes captured on the Debriefs page
 7. **Tommy Awards**: Check the leaderboard and recognition program standings
 8. **Services**: Look up service offerings and pricing
 

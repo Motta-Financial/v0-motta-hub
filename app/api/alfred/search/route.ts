@@ -27,10 +27,6 @@ const SEARCHABLE_TABLES = {
     columns: ["subject", "body", "author_name", "contact_name"],
     display: ["id", "subject", "author_name", "work_item_title", "created_at"],
   },
-  meeting_notes: {
-    columns: ["client_name", "notes", "agenda"],
-    display: ["id", "client_name", "meeting_date", "meeting_type", "status"],
-  },
   services: {
     columns: ["name", "description", "category"],
     display: ["id", "name", "category", "price"],

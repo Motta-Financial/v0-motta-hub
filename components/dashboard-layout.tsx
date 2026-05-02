@@ -95,7 +95,6 @@ const navigation = [
       { name: "New Debrief", href: "/debriefs/new", icon: NotebookPen },
     ],
   },
-  { name: "Meeting Notes", href: "/meeting-notes", icon: NotebookPen },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
   {
