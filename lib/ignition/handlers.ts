@@ -88,13 +88,23 @@ async function upsertIgnitionClient(supabase: SupabaseClient, args: UpsertClient
 
   // Zapier flattens nested objects with double-underscore separators; we
   // accept either flat keys or a nested `client` object.
-  const c = (payload.client && typeof payload.client === "object"
+  const isNestedClient = payload.client && typeof payload.client === "object"
+  const c = (isNestedClient
     ? (payload.client as Record<string, unknown>)
     : payload) as Record<string, unknown>
 
+  // When the client is embedded inside a non-client event (e.g. proposal.accepted
+  // payloads carry client info alongside the proposal), the top-level `name`
+  // field describes the proposal, NOT the client. Restrict to client-prefixed
+  // keys in that case so we don't clobber a real client name with a proposal title.
+  const isStandaloneClientPayload = isNestedClient || !payload.proposal_id
+  const nameKeys = isStandaloneClientPayload
+    ? ["name", "client_name", "client__name", "full_name", "display_name"]
+    : ["client_name", "client__name", "full_name", "display_name"]
+
   const row = {
     ignition_client_id: ignitionClientId,
-    name: pick<string>(c, ["name", "client_name", "client__name", "full_name", "display_name"]),
+    name: pick<string>(c, nameKeys),
     email: pick<string>(c, ["email", "client_email", "client__email", "primary_email"]),
     phone: pick<string>(c, ["phone", "client_phone", "phone_number"]),
     business_name: pick<string>(c, ["business_name", "company_name", "company", "organization_name"]),
@@ -154,17 +164,22 @@ export async function handleIgnitionEvent(
   eventReceivedAt: string,
 ): Promise<HandlerResult> {
   // Common: every event is associated with a client_id and/or proposal_id.
-  const clientId = pick<string>(payload, [
-    "client_id",
-    "ignition_client_id",
-    "client__id",
-    "client_uuid",
-  ])
+  // For client.* events, the top-level `id` IS the client id; for everything
+  // else `id` typically refers to the proposal/invoice/payment, so we only
+  // fall back to it on client.* events.
+  const isClientEvent = eventType.startsWith("client.")
+  const clientId = pick<string>(
+    payload,
+    isClientEvent
+      ? ["client_id", "ignition_client_id", "client__id", "client_uuid", "id"]
+      : ["client_id", "ignition_client_id", "client__id", "client_uuid"],
+  )
   const proposalId = pick<string>(payload, [
     "proposal_id",
     "ignition_proposal_id",
     "proposal__id",
-    "id",
+    // Only fall back to top-level `id` for proposal.* events.
+    ...(eventType.startsWith("proposal.") ? ["id"] : []),
   ])
 
   // ---- Client events ---------------------------------------------------
@@ -224,6 +239,10 @@ export async function handleIgnitionEvent(
       client_manager: pick(payload, ["client_manager", "manager"]),
       client_partner: pick(payload, ["client_partner", "partner"]),
       signed_url: pick(payload, ["signed_url", "proposal_url", "url"]),
+      // `payload` is the legacy NOT NULL column from the original schema; we
+      // mirror raw_payload into it so old queries keep working without a
+      // breaking migration.
+      payload,
       raw_payload: payload,
       last_event_at: eventReceivedAt,
       updated_at: new Date().toISOString(),
