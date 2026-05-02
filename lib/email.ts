@@ -92,6 +92,10 @@ export function buildDebriefEmailHtml({
   services,
   researchTopics,
   feeAdjustment,
+  feeAdjustmentReason,
+  followUpDate,
+  relatedClients,
+  relatedWorkItems,
   debriefUrl,
 }: {
   authorName: string
@@ -107,6 +111,20 @@ export function buildDebriefEmailHtml({
   services?: string[]
   researchTopics?: string
   feeAdjustment?: string
+  feeAdjustmentReason?: string
+  followUpDate?: string
+  // Render a "Karbon Links" block so reviewers can jump straight to the
+  // related Work Item or Contact/Organization timeline in Karbon.
+  relatedClients?: Array<{
+    name: string
+    type?: "contact" | "organization" | string
+    karbonUrl?: string | null
+  }>
+  relatedWorkItems?: Array<{
+    title: string
+    workType?: string | null
+    karbonUrl?: string | null
+  }>
   debriefUrl: string
 }) {
   const actionItemsHtml =
@@ -175,7 +193,12 @@ export function buildDebriefEmailHtml({
     ? `
     <div style="margin-top: 16px;">
       <h3 style="color: #1a1a1a; font-size: 16px; margin-bottom: 8px;">Fee Adjustments</h3>
-      <p style="font-size: 14px; color: #333;">${feeAdjustment}</p>
+      <p style="font-size: 14px; color: #333; margin: 0 0 4px;">${feeAdjustment}</p>
+      ${
+        feeAdjustmentReason
+          ? `<p style="font-size: 13px; color: #666; margin: 0;"><em>Reason: ${feeAdjustmentReason}</em></p>`
+          : ""
+      }
     </div>
   `
     : ""
@@ -188,6 +211,65 @@ export function buildDebriefEmailHtml({
     </div>
   `
     : ""
+
+  const followUpHtml = followUpDate
+    ? `
+    <div style="margin-top: 16px;">
+      <h3 style="color: #1a1a1a; font-size: 16px; margin-bottom: 8px;">Follow-Up Date</h3>
+      <p style="font-size: 14px; color: #333;">${followUpDate}</p>
+    </div>
+  `
+    : ""
+
+  // Karbon deep links — work items first (most actionable), then the
+  // contact/organization timelines so reviewers can jump straight to the
+  // client's profile in Karbon.
+  const renderKarbonLink = (label: string, url?: string | null, sub?: string | null) => {
+    if (!url) {
+      return `<li style="margin-bottom: 6px; font-size: 14px; color: #666;">${label}${sub ? ` <span style="color: #999; font-size: 12px;">— ${sub}</span>` : ""} <span style="color: #999; font-size: 12px;">(not synced to Karbon)</span></li>`
+    }
+    return `<li style="margin-bottom: 6px; font-size: 14px;">
+      <a href="${url}" style="color: #1a1a1a; text-decoration: underline;">${label}</a>${
+        sub ? ` <span style="color: #999; font-size: 12px;">— ${sub}</span>` : ""
+      }
+    </li>`
+  }
+
+  const workItemLinks = (relatedWorkItems || []).filter((w) => w.title)
+  const clientLinks = (relatedClients || []).filter((c) => c.name)
+
+  const karbonLinksHtml =
+    workItemLinks.length > 0 || clientLinks.length > 0
+      ? `
+    <div style="margin-top: 20px; padding: 16px; background: #f9fafb; border: 1px solid #eee; border-radius: 8px;">
+      <h3 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px;">Open in Karbon</h3>
+      ${
+        workItemLinks.length > 0
+          ? `<p style="font-size: 12px; color: #666; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.5px;">Work Items</p>
+             <ul style="margin: 0 0 12px; padding-left: 20px;">
+               ${workItemLinks.map((w) => renderKarbonLink(w.title, w.karbonUrl, w.workType || null)).join("")}
+             </ul>`
+          : ""
+      }
+      ${
+        clientLinks.length > 0
+          ? `<p style="font-size: 12px; color: #666; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.5px;">Contact &amp; Organization Timelines</p>
+             <ul style="margin: 0; padding-left: 20px;">
+               ${clientLinks
+                 .map((c) =>
+                   renderKarbonLink(
+                     c.name,
+                     c.karbonUrl,
+                     c.type === "organization" ? "Organization" : c.type === "contact" ? "Contact" : null,
+                   ),
+                 )
+                 .join("")}
+             </ul>`
+          : ""
+      }
+    </div>
+  `
+      : ""
 
   return `
 <!DOCTYPE html>
@@ -215,6 +297,8 @@ export function buildDebriefEmailHtml({
         ${servicesHtml}
         ${feeHtml}
         ${researchHtml}
+        ${followUpHtml}
+        ${karbonLinksHtml}
 
         <!-- CTA -->
         <div style="margin-top: 28px; text-align: center;">
