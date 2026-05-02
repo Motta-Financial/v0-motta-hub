@@ -47,6 +47,8 @@ import {
   Lightbulb,
   UserPlus,
   NotebookPen,
+  Receipt,
+  Briefcase,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -61,10 +63,21 @@ import { WorkItemSearchTrigger } from "@/components/work-item-search"
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
-  // Sales Dashboard sits up top because it cuts across all the other data
-  // sources (proposals, services, clients, geography) and is a daily-touch
-  // surface for partners reviewing pipeline.
-  { name: "Sales", href: "/sales", icon: BarChart3 },
+  // Sales is a hub: the landing page summarises everything and four child
+  // routes drill into Dashboard analytics, the Proposals list, the Invoices
+  // list, and the Services catalog. Kept high in the nav because partners
+  // touch it daily.
+  {
+    name: "Sales",
+    href: "/sales",
+    icon: BarChart3,
+    children: [
+      { name: "Sales Dashboard", href: "/sales/dashboard", icon: TrendingUp },
+      { name: "Proposals", href: "/sales/proposals", icon: FileText },
+      { name: "Invoices", href: "/sales/invoices", icon: Receipt },
+      { name: "Services", href: "/sales/services", icon: Briefcase },
+    ],
+  },
   { name: "Triage", href: "/triage", icon: Inbox },
   { name: "Work Items", href: "/work-items", icon: CheckSquare },
   { name: "Clients", href: "/clients", icon: Users },
