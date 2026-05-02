@@ -340,7 +340,7 @@ export async function calendlyListAll<T = unknown>(
   let pages = 0
 
   do {
-    const page = nextUrl
+    const page: CalendlyPaginatedResponse<T> | null = nextUrl
       ? await calendlyRequest<CalendlyPaginatedResponse<T>>(connection, supabase, nextUrl)
       : await calendlyRequest<CalendlyPaginatedResponse<T>>(connection, supabase, path, options)
     if (!page) break

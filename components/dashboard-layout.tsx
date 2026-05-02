@@ -97,7 +97,15 @@ const navigation = [
       { name: "Ignition", href: "/admin/ignition", icon: Workflow },
     ],
   },
-  { name: "Calendar", href: "/calendar", icon: Calendar },
+  {
+    name: "Calendar",
+    href: "/calendar",
+    icon: Calendar,
+    // Calendly admin (per-user OAuth + scope diagnostics + webhook health)
+    // belongs under Calendar since the calendar page is what consumes the
+    // synced data. Admins land here when they need to reconnect or debug.
+    children: [{ name: "Calendly Admin", href: "/calendly", icon: Settings }],
+  },
   { name: "Karbon Data", href: "/karbon-data", icon: Database },
   {
     name: "Settings",

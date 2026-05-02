@@ -153,7 +153,6 @@ export async function notifyMeeting(
   // Notify all active team members (legacy behaviour). Newer code
   // funnels through the webhook handler which targets the host.
   // This helper is intentionally minimal and tolerant of failures.
-  // @ts-expect-error - dynamic supabase client
   await supabase.from("notifications").insert({
     notification_type: "calendly_event",
     title: `New Meeting Scheduled: ${event.name}`,

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getAppBaseUrl } from "@/lib/calendly-api"
+import { runCalendlySync } from "@/lib/calendly-sync"
 
 /**
  * Periodic Calendly sync.
@@ -12,7 +12,11 @@ import { getAppBaseUrl } from "@/lib/calendly-api"
  * Authenticated by `CRON_SECRET` either via the `Authorization: Bearer`
  * header (Vercel Cron's default) or a `?token=` query param.
  *
- * Vercel cron config example (vercel.json):
+ * We invoke `runCalendlySync` directly rather than fetching the sync
+ * route, which avoids re-tripping the Supabase middleware that protects
+ * the user-facing API.
+ *
+ * Vercel cron config (vercel.json):
  *   { "crons": [{ "path": "/api/cron/calendly-sync", "schedule": "*\/30 * * * *" }] }
  */
 export async function GET(request: Request) {
@@ -29,28 +33,27 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  // Forward to the canonical sync route. We always include the past 7d
-  // so cancellations or reschedules that happened during a webhook
-  // outage get reconciled even though they're now in the past.
-  const base = getAppBaseUrl() || url.origin
-  const res = await fetch(`${base}/api/calendly/sync`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  // Always include the past 7d so cancellations or reschedules that
+  // happened during a webhook outage get reconciled even though they're
+  // now in the past.
+  try {
+    const result = await runCalendlySync({
       syncPast: true,
       daysBack: 7,
       daysForward: 60,
       syncEventTypes: true,
-    }),
-  })
-  const json = await res.json().catch(() => ({}))
-  return NextResponse.json(
-    {
-      success: res.ok,
-      forwarded: json,
-    },
-    { status: res.ok ? 200 : 502 },
-  )
+    })
+    return NextResponse.json(result)
+  } catch (err) {
+    console.error("[cron/calendly-sync] failed:", err)
+    return NextResponse.json(
+      {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      { status: 500 },
+    )
+  }
 }
 
 export const POST = GET
