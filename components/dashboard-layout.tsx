@@ -37,6 +37,16 @@ import {
   DollarSign,
   Workflow,
   BarChart3,
+  Video,
+  Bell,
+  Radio,
+  RefreshCw,
+  FileSpreadsheet,
+  AlertTriangle,
+  TrendingUp,
+  Lightbulb,
+  UserPlus,
+  NotebookPen,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -58,7 +68,15 @@ const navigation = [
   { name: "Triage", href: "/triage", icon: Inbox },
   { name: "Work Items", href: "/work-items", icon: CheckSquare },
   { name: "Clients", href: "/clients", icon: Users },
-  { name: "Debriefs", href: "/debriefs/new", icon: MessageSquare },
+  {
+    name: "Debriefs",
+    href: "/debriefs",
+    icon: MessageSquare,
+    children: [
+      { name: "New Debrief", href: "/debriefs/new", icon: NotebookPen },
+    ],
+  },
+  { name: "Meeting Notes", href: "/meeting-notes", icon: NotebookPen },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
   {
@@ -80,6 +98,10 @@ const navigation = [
         icon: FileText,
         children: [
           { name: "Busy Season", href: "/tax/busy-season", icon: FileText },
+          { name: "Tax Planning", href: "/tax/planning", icon: Lightbulb },
+          { name: "Estimates", href: "/tax/estimates", icon: FileSpreadsheet },
+          { name: "IRS Notices", href: "/tax/irs-notices", icon: AlertTriangle },
+          { name: "Advisory", href: "/tax/advisory", icon: TrendingUp },
         ],
       },
       { name: "Special Teams", href: "/special-teams", icon: Flame },
@@ -91,6 +113,7 @@ const navigation = [
     icon: Headphones,
     children: [
       { name: "Payments", href: "/payments", icon: CreditCard },
+      { name: "Onboarding", href: "/onboarding", icon: UserPlus },
       // Ignition is the proposal/billing platform; admin lives under /admin/ignition
       // following the same pattern as karbon-sync. Surfacing it here makes the
       // mapping queue + Zap setup discoverable alongside Payments.
@@ -101,17 +124,30 @@ const navigation = [
     name: "Calendar",
     href: "/calendar",
     icon: Calendar,
-    // Calendly admin (per-user OAuth + scope diagnostics + webhook health)
-    // belongs under Calendar since the calendar page is what consumes the
-    // synced data. Admins land here when they need to reconnect or debug.
-    children: [{ name: "Calendly Admin", href: "/calendly", icon: Settings }],
+    children: [
+      { name: "Calendly Admin", href: "/calendly", icon: Settings },
+      { name: "Zoom", href: "/zoom", icon: Video },
+    ],
   },
   { name: "Karbon Data", href: "/karbon-data", icon: Database },
+  {
+    name: "Admin",
+    href: "/admin/karbon-sync",
+    icon: Settings,
+    children: [
+      { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
+      { name: "Broadcast", href: "/admin/broadcast", icon: Radio },
+      { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
+      { name: "Work Statuses", href: "/admin/work-statuses", icon: ListChecks },
+    ],
+  },
   {
     name: "Settings",
     href: "/settings",
     icon: Settings,
     children: [
+      { name: "Profile", href: "/settings/profile", icon: UserCircle },
+      { name: "Notifications", href: "/settings/notifications", icon: Bell },
       { name: "Users", href: "/settings/users", icon: ShieldCheck },
       { name: "Work Statuses", href: "/settings/work-statuses", icon: ListChecks },
       { name: "Migration", href: "/settings/migration", icon: ArrowRightLeft },
