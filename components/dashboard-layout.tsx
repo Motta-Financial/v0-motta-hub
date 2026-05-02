@@ -35,6 +35,7 @@ import {
   FileText,
   Flame,
   DollarSign,
+  Workflow,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -85,6 +86,10 @@ const navigation = [
     icon: Headphones,
     children: [
       { name: "Payments", href: "/payments", icon: CreditCard },
+      // Ignition is the proposal/billing platform; admin lives under /admin/ignition
+      // following the same pattern as karbon-sync. Surfacing it here makes the
+      // mapping queue + Zap setup discoverable alongside Payments.
+      { name: "Ignition", href: "/admin/ignition", icon: Workflow },
     ],
   },
   { name: "Calendar", href: "/calendar", icon: Calendar },

@@ -1,13 +1,18 @@
 /**
  * GET /api/ignition/stats
  *
- * Top-of-page numbers for the Ignition admin dashboard:
- *   - clients (total / matched / unmatched / no_match)
- *   - proposals (total + by status)
- *   - invoices (paid / outstanding / paid amount / outstanding amount)
- *   - webhook events in the last 24h (success / failed / skipped)
+ * Drives the Ignition admin page header + activity feed.
  *
- * One round-trip; everything aggregated DB-side via parallel selects.
+ * Shape (matches what the page consumes — see app/admin/ignition/page.tsx):
+ *   {
+ *     totals: { clients, matched, unmatched, proposals, invoices, payments }
+ *     matchBreakdown: [{ method, count, avg_confidence }]
+ *     recentEvents:   [{ event_type, processing_status, received_at, processing_error }]
+ *   }
+ *
+ * "matched" counts BOTH auto_matched AND manual_matched — anything where the
+ * Ignition client is linked to a real Karbon contact/organization. Anything
+ * needing human review (unmatched, manual_review) lands in "unmatched".
  */
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
@@ -17,80 +22,84 @@ export const runtime = "nodejs"
 export async function GET() {
   const supabase = await createClient()
 
-  const { data: { user } } = await supabase.auth.getUser()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
-  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-
-  // Run aggregation queries in parallel — each one is a small COUNT that
-  // hits an indexed column.
+  // Run all aggregates in parallel; each is a tiny indexed COUNT or a
+  // small bounded SELECT. p95 should be well under 100ms.
   const [
-    clientsAll,
-    clientsAuto,
-    clientsManual,
+    clientsTotal,
+    clientsMatched,
     clientsUnmatched,
-    clientsNoMatch,
-    proposalsAll,
-    proposalsAccepted,
-    proposalsSent,
-    proposalsLost,
-    invoicesPaid,
-    invoicesOutstanding,
-    eventsRecent,
+    proposalsTotal,
+    invoicesTotal,
+    paymentsTotal,
+    matchBreakdownRows,
+    recentEventRows,
   ] = await Promise.all([
     supabase.from("ignition_clients").select("ignition_client_id", { count: "exact", head: true }),
-    supabase.from("ignition_clients").select("ignition_client_id", { count: "exact", head: true }).eq("match_status", "auto_matched"),
-    supabase.from("ignition_clients").select("ignition_client_id", { count: "exact", head: true }).eq("match_status", "manual_matched"),
-    supabase.from("ignition_clients").select("ignition_client_id", { count: "exact", head: true }).in("match_status", ["unmatched", "manual_review"]),
-    supabase.from("ignition_clients").select("ignition_client_id", { count: "exact", head: true }).eq("match_status", "no_match"),
+    // Auto + manual confirmed matches both count as "matched" for the
+    // headline "X% mapped" stat.
+    supabase
+      .from("ignition_clients")
+      .select("ignition_client_id", { count: "exact", head: true })
+      .in("match_status", ["matched", "auto_matched", "manual_matched"]),
+    // "Needs review" bucket — what shows up in the unmatched queue.
+    supabase
+      .from("ignition_clients")
+      .select("ignition_client_id", { count: "exact", head: true })
+      .in("match_status", ["unmatched", "manual_review"]),
     supabase.from("ignition_proposals").select("proposal_id", { count: "exact", head: true }),
-    supabase.from("ignition_proposals").select("proposal_id", { count: "exact", head: true }).eq("status", "accepted"),
-    supabase.from("ignition_proposals").select("proposal_id", { count: "exact", head: true }).eq("status", "sent"),
-    supabase.from("ignition_proposals").select("proposal_id", { count: "exact", head: true }).eq("status", "lost"),
-    supabase.from("ignition_invoices").select("ignition_invoice_id, amount", { count: "exact" }).eq("status", "paid"),
-    supabase.from("ignition_invoices").select("ignition_invoice_id, amount_outstanding", { count: "exact" }).neq("status", "paid"),
-    supabase.from("ignition_webhook_events").select("processing_status, event_type").gte("received_at", oneDayAgo),
+    supabase
+      .from("ignition_invoices")
+      .select("ignition_invoice_id", { count: "exact", head: true }),
+    supabase
+      .from("ignition_payments")
+      .select("ignition_payment_id", { count: "exact", head: true }),
+    // Match-method breakdown for the "How clients were matched" card.
+    supabase
+      .from("ignition_clients")
+      .select("match_method, match_confidence")
+      .not("match_method", "is", null),
+    // Last 50 events for the activity feed. Index on received_at DESC.
+    supabase
+      .from("ignition_webhook_events")
+      .select("event_type, processing_status, received_at, processing_error")
+      .order("received_at", { ascending: false })
+      .limit(50),
   ])
 
-  // Sum invoice amounts client-side from the (small) returned rows.
-  const paidAmount = (invoicesPaid.data || []).reduce(
-    (sum, r) => sum + (Number(r.amount) || 0),
-    0,
-  )
-  const outstandingAmount = (invoicesOutstanding.data || []).reduce(
-    (sum, r) => sum + (Number(r.amount_outstanding) || 0),
-    0,
-  )
-
-  // Tally events by status
-  const eventTally: Record<string, number> = { success: 0, failed: 0, skipped: 0, pending: 0 }
-  for (const e of eventsRecent.data || []) {
-    eventTally[e.processing_status] = (eventTally[e.processing_status] || 0) + 1
+  // Tally match methods client-side (the table is small — at most a few
+  // hundred rows total).
+  const breakdownMap = new Map<string, { count: number; sum: number }>()
+  for (const row of matchBreakdownRows.data || []) {
+    const method = row.match_method as string
+    const conf = Number(row.match_confidence) || 0
+    const existing = breakdownMap.get(method) || { count: 0, sum: 0 }
+    existing.count += 1
+    existing.sum += conf
+    breakdownMap.set(method, existing)
   }
+  const matchBreakdown = Array.from(breakdownMap.entries())
+    .map(([method, v]) => ({
+      method,
+      count: v.count,
+      avg_confidence: v.count > 0 ? v.sum / v.count : 0,
+    }))
+    .sort((a, b) => b.count - a.count)
 
   return NextResponse.json({
-    clients: {
-      total: clientsAll.count || 0,
-      auto_matched: clientsAuto.count || 0,
-      manual_matched: clientsManual.count || 0,
+    totals: {
+      clients: clientsTotal.count || 0,
+      matched: clientsMatched.count || 0,
       unmatched: clientsUnmatched.count || 0,
-      no_match: clientsNoMatch.count || 0,
+      proposals: proposalsTotal.count || 0,
+      invoices: invoicesTotal.count || 0,
+      payments: paymentsTotal.count || 0,
     },
-    proposals: {
-      total: proposalsAll.count || 0,
-      accepted: proposalsAccepted.count || 0,
-      sent: proposalsSent.count || 0,
-      lost: proposalsLost.count || 0,
-    },
-    invoices: {
-      paid_count: invoicesPaid.count || 0,
-      paid_amount: paidAmount,
-      outstanding_count: invoicesOutstanding.count || 0,
-      outstanding_amount: outstandingAmount,
-    },
-    webhooks_24h: {
-      total: (eventsRecent.data || []).length,
-      ...eventTally,
-    },
+    matchBreakdown,
+    recentEvents: recentEventRows.data || [],
   })
 }

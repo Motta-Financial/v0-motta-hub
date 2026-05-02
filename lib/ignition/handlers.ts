@@ -130,28 +130,82 @@ async function upsertIgnitionClient(supabase: SupabaseClient, args: UpsertClient
   if (error) throw new Error(`upsert ignition_client: ${error.message}`)
 
   // Auto-match if not yet linked.
+  // We route through apply_ignition_client_match (instead of writing the
+  // update inline) so that the contact_id/organization_id cascades to all
+  // existing ignition_proposals / ignition_invoices / ignition_payments rows
+  // for this client — same code path manual-matching uses.
   const { data: existing } = await supabase
     .from("ignition_clients")
     .select("contact_id, organization_id, match_status")
     .eq("ignition_client_id", ignitionClientId)
     .single()
 
-  if (existing && !existing.contact_id && !existing.organization_id && existing.match_status === "unmatched") {
+  if (
+    existing &&
+    !existing.contact_id &&
+    !existing.organization_id &&
+    existing.match_status === "unmatched"
+  ) {
     const { data: match } = await supabase.rpc("match_ignition_client_to_supabase", {
       p_ignition_client_id: ignitionClientId,
     })
     if (match && match.length > 0) {
       const m = match[0]
-      const update: Record<string, unknown> = {
-        match_status: m.confidence >= 1.0 ? "auto_matched" : "manual_review",
-        match_confidence: m.confidence,
-        match_method: m.method,
+      // Only auto-link on high-confidence (>=0.95) matches. Lower-confidence
+      // hits are flagged for manual review on the admin page rather than
+      // silently linking and risking a wrong cascade.
+      if (m.confidence >= 0.95) {
+        await supabase.rpc("apply_ignition_client_match", {
+          p_ignition_client_id: ignitionClientId,
+          p_match_kind: m.match_kind,
+          p_matched_id: m.matched_id,
+          p_notes: `auto-match (${m.method}, conf=${Number(m.confidence).toFixed(2)})`,
+        })
+        // Reset the status from 'matched' (set by the RPC) to 'auto_matched'
+        // so the admin UI can distinguish manual confirmations from auto.
+        await supabase
+          .from("ignition_clients")
+          .update({ match_status: "auto_matched", match_method: m.method })
+          .eq("ignition_client_id", ignitionClientId)
+      } else {
+        // Surface as needs-review without linking.
+        await supabase
+          .from("ignition_clients")
+          .update({
+            match_status: "manual_review",
+            match_method: m.method,
+            match_confidence: m.confidence,
+          })
+          .eq("ignition_client_id", ignitionClientId)
       }
-      if (m.match_kind === "contact") update.contact_id = m.matched_id
-      if (m.match_kind === "organization") update.organization_id = m.matched_id
-
-      await supabase.from("ignition_clients").update(update).eq("ignition_client_id", ignitionClientId)
     }
+  }
+}
+
+// -------- Helpers -------------------------------------------------------
+
+/**
+ * Look up the matched contact_id / organization_id for an Ignition client.
+ *
+ * Why we read instead of relying on the apply_ignition_client_match cascade:
+ * the cascade only updates rows that ALREADY exist. When a webhook arrives
+ * before the matching client.created event (or before any prior event has
+ * upserted the client), the related proposal/invoice/payment row is being
+ * inserted for the first time, so we have to seed its FKs at insert time.
+ */
+async function fetchClientFKs(
+  supabase: SupabaseClient,
+  clientId: string | null,
+): Promise<{ contact_id: string | null; organization_id: string | null }> {
+  if (!clientId) return { contact_id: null, organization_id: null }
+  const { data } = await supabase
+    .from("ignition_clients")
+    .select("contact_id, organization_id")
+    .eq("ignition_client_id", clientId)
+    .single()
+  return {
+    contact_id: data?.contact_id ?? null,
+    organization_id: data?.organization_id ?? null,
   }
 }
 
@@ -204,6 +258,10 @@ export async function handleIgnitionEvent(
     if (!proposalId) return { status: "skipped", message: "no proposal_id in payload" }
 
     // First, make sure the embedded client exists (Zapier usually inlines it).
+    // The upsert auto-runs the matcher, so by the time it returns we may
+    // already have a contact_id / organization_id we should stamp on this
+    // proposal — apply_ignition_client_match's cascade only updates rows
+    // that already exist, and the proposal row hasn't been inserted yet.
     if (clientId) {
       await upsertIgnitionClient(supabase, {
         ignitionClientId: clientId,
@@ -212,9 +270,14 @@ export async function handleIgnitionEvent(
       })
     }
 
+    // Read the (possibly just-matched) client to seed FK columns directly.
+    const fks = await fetchClientFKs(supabase, clientId)
+
     const row: Record<string, unknown> = {
       proposal_id: proposalId,
       ignition_client_id: clientId,
+      contact_id: fks.contact_id,
+      organization_id: fks.organization_id,
       title: pick(payload, ["title", "proposal_title", "name"]),
       status: pick(payload, ["status", "proposal_status", "state"]),
       proposal_number: pick(payload, ["proposal_number", "number"]),
@@ -329,10 +392,17 @@ export async function handleIgnitionEvent(
     ])
     if (!invoiceId) return { status: "skipped", message: "no invoice_id" }
 
+    // Seed the FKs from whatever the client is currently matched to. If the
+    // client hasn't been seen yet, both will be null and the cascade will
+    // back-fill once a client.* event arrives.
+    const fks = await fetchClientFKs(supabase, clientId)
+
     const row: Record<string, unknown> = {
       ignition_invoice_id: invoiceId,
       proposal_id: proposalId,
       ignition_client_id: clientId,
+      contact_id: fks.contact_id,
+      organization_id: fks.organization_id,
       invoice_number: pick(payload, ["invoice_number", "number"]),
       status: pick(payload, ["status", "invoice_status"]),
       amount: toNumber(pick(payload, ["amount", "total"])),
@@ -377,11 +447,15 @@ export async function handleIgnitionEvent(
     const invoiceId = pick<string>(payload, ["invoice_id", "ignition_invoice_id"])
     if (!paymentId) return { status: "skipped", message: "no payment_id" }
 
+    const fks = await fetchClientFKs(supabase, clientId)
+
     const row: Record<string, unknown> = {
       ignition_payment_id: paymentId,
       ignition_invoice_id: invoiceId,
       proposal_id: proposalId,
       ignition_client_id: clientId,
+      contact_id: fks.contact_id,
+      organization_id: fks.organization_id,
       amount: toNumber(pick(payload, ["amount", "gross_amount"])),
       fees: toNumber(pick(payload, ["fees", "fee"])),
       net_amount: toNumber(pick(payload, ["net_amount", "net"])),
