@@ -191,11 +191,18 @@ async function main() {
     for (const ct of newContacts) {
       let cid = "<dry-run-uuid>"
       if (APPLY) {
+        // contacts.full_name is a STORED generated column derived from
+        // first_name + last_name. We split on whitespace: first token →
+        // first_name, remainder → last_name. Single-token names go entirely
+        // into last_name to preserve the surname.
+        const parts = ct.fullName.trim().split(/\s+/)
+        const firstName = parts.length > 1 ? parts[0] : ""
+        const lastName = parts.length > 1 ? parts.slice(1).join(" ") : parts[0]
         const r = await c.query(
-          `INSERT INTO contacts (full_name, primary_email, contact_type, status)
-                VALUES ($1, $2, $3, 'active')
+          `INSERT INTO contacts (first_name, last_name, primary_email, contact_type, status)
+                VALUES ($1, $2, $3, $4, 'active')
                 RETURNING id`,
-          [ct.fullName, ct.email, ct.contactType],
+          [firstName || null, lastName, ct.email, ct.contactType],
         )
         cid = r.rows[0].id
       }
