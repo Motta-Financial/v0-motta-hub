@@ -21,8 +21,6 @@ const ALLOWED_TABLES = [
   "karbon_timesheets",
   "leads",
   "meeting_attendees",
-  "meeting_notes",
-  "meeting_notes_debriefs",
   "meetings",
   "message_comments",
   "message_reactions",
@@ -89,10 +87,6 @@ const TABLE_SCHEMAS: Record<string, { description: string; key_columns: string[]
   karbon_timesheets: {
     description: "Time entries synced from Karbon",
     key_columns: ["id", "user_name", "minutes", "work_item_title", "client_name", "date"],
-  },
-  meeting_notes: {
-    description: "Notes from client meetings",
-    key_columns: ["id", "client_name", "meeting_date", "meeting_type", "notes", "action_items"],
   },
   organizations: {
     description: "Business entities and companies",
@@ -270,7 +264,6 @@ function getSearchColumns(table: AllowedTable): string[] {
     tasks: ["title", "description"],
     karbon_tasks: ["title", "description", "assignee_name"],
     karbon_notes: ["subject", "body", "author_name", "contact_name"],
-    meeting_notes: ["client_name", "notes", "agenda"],
     invoices: ["invoice_number", "notes"],
     services: ["name", "description", "category"],
     client_groups: ["name", "description"],

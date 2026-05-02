@@ -21,6 +21,7 @@ import {
   Trophy,
   Hourglass,
   CircleDollarSign,
+  Repeat,
 } from "lucide-react"
 
 import { Card, CardContent } from "@/components/ui/card"
@@ -58,6 +59,14 @@ export function SalesOverview() {
   const { data: services } = useSWR<{
     stats: { totalServices: number; activeServices: number; acceptedRevenue: number }
   }>(`/api/sales/services`, fetcher)
+  const { data: recurring } = useSWR<{
+    totals: {
+      mrr: number
+      arr: number
+      distinct_clients: number
+    }
+    departments: Array<{ department: string; mrr: number; client_count: number }>
+  }>(`/api/sales/recurring-revenue`, fetcher)
 
   const proposals = dash?.proposals || []
   const totalProposals = proposals.length
@@ -126,6 +135,23 @@ export function SalesOverview() {
               value: `${services.stats.totalServices.toLocaleString()} (${services.stats.activeServices} active)`,
             },
             { label: "Accepted revenue", value: fmtMoney(services.stats.acceptedRevenue) },
+          ]
+        : null,
+    },
+    {
+      title: "Recurring Revenue",
+      description:
+        "Curated MRR for Accounting and Tax. Sourced from the partner-maintained CSV — Ignition one-time engagements are excluded.",
+      href: "/sales/recurring-revenue",
+      icon: Repeat,
+      tone: "emerald",
+      stats: recurring
+        ? [
+            { label: "Combined MRR", value: fmtMoney(recurring.totals.mrr) },
+            {
+              label: "Recurring clients",
+              value: recurring.totals.distinct_clients.toLocaleString(),
+            },
           ]
         : null,
     },

@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -49,6 +49,7 @@ import {
   NotebookPen,
   Receipt,
   Briefcase,
+  Repeat,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -76,6 +77,11 @@ const navigation = [
       { name: "Proposals", href: "/sales/proposals", icon: FileText },
       { name: "Invoices", href: "/sales/invoices", icon: Receipt },
       { name: "Services", href: "/sales/services", icon: Briefcase },
+      {
+        name: "Recurring Revenue",
+        href: "/sales/recurring-revenue",
+        icon: Repeat,
+      },
     ],
   },
   { name: "Triage", href: "/triage", icon: Inbox },
@@ -89,7 +95,6 @@ const navigation = [
       { name: "New Debrief", href: "/debriefs/new", icon: NotebookPen },
     ],
   },
-  { name: "Meeting Notes", href: "/meeting-notes", icon: NotebookPen },
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
   {
@@ -215,16 +220,24 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   )
 }
 
-// Walk the navigation tree and seed every collapsible section as expanded
-// so the sidebar reveals the complete site map on first paint. Users can
-// still collapse a section if they want; their explicit choice wins because
-// `toggleSection` simply flips the boolean for that name.
-function buildInitialExpandedState(items: typeof navigation): Record<string, boolean> {
+// Walk the navigation tree and pre-expand only the section(s) that contain
+// the currently-active route. Everything else stays collapsed so the sidebar
+// is calm by default; users will see the chevron next to a section name and
+// can click to drill in. Once they navigate into a child, that section
+// auto-opens because its branch matches `pathname`.
+function buildInitialExpandedState(
+  items: typeof navigation,
+  pathname: string,
+): Record<string, boolean> {
   const expanded: Record<string, boolean> = {}
   const walk = (nodes: any[]) => {
     for (const node of nodes) {
       if (node.children && node.children.length > 0) {
-        expanded[node.name] = true
+        const hasActive = node.children.some(
+          (child: any) =>
+            pathname === child.href || pathname.startsWith(child.href + "/"),
+        )
+        if (hasActive) expanded[node.name] = true
         walk(node.children)
       }
     }
@@ -236,10 +249,33 @@ function buildInitialExpandedState(items: typeof navigation): Record<string, boo
 function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
-  // Default every section open so all pages are immediately discoverable.
+  // Sections collapsed by default; the section containing the active route
+  // is auto-expanded so users always see where they are.
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() =>
-    buildInitialExpandedState(navigation),
+    buildInitialExpandedState(navigation, pathname),
   )
+
+  // When the user navigates to a child route via a top-level link, ensure
+  // that destination section opens automatically. We never collapse a
+  // section the user explicitly opened — that would feel jumpy.
+  useEffect(() => {
+    setExpandedSections((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const item of navigation) {
+        if (!item.children?.length) continue
+        const isActive = item.children.some(
+          (child) =>
+            pathname === child.href || pathname.startsWith(child.href + "/"),
+        )
+        if (isActive && !next[item.name]) {
+          next[item.name] = true
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [pathname])
 
   const { teamMember, user } = useUser()
   const displayName = useDisplayName()

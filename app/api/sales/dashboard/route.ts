@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import {
+  loadRecurringScrubSet,
+  normalizeClientName,
+} from "@/lib/sales/recurring-scrub"
 
 /**
  * Sales Dashboard data endpoint.
@@ -115,6 +119,14 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
+  // ── Load curated recurring-revenue scrub set ──────────────────────────
+  // The Ignition feed flags many one-time engagements as "recurring" because
+  // the platform allows monthly billing schedules on fixed-fee work. We use
+  // the partner-maintained `motta_recurring_revenue` list as the authoritative
+  // source of who's truly on a recurring engagement; everyone else gets their
+  // recurring_total shifted into one-time so MRR/ARR calculations are correct.
+  const curatedRecurring = await loadRecurringScrubSet()
+
   // ── Resolve states via the linked org/contact ─────────────────────────
   // Only fetch the org/contact rows we actually need.
   const orgIds = new Set<string>()
@@ -177,6 +189,7 @@ export async function GET(req: Request) {
     recurring_total: number
     recurring_frequency: string | null
     annualized_recurring: number
+    is_curated_recurring: boolean
     currency: string
     sent_at: string | null
     accepted_at: string | null
@@ -216,7 +229,24 @@ export async function GET(req: Request) {
       : p.contact_id
       ? "contact"
       : null
-    const recurring = Number(p.recurring_total) || 0
+
+    // Apply curated recurring-revenue scrub: only proposals tied to a client
+    // in the partner-maintained list keep their recurring_total. Everyone
+    // else has it absorbed into one-time so MRR/ARR aren't inflated by
+    // Ignition's misclassified engagements.
+    const candidates = [linked?.name, p.client_name].filter(Boolean) as string[]
+    const isCuratedRecurring = candidates.some((n) =>
+      curatedRecurring.has(normalizeClientName(n)),
+    )
+    const rawRecurring = Number(p.recurring_total) || 0
+    const rawOneTime = Number(p.one_time_total) || 0
+    const totalValue = Number(p.total_value) || 0
+
+    const recurring = isCuratedRecurring ? rawRecurring : 0
+    const oneTime = isCuratedRecurring
+      ? rawOneTime
+      : Math.max(rawOneTime + rawRecurring, totalValue > 0 ? totalValue : 0)
+
     // Annualize recurring revenue. We only see "monthly" today but we're
     // defensive about other frequencies for when Ignition adds them.
     const freq = (p.recurring_frequency || "").toLowerCase()
@@ -244,11 +274,12 @@ export async function GET(req: Request) {
       state: linked?.state ?? null,
       city: linked?.city ?? null,
       country: linked?.country ?? null,
-      total_value: Number(p.total_value) || 0,
-      one_time_total: Number(p.one_time_total) || 0,
+      total_value: totalValue,
+      one_time_total: oneTime,
       recurring_total: recurring,
-      recurring_frequency: p.recurring_frequency,
+      recurring_frequency: isCuratedRecurring ? p.recurring_frequency : null,
       annualized_recurring: recurring * annualMultiplier,
+      is_curated_recurring: isCuratedRecurring,
       currency: p.currency || "USD",
       sent_at: p.sent_at,
       accepted_at: p.accepted_at,
