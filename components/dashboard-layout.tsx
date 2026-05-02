@@ -49,6 +49,7 @@ import {
   NotebookPen,
   Receipt,
   Briefcase,
+  Repeat,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -76,6 +77,11 @@ const navigation = [
       { name: "Proposals", href: "/sales/proposals", icon: FileText },
       { name: "Invoices", href: "/sales/invoices", icon: Receipt },
       { name: "Services", href: "/sales/services", icon: Briefcase },
+      {
+        name: "Recurring Revenue",
+        href: "/sales/recurring-revenue",
+        icon: Repeat,
+      },
     ],
   },
   { name: "Triage", href: "/triage", icon: Inbox },

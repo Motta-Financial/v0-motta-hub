@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import {
+  loadRecurringScrubSet,
+  normalizeClientName,
+} from "@/lib/sales/recurring-scrub"
 
 /**
  * Sales > Proposals listing endpoint.
@@ -112,6 +116,33 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
+  // Apply curated recurring-revenue scrub: only proposals whose linked
+  // organization OR client_name appears in `motta_recurring_revenue` keep
+  // their recurring_total. Everyone else has it shifted into one-time so
+  // the table doesn't lie about what's actually recurring.
+  const curatedRecurring = await loadRecurringScrubSet()
+  const scrubbed = (data || []).map((p: any) => {
+    const candidates = [p.organizations?.name, p.client_name].filter(
+      Boolean,
+    ) as string[]
+    const isCurated = candidates.some((n) =>
+      curatedRecurring.has(normalizeClientName(n)),
+    )
+    if (isCurated) {
+      return { ...p, is_curated_recurring: true }
+    }
+    const recurring = Number(p.recurring_total) || 0
+    const oneTime = Number(p.one_time_total) || 0
+    const total = Number(p.total_value) || 0
+    return {
+      ...p,
+      recurring_total: 0,
+      recurring_frequency: null,
+      one_time_total: Math.max(oneTime + recurring, total > 0 ? total : 0),
+      is_curated_recurring: false,
+    }
+  })
+
   // Filter dimensions for the UI (cheap separate query, not paginated)
   const { data: dimensionsData } = await supabase
     .from("ignition_proposals")
@@ -126,7 +157,7 @@ export async function GET(req: Request) {
   }
 
   return NextResponse.json({
-    proposals: data || [],
+    proposals: scrubbed,
     page,
     pageSize,
     total: count || 0,
