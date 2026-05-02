@@ -12,8 +12,9 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
-import { User, Mail, Phone, Building, MapPin, Camera, Save, Shield, Key, Calendar, Clock, Loader2 } from "lucide-react"
+import { User, Mail, Phone, Building, MapPin, Camera, Save, Shield, Key, Calendar, Clock, Loader2, Trophy } from "lucide-react"
 import { useUser, useDisplayName, useUserInitials } from "@/hooks/use-user" // Importing missing hooks
+import { TrophyCase } from "@/components/trophy-case"
 
 const TIMEZONES = [
   { value: "America/New_York", label: "Eastern Time (ET)" },
@@ -318,6 +319,10 @@ export default function ProfileSettingsPage() {
               <User className="h-4 w-4 mr-2" />
               Profile Information
             </TabsTrigger>
+            <TabsTrigger value="trophy" className="data-[state=active]:bg-[#6B745D] data-[state=active]:text-white">
+              <Trophy className="h-4 w-4 mr-2" />
+              Trophy Case
+            </TabsTrigger>
             <TabsTrigger value="security" className="data-[state=active]:bg-[#6B745D] data-[state=active]:text-white">
               <Shield className="h-4 w-4 mr-2" />
               Security
@@ -513,6 +518,11 @@ export default function ProfileSettingsPage() {
                 )}
               </Button>
             </div>
+          </TabsContent>
+
+          {/* Trophy Case Tab — Tommy Awards stats for the logged-in user */}
+          <TabsContent value="trophy" className="space-y-6">
+            <TrophyCase />
           </TabsContent>
 
           {/* Security Tab */}
