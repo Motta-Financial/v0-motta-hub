@@ -214,6 +214,24 @@ interface ClientBundle {
     last_event_at: string | null
     created_at: string | null
     updated_at: string | null
+    /**
+     * Live recurring service line items from ignition_proposal_services. Only
+     * present on accepted proposals — drafts/sent proposals don't yet have an
+     * "active services" snapshot in Ignition.
+     */
+    services?: Array<{
+      id: string
+      service_name: string
+      description: string | null
+      quantity: number | null
+      unit_price: number | null
+      total_amount: number | null
+      currency: string | null
+      billing_frequency: string | null
+      billing_type: string | null
+      status: string | null
+      ordinal: number | null
+    }> | null
   }>
   documents: Array<{
     id: string
@@ -1181,6 +1199,39 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                               <p className="text-xs text-muted-foreground italic">
                                 Reason: {p.lost_reason}
                               </p>
+                            ) : null}
+                            {/*
+                             * Inline service line items. We sort by ordinal to
+                             * preserve the proposal's original line order and
+                             * suppress the section entirely when there are no
+                             * services (typical for non-accepted proposals).
+                             */}
+                            {p.services && p.services.length > 0 ? (
+                              <ul className="mt-1.5 flex flex-col gap-1 rounded-md border bg-muted/30 px-2.5 py-1.5">
+                                {[...p.services]
+                                  .sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0))
+                                  .map((s) => (
+                                    <li
+                                      key={s.id}
+                                      className="flex items-center justify-between gap-3 text-xs"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <span className="truncate font-medium">{s.service_name}</span>
+                                        {s.billing_frequency ? (
+                                          <Badge variant="outline" className="h-4 px-1 text-[10px] font-normal capitalize">
+                                            {s.billing_frequency.replace(/_/g, " ")}
+                                          </Badge>
+                                        ) : null}
+                                      </div>
+                                      <span className="text-muted-foreground shrink-0">
+                                        {formatCurrency(s.total_amount, s.currency || p.currency || "USD")}
+                                        {s.quantity && s.quantity > 1 ? (
+                                          <span className="ml-1 text-[10px]">x{s.quantity}</span>
+                                        ) : null}
+                                      </span>
+                                    </li>
+                                  ))}
+                              </ul>
                             ) : null}
                           </div>
                           <div className="flex flex-col items-end gap-1 shrink-0">

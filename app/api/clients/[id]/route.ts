@@ -211,15 +211,24 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
           .limit(100)
       })(),
 
-      // Ignition proposals — linked via FK only (organization_id / contact_id).
-      // Falls back to a name match against the entity's display name when the
-      // FK isn't set (covers proposals synced before the backfill script ran).
+      // Ignition proposals — linked via FK (organization_id / contact_id).
+      // Embeds the active service line items (ignition_proposal_services) so the
+      // UI can show recurring cadence and per-service price breakdowns under
+      // each proposal without an extra round-trip.
       (() => {
         const fkClause = `${idCol}.eq.${entityId}`
         return supabase
           .from("ignition_proposals")
           .select(
-            "proposal_id, proposal_number, title, status, client_name, client_email, total_value, one_time_total, recurring_total, recurring_frequency, currency, sent_at, accepted_at, completed_at, lost_at, lost_reason, archived_at, revoked_at, signed_url, client_manager, client_partner, proposal_sent_by, billing_starts_on, effective_start_date, last_event_at, created_at, updated_at",
+            `proposal_id, proposal_number, title, status, client_name, client_email,
+             total_value, one_time_total, recurring_total, recurring_frequency, currency,
+             sent_at, accepted_at, completed_at, lost_at, lost_reason, archived_at, revoked_at,
+             signed_url, client_manager, client_partner, proposal_sent_by,
+             billing_starts_on, effective_start_date, last_event_at, created_at, updated_at,
+             services:ignition_proposal_services (
+               id, service_name, description, quantity, unit_price, total_amount,
+               currency, billing_frequency, billing_type, status, ordinal
+             )`,
           )
           .or(fkClause)
           .order("created_at", { ascending: false, nullsFirst: false })
