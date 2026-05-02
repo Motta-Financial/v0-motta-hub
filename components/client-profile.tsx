@@ -186,6 +186,26 @@ interface ClientBundle {
     work_item_title: string | null
     karbon_url: string | null
   }>
+  /**
+   * Server-merged invoice list spanning Karbon, Ignition, and the legacy
+   * HubSpot import. Use this in the Invoices tab — the source-specific
+   * arrays (karbonInvoices) remain available only for backward compat.
+   */
+  unifiedInvoices: Array<{
+    id: string
+    source: "karbon" | "ignition" | "hubspot"
+    invoice_number: string | null
+    status: string | null
+    amount: number
+    amount_paid: number
+    amount_outstanding: number
+    currency: string
+    issued_date: string | null
+    due_date: string | null
+    paid_date: string | null
+    work_item_title: string | null
+    external_url: string | null
+  }>
   ignitionProposals: Array<{
     proposal_id: string
     proposal_number: string | null
@@ -509,7 +529,39 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     )
   }
 
-  const { client, workItems, karbonTasks, karbonInvoices, ignitionProposals, documents, karbonTimesheets, stats } = data
+  const {
+    client,
+    workItems,
+    karbonTasks,
+    karbonInvoices,
+    unifiedInvoices,
+    ignitionProposals,
+    documents,
+    karbonTimesheets,
+    stats,
+  } = data
+  // Use the server-merged unified list when present. Older API responses
+  // didn't include it — in that case we synthesize the same shape from
+  // karbonInvoices so the Invoices tab still renders something useful.
+  const invoices =
+    unifiedInvoices ??
+    karbonInvoices.map((inv) => ({
+      id: `karbon:${inv.id}`,
+      source: "karbon" as const,
+      invoice_number: inv.invoice_number,
+      status: inv.status,
+      amount: Number(inv.total_amount) || 0,
+      amount_paid:
+        inv.status?.toLowerCase() === "paid" ? Number(inv.total_amount) || 0 : 0,
+      amount_outstanding:
+        inv.status?.toLowerCase() === "paid" ? 0 : Number(inv.total_amount) || 0,
+      currency: inv.currency || "USD",
+      issued_date: inv.issued_date,
+      due_date: inv.due_date,
+      paid_date: inv.paid_date,
+      work_item_title: inv.work_item_title,
+      external_url: inv.karbon_url,
+    }))
 
   return (
     <div className="flex flex-col gap-6 pb-12">
@@ -1267,7 +1319,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center justify-between">
-                <span>Invoices ({karbonInvoices.length})</span>
+                <span>Invoices ({invoices.length})</span>
                 <span className="text-sm font-normal text-muted-foreground">
                   Unpaid: {formatCurrency(stats.totalUnpaidAmount)}
                   <span className="mx-2">•</span>
@@ -1276,27 +1328,44 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              {karbonInvoices.length === 0 ? (
-                <EmptyState message="No invoices synced for this client." />
+              {invoices.length === 0 ? (
+                <EmptyState message="No invoices on file for this client." />
               ) : (
                 <ScrollArea className="max-h-[600px]">
                   <div className="divide-y">
-                    {karbonInvoices.map((inv) => (
-                      <div key={inv.id} className="p-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition-colors">
+                    {invoices.map((inv) => (
+                      <div
+                        key={inv.id}
+                        className="p-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition-colors"
+                      >
                         <div className="flex flex-col gap-1 min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
                             <h3 className="font-medium text-sm">
-                              #{inv.invoice_number || inv.id.slice(0, 8)}
+                              #{inv.invoice_number || inv.id.split(":").pop()?.slice(0, 8)}
                             </h3>
-                            <Badge variant={statusVariant(inv.status)} className="text-xs capitalize">
+                            <Badge
+                              variant={statusVariant(inv.status)}
+                              className="text-xs capitalize"
+                            >
                               {inv.status || "draft"}
+                            </Badge>
+                            {/*
+                             * Source pill — distinguishes Karbon (current),
+                             * Ignition (current proposals → invoices), and
+                             * HubSpot (legacy pre-Ignition billing).
+                             */}
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] h-4 px-1 font-normal capitalize text-muted-foreground"
+                            >
+                              {inv.source}
                             </Badge>
                           </div>
                           <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
                             {inv.work_item_title ? <span>{inv.work_item_title}</span> : null}
                             {inv.issued_date ? (
                               <>
-                                <span>•</span>
+                                {inv.work_item_title ? <span>•</span> : null}
                                 <span>Issued {formatDate(inv.issued_date)}</span>
                               </>
                             ) : null}
@@ -1315,12 +1384,26 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                           </div>
                         </div>
                         <div className="flex items-center gap-3 shrink-0">
-                          <span className="font-semibold">
-                            {formatCurrency(inv.total_amount, inv.currency || "USD")}
-                          </span>
-                          {inv.karbon_url ? (
+                          <div className="flex flex-col items-end">
+                            <span className="font-semibold">
+                              {formatCurrency(inv.amount, inv.currency || "USD")}
+                            </span>
+                            {inv.amount_outstanding > 0 &&
+                            inv.amount_outstanding < inv.amount ? (
+                              <span className="text-xs text-muted-foreground">
+                                {formatCurrency(inv.amount_outstanding, inv.currency || "USD")}{" "}
+                                outstanding
+                              </span>
+                            ) : null}
+                          </div>
+                          {inv.external_url ? (
                             <Button asChild variant="ghost" size="icon" className="h-7 w-7">
-                              <a href={inv.karbon_url} target="_blank" rel="noreferrer" aria-label="Open in Karbon">
+                              <a
+                                href={inv.external_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                aria-label="Open invoice"
+                              >
                                 <ExternalLink className="h-3.5 w-3.5" />
                               </a>
                             </Button>
