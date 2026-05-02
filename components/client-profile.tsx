@@ -178,6 +178,35 @@ interface ClientBundle {
     work_item_title: string | null
     karbon_url: string | null
   }>
+  ignitionProposals: Array<{
+    proposal_id: string
+    proposal_number: string | null
+    title: string | null
+    status: string | null
+    client_name: string | null
+    client_email: string | null
+    total_value: number | null
+    one_time_total: number | null
+    recurring_total: number | null
+    recurring_frequency: string | null
+    currency: string | null
+    sent_at: string | null
+    accepted_at: string | null
+    completed_at: string | null
+    lost_at: string | null
+    lost_reason: string | null
+    archived_at: string | null
+    revoked_at: string | null
+    signed_url: string | null
+    client_manager: string | null
+    client_partner: string | null
+    proposal_sent_by: string | null
+    billing_starts_on: string | null
+    effective_start_date: string | null
+    last_event_at: string | null
+    created_at: string | null
+    updated_at: string | null
+  }>
   documents: Array<{
     id: string
     name: string | null
@@ -252,7 +281,7 @@ interface ClientBundle {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────���────────────────────────────────────
 
 function formatDate(iso: string | null | undefined, pattern = "MMM d, yyyy"): string | null {
   if (!iso) return null

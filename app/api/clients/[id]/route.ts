@@ -13,6 +13,7 @@
  */
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { getClientType } from "@/lib/client-type"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -118,6 +119,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       karbonTasksRes,
       karbonTimesheetsRes,
       karbonInvoicesRes,
+      ignitionProposalsRes,
       documentsRes,
       meetingsRes,
       debriefsRes,
@@ -209,6 +211,21 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
           .limit(100)
       })(),
 
+      // Ignition proposals — linked via FK only (organization_id / contact_id).
+      // Falls back to a name match against the entity's display name when the
+      // FK isn't set (covers proposals synced before the backfill script ran).
+      (() => {
+        const fkClause = `${idCol}.eq.${entityId}`
+        return supabase
+          .from("ignition_proposals")
+          .select(
+            "proposal_id, proposal_number, title, status, client_name, client_email, total_value, one_time_total, recurring_total, recurring_frequency, currency, sent_at, accepted_at, completed_at, lost_at, lost_reason, archived_at, revoked_at, signed_url, client_manager, client_partner, proposal_sent_by, billing_starts_on, effective_start_date, last_event_at, created_at, updated_at",
+          )
+          .or(fkClause)
+          .order("created_at", { ascending: false, nullsFirst: false })
+          .limit(100)
+      })(),
+
       // Documents
       supabase
         .from("documents")
@@ -273,6 +290,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const karbonTasks = karbonTasksRes.data || []
     const karbonTimesheets = karbonTimesheetsRes.data || []
     const karbonInvoices = karbonInvoicesRes.data || []
+    const ignitionProposals = ignitionProposalsRes.data || []
     const documents = documentsRes.data || []
     const meetings = meetingsRes.data || []
     const debriefs = debriefsRes.data || []
@@ -347,6 +365,21 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         (sum: number, t: any) => sum + (Number(t.minutes) || 0),
         0,
       ),
+      totalProposals: ignitionProposals.length,
+      activeProposals: ignitionProposals.filter(
+        (p: any) =>
+          !p.archived_at &&
+          !p.revoked_at &&
+          !p.lost_at &&
+          (p.status || "").toLowerCase() !== "lost",
+      ).length,
+      acceptedProposals: ignitionProposals.filter(
+        (p: any) => (p.status || "").toLowerCase() === "accepted",
+      ).length,
+      totalProposalValue: ignitionProposals.reduce(
+        (sum: number, p: any) => sum + (Number(p.total_value) || 0),
+        0,
+      ),
     }
 
     // Last activity = max timestamp across all sources
@@ -404,6 +437,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       type: isOrg ? "Business" : "Individual",
       entityType: row.entity_type || row.contact_type || null,
       contactType: row.contact_type || null,
+      clientType: getClientType(kind, row.entity_type),
       status: row.status || "Active",
       isProspect: !!row.is_prospect || row.contact_type === "Prospect",
 
@@ -544,6 +578,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       karbonTasks,
       karbonTimesheets,
       karbonInvoices,
+      ignitionProposals,
       documents,
       meetings,
       debriefs,
