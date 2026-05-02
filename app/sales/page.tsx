@@ -1,15 +1,15 @@
 import { DashboardLayout } from "@/components/dashboard-layout"
-import { SalesDashboard } from "@/components/sales-dashboard"
+import { SalesOverview } from "@/components/sales-overview"
 
 export const metadata = {
-  title: "Sales Dashboard | Motta Hub",
-  description: "Pipeline, won deals, services, and geographic breakdown across Ignition proposals",
+  title: "Sales | Motta Hub",
+  description: "Sales hub: dashboard, proposals, invoices, and the service catalog",
 }
 
 export default function SalesPage() {
   return (
     <DashboardLayout>
-      <SalesDashboard />
+      <SalesOverview />
     </DashboardLayout>
   )
 }
