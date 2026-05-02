@@ -24,6 +24,7 @@ import {
   DollarSign,
   ExternalLink,
   FileText,
+  Flame,
   Globe,
   Mail,
   MapPin,
@@ -252,6 +253,31 @@ interface ClientBundle {
       status: string | null
       ordinal: number | null
     }> | null
+  }>
+  /**
+   * Ignition billing records linked to this client. Contains contact info
+   * from the billing platform which may differ from Karbon-sourced data.
+   */
+  ignitionClients: Array<{
+    ignition_client_id: string
+    name: string | null
+    email: string | null
+    phone: string | null
+    business_name: string | null
+    client_type: string | null
+    address_line1: string | null
+    address_line2: string | null
+    city: string | null
+    state: string | null
+    zip_code: string | null
+    country: string | null
+    match_status: string | null
+    match_confidence: number | null
+    match_method: string | null
+    match_notes: string | null
+    ignition_created_at: string | null
+    ignition_updated_at: string | null
+    last_event_at: string | null
   }>
   documents: Array<{
     id: string
@@ -536,6 +562,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     karbonInvoices,
     unifiedInvoices,
     ignitionProposals,
+    ignitionClients,
     documents,
     karbonTimesheets,
     stats,
@@ -860,6 +887,106 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </CardContent>
             </Card>
           </div>
+
+          {/* Ignition Billing Info (if linked) */}
+          {ignitionClients && ignitionClients.length > 0 ? (
+            <Card className="mt-4">
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Flame className="h-4 w-4 text-orange-500" />
+                  Ignition Billing
+                  <Badge variant="secondary" className="ml-auto text-xs font-normal">
+                    {ignitionClients.length} record{ignitionClients.length > 1 ? "s" : ""}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {ignitionClients.map((ic) => {
+                    const address = [
+                      ic.address_line1,
+                      ic.address_line2,
+                      ic.city,
+                      ic.state,
+                      ic.zip_code,
+                      ic.country,
+                    ]
+                      .filter(Boolean)
+                      .join(", ")
+                    return (
+                      <div
+                        key={ic.ignition_client_id}
+                        className="rounded-lg border bg-muted/30 p-3 flex flex-col gap-2"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="font-medium text-sm truncate">
+                            {ic.name || ic.business_name || "Unnamed"}
+                          </div>
+                          {ic.client_type ? (
+                            <Badge variant="outline" className="text-xs capitalize shrink-0">
+                              {ic.client_type}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        {ic.business_name && ic.name && ic.business_name !== ic.name ? (
+                          <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                            <Building2 className="h-3 w-3" />
+                            {ic.business_name}
+                          </div>
+                        ) : null}
+                        {ic.email ? (
+                          <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                            <Mail className="h-3 w-3" />
+                            <a
+                              href={`mailto:${ic.email}`}
+                              className="hover:underline truncate"
+                            >
+                              {ic.email}
+                            </a>
+                          </div>
+                        ) : null}
+                        {ic.phone ? (
+                          <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                            <Phone className="h-3 w-3" />
+                            <a href={`tel:${ic.phone}`} className="hover:underline">
+                              {ic.phone}
+                            </a>
+                          </div>
+                        ) : null}
+                        {address ? (
+                          <div className="text-xs text-muted-foreground flex items-start gap-1.5">
+                            <MapPin className="h-3 w-3 mt-0.5 shrink-0" />
+                            <span>{address}</span>
+                          </div>
+                        ) : null}
+                        <div className="flex items-center gap-2 mt-1 pt-1 border-t text-xs text-muted-foreground">
+                          {ic.match_status ? (
+                            <Badge
+                              variant={
+                                ic.match_status === "auto_matched"
+                                  ? "default"
+                                  : ic.match_status === "manual_matched"
+                                  ? "secondary"
+                                  : "outline"
+                              }
+                              className="text-[10px] h-4 px-1"
+                            >
+                              {ic.match_status.replace(/_/g, " ")}
+                            </Badge>
+                          ) : null}
+                          {ic.ignition_updated_at ? (
+                            <span className="ml-auto">
+                              Updated {relativeTime(ic.ignition_updated_at)}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
 
           {/* Recent Activity */}
           <Card className="mt-4">
