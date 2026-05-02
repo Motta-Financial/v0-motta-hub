@@ -61,6 +61,14 @@ interface ClientBundle {
     type: string
     entityType: string | null
     contactType: string | null
+    /**
+     * Unified, filing-form-aware client type label derived on the server via
+     * `lib/client-type.getClientType()`. Examples: "Individual (1040)",
+     * "Partnership (1065)", "S-Corp (1120-S)", "C-Corp (1120)", "Trust (1041)",
+     * "Non-Profit (990)", "Sole Proprietor (Schedule C)", or "Business" /
+     * "Individual" when the source data is too sparse to classify.
+     */
+    clientType: string
     status: string | null
     isProspect: boolean
     contactInfo: {
@@ -276,6 +284,10 @@ interface ClientBundle {
     totalInvoicedAmount: number
     totalUnpaidAmount: number
     totalBillableMinutes: number
+    totalProposals: number
+    activeProposals: number
+    acceptedProposals: number
+    totalProposalValue: number
   }
 }
 
@@ -479,7 +491,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     )
   }
 
-  const { client, workItems, karbonTasks, karbonInvoices, documents, karbonTimesheets, stats } = data
+  const { client, workItems, karbonTasks, karbonInvoices, ignitionProposals, documents, karbonTimesheets, stats } = data
 
   return (
     <div className="flex flex-col gap-6 pb-12">
@@ -504,9 +516,17 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                   )}
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <Badge variant="secondary">{client.type}</Badge>
-                  {client.entityType ? <Badge variant="outline">{client.entityType}</Badge> : null}
-                  {client.contactType ? <Badge variant="outline">{client.contactType}</Badge> : null}
+                  {/*
+                   * Single, filing-form-aware Client Type badge replaces the
+                   * old triple-stack of {type, entityType, contactType}. The
+                   * server resolves a unified label like "Partnership (1065)"
+                   * via lib/client-type so the badge is consistent with the
+                   * Clients list and any future filters.
+                   */}
+                  <Badge variant="secondary">{client.clientType || client.type}</Badge>
+                  {client.contactType && client.contactType !== client.clientType ? (
+                    <Badge variant="outline">{client.contactType}</Badge>
+                  ) : null}
                   {client.status ? (
                     <Badge variant={statusVariant(client.status)}>{client.status}</Badge>
                   ) : null}
@@ -557,8 +577,20 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
       </Card>
 
       {/* ═════ Stats row ═════ */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
         <StatCard icon={Briefcase} label="Active Work" value={stats.activeWorkItems} sub={`${stats.totalWorkItems} total`} />
+        <StatCard
+          icon={ClipboardList}
+          label="Proposals"
+          value={stats.totalProposals}
+          sub={
+            stats.acceptedProposals
+              ? `${stats.acceptedProposals} accepted`
+              : stats.activeProposals
+              ? `${stats.activeProposals} active`
+              : undefined
+          }
+        />
         <StatCard icon={CheckSquare} label="Open Tasks" value={stats.openTasks} sub={`${stats.totalTasks} total`} />
         <StatCard icon={Mail} label="Emails" value={stats.totalEmails} />
         <StatCard icon={StickyNote} label="Notes" value={stats.totalNotes} />
@@ -604,6 +636,14 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
             {stats.totalNotes > 0 ? (
               <Badge variant="secondary" className="ml-2 h-5 px-1.5">
                 {stats.totalNotes}
+              </Badge>
+            ) : null}
+          </TabsTrigger>
+          <TabsTrigger value="proposals">
+            Proposals
+            {stats.totalProposals > 0 ? (
+              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
+                {stats.totalProposals}
               </Badge>
             ) : null}
           </TabsTrigger>
@@ -1056,6 +1096,122 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         </TabsContent>
 
         {/* ── Invoices ──────────────────────────────────────────────────── */}
+        {/* ── Proposals (Ignition) ──────────────────────────────────────── */}
+        <TabsContent value="proposals" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center justify-between">
+                <span>Proposals ({ignitionProposals.length})</span>
+                <span className="text-sm font-normal text-muted-foreground">
+                  {stats.acceptedProposals > 0 ? (
+                    <>
+                      Accepted: {stats.acceptedProposals}
+                      <span className="mx-2">•</span>
+                    </>
+                  ) : null}
+                  Total Value: {formatCurrency(stats.totalProposalValue)}
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {ignitionProposals.length === 0 ? (
+                <EmptyState message="No proposals synced from Ignition for this client." />
+              ) : (
+                <ScrollArea className="max-h-[600px]">
+                  <div className="divide-y">
+                    {ignitionProposals.map((p) => {
+                      // Resolve the most informative status label and a date stamp
+                      // describing the most recent state transition. Lifecycle
+                      // priority: revoked > archived > lost > completed > accepted > sent > draft.
+                      const lifecycle =
+                        p.revoked_at
+                          ? { label: "Revoked", date: p.revoked_at, variant: "destructive" as const }
+                          : p.archived_at
+                          ? { label: "Archived", date: p.archived_at, variant: "outline" as const }
+                          : p.lost_at || (p.status || "").toLowerCase() === "lost"
+                          ? { label: "Lost", date: p.lost_at, variant: "destructive" as const }
+                          : p.completed_at
+                          ? { label: "Completed", date: p.completed_at, variant: "default" as const }
+                          : p.accepted_at || (p.status || "").toLowerCase() === "accepted"
+                          ? { label: "Accepted", date: p.accepted_at, variant: "default" as const }
+                          : p.sent_at || (p.status || "").toLowerCase() === "sent"
+                          ? { label: "Sent", date: p.sent_at, variant: "secondary" as const }
+                          : { label: p.status || "Draft", date: p.created_at, variant: "outline" as const }
+
+                      return (
+                        <div key={p.proposal_id} className="p-4 flex items-start justify-between gap-4 hover:bg-muted/30 transition-colors">
+                          <div className="flex flex-col gap-1.5 min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3 className="font-medium text-sm truncate">
+                                {p.title || `Proposal ${p.proposal_number || p.proposal_id.slice(0, 8)}`}
+                              </h3>
+                              <Badge variant={lifecycle.variant} className="text-xs">
+                                {lifecycle.label}
+                              </Badge>
+                              {p.proposal_number && p.title ? (
+                                <span className="text-xs text-muted-foreground">#{p.proposal_number}</span>
+                              ) : null}
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                              {lifecycle.date ? (
+                                <span>
+                                  {lifecycle.label} {formatDate(lifecycle.date)}
+                                </span>
+                              ) : null}
+                              {p.billing_starts_on ? (
+                                <>
+                                  <span>•</span>
+                                  <span>Billing starts {formatDate(p.billing_starts_on)}</span>
+                                </>
+                              ) : null}
+                              {p.client_partner ? (
+                                <>
+                                  <span>•</span>
+                                  <span>Partner: {p.client_partner}</span>
+                                </>
+                              ) : null}
+                              {p.client_manager && p.client_manager !== p.client_partner ? (
+                                <>
+                                  <span>•</span>
+                                  <span>Manager: {p.client_manager}</span>
+                                </>
+                              ) : null}
+                            </div>
+                            {p.lost_reason ? (
+                              <p className="text-xs text-muted-foreground italic">
+                                Reason: {p.lost_reason}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <span className="font-semibold">
+                              {formatCurrency(p.total_value, p.currency || "USD")}
+                            </span>
+                            {p.recurring_total && p.recurring_total > 0 ? (
+                              <span className="text-xs text-muted-foreground">
+                                {formatCurrency(p.recurring_total, p.currency || "USD")}/
+                                {(p.recurring_frequency || "month").toLowerCase()}
+                              </span>
+                            ) : null}
+                            {p.signed_url ? (
+                              <Button asChild variant="ghost" size="sm" className="h-7 px-2 -mr-2">
+                                <a href={p.signed_url} target="_blank" rel="noreferrer">
+                                  <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                                  View
+                                </a>
+                              </Button>
+                            ) : null}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </ScrollArea>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="invoices" className="mt-4">
           <Card>
             <CardHeader>
