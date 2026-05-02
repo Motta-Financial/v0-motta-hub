@@ -25,8 +25,18 @@ export async function middleware(request: NextRequest) {
   const isLoginPage = pathname === "/login"
   const isAuthCallback = pathname.startsWith("/auth")
   const isPublicApi = pathname.startsWith("/api/alfred")
-  const isWebhook = pathname.startsWith("/api/webhooks") || pathname.startsWith("/api/karbon/webhooks")
+  const isWebhook =
+    pathname.startsWith("/api/webhooks") ||
+    pathname.startsWith("/api/karbon/webhooks") ||
+    // Calendly POSTs webhook events here; signature is verified inside
+    // the route handler via the per-subscription signing key.
+    pathname === "/api/calendly/webhook"
   const isCron = pathname.startsWith("/api/cron")
+  // Calendly's OAuth provider sends the user back to /api/calendly/oauth/callback
+  // before our app session cookie has been issued — exempt only the callback,
+  // not the rest of the OAuth surface (authorize/refresh/disconnect still
+  // require a logged-in team member).
+  const isCalendlyOAuthCallback = pathname === "/api/calendly/oauth/callback"
 
   // Allow internal server-to-server calls (e.g. cron -> /api/karbon/sync -> /api/karbon/contacts)
   // These pass a shared secret so middleware doesn't block the sync chain.
@@ -35,8 +45,16 @@ export async function middleware(request: NextRequest) {
     process.env.CRON_SECRET &&
     request.headers.get("x-internal-secret") === process.env.CRON_SECRET
 
-  // Allow auth callback, public API, webhooks, cron, and internal calls without auth checks
-  if (isAuthCallback || isPublicApi || isWebhook || isCron || isInternalCall) {
+  // Allow auth callback, public API, webhooks, cron, OAuth callbacks, and
+  // internal calls without auth checks
+  if (
+    isAuthCallback ||
+    isPublicApi ||
+    isWebhook ||
+    isCron ||
+    isCalendlyOAuthCallback ||
+    isInternalCall
+  ) {
     return supabaseResponse
   }
 
