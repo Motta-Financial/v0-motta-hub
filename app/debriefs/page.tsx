@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -27,7 +26,6 @@ import {
   Filter,
   RefreshCw,
   Eye,
-  Loader2,
   Pencil,
 } from "lucide-react"
 import { DebriefEditSheet } from "@/components/debriefs/debrief-edit-sheet"
@@ -38,9 +36,12 @@ interface Debrief {
   debrief_type: string | null
   team_member: string | null
   // Backing IDs
+  team_member_id: string | null
   contact_id: string | null
   organization_id: string | null
   work_item_id: string | null
+  client_manager_id: string | null
+  client_owner_id: string | null
   // Display names — debriefs_full pre-joins these so we don't have to chase
   // FKs in the UI. organization_name is what was captured on the row at debrief
   // time; organization_display_name comes from the live organizations table.
@@ -79,7 +80,6 @@ interface Debrief {
 }
 
 export default function DebriefsPage() {
-  const [activeTab, setActiveTab] = useState("all")
   const [debriefs, setDebriefs] = useState<Debrief[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -196,34 +196,36 @@ export default function DebriefsPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      {/*
+        Header: title + the "New Debrief" launcher.
+
+        Previously this page used <Tabs> to switch between "All Debriefs"
+        and "New Debrief", with the New tab patched to call
+        window.open(...) inside e.preventDefault(). Even with
+        preventDefault Radix still flips the active tab to "new" via its
+        keyboard / data-state machinery, which unmounted the
+        TabsContent value="all" — taking the search input with it. That
+        was the source of two complaints at once: the New Debrief view
+        opened in-place AND the search field stopped accepting input.
+
+        The new view is plain: render the list, render a button that
+        opens /debriefs/new in a new browser tab. No tab state, no
+        unmounted content.
+      */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Debriefs</h1>
           <p className="text-muted-foreground">Manage client meeting debriefs and notes</p>
         </div>
+        <Button onClick={() => window.open("/debriefs/new", "_blank")} className="gap-2">
+          <Plus className="h-4 w-4" />
+          New Debrief
+          <ExternalLink className="h-3 w-3 opacity-70" />
+        </Button>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full max-w-md grid-cols-2">
-          <TabsTrigger value="all" className="gap-2">
-            <FileText className="h-4 w-4" />
-            All Debriefs
-          </TabsTrigger>
-          <TabsTrigger
-            value="new"
-            className="gap-2"
-            onClick={(e) => {
-              e.preventDefault()
-              window.open("/debriefs/new", "_blank")
-            }}
-          >
-            <Plus className="h-4 w-4" />
-            New Debrief
-            <ExternalLink className="h-3 w-3 ml-1 opacity-50" />
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="all" className="mt-6">
+      <div className="w-full">
+        <div>
           <Card>
             <CardHeader>
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -463,10 +465,8 @@ export default function DebriefsPage() {
               )}
             </CardContent>
           </Card>
-        </TabsContent>
-
-
-      </Tabs>
+        </div>
+      </div>
 
       {/* Debrief Details Dialog */}
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
