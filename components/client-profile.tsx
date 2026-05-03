@@ -13,7 +13,6 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { format, formatDistanceToNow, parseISO } from "date-fns"
 import {
-  AlertCircle,
   Briefcase,
   Building2,
   Calendar,
@@ -47,6 +46,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
+import { AlfredErrorCard } from "@/components/alfred-error"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types matching /api/clients/[id] response
@@ -529,7 +529,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         direction: e.direction,
       })
     }
-    for (const n of data.karbonNotes) {
+    for (const n of karbonNotes) {
       items.push({
         id: `note-${n.id}`,
         kind: "note",
@@ -622,41 +622,57 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
   }
 
   if (error || !data) {
+    // Frame the failure as ALFRED reporting back: friendlier than a stock
+    // "Failed to load" card and consistent with the route-level error
+    // boundary's branding, so a 500 from /api/clients/[id] looks the same
+    // as an unhandled render crash from the user's point of view.
+    const isNotFound = !!error && /HTTP\s*404/i.test(error)
     return (
-      <Card className="max-w-2xl mx-auto mt-12">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-destructive">
-            <AlertCircle className="h-5 w-5" />
-            Failed to load client
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <p className="text-sm text-muted-foreground">{error || "Client not found"}</p>
-          <div className="flex gap-2">
-            <Button onClick={fetchClient} variant="outline">
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Retry
-            </Button>
-            <Button asChild variant="ghost">
-              <Link href="/clients">Back to Clients</Link>
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="flex min-h-[60vh] items-center justify-center p-6">
+        <AlfredErrorCard
+          title={
+            isNotFound
+              ? "ALFRED here — I couldn't find that client in our records."
+              : "ALFRED here — I couldn't pull up that client just now."
+          }
+          message={
+            isNotFound
+              ? "The client may have been merged, archived, or never synced from Karbon. Let me take you back to the directory."
+              : "I tried fetching the file but something went wrong on the way. You can try again, or head back to the directory."
+          }
+          error={error ? new Error(error) : undefined}
+          onRetry={fetchClient}
+          homeHref="/clients"
+        />
+      </div>
     )
   }
 
+  // Defensive destructure with `?? []` fallbacks. Older deployments of
+  // /api/clients/[id] sometimes shipped responses missing one of these
+  // arrays (e.g. `ignitionClients` was added later, `unifiedInvoices` was
+  // added later). When that happens, hitting `.length` or `.map(...)` on
+  // an undefined value throws and bubbles all the way up to the route
+  // error boundary — better to render an empty section than to crash the
+  // entire page.
   const {
     client,
-    workItems,
-    karbonTasks,
-    karbonInvoices,
+    workItems = [],
+    karbonTasks = [],
+    karbonInvoices = [],
     unifiedInvoices,
-    ignitionProposals,
-    ignitionClients,
-    documents,
-    karbonTimesheets,
-    debriefs,
+    ignitionProposals = [],
+    ignitionClients = [],
+    documents = [],
+    karbonTimesheets = [],
+    debriefs = [],
+    karbonNotes = [],
+    manualNotes = [],
+    serviceLinesUsed = [],
+    teamMembers = [],
+    clientGroups = [],
+    relatedContacts = [],
+    relatedOrganizations = [],
     stats,
   } = data
   // Use the server-merged unified list when present. Older API responses
@@ -664,7 +680,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
   // karbonInvoices so the Invoices tab still renders something useful.
   const invoices =
     unifiedInvoices ??
-    karbonInvoices.map((inv) => ({
+    (karbonInvoices ?? []).map((inv) => ({
       id: `karbon:${inv.id}`,
       source: "karbon" as const,
       invoice_number: inv.invoice_number,
@@ -953,13 +969,13 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                 {client.ownership.legalFirmName ? (
                   <KvRow label="Legal Firm" value={client.ownership.legalFirmName} />
                 ) : null}
-                {data.serviceLinesUsed.length > 0 ? (
+                {serviceLinesUsed.length > 0 ? (
                   <div className="flex flex-col gap-1.5">
                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                       Service Lines
                     </span>
                     <div className="flex flex-wrap gap-1.5">
-                      {data.serviceLinesUsed.map((s) => (
+                      {serviceLinesUsed.map((s) => (
                         <Badge key={s} variant="secondary" className="font-normal">
                           {s}
                         </Badge>
@@ -967,13 +983,13 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                     </div>
                   </div>
                 ) : null}
-                {data.teamMembers.length > 0 ? (
+                {teamMembers.length > 0 ? (
                   <div className="flex flex-col gap-1.5">
                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                       Assigned Team
                     </span>
                     <div className="flex flex-col gap-1">
-                      {data.teamMembers.slice(0, 6).map((m) => (
+                      {teamMembers.slice(0, 6).map((m) => (
                         <div key={m.key || m.name} className="flex items-center gap-2">
                           <Avatar className="h-6 w-6">
                             <AvatarFallback className="text-xs">{initials(m.name)}</AvatarFallback>
@@ -1317,15 +1333,15 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Karbon Notes ({data.karbonNotes.length})</CardTitle>
+                <CardTitle className="text-base">Karbon Notes ({karbonNotes.length})</CardTitle>
               </CardHeader>
               <CardContent className="p-0">
-                {data.karbonNotes.length === 0 ? (
+                {karbonNotes.length === 0 ? (
                   <EmptyState message="No Karbon notes synced." />
                 ) : (
                   <ScrollArea className="max-h-[500px]">
                     <div className="divide-y">
-                      {data.karbonNotes.map((n) => (
+                      {karbonNotes.map((n) => (
                         <div key={n.id} className="p-4 flex flex-col gap-1.5">
                           <div className="flex items-start justify-between gap-2">
                             <h3 className="font-medium text-sm">{n.subject || "(no subject)"}</h3>
@@ -1361,15 +1377,15 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Internal Notes ({data.manualNotes.length})</CardTitle>
+                <CardTitle className="text-base">Internal Notes ({manualNotes.length})</CardTitle>
               </CardHeader>
               <CardContent className="p-0">
-                {data.manualNotes.length === 0 ? (
+                {manualNotes.length === 0 ? (
                   <EmptyState message="No internal notes yet." />
                 ) : (
                   <ScrollArea className="max-h-[500px]">
                     <div className="divide-y">
-                      {data.manualNotes.map((n) => (
+                      {manualNotes.map((n) => (
                         <div key={n.id} className="p-4 flex flex-col gap-1.5">
                           <div className="flex items-start justify-between gap-2">
                             <h3 className="font-medium text-sm">{n.title || "(untitled)"}</h3>
@@ -1981,7 +1997,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         {/* ── Relationships ─────────────────────────────────────────────── */}
         <TabsContent value="relationships" className="mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {data.clientGroups.length > 0 ? (
+            {clientGroups.length > 0 ? (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
@@ -1990,7 +2006,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2">
-                  {data.clientGroups.map((g) => (
+                  {clientGroups.map((g) => (
                     <div key={g.id} className="flex items-center justify-between gap-2 text-sm border rounded-md p-3">
                       <div className="flex flex-col gap-0.5 min-w-0">
                         <span className="font-medium">{g.name || "(unnamed)"}</span>
@@ -2005,16 +2021,16 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </Card>
             ) : null}
 
-            {data.relatedContacts.length > 0 ? (
+            {relatedContacts.length > 0 ? (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
                     <User className="h-4 w-4" />
-                    Related Contacts ({data.relatedContacts.length})
+                    Related Contacts ({relatedContacts.length})
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2">
-                  {data.relatedContacts.map((c) => (
+                  {relatedContacts.map((c) => (
                     <Link
                       key={c.id}
                       href={`/clients/${c.id}`}
@@ -2035,16 +2051,16 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </Card>
             ) : null}
 
-            {data.relatedOrganizations.length > 0 ? (
+            {relatedOrganizations.length > 0 ? (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
                     <Building2 className="h-4 w-4" />
-                    Related Organizations ({data.relatedOrganizations.length})
+                    Related Organizations ({relatedOrganizations.length})
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2">
-                  {data.relatedOrganizations.map((o) => (
+                  {relatedOrganizations.map((o) => (
                     <Link
                       key={o.id}
                       href={`/clients/${o.id}`}
@@ -2062,9 +2078,9 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </Card>
             ) : null}
 
-            {data.clientGroups.length === 0 &&
-            data.relatedContacts.length === 0 &&
-            data.relatedOrganizations.length === 0 ? (
+            {clientGroups.length === 0 &&
+            relatedContacts.length === 0 &&
+            relatedOrganizations.length === 0 ? (
               <Card className="lg:col-span-2">
                 <CardContent className="pt-6">
                   <EmptyState message="No related contacts, organizations, or client groups." />
@@ -2078,7 +2094,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────���─────────────────────────
 // Sub-components
 // ─────────────────────────────────────────────────────────────────────────────
 
