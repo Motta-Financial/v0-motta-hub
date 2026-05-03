@@ -13,19 +13,20 @@ import {
   Calendar,
   Search,
   Users,
-  Filter,
   Briefcase,
   Shield,
   RefreshCw,
   CheckCircle,
   AlertCircle,
-  UserCheck,
-  UserX,
+  Building2,
+  Network,
 } from "lucide-react"
 import { ViewManager } from "@/components/view-manager"
 import type { FilterView } from "@/lib/view-types"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { OrgChart } from "@/components/org-chart"
 
 interface TeamMember {
   id: string
@@ -64,7 +65,6 @@ export function Teammates() {
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all")
   const [departmentFilter, setDepartmentFilter] = useState<string>("all")
 
   useEffect(() => {
@@ -73,10 +73,11 @@ export function Teammates() {
 
   const fetchUsers = async () => {
     try {
-      // Directory page intentionally shows inactive members too -- it has
-      // Active / Inactive tabs and stats. The default API response excludes
-      // them so they never end up in assignment / mention selectors.
-      const response = await fetch("/api/team-members?include_inactive=true")
+      // The directory only renders ACTIVE team members. The default
+      // /api/team-members response already filters is_active=true and
+      // excludes system "Company" accounts (Motta Financial, Karbon HQ),
+      // so a plain GET returns exactly what we want here.
+      const response = await fetch("/api/team-members")
       if (!response.ok) throw new Error("Failed to fetch users")
       const data = await response.json()
       const usersArray = data.team_members || data.teamMembers || []
@@ -126,10 +127,9 @@ export function Teammates() {
       user.department?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       user.role?.toLowerCase().includes(searchQuery.toLowerCase())
 
-    const matchesStatus = statusFilter === "all" || (statusFilter === "active" ? user.is_active : !user.is_active)
     const matchesDepartment = departmentFilter === "all" || user.department === departmentFilter
 
-    return matchesSearch && matchesStatus && matchesDepartment
+    return matchesSearch && matchesDepartment
   })
 
   const getInitials = (name: string) => {
@@ -143,18 +143,16 @@ export function Teammates() {
 
   const handleLoadView = (view: FilterView) => {
     if (view.filters.searchQuery) setSearchQuery(view.filters.searchQuery)
-    if (view.filters.userStatus) setStatusFilter(view.filters.userStatus)
     if (view.filters.department) setDepartmentFilter(view.filters.department)
   }
 
   const getCurrentFilters = () => ({
     searchQuery,
-    userStatus: statusFilter,
     department: departmentFilter,
   })
 
-  const activeCount = users.filter((u) => u.is_active).length
-  const inactiveCount = users.filter((u) => !u.is_active).length
+  const totalCount = users.length
+  const departmentCount = departments.length
 
   if (loading) {
     return (
@@ -172,7 +170,7 @@ export function Teammates() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Team Members</h1>
-          <p className="text-gray-600 mt-2">Motta Financial team directory</p>
+          <p className="text-gray-600 mt-2">Motta Financial team directory & org chart</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={syncFromKarbon} disabled={syncing}>
@@ -208,13 +206,13 @@ export function Teammates() {
         </Alert>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Total Members</p>
-                <p className="text-2xl font-bold">{users.length}</p>
+                <p className="text-sm text-muted-foreground">Active Members</p>
+                <p className="text-2xl font-bold">{totalCount}</p>
               </div>
               <Users className="h-8 w-8 text-muted-foreground" />
             </div>
@@ -224,165 +222,174 @@ export function Teammates() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Active</p>
-                <p className="text-2xl font-bold text-green-600">{activeCount}</p>
+                <p className="text-sm text-muted-foreground">Departments</p>
+                <p className="text-2xl font-bold">{departmentCount}</p>
               </div>
-              <UserCheck className="h-8 w-8 text-green-600" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground">Inactive</p>
-                <p className="text-2xl font-bold text-gray-400">{inactiveCount}</p>
-              </div>
-              <UserX className="h-8 w-8 text-gray-400" />
+              <Building2 className="h-8 w-8 text-muted-foreground" />
             </div>
           </CardContent>
         </Card>
       </div>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
+      <Tabs defaultValue="directory" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="directory" className="flex items-center gap-2">
+            <Users className="h-4 w-4" />
+            Directory
+          </TabsTrigger>
+          <TabsTrigger value="org-chart" className="flex items-center gap-2">
+            <Network className="h-4 w-4" />
+            Org Chart
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="directory">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Users className="h-5 w-5" />
+                    Team Directory
+                  </CardTitle>
+                  <CardDescription>
+                    {filteredUsers.length} of {totalCount} team members
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {/* Filters */}
+              <div className="mb-6 space-y-4">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Input
+                    placeholder="Search by name, email, title, department, or role..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-10"
+                  />
+                </div>
+                {departments.length > 0 && (
+                  <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
+                    <SelectTrigger>
+                      <Briefcase className="h-4 w-4 mr-2" />
+                      <SelectValue placeholder="Filter by department" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Departments</SelectItem>
+                      {departments.map((dept) => (
+                        <SelectItem key={dept} value={dept}>
+                          {dept}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+
+              {/* User Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filteredUsers.map((user) => (
+                  <Card key={user.id} className="hover:shadow-md transition-shadow">
+                    <CardContent className="p-6">
+                      <div className="flex items-start gap-4">
+                        <Avatar className="h-14 w-14">
+                          <AvatarImage src={user.avatar_url || "/placeholder.svg"} alt={user.full_name} />
+                          <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white text-lg">
+                            {getInitials(user.full_name)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-semibold text-gray-900 truncate">{user.full_name}</h3>
+                          {user.title && <p className="text-sm text-gray-600 truncate mt-1">{user.title}</p>}
+                          {user.department && (
+                            <p className="text-xs text-gray-500 truncate mt-1 flex items-center gap-1">
+                              <Briefcase className="h-3 w-3" />
+                              {user.department}
+                            </p>
+                          )}
+                          {user.role && (
+                            <p className="text-xs text-gray-500 truncate mt-1 flex items-center gap-1">
+                              <Shield className="h-3 w-3" />
+                              {user.role}
+                            </p>
+                          )}
+                          <div className="mt-3 space-y-2">
+                            <a
+                              href={`mailto:${user.email}`}
+                              className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
+                            >
+                              <Mail className="h-4 w-4 flex-shrink-0" />
+                              <span className="truncate">{user.email}</span>
+                            </a>
+                            {(user.phone_number || user.mobile_number) && (
+                              <a
+                                href={`tel:${user.phone_number || user.mobile_number}`}
+                                className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
+                              >
+                                <Phone className="h-4 w-4 flex-shrink-0" />
+                                <span className="truncate">{user.phone_number || user.mobile_number}</span>
+                              </a>
+                            )}
+                            {user.timezone && (
+                              <div className="flex items-center gap-2 text-sm text-gray-600">
+                                <MapPin className="h-4 w-4 flex-shrink-0" />
+                                <span className="truncate">{user.timezone}</span>
+                              </div>
+                            )}
+                            {user.start_date && (
+                              <div className="flex items-center gap-2 text-xs text-gray-500">
+                                <Calendar className="h-3 w-3 flex-shrink-0" />
+                                <span className="truncate">
+                                  Started {new Date(user.start_date).toLocaleDateString()}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              {filteredUsers.length === 0 && (
+                <div className="text-center py-12">
+                  <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-600">No team members found matching your filters.</p>
+                  <Button
+                    variant="outline"
+                    className="mt-4 bg-transparent"
+                    onClick={syncFromKarbon}
+                    disabled={syncing}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
+                    Sync from Karbon
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="org-chart">
+          <Card>
+            <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Users className="h-5 w-5" />
-                Team Directory
+                <Network className="h-5 w-5" />
+                Organizational Chart
               </CardTitle>
               <CardDescription>
-                {filteredUsers.length} of {users.length} team members
+                Reporting structure across {totalCount} active team members
               </CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {/* Filters */}
-          <div className="mb-6 space-y-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <Input
-                placeholder="Search by name, email, title, department, or role..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
-              />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Select value={statusFilter} onValueChange={(value: any) => setStatusFilter(value)}>
-                <SelectTrigger>
-                  <Filter className="h-4 w-4 mr-2" />
-                  <SelectValue placeholder="Filter by status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Users</SelectItem>
-                  <SelectItem value="active">Active Only</SelectItem>
-                  <SelectItem value="inactive">Inactive Only</SelectItem>
-                </SelectContent>
-              </Select>
-
-              {departments.length > 0 && (
-                <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
-                  <SelectTrigger>
-                    <Briefcase className="h-4 w-4 mr-2" />
-                    <SelectValue placeholder="Filter by department" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Departments</SelectItem>
-                    {departments.map((dept) => (
-                      <SelectItem key={dept} value={dept}>
-                        {dept}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            </div>
-          </div>
-
-          {/* User Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredUsers.map((user) => (
-              <Card key={user.id} className="hover:shadow-md transition-shadow">
-                <CardContent className="p-6">
-                  <div className="flex items-start gap-4">
-                    <Avatar className="h-14 w-14">
-                      <AvatarImage src={user.avatar_url || "/placeholder.svg"} alt={user.full_name} />
-                      <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white text-lg">
-                        {getInitials(user.full_name)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-2">
-                        <h3 className="font-semibold text-gray-900 truncate">{user.full_name}</h3>
-                        <Badge variant={user.is_active ? "default" : "secondary"} className="flex-shrink-0">
-                          {user.is_active ? "Active" : "Inactive"}
-                        </Badge>
-                      </div>
-                      {user.title && <p className="text-sm text-gray-600 truncate mt-1">{user.title}</p>}
-                      {user.department && (
-                        <p className="text-xs text-gray-500 truncate mt-1 flex items-center gap-1">
-                          <Briefcase className="h-3 w-3" />
-                          {user.department}
-                        </p>
-                      )}
-                      {user.role && (
-                        <p className="text-xs text-gray-500 truncate mt-1 flex items-center gap-1">
-                          <Shield className="h-3 w-3" />
-                          {user.role}
-                        </p>
-                      )}
-                      <div className="mt-3 space-y-2">
-                        <a
-                          href={`mailto:${user.email}`}
-                          className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
-                        >
-                          <Mail className="h-4 w-4 flex-shrink-0" />
-                          <span className="truncate">{user.email}</span>
-                        </a>
-                        {(user.phone_number || user.mobile_number) && (
-                          <a
-                            href={`tel:${user.phone_number || user.mobile_number}`}
-                            className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
-                          >
-                            <Phone className="h-4 w-4 flex-shrink-0" />
-                            <span className="truncate">{user.phone_number || user.mobile_number}</span>
-                          </a>
-                        )}
-                        {user.timezone && (
-                          <div className="flex items-center gap-2 text-sm text-gray-600">
-                            <MapPin className="h-4 w-4 flex-shrink-0" />
-                            <span className="truncate">{user.timezone}</span>
-                          </div>
-                        )}
-                        {user.start_date && (
-                          <div className="flex items-center gap-2 text-xs text-gray-500">
-                            <Calendar className="h-3 w-3 flex-shrink-0" />
-                            <span className="truncate">Started {new Date(user.start_date).toLocaleDateString()}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-
-          {filteredUsers.length === 0 && (
-            <div className="text-center py-12">
-              <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-600">No team members found matching your filters.</p>
-              <Button variant="outline" className="mt-4 bg-transparent" onClick={syncFromKarbon} disabled={syncing}>
-                <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
-                Sync from Karbon
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+            </CardHeader>
+            <CardContent>
+              <OrgChart members={users} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
