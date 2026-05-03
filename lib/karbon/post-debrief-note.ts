@@ -96,6 +96,11 @@ const buildKarbonUrl = (
  * Build the HTML note body. Karbon's Note `Body` field supports HTML — we use
  * a constrained subset (no inline styles beyond what Karbon traditionally
  * renders) to keep the timeline view clean.
+ *
+ * Structured into sections matching the debrief email:
+ * 1. Project Details (submitter, date, service lines)
+ * 2. Meeting Notes (notes, action items, research topics)
+ * 3. Project Finance (pricing adjustments)
  */
 function buildNoteBody(
   debrief: DebriefForKarbon,
@@ -106,66 +111,103 @@ function buildNoteBody(
   const debriefDate = formatDateLong(debrief.debrief_date)
   const author = body.team_member || "A team member"
 
-  lines.push(`<p><strong>Debrief submitted by ${escape(author)}</strong>${debriefDate ? ` on ${escape(debriefDate)}` : ""}.</p>`)
-
-  // Notes
-  const notes = body.notes || debrief.notes
-  if (notes && notes.trim()) {
-    lines.push("<h3>Notes</h3>")
-    lines.push(
-      `<div>${escape(notes).replace(/\n/g, "<br />")}</div>`,
-    )
+  // ========================================
+  // SECTION 1: Project Details
+  // ========================================
+  lines.push("<h3>Project Details</h3>")
+  lines.push("<ul>")
+  lines.push(`<li><strong>Submitted By:</strong> ${escape(author)}</li>`)
+  if (debriefDate) {
+    lines.push(`<li><strong>Date of Meeting:</strong> ${escape(debriefDate)}</li>`)
   }
 
-  // Action items
-  const items = (body.action_items || []).filter((i) => i?.description?.trim())
-  if (items.length > 0) {
-    lines.push("<h3>Action Items</h3>")
-    lines.push("<ul>")
-    for (const item of items) {
-      const parts: string[] = [escape(item.description)]
-      const meta: string[] = []
-      if (item.assignee_name) meta.push(`assignee: ${escape(item.assignee_name)}`)
-      if (item.due_date) meta.push(`due: ${escape(item.due_date)}`)
-      if (item.priority) meta.push(`priority: ${escape(item.priority)}`)
-      if (meta.length) parts.push(` <em>(${meta.join(" · ")})</em>`)
-      lines.push(`<li>${parts.join("")}</li>`)
-    }
-    lines.push("</ul>")
+  // Related Clients
+  const relatedClients = (body.related_clients || []).filter((c) => c.name)
+  if (relatedClients.length > 0) {
+    const clientNames = relatedClients
+      .map((c) => {
+        const typeLabel = c.type === "organization" ? " (Org)" : c.type === "contact" ? "" : ""
+        const url = buildKarbonUrl(
+          c.type === "organization" ? "organization" : "contact",
+          c.karbon_key,
+        )
+        return url
+          ? `<a href="${escape(url)}">${escape(c.name)}</a>${typeLabel}`
+          : `${escape(c.name)}${typeLabel}`
+      })
+      .join(", ")
+    lines.push(`<li><strong>Related Clients:</strong> ${clientNames}</li>`)
   }
 
-  // Services
+  // Service Lines
   const services = (body.services || []).filter(Boolean)
   if (services.length > 0) {
-    lines.push("<h3>Related Services</h3>")
-    lines.push(`<p>${services.map(escape).join(", ")}</p>`)
+    lines.push(`<li><strong>Service Lines:</strong> ${services.map(escape).join(", ")}</li>`)
   }
 
-  // Fee adjustment
+  // Follow-up
+  const followUp = body.follow_up_date || debrief.follow_up_date
+  if (followUp) {
+    lines.push(`<li><strong>Follow-Up Date:</strong> ${escape(formatDateLong(followUp))}</li>`)
+  }
+  lines.push("</ul>")
+
+  // ========================================
+  // SECTION 2: Meeting Notes
+  // ========================================
+  const notes = body.notes || debrief.notes
+  const items = (body.action_items || []).filter((i) => i?.description?.trim())
+  const hasResearch = body.research_topics && body.research_topics.trim()
+
+  if (notes || items.length > 0 || hasResearch) {
+    lines.push("<h3>Meeting Notes</h3>")
+
+    // Notes
+    if (notes && notes.trim()) {
+      lines.push(
+        `<div style="background: #f5f5f5; padding: 10px; border-radius: 4px; margin-bottom: 12px;">${escape(notes).replace(/\n/g, "<br />")}</div>`,
+      )
+    }
+
+    // Action items
+    if (items.length > 0) {
+      lines.push("<p><strong>Action Items:</strong></p>")
+      lines.push("<ul>")
+      for (const item of items) {
+        const parts: string[] = [escape(item.description)]
+        const meta: string[] = []
+        if (item.assignee_name) meta.push(`assignee: ${escape(item.assignee_name)}`)
+        if (item.due_date) meta.push(`due: ${escape(item.due_date)}`)
+        if (item.priority) meta.push(`priority: ${escape(item.priority)}`)
+        if (meta.length) parts.push(` <em>(${meta.join(" · ")})</em>`)
+        lines.push(`<li>${parts.join("")}</li>`)
+      }
+      lines.push("</ul>")
+    }
+
+    // Research topics
+    if (hasResearch) {
+      lines.push("<p><strong>Research Topics:</strong></p>")
+      lines.push(`<p>${escape(body.research_topics!)}</p>`)
+    }
+  }
+
+  // ========================================
+  // SECTION 3: Project Finance
+  // ========================================
   if (body.fee_adjustment) {
-    lines.push("<h3>Fee Adjustment</h3>")
+    lines.push("<h3>Project Finance</h3>")
+    lines.push("<p><strong>Pricing Adjustment / Payment Structure:</strong></p>")
     lines.push(`<p>${escape(body.fee_adjustment)}</p>`)
     if (body.fee_adjustment_reason) {
       lines.push(`<p><em>Reason:</em> ${escape(body.fee_adjustment_reason)}</p>`)
     }
   }
 
-  // Research topics
-  if (body.research_topics && body.research_topics.trim()) {
-    lines.push("<h3>Research Topics</h3>")
-    lines.push(`<p>${escape(body.research_topics)}</p>`)
-  }
-
-  // Follow-up
-  const followUp = body.follow_up_date || debrief.follow_up_date
-  if (followUp) {
-    lines.push("<h3>Follow-Up</h3>")
-    lines.push(`<p>${escape(formatDateLong(followUp))}</p>`)
-  }
-
   // Cross-link to Motta Hub for the canonical record + threaded comments.
+  lines.push("<hr />")
   lines.push(
-    `<p>—<br /><em>Synced from <a href="${escape(hubUrl)}">Motta Hub</a> debrief #${escape(debrief.id)}.</em></p>`,
+    `<p><em>Synced from <a href="${escape(hubUrl)}">Motta Hub</a>.</em></p>`,
   )
 
   return lines.join("\n")
@@ -249,14 +291,16 @@ export async function postDebriefNoteToKarbon(
     "https://mottahub-motta.vercel.app"
   const hubUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
-  // Build a concise subject — first related client name + date works well in
-  // Karbon's timeline list view and matches how teammates already manually
-  // title meeting notes.
+  // Subject line uses the work item name as the primary identifier, matching
+  // how the firm organizes work in Karbon. Falls back to client + date if no
+  // work item is present.
+  const primaryWorkItem = (body.related_work_items || []).find((w) => w.title)?.title
   const primaryClient = (body.related_clients || []).find((c) => c.name)?.name
-  const dateLabel = formatDateLong(debrief.debrief_date) || formatDateLong(new Date().toISOString())
-  const subject = primaryClient
-    ? `Debrief — ${primaryClient}${dateLabel ? ` (${dateLabel})` : ""}`
-    : `Debrief${dateLabel ? ` — ${dateLabel}` : ""}`
+  const subject = primaryWorkItem
+    ? primaryWorkItem // Use work item name directly as subject
+    : primaryClient
+      ? `Debrief — ${primaryClient}`
+      : "Client Debrief"
 
   const noteBody = buildNoteBody(debrief, body, hubUrl)
 
@@ -267,13 +311,11 @@ export async function postDebriefNoteToKarbon(
     Timelines: timelines,
   }
 
-  // If a follow-up date is set, surface it on the note as TodoDate so the
-  // Karbon assignee sees it on their To Do list.
-  const followUp = body.follow_up_date || debrief.follow_up_date
-  if (followUp) {
-    // Karbon expects ISO 8601; the form already serializes follow_up_date as
-    // YYYY-MM-DD which Karbon accepts directly.
-    payload.TodoDate = followUp
+  // TodoDate is set to the meeting date (debrief_date) as requested — the note
+  // should be dated to when the meeting occurred so it appears correctly in
+  // the Karbon timeline. Karbon expects ISO 8601; debrief_date is YYYY-MM-DD.
+  if (debrief.debrief_date) {
+    payload.TodoDate = debrief.debrief_date
   }
 
   const { data, error } = await karbonFetch<{ NoteKey?: string }>(

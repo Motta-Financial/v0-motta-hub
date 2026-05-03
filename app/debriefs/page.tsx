@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, Suspense } from "react"
+import { useState, useEffect } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -12,7 +12,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { DebriefForm } from "@/components/debrief-form"
+
 import { format } from "date-fns"
 import {
   Plus,
@@ -76,10 +76,6 @@ interface Debrief {
   client_owner_name: string | null
   recurring_revenue: number | null
   follow_up_date: string | null
-}
-
-function DebriefFormWrapper() {
-  return <DebriefForm />
 }
 
 export default function DebriefsPage() {
@@ -213,9 +209,17 @@ export default function DebriefsPage() {
             <FileText className="h-4 w-4" />
             All Debriefs
           </TabsTrigger>
-          <TabsTrigger value="new" className="gap-2">
+          <TabsTrigger
+            value="new"
+            className="gap-2"
+            onClick={(e) => {
+              e.preventDefault()
+              window.open("/debriefs/new", "_blank")
+            }}
+          >
             <Plus className="h-4 w-4" />
             New Debrief
+            <ExternalLink className="h-3 w-3 ml-1 opacity-50" />
           </TabsTrigger>
         </TabsList>
 
@@ -300,9 +304,13 @@ export default function DebriefsPage() {
                       : "Create a new debrief to get started"}
                   </p>
                   {!searchQuery && typeFilter === "all" && (
-                    <Button className="mt-4" onClick={() => setActiveTab("new")}>
+                    <Button
+                      className="mt-4"
+                      onClick={() => window.open("/debriefs/new", "_blank")}
+                    >
                       <Plus className="mr-2 h-4 w-4" />
                       Create Debrief
+                      <ExternalLink className="h-3 w-3 ml-1 opacity-50" />
                     </Button>
                   )}
                 </div>
@@ -457,17 +465,7 @@ export default function DebriefsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="new" className="mt-6">
-          <Suspense
-            fallback={
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
-            }
-          >
-            <DebriefFormWrapper />
-          </Suspense>
-        </TabsContent>
+
       </Tabs>
 
       {/* Debrief Details Dialog */}
