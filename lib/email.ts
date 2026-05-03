@@ -82,7 +82,10 @@ export async function sendEmail({ to, subject, html, replyTo }: SendEmailParams)
   }
 }
 
-// Debrief notification email template
+// Debrief notification email template - organized into clear sections:
+// 1. Project Details (submitter, date, work item, clients, service lines)
+// 2. Meeting Notes (notes, related services, action items, research topics)
+// 3. Project Finance (pricing adjustments, payment structure)
 export function buildDebriefEmailHtml({
   authorName,
   clientName,
@@ -113,8 +116,6 @@ export function buildDebriefEmailHtml({
   feeAdjustment?: string
   feeAdjustmentReason?: string
   followUpDate?: string
-  // Render a "Karbon Links" block so reviewers can jump straight to the
-  // related Work Item or Contact/Organization timeline in Karbon.
   relatedClients?: Array<{
     name: string
     type?: "contact" | "organization" | string
@@ -127,146 +128,194 @@ export function buildDebriefEmailHtml({
   }>
   debriefUrl: string
 }) {
-  const actionItemsHtml =
-    actionItems && actionItems.length > 0
-      ? `
-    <div style="margin-top: 20px;">
-      <h3 style="color: #1a1a1a; font-size: 16px; margin-bottom: 12px;">Action Items</h3>
-      <table style="width: 100%; border-collapse: collapse;">
-        <thead>
-          <tr style="background: #f5f5f5;">
-            <th style="text-align: left; padding: 8px 12px; font-size: 13px; color: #666;">Description</th>
-            <th style="text-align: left; padding: 8px 12px; font-size: 13px; color: #666;">Assignee</th>
-            <th style="text-align: left; padding: 8px 12px; font-size: 13px; color: #666;">Due</th>
-            <th style="text-align: left; padding: 8px 12px; font-size: 13px; color: #666;">Priority</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${actionItems
-            .map(
-              (item) => `
-            <tr style="border-bottom: 1px solid #eee;">
-              <td style="padding: 8px 12px; font-size: 14px;">${item.description}</td>
-              <td style="padding: 8px 12px; font-size: 14px;">${item.assignee_name || "-"}</td>
-              <td style="padding: 8px 12px; font-size: 14px;">${item.due_date || "-"}</td>
-              <td style="padding: 8px 12px; font-size: 14px;">
-                <span style="
-                  display: inline-block;
-                  padding: 2px 8px;
-                  border-radius: 4px;
-                  font-size: 12px;
-                  font-weight: 600;
-                  background: ${item.priority === "high" ? "#fee2e2" : item.priority === "medium" ? "#fef3c7" : "#dcfce7"};
-                  color: ${item.priority === "high" ? "#991b1b" : item.priority === "medium" ? "#92400e" : "#166534"};
-                ">${item.priority}</span>
-              </td>
-            </tr>
-          `,
-            )
-            .join("")}
-        </tbody>
-      </table>
-    </div>
-  `
-      : ""
-
-  const servicesHtml =
-    services && services.length > 0
-      ? `
-    <div style="margin-top: 16px;">
-      <h3 style="color: #1a1a1a; font-size: 16px; margin-bottom: 8px;">Related Services</h3>
-      <p style="font-size: 14px; color: #333;">${services.join(", ")}</p>
-    </div>
-  `
-      : ""
-
-  const notesHtml = notes
-    ? `
-    <div style="margin-top: 16px;">
-      <h3 style="color: #1a1a1a; font-size: 16px; margin-bottom: 8px;">Notes</h3>
-      <div style="background: #f9fafb; border-radius: 8px; padding: 16px; font-size: 14px; color: #333; white-space: pre-wrap;">${notes}</div>
-    </div>
-  `
-    : ""
-
-  const feeHtml = feeAdjustment
-    ? `
-    <div style="margin-top: 16px;">
-      <h3 style="color: #1a1a1a; font-size: 16px; margin-bottom: 8px;">Fee Adjustments</h3>
-      <p style="font-size: 14px; color: #333; margin: 0 0 4px;">${feeAdjustment}</p>
-      ${
-        feeAdjustmentReason
-          ? `<p style="font-size: 13px; color: #666; margin: 0;"><em>Reason: ${feeAdjustmentReason}</em></p>`
-          : ""
-      }
-    </div>
-  `
-    : ""
-
-  const researchHtml = researchTopics
-    ? `
-    <div style="margin-top: 16px;">
-      <h3 style="color: #1a1a1a; font-size: 16px; margin-bottom: 8px;">Research Topics</h3>
-      <p style="font-size: 14px; color: #333;">${researchTopics}</p>
-    </div>
-  `
-    : ""
-
-  const followUpHtml = followUpDate
-    ? `
-    <div style="margin-top: 16px;">
-      <h3 style="color: #1a1a1a; font-size: 16px; margin-bottom: 8px;">Follow-Up Date</h3>
-      <p style="font-size: 14px; color: #333;">${followUpDate}</p>
-    </div>
-  `
-    : ""
-
-  // Karbon deep links — work items first (most actionable), then the
-  // contact/organization timelines so reviewers can jump straight to the
-  // client's profile in Karbon.
-  const renderKarbonLink = (label: string, url?: string | null, sub?: string | null) => {
+  // Helper to render a Karbon deep link
+  const renderKarbonLink = (label: string, url?: string | null) => {
     if (!url) {
-      return `<li style="margin-bottom: 6px; font-size: 14px; color: #666;">${label}${sub ? ` <span style="color: #999; font-size: 12px;">— ${sub}</span>` : ""} <span style="color: #999; font-size: 12px;">(not synced to Karbon)</span></li>`
+      return `<span style="color: #333;">${label}</span>`
     }
-    return `<li style="margin-bottom: 6px; font-size: 14px;">
-      <a href="${url}" style="color: #1a1a1a; text-decoration: underline;">${label}</a>${
-        sub ? ` <span style="color: #999; font-size: 12px;">— ${sub}</span>` : ""
-      }
-    </li>`
+    return `<a href="${url}" style="color: #2563eb; text-decoration: underline;">${label}</a>`
   }
 
   const workItemLinks = (relatedWorkItems || []).filter((w) => w.title)
   const clientLinks = (relatedClients || []).filter((c) => c.name)
 
-  const karbonLinksHtml =
-    workItemLinks.length > 0 || clientLinks.length > 0
+  // ========================================
+  // SECTION 1: Project Details
+  // ========================================
+  const projectDetailsRows: string[] = []
+
+  // Submitted By
+  projectDetailsRows.push(`
+    <tr>
+      <td style="padding: 8px 12px; font-size: 13px; color: #666; width: 140px; vertical-align: top;">Submitted By</td>
+      <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${authorName}</td>
+    </tr>
+  `)
+
+  // Date of Meeting
+  projectDetailsRows.push(`
+    <tr>
+      <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Date of Meeting</td>
+      <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${debriefDate}</td>
+    </tr>
+  `)
+
+  // Karbon Work Item(s)
+  if (workItemLinks.length > 0) {
+    const workItemsHtml = workItemLinks
+      .map((w) => renderKarbonLink(w.title, w.karbonUrl))
+      .join("<br />")
+    projectDetailsRows.push(`
+      <tr>
+        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Karbon Work Item</td>
+        <td style="padding: 8px 12px; font-size: 14px;">${workItemsHtml}</td>
+      </tr>
+    `)
+  }
+
+  // Related Clients (hyperlinked to Client Profile in Karbon)
+  if (clientLinks.length > 0) {
+    const clientsHtml = clientLinks
+      .map((c) => {
+        const typeLabel = c.type === "organization" ? " (Organization)" : c.type === "contact" ? " (Contact)" : ""
+        return `${renderKarbonLink(c.name, c.karbonUrl)}${typeLabel ? `<span style="color: #999; font-size: 12px;">${typeLabel}</span>` : ""}`
+      })
+      .join("<br />")
+    projectDetailsRows.push(`
+      <tr>
+        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Related Clients</td>
+        <td style="padding: 8px 12px; font-size: 14px;">${clientsHtml}</td>
+      </tr>
+    `)
+  }
+
+  // Service Lines
+  if (services && services.length > 0) {
+    projectDetailsRows.push(`
+      <tr>
+        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Service Lines</td>
+        <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${services.join(", ")}</td>
+      </tr>
+    `)
+  }
+
+  // Follow-up Date
+  if (followUpDate) {
+    projectDetailsRows.push(`
+      <tr>
+        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Follow-Up Date</td>
+        <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${followUpDate}</td>
+      </tr>
+    `)
+  }
+
+  const projectDetailsHtml = `
+    <div style="margin-bottom: 24px;">
+      <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Project Details</h2>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tbody>
+          ${projectDetailsRows.join("")}
+        </tbody>
+      </table>
+    </div>
+  `
+
+  // ========================================
+  // SECTION 2: Meeting Notes
+  // ========================================
+  const meetingNotesSections: string[] = []
+
+  // Notes
+  if (notes) {
+    meetingNotesSections.push(`
+      <div style="margin-bottom: 16px;">
+        <h3 style="color: #666; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Notes</h3>
+        <div style="background: #f9fafb; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #333; white-space: pre-wrap; line-height: 1.5;">${notes}</div>
+      </div>
+    `)
+  }
+
+  // Action Items
+  if (actionItems && actionItems.length > 0) {
+    const actionItemsTableHtml = `
+      <div style="margin-bottom: 16px;">
+        <h3 style="color: #666; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Action Items</h3>
+        <table style="width: 100%; border-collapse: collapse; background: #f9fafb; border-radius: 6px; overflow: hidden;">
+          <thead>
+            <tr style="background: #e5e5e5;">
+              <th style="text-align: left; padding: 8px 12px; font-size: 12px; color: #666;">Task</th>
+              <th style="text-align: left; padding: 8px 12px; font-size: 12px; color: #666;">Assignee</th>
+              <th style="text-align: left; padding: 8px 12px; font-size: 12px; color: #666;">Due</th>
+              <th style="text-align: left; padding: 8px 12px; font-size: 12px; color: #666;">Priority</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${actionItems
+              .map(
+                (item) => `
+              <tr style="border-bottom: 1px solid #e5e5e5;">
+                <td style="padding: 10px 12px; font-size: 14px; color: #1a1a1a;">${item.description}</td>
+                <td style="padding: 10px 12px; font-size: 14px; color: #333;">${item.assignee_name || "-"}</td>
+                <td style="padding: 10px 12px; font-size: 14px; color: #333;">${item.due_date || "-"}</td>
+                <td style="padding: 10px 12px; font-size: 14px;">
+                  <span style="
+                    display: inline-block;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    font-weight: 600;
+                    background: ${item.priority === "high" ? "#fee2e2" : item.priority === "medium" ? "#fef3c7" : "#dcfce7"};
+                    color: ${item.priority === "high" ? "#991b1b" : item.priority === "medium" ? "#92400e" : "#166534"};
+                  ">${item.priority}</span>
+                </td>
+              </tr>
+            `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    `
+    meetingNotesSections.push(actionItemsTableHtml)
+  }
+
+  // Research Topics
+  if (researchTopics) {
+    meetingNotesSections.push(`
+      <div style="margin-bottom: 16px;">
+        <h3 style="color: #666; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Research Topics</h3>
+        <div style="background: #fef3c7; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #92400e; white-space: pre-wrap;">${researchTopics}</div>
+      </div>
+    `)
+  }
+
+  const meetingNotesHtml =
+    meetingNotesSections.length > 0
       ? `
-    <div style="margin-top: 20px; padding: 16px; background: #f9fafb; border: 1px solid #eee; border-radius: 8px;">
-      <h3 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px;">Open in Karbon</h3>
-      ${
-        workItemLinks.length > 0
-          ? `<p style="font-size: 12px; color: #666; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.5px;">Work Items</p>
-             <ul style="margin: 0 0 12px; padding-left: 20px;">
-               ${workItemLinks.map((w) => renderKarbonLink(w.title, w.karbonUrl, w.workType || null)).join("")}
-             </ul>`
-          : ""
-      }
-      ${
-        clientLinks.length > 0
-          ? `<p style="font-size: 12px; color: #666; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.5px;">Contact &amp; Organization Timelines</p>
-             <ul style="margin: 0; padding-left: 20px;">
-               ${clientLinks
-                 .map((c) =>
-                   renderKarbonLink(
-                     c.name,
-                     c.karbonUrl,
-                     c.type === "organization" ? "Organization" : c.type === "contact" ? "Contact" : null,
-                   ),
-                 )
-                 .join("")}
-             </ul>`
-          : ""
-      }
+    <div style="margin-bottom: 24px;">
+      <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Meeting Notes</h2>
+      ${meetingNotesSections.join("")}
+    </div>
+  `
+      : ""
+
+  // ========================================
+  // SECTION 3: Project Finance
+  // ========================================
+  const projectFinanceHtml =
+    feeAdjustment
+      ? `
+    <div style="margin-bottom: 24px;">
+      <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Project Finance</h2>
+      <div style="background: #f0fdf4; border-radius: 6px; padding: 16px; border-left: 4px solid #22c55e;">
+        <h3 style="color: #166534; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Pricing Adjustment / Payment Structure</h3>
+        <p style="font-size: 14px; color: #1a1a1a; margin: 0 0 8px;">${feeAdjustment}</p>
+        ${
+          feeAdjustmentReason
+            ? `<p style="font-size: 13px; color: #666; margin: 0;"><strong>Reason:</strong> ${feeAdjustmentReason}</p>`
+            : ""
+        }
+      </div>
     </div>
   `
       : ""
@@ -274,31 +323,21 @@ export function buildDebriefEmailHtml({
   return `
 <!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5;">
-  <div style="max-width: 640px; margin: 0 auto; padding: 24px;">
+  <div style="max-width: 680px; margin: 0 auto; padding: 24px;">
     <div style="background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
       <!-- Header -->
       <div style="background: #1a1a1a; padding: 24px 32px;">
-        <h1 style="color: #fff; font-size: 20px; margin: 0;">New Debrief Submitted</h1>
-        <p style="color: #a3a3a3; font-size: 14px; margin: 8px 0 0;">MOTTA HUB</p>
+        <h1 style="color: #fff; font-size: 20px; margin: 0;">Client Debrief</h1>
+        <p style="color: #a3a3a3; font-size: 14px; margin: 8px 0 0;">MOTTA FINANCIAL</p>
       </div>
 
       <!-- Body -->
       <div style="padding: 32px;">
-        <div style="margin-bottom: 24px;">
-          <p style="font-size: 15px; color: #333; margin: 0;">
-            <strong>${authorName}</strong> submitted a debrief for <strong>${clientName}</strong> on ${debriefDate}.
-          </p>
-        </div>
-
-        ${notesHtml}
-        ${actionItemsHtml}
-        ${servicesHtml}
-        ${feeHtml}
-        ${researchHtml}
-        ${followUpHtml}
-        ${karbonLinksHtml}
+        ${projectDetailsHtml}
+        ${meetingNotesHtml}
+        ${projectFinanceHtml}
 
         <!-- CTA -->
         <div style="margin-top: 28px; text-align: center;">
@@ -311,7 +350,7 @@ export function buildDebriefEmailHtml({
             text-decoration: none;
             font-size: 14px;
             font-weight: 600;
-          ">View Debrief in MOTTA HUB</a>
+          ">View Full Debrief in MOTTA HUB</a>
         </div>
       </div>
 

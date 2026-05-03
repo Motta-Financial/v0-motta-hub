@@ -22,11 +22,9 @@ import {
   ArrowUp,
   ArrowUpDown,
   Building2,
-  CheckCircle2,
   ChevronDown,
   RefreshCw,
   Search,
-  TrendingUp,
   User,
   Users,
   X,
@@ -356,7 +354,11 @@ export function ClientsList() {
       const clientType = getClientType("organization", org.entity_type)
       return {
         id: org.id,
-        clientKey: org.karbon_organization_key,
+        // Some Karbon-imported orgs have a NULL karbon_organization_key
+        // (e.g. local-only orgs created via the migration script). The
+        // /clients/[id] route accepts EITHER a Karbon key OR our UUID, so
+        // fall back to the UUID to keep every row's profile link working.
+        clientKey: org.karbon_organization_key || org.id,
         name: org.full_name?.trim() || org.name?.trim() || "Unknown Organization",
         family: "business",
         clientType,
@@ -386,7 +388,10 @@ export function ClientsList() {
         "Unnamed Contact"
       return {
         id: c.id,
-        clientKey: c.karbon_contact_key,
+        // Same fallback as orgs — the contact's UUID is a valid `/clients/[id]`
+        // identifier, so contacts that haven't been mapped to a Karbon key
+        // (or where the key was lost in a re-import) still link correctly.
+        clientKey: c.karbon_contact_key || c.id,
         name,
         family: "individual",
         clientType,
@@ -608,20 +613,6 @@ export function ClientsList() {
             Refresh
           </Button>
         </div>
-      </div>
-
-      {/* ═════ KPIs ═════ */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        <KpiCard icon={Users} label="Total" value={kpis.totalClients} />
-        <KpiCard icon={CheckCircle2} label="Active" value={kpis.activeClients} accent="primary" />
-        <KpiCard icon={Building2} label="Businesses" value={kpis.businesses} />
-        <KpiCard icon={User} label="Individuals" value={kpis.individuals} />
-        <KpiCard
-          icon={TrendingUp}
-          label="Active Work"
-          value={kpis.totalActiveWork}
-          sub={`across ${kpis.activeClients} clients`}
-        />
       </div>
 
       {/* ═════ Filter bar ═════ */}
@@ -872,47 +863,6 @@ export function ClientsList() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper components
 // ─────────────────────────────────────────────────────────────────────────────
-
-function KpiCard({
-  icon: Icon,
-  label,
-  value,
-  sub,
-  accent,
-}: {
-  icon: React.ComponentType<{ className?: string }>
-  label: string
-  value: number | string
-  sub?: string
-  accent?: "primary"
-}) {
-  return (
-    <Card className="bg-card shadow-sm border">
-      <CardContent className="p-4">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <p className="text-xs text-muted-foreground uppercase tracking-wide">{label}</p>
-            <p
-              className={cn(
-                "text-2xl font-bold mt-1",
-                accent === "primary" ? "text-primary" : "text-foreground",
-              )}
-            >
-              {value}
-            </p>
-            {sub && <p className="text-[11px] text-muted-foreground mt-0.5 truncate">{sub}</p>}
-          </div>
-          <Icon
-            className={cn(
-              "h-7 w-7 shrink-0",
-              accent === "primary" ? "text-primary" : "text-muted-foreground",
-            )}
-          />
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
 
 function StatusTabButton({
   label,

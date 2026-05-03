@@ -786,7 +786,7 @@ export function DebriefForm() {
               <PopoverContent className="w-[500px] p-0" align="start">
                 <Command shouldFilter={false}>
                   <CommandInput
-                    placeholder="Search by title, client, or type..."
+                    placeholder="Search by title, client, work type, status, or work item ID..."
                     value={workItemSearch}
                     onValueChange={setWorkItemSearch}
                   />
@@ -848,10 +848,10 @@ export function DebriefForm() {
           <div className="space-y-2">
             <Label className="flex items-center gap-2">
               <Users className="h-4 w-4" />
-              Related Karbon Clients
+              Other Related Clients
             </Label>
             <p className="text-xs text-muted-foreground mb-2">
-              Search by client's full name (individuals or organizations)
+              Add clients not auto-populated from the work item above (e.g., spouse, related entities)
             </p>
             <Popover open={clientPopoverOpen} onOpenChange={setClientPopoverOpen}>
               <PopoverTrigger asChild>

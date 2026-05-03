@@ -169,7 +169,7 @@ export function KarbonWorkItemsProvider({ children }: { children: ReactNode }) {
 
   // Exclude completed / cancelled items for dashboard views
   const activeWorkItems = useMemo(() => {
-    return allWorkItems.filter((item) => {
+    return allWorkItems.filter((item: KarbonWorkItem) => {
       const s = (item.status || item.primary_status || item.WorkStatus || "").toLowerCase()
       return !s.includes("completed") && !s.includes("complete") && !s.includes("cancelled") && !s.includes("canceled")
     })

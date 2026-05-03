@@ -19,10 +19,11 @@ const PAGE_SIZE_DEFAULT = 50
 const PAGE_SIZE_MAX = 200
 
 export async function GET(req: Request) {
-  const url = new URL(req.url)
-  const sp = url.searchParams
+  try {
+    const url = new URL(req.url)
+    const sp = url.searchParams
 
-  const page = Math.max(1, Number.parseInt(sp.get("page") || "1", 10))
+    const page = Math.max(1, Number.parseInt(sp.get("page") || "1", 10))
   const pageSize = Math.min(
     PAGE_SIZE_MAX,
     Math.max(1, Number.parseInt(sp.get("pageSize") || String(PAGE_SIZE_DEFAULT), 10)),
@@ -156,13 +157,17 @@ export async function GET(req: Request) {
     sentBy: uniqueSorted(dimensionsData?.map((d) => d.proposal_sent_by)),
   }
 
-  return NextResponse.json({
-    proposals: scrubbed,
-    page,
-    pageSize,
-    total: count || 0,
-    dimensions,
-  })
+    return NextResponse.json({
+      proposals: scrubbed,
+      page,
+      pageSize,
+      total: count || 0,
+      dimensions,
+    })
+  } catch (error) {
+    console.error("[sales/proposals] Error:", error)
+    return NextResponse.json({ error: "Failed to load proposals" }, { status: 500 })
+  }
 }
 
 function uniqueSorted(arr: (string | null | undefined)[] | undefined): string[] {

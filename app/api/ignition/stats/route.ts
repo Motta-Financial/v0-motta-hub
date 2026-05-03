@@ -20,12 +20,13 @@ import { createClient } from "@/lib/supabase/server"
 export const runtime = "nodejs"
 
 export async function GET() {
-  const supabase = await createClient()
+  try {
+    const supabase = await createClient()
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
   // Run all aggregates in parallel; each is a tiny indexed COUNT or a
   // small bounded SELECT. p95 should be well under 100ms.
@@ -90,16 +91,20 @@ export async function GET() {
     }))
     .sort((a, b) => b.count - a.count)
 
-  return NextResponse.json({
-    totals: {
-      clients: clientsTotal.count || 0,
-      matched: clientsMatched.count || 0,
-      unmatched: clientsUnmatched.count || 0,
-      proposals: proposalsTotal.count || 0,
-      invoices: invoicesTotal.count || 0,
-      payments: paymentsTotal.count || 0,
-    },
-    matchBreakdown,
-    recentEvents: recentEventRows.data || [],
-  })
+    return NextResponse.json({
+      totals: {
+        clients: clientsTotal.count || 0,
+        matched: clientsMatched.count || 0,
+        unmatched: clientsUnmatched.count || 0,
+        proposals: proposalsTotal.count || 0,
+        invoices: invoicesTotal.count || 0,
+        payments: paymentsTotal.count || 0,
+      },
+      matchBreakdown,
+      recentEvents: recentEventRows.data || [],
+    })
+  } catch (error) {
+    console.error("[ignition/stats] Error:", error)
+    return NextResponse.json({ error: "Failed to load stats" }, { status: 500 })
+  }
 }

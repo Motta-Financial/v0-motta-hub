@@ -72,7 +72,8 @@ export async function GET(request: NextRequest) {
       if (clientKey) query = query.eq("client_key", clientKey)
       if (workItemKey) query = query.eq("karbon_work_item_key", workItemKey)
       if (status) query = query.eq("status", status)
-      if (top) query = query.limit(Number.parseInt(top, 10))
+      // Always apply a limit to prevent unbounded queries
+      query = query.limit(top ? Number.parseInt(top, 10) : 500)
 
       const { data, error } = await query
 

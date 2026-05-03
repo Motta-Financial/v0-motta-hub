@@ -4,6 +4,10 @@ import {
   loadRecurringScrubSet,
   normalizeClientName,
 } from "@/lib/sales/recurring-scrub"
+import {
+  classifyService,
+  type ServiceLine,
+} from "@/lib/sales/service-line-classifier"
 
 /**
  * Sales Dashboard data endpoint.
@@ -340,6 +344,118 @@ export async function GET(req: Request) {
   ).sort()
   const statuses = Array.from(new Set(enriched.map((p) => p.status))).sort()
 
+  // ── Service Line breakdown (only for accepted/completed proposals) ────
+  const serviceLineMap = new Map<
+    ServiceLine,
+    {
+      revenue: number
+      count: number
+      servicesMap: Map<string, { revenue: number; count: number }>
+    }
+  >()
+
+  for (const p of filtered) {
+    // Only count revenue from won deals
+    if (p.status !== "accepted" && p.status !== "completed") continue
+
+    for (const s of p.services) {
+      const line = classifyService(s.service_name)
+      const current = serviceLineMap.get(line) || {
+        revenue: 0,
+        count: 0,
+        servicesMap: new Map(),
+      }
+
+      current.revenue += s.total_amount
+      current.count += 1
+
+      const serviceCurrent = current.servicesMap.get(s.service_name) || {
+        revenue: 0,
+        count: 0,
+      }
+      serviceCurrent.revenue += s.total_amount
+      serviceCurrent.count += 1
+      current.servicesMap.set(s.service_name, serviceCurrent)
+
+      serviceLineMap.set(line, current)
+    }
+  }
+
+  const serviceLines = (["Tax", "Accounting", "Advisory", "Other"] as ServiceLine[])
+    .filter((line) => serviceLineMap.has(line))
+    .map((line) => {
+      const data = serviceLineMap.get(line)!
+      return {
+        serviceLine: line,
+        revenue: data.revenue,
+        count: data.count,
+        topServices: Array.from(data.servicesMap.entries())
+          .map(([name, stats]) => ({
+            name,
+            revenue: stats.revenue,
+            count: stats.count,
+          }))
+          .sort((a, b) => b.revenue - a.revenue)
+          .slice(0, 8),
+      }
+    })
+    .sort((a, b) => b.revenue - a.revenue)
+
+  // ── State breakdown with clients for map expansion ────────────────────
+  const stateBreakdownMap = new Map<
+    string,
+    {
+      state: string
+      proposalCount: number
+      acceptedValue: number
+      totalValue: number
+      clients: Map<string, { name: string; id: string | null; kind: "organization" | "contact" | null; value: number }>
+    }
+  >()
+
+  for (const p of filtered) {
+    const st = p.state || "Unknown"
+    const current = stateBreakdownMap.get(st) || {
+      state: st,
+      proposalCount: 0,
+      acceptedValue: 0,
+      totalValue: 0,
+      clients: new Map(),
+    }
+
+    current.proposalCount += 1
+    current.totalValue += p.total_value
+
+    if (p.status === "accepted" || p.status === "completed") {
+      current.acceptedValue += p.total_value
+
+      // Track client in this state
+      const clientKey = p.organization_id || p.contact_id || p.client_display
+      const existingClient = current.clients.get(clientKey) || {
+        name: p.client_display,
+        id: p.organization_id || p.contact_id,
+        kind: p.entity_kind,
+        value: 0,
+      }
+      existingClient.value += p.total_value
+      current.clients.set(clientKey, existingClient)
+    }
+
+    stateBreakdownMap.set(st, current)
+  }
+
+  const stateBreakdown = Array.from(stateBreakdownMap.values())
+    .map((s) => ({
+      state: s.state,
+      proposalCount: s.proposalCount,
+      acceptedValue: s.acceptedValue,
+      totalValue: s.totalValue,
+      clients: Array.from(s.clients.values())
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 15), // Top 15 clients per state
+    }))
+    .sort((a, b) => b.acceptedValue - a.acceptedValue)
+
   return NextResponse.json({
     proposals: filtered,
     totalUnfiltered: enriched.length,
@@ -350,5 +466,7 @@ export async function GET(req: Request) {
       sentBy: sentByList,
       statuses,
     },
+    serviceLines,
+    stateBreakdown,
   })
 }

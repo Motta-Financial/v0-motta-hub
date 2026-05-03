@@ -37,10 +37,10 @@ export async function GET() {
 
   const teamMemberId = teamMember.id
 
-  // Fan-out: weekly points and yearly totals in parallel. Sort weekly
-  // results in JS rather than the database to avoid a second round-trip
-  // when computing the "best week".
-  const [pointsRes, yearlyRes] = await Promise.all([
+  // Fan-out: weekly points, yearly totals, and feedback received in parallel.
+  // Sort weekly results in JS rather than the database to avoid a second
+  // round-trip when computing the "best week".
+  const [pointsRes, yearlyRes, feedbackRes] = await Promise.all([
     supabase
       .from("tommy_award_points")
       .select(
@@ -56,6 +56,18 @@ export async function GET() {
       )
       .eq("team_member_id", teamMemberId)
       .order("year", { ascending: false }),
+    // Fetch all ballots where this team member was nominated in any position
+    // to surface the feedback/notes they received from teammates
+    supabase
+      .from("tommy_award_ballots")
+      .select(
+        "id, week_date, voter_name, first_place_id, first_place_notes, second_place_id, second_place_notes, third_place_id, third_place_notes, honorable_mention_id, honorable_mention_notes, partner_vote_id, partner_vote_notes, submitted_at",
+      )
+      .or(
+        `first_place_id.eq.${teamMemberId},second_place_id.eq.${teamMemberId},third_place_id.eq.${teamMemberId},honorable_mention_id.eq.${teamMemberId},partner_vote_id.eq.${teamMemberId}`,
+      )
+      .order("week_date", { ascending: false })
+      .limit(100),
   ])
 
   if (pointsRes.error) {
@@ -64,6 +76,72 @@ export async function GET() {
 
   const points = pointsRes.data || []
   const yearly = yearlyRes.data || []
+  const feedbackBallots = feedbackRes.data || []
+
+  // Transform ballots into feedback items — extract only the notes where this
+  // team member was nominated in that specific slot
+  type FeedbackItem = {
+    id: string
+    weekDate: string
+    voterName: string
+    placement: "1st" | "2nd" | "3rd" | "HM" | "Partner"
+    notes: string | null
+    submittedAt: string | null
+  }
+
+  const feedbackReceived: FeedbackItem[] = []
+  for (const ballot of feedbackBallots) {
+    if (ballot.first_place_id === teamMemberId && ballot.first_place_notes) {
+      feedbackReceived.push({
+        id: `${ballot.id}-1st`,
+        weekDate: ballot.week_date,
+        voterName: ballot.voter_name || "Anonymous",
+        placement: "1st",
+        notes: ballot.first_place_notes,
+        submittedAt: ballot.submitted_at,
+      })
+    }
+    if (ballot.second_place_id === teamMemberId && ballot.second_place_notes) {
+      feedbackReceived.push({
+        id: `${ballot.id}-2nd`,
+        weekDate: ballot.week_date,
+        voterName: ballot.voter_name || "Anonymous",
+        placement: "2nd",
+        notes: ballot.second_place_notes,
+        submittedAt: ballot.submitted_at,
+      })
+    }
+    if (ballot.third_place_id === teamMemberId && ballot.third_place_notes) {
+      feedbackReceived.push({
+        id: `${ballot.id}-3rd`,
+        weekDate: ballot.week_date,
+        voterName: ballot.voter_name || "Anonymous",
+        placement: "3rd",
+        notes: ballot.third_place_notes,
+        submittedAt: ballot.submitted_at,
+      })
+    }
+    if (ballot.honorable_mention_id === teamMemberId && ballot.honorable_mention_notes) {
+      feedbackReceived.push({
+        id: `${ballot.id}-hm`,
+        weekDate: ballot.week_date,
+        voterName: ballot.voter_name || "Anonymous",
+        placement: "HM",
+        notes: ballot.honorable_mention_notes,
+        submittedAt: ballot.submitted_at,
+      })
+    }
+    if (ballot.partner_vote_id === teamMemberId && ballot.partner_vote_notes) {
+      feedbackReceived.push({
+        id: `${ballot.id}-partner`,
+        weekDate: ballot.week_date,
+        voterName: ballot.voter_name || "Anonymous",
+        placement: "Partner",
+        notes: ballot.partner_vote_notes,
+        submittedAt: ballot.submitted_at,
+      })
+    }
+  }
 
   // Lifetime aggregation from the weekly source-of-truth. Numeric coercion
   // matters here: total_points comes back as a Postgres `numeric` which
@@ -190,5 +268,8 @@ export async function GET() {
         honorableMention: y.total_honorable_mention_votes || 0,
         partner: y.total_partner_votes || 0,
       })),
+    // Feedback received from teammates — notes written when they voted
+    // for this team member. Only entries with actual notes are included.
+    feedbackReceived,
   })
 }

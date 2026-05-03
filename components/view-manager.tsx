@@ -19,7 +19,7 @@ import type { FilterView } from "@/lib/view-types"
 import { Badge } from "@/components/ui/badge"
 
 interface ViewManagerProps {
-  type: "clients" | "workItems"
+  type: "clients" | "workItems" | "teammates"
   currentFilters: any
   onLoadView: (view: FilterView) => void
   onSaveView?: (viewName: string, isShared: boolean) => void

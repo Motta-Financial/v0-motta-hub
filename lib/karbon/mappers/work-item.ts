@@ -49,8 +49,15 @@ export function mapKarbonWorkItemToSupabase(item: any) {
     completed_date: item.CompletedDate ? String(item.CompletedDate).split("T")[0] : null,
     year_end: item.YearEnd ? String(item.YearEnd).split("T")[0] : null,
     tax_year: parseTaxYear(item),
-    period_start: item.PeriodStart ? String(item.PeriodStart).split("T")[0] : null,
-    period_end: item.PeriodEnd ? String(item.PeriodEnd).split("T")[0] : null,
+    // NOTE on period_start / period_end:
+    // Karbon's /WorkItems list does NOT return PeriodStart or PeriodEnd, so
+    // sending `null` on every upsert would clobber the values our
+    // `work_items_derive_period` Postgres trigger derives from the title
+    // (e.g. "| Aug 2025" -> 2025-08-01..2025-08-31).
+    // We only include these fields when Karbon actually surfaces them — the
+    // trigger handles the rest (see scripts/032_work_items_derive_period_from_title.sql).
+    ...(item.PeriodStart ? { period_start: String(item.PeriodStart).split("T")[0] } : {}),
+    ...(item.PeriodEnd ? { period_end: String(item.PeriodEnd).split("T")[0] } : {}),
     internal_due_date: item.InternalDueDate ? String(item.InternalDueDate).split("T")[0] : null,
     regulatory_deadline: item.RegulatoryDeadline ? String(item.RegulatoryDeadline).split("T")[0] : null,
     client_deadline: item.ClientDeadline ? String(item.ClientDeadline).split("T")[0] : null,
@@ -84,6 +91,9 @@ export function mapKarbonWorkItemToSupabase(item: any) {
     karbon_url: `${KARBON_TENANT_PREFIX}/work/${item.WorkItemKey}`,
     karbon_created_at: item.CreatedDate || item.CreatedDateTime || null,
     karbon_modified_at: item.LastModifiedDateTime || item.ModifiedDate || null,
+    // If Karbon is returning this item, by definition it is NOT deleted. Clear
+    // any stale soft-delete flag (covers the "deleted then restored" case).
+    deleted_in_karbon_at: null,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }

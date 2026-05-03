@@ -26,7 +26,11 @@ export function resolveWebhookTargetUrl(): string {
 }
 
 function ensureWebhookPath(base: string): string {
-  const trimmed = base.replace(/\/+$/, "")
+  let trimmed = base.replace(/\/+$/, "")
+  // Ensure https:// protocol is present
+  if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+    trimmed = `https://${trimmed}`
+  }
   if (trimmed.endsWith("/api/karbon/webhooks")) return trimmed
   return `${trimmed}/api/karbon/webhooks`
 }

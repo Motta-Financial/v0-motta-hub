@@ -355,15 +355,15 @@ export function TaxEstimates() {
                           {formatDate(estimate.DueDate)}
                         </span>
                       </div>
-                      {estimate.AssignedTo && estimate.AssignedTo.length > 0 && (
-                        <div className="flex items-center gap-1">
+                      {estimate.AssignedTo && (Array.isArray(estimate.AssignedTo) ? estimate.AssignedTo.length > 0 : true) && (
+                        <div className="flex items-center gap-1 text-muted-foreground text-xs">
                           <User className="h-3 w-3" />
-                          <span>{estimate.AssignedTo[0].FullName}</span>
+                          <span>{Array.isArray(estimate.AssignedTo) ? estimate.AssignedTo[0]?.FullName : estimate.AssignedTo || "Unassigned"}</span>
                         </div>
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline" className={getStatusColor(estimate.PrimaryStatus)}>
+                      <Badge variant="outline" className={getStatusColor(estimate.PrimaryStatus || "")}>
                         {estimate.PrimaryStatus}
                       </Badge>
                       {estimate.SecondaryStatus && (

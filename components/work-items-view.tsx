@@ -210,7 +210,7 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
   }
 
   const getServiceLines = (): string[] => {
-    const serviceLines = new Set(workItems.map((item) => item.WorkType))
+    const serviceLines = new Set(workItems.map((item) => item.WorkType).filter((t): t is string => Boolean(t)))
     const sortedLines = Array.from(serviceLines).sort()
     const filtered = sortedLines.filter((line) => line !== "OTHER")
     if (serviceLines.has("OTHER")) {
@@ -318,7 +318,7 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
     }
 
     if (!selectedServiceLines.includes("all")) {
-      filtered = filtered.filter((item) => selectedServiceLines.includes(item.WorkType))
+      filtered = filtered.filter((item) => item.WorkType && selectedServiceLines.includes(item.WorkType))
     }
 
     if (!selectedPriorities.includes("all")) {
@@ -326,7 +326,7 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
     }
 
     if (!selectedWorkTypes.includes("all")) {
-      filtered = filtered.filter((item) => selectedWorkTypes.includes(item.WorkType))
+      filtered = filtered.filter((item) => item.WorkType && selectedWorkTypes.includes(item.WorkType))
     }
 
     if (dateRange.start || dateRange.end) {
@@ -396,13 +396,13 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
     }
   }
 
-  const getAllPriorities = () => {
-    const priorities = new Set(workItems.map((item) => item.Priority).filter(Boolean))
+  const getAllPriorities = (): string[] => {
+    const priorities = new Set(workItems.map((item) => item.Priority).filter((p): p is string => Boolean(p)))
     return ["all", ...Array.from(priorities).sort()]
   }
 
-  const getAllWorkTypes = () => {
-    const workTypes = new Set(workItems.map((item) => item.WorkType).filter(Boolean))
+  const getAllWorkTypes = (): string[] => {
+    const workTypes = new Set(workItems.map((item) => item.WorkType).filter((t): t is string => Boolean(t)))
     return ["all", ...Array.from(workTypes).sort()]
   }
 

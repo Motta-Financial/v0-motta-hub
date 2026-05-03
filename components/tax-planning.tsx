@@ -475,7 +475,9 @@ export function TaxPlanning() {
                           <span>
                             {typeof item.AssignedTo === "string"
                               ? item.AssignedTo
-                              : item.AssignedTo?.FullName || "Unassigned"}
+                              : Array.isArray(item.AssignedTo) && item.AssignedTo.length > 0
+                                ? (item.AssignedTo[0]?.FullName || "Unassigned")
+                                : (item.AssigneeName || "Unassigned")}
                           </span>
                         </div>
                       )}
