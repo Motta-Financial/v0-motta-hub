@@ -195,12 +195,31 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
       .map((tm) => tm.email)
 
     if (recipientEmails.length > 0) {
-      const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://mottahub-motta.vercel.app"
+      const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_BASE_URL || "https://mottahub-motta.vercel.app"
       const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
+
+      // Resolve the primary work item title for the subject line
+      let workItemTitle: string | null = null
+      const relatedWorkItemsForSubject = body?.related_work_items || []
+      if (relatedWorkItemsForSubject.length > 0) {
+        workItemTitle = relatedWorkItemsForSubject[0].title || null
+      }
+      if (!workItemTitle && debrief.work_item_id) {
+        const { data: workItem } = await supabase
+          .from("work_items")
+          .select("title")
+          .eq("id", debrief.work_item_id)
+          .single()
+        if (workItem) workItemTitle = workItem.title
+      }
+
+      const subjectName = workItemTitle || clientName
+      const subject = `DEBRIEF: ${subjectName}`
 
       const html = buildDebriefEmailHtml({
         authorName: authorName || "A team member",
         clientName,
+        workItemTitle,
         debriefDate: debrief.debrief_date
           ? new Date(debrief.debrief_date).toLocaleDateString("en-US", {
               month: "long",
@@ -218,14 +237,14 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
 
       const emailResult = await sendEmail({
         to: recipientEmails,
-        subject: `New Debrief: ${clientName} - ${authorName || "Team Member"}`,
+        subject,
         html,
       })
 
       if (!emailResult.success) {
         console.warn("[debrief] Email send failed (in-app notifications still created):", emailResult.error)
       } else {
-        console.log(`[debrief] Email sent to ${recipientEmails.length} active team members`)
+        console.log(`[debrief] Email sent to ${recipientEmails.length} active team members with subject: ${subject}`)
       }
     }
 

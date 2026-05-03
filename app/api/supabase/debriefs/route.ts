@@ -19,7 +19,9 @@ export async function GET(request: Request) {
         *,
         contact:contacts(full_name),
         organization:organizations(name),
-        work_item:work_items(title)
+        work_item:work_items(title, karbon_work_item_key),
+        team_member:team_members!team_member_id(id, full_name, avatar_url, email),
+        created_by:team_members!created_by_id(id, full_name)
       `)
       .order("created_at", { ascending: false })
       .limit(limit)
