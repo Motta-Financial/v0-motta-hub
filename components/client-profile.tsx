@@ -47,6 +47,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
 import { AlfredErrorCard } from "@/components/alfred-error"
+import { clientTypeBadgeClass, type ClientType } from "@/lib/client-type"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types matching /api/clients/[id] response
@@ -65,13 +66,14 @@ interface ClientBundle {
     entityType: string | null
     contactType: string | null
     /**
-     * Unified, filing-form-aware client type label derived on the server via
-     * `lib/client-type.getClientType()`. Examples: "Individual (1040)",
-     * "Partnership (1065)", "S-Corp (1120-S)", "C-Corp (1120)", "Trust (1041)",
-     * "Non-Profit (990)", "Sole Proprietor (Schedule C)", or "Business" /
-     * "Individual" when the source data is too sparse to classify.
+     * Unified, filing-form-aware client type derived on the server via
+     * `lib/client-type.getClientType()`. The full structured object — not
+     * just a string — so the badge can pick a colour variant (.variant)
+     * and the rest of the app can filter by .code without having to
+     * re-parse a label. Examples of .labelWithForm: "Individual (1040)",
+     * "Partnership (1065)", "S-Corp (1120-S)", "Trust (1041)".
      */
-    clientType: string
+    clientType: ClientType
     status: string | null
     isProspect: boolean
     contactInfo: {
@@ -736,8 +738,26 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                    * via lib/client-type so the badge is consistent with the
                    * Clients list and any future filters.
                    */}
-                  <Badge variant="secondary">{client.clientType || client.type}</Badge>
-                  {client.contactType && client.contactType !== client.clientType ? (
+                  {client.clientType ? (
+                    <Badge
+                      variant="outline"
+                      className={cn("font-medium", clientTypeBadgeClass(client.clientType.variant))}
+                    >
+                      {client.clientType.labelWithForm}
+                    </Badge>
+                  ) : client.type ? (
+                    <Badge variant="secondary">{client.type}</Badge>
+                  ) : null}
+                  {/*
+                   * Suppress the secondary contactType chip when it duplicates
+                   * what the unified Client Type badge already says. We compare
+                   * against both label fields because Karbon's contact_type
+                   * sometimes carries the bare label ("S Corporation") and
+                   * sometimes the form-suffixed variant ("S-Corp (1120-S)").
+                   */}
+                  {client.contactType &&
+                  client.contactType !== client.clientType?.label &&
+                  client.contactType !== client.clientType?.labelWithForm ? (
                     <Badge variant="outline">{client.contactType}</Badge>
                   ) : null}
                   {client.status ? (
