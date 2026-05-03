@@ -5,7 +5,7 @@ import { getKarbonCredentials, karbonFetch } from "@/lib/karbon-api"
  * GET /api/karbon/client-groups/[clientGroupKey]
  * Fetch a specific client group with members
  */
-export async function GET(request: NextRequest, { params }: { params: { clientGroupKey: string } }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ clientGroupKey: string }> }) {
   const credentials = getKarbonCredentials()
 
   if (!credentials) {
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest, { params }: { params: { clientGr
   }
 
   try {
-    const { clientGroupKey } = params
+    const { clientGroupKey } = await params
 
     const { data, error } = await karbonFetch<any>(`/ClientGroups/${clientGroupKey}`, credentials, {
       queryOptions: { expand: ["Members", "Contacts"] },

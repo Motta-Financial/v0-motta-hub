@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 
-export async function GET(request: NextRequest, { params }: { params: { organizationKey: string } }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ organizationKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -9,7 +9,7 @@ export async function GET(request: NextRequest, { params }: { params: { organiza
   }
 
   try {
-    const { organizationKey } = params
+    const { organizationKey } = await params
     const searchParams = request.nextUrl.searchParams
     // Karbon Organization $expand options: BusinessCards, AccountingDetail, Contacts
     const expand = searchParams.get("expand") || "BusinessCards,AccountingDetail"
@@ -53,7 +53,7 @@ export async function GET(request: NextRequest, { params }: { params: { organiza
   }
 }
 
-export async function PUT(request: NextRequest, { params }: { params: { organizationKey: string } }) {
+export async function PUT(request: NextRequest, { params }: { params: Promise<{ organizationKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -63,7 +63,7 @@ export async function PUT(request: NextRequest, { params }: { params: { organiza
 
   try {
     const body = await request.json()
-    const { organizationKey } = params
+    const { organizationKey } = await params
 
     const response = await fetch(`https://api.karbonhq.com/v3/Organizations/${organizationKey}`, {
       method: "PUT",
@@ -95,7 +95,7 @@ export async function PUT(request: NextRequest, { params }: { params: { organiza
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { organizationKey: string } }) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ organizationKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -105,7 +105,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { organi
 
   try {
     const body = await request.json()
-    const { organizationKey } = params
+    const { organizationKey } = await params
 
     const response = await fetch(`https://api.karbonhq.com/v3/Organizations/${organizationKey}`, {
       method: "PATCH",

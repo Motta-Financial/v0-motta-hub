@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 
-export async function PUT(request: NextRequest, { params }: { params: { workItemKey: string } }) {
+export async function PUT(request: NextRequest, { params }: { params: Promise<{ workItemKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -10,7 +10,7 @@ export async function PUT(request: NextRequest, { params }: { params: { workItem
 
   try {
     const body = await request.json()
-    const { workItemKey } = params
+    const { workItemKey } = await params
 
     // Make PUT request to Karbon API
     const response = await fetch(`https://api.karbonhq.com/v3/WorkItems/${workItemKey}`, {
@@ -43,7 +43,7 @@ export async function PUT(request: NextRequest, { params }: { params: { workItem
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { workItemKey: string } }) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ workItemKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -53,7 +53,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { workIt
 
   try {
     const body = await request.json()
-    const { workItemKey } = params
+    const { workItemKey } = await params
 
     // Make PATCH request to Karbon API
     const response = await fetch(`https://api.karbonhq.com/v3/WorkItems/${workItemKey}`, {
@@ -86,7 +86,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { workIt
   }
 }
 
-export async function GET(request: NextRequest, { params }: { params: { workItemKey: string } }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ workItemKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -95,7 +95,7 @@ export async function GET(request: NextRequest, { params }: { params: { workItem
   }
 
   try {
-    const { workItemKey } = params
+    const { workItemKey } = await params
 
     const response = await fetch(`https://api.karbonhq.com/v3/WorkItems/${workItemKey}`, {
       method: "GET",

@@ -5,7 +5,7 @@ import { getKarbonCredentials, karbonFetchAll, karbonFetch } from "@/lib/karbon-
  * GET /api/karbon/work-items/[workItemKey]/notes
  * Fetch all notes for a specific work item
  */
-export async function GET(request: NextRequest, { params }: { params: { workItemKey: string } }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ workItemKey: string }> }) {
   const credentials = getKarbonCredentials()
 
   if (!credentials) {
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest, { params }: { params: { workItem
   }
 
   try {
-    const { workItemKey } = params
+    const { workItemKey } = await params
 
     const { data: notes, error } = await karbonFetchAll<any>(`/WorkItems/${workItemKey}/Notes`, credentials, {
       orderby: "CreatedDate desc",
@@ -58,7 +58,7 @@ export async function GET(request: NextRequest, { params }: { params: { workItem
  * POST /api/karbon/work-items/[workItemKey]/notes
  * Add a note to a work item
  */
-export async function POST(request: NextRequest, { params }: { params: { workItemKey: string } }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ workItemKey: string }> }) {
   const credentials = getKarbonCredentials()
 
   if (!credentials) {
@@ -66,7 +66,7 @@ export async function POST(request: NextRequest, { params }: { params: { workIte
   }
 
   try {
-    const { workItemKey } = params
+    const { workItemKey } = await params
     const body = await request.json()
 
     const { data, error } = await karbonFetch<any>(`/WorkItems/${workItemKey}/Notes`, credentials, {
