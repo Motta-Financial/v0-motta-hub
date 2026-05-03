@@ -19,6 +19,8 @@ import {
   Calendar,
   CheckCircle2,
   CheckSquare,
+  ChevronDown,
+  ChevronRight,
   ClipboardList,
   Clock,
   DollarSign,
@@ -306,6 +308,21 @@ interface ClientBundle {
     status: string | null
     notes: string | null
     tax_year: number | null
+    filing_status: string | null
+    follow_up_date: string | null
+    action_items: { items?: Array<{ description: string; assignee_name?: string; due_date?: string | null; priority?: string }> } | null
+    client_owner_name: string | null
+    client_manager_name: string | null
+    work_item_id: string | null
+    /** From debriefs_full view: title of the linked work_items row */
+    work_item_title: string | null
+    /** Direct Karbon URL on the joined work item (canonical, prefer this) */
+    work_item_karbon_url: string | null
+    /** User-pasted Karbon URL on the debrief itself (legacy fallback) */
+    karbon_work_url: string | null
+    team_member_id: string | null
+    team_member_full_name: string | null
+    created_at: string | null
   }>
   clientGroups: Array<{
     id: string
@@ -425,6 +442,16 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
   const [syncing, setSyncing] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("overview")
+  // Two layers of expand-state for the Debriefs tab. Work-item groups default
+  // to expanded so users land on a fully-visible list; individual debrief
+  // cards default to collapsed (only date + type visible) so a client with
+  // many debriefs doesn't drown the view in walls of notes text.
+  const [collapsedDebriefGroups, setCollapsedDebriefGroups] = useState<Set<string>>(
+    () => new Set(),
+  )
+  const [expandedDebriefIds, setExpandedDebriefIds] = useState<Set<string>>(
+    () => new Set(),
+  )
 
   const fetchClient = useCallback(async () => {
     if (!clientId) return
@@ -519,6 +546,70 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
       .sort((a, b) => new Date(b.timestamp!).getTime() - new Date(a.timestamp!).getTime())
   }, [data])
 
+  // Group debriefs by their linked Karbon work item so users can scan past
+  // debriefs in the context of the engagement they belong to. Debriefs with
+  // no linked work item land in a synthetic "(No Work Item)" bucket — these
+  // are the residual cases the Karbon webhook backfill couldn't resolve.
+  const debriefsByWorkItem = useMemo(() => {
+    if (!data) return [] as Array<{
+      key: string
+      workItemId: string | null
+      title: string
+      karbonUrl: string | null
+      latestDate: string | null
+      debriefs: ClientBundle["debriefs"]
+    }>
+    const groups = new Map<
+      string,
+      {
+        key: string
+        workItemId: string | null
+        title: string
+        karbonUrl: string | null
+        latestDate: string | null
+        debriefs: ClientBundle["debriefs"]
+      }
+    >()
+    for (const d of data.debriefs) {
+      const key = d.work_item_id || "__none__"
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          workItemId: d.work_item_id,
+          title: d.work_item_title || "(No Work Item)",
+          karbonUrl: d.work_item_karbon_url || d.karbon_work_url || null,
+          latestDate: null,
+          debriefs: [],
+        })
+      }
+      const g = groups.get(key)!
+      g.debriefs.push(d)
+      // Track the most-recent date in the group for sorting groups by recency.
+      const ts = d.debrief_date || d.created_at
+      if (ts && (!g.latestDate || new Date(ts) > new Date(g.latestDate))) {
+        g.latestDate = ts
+      }
+    }
+    // Each group: most-recent debrief first.
+    for (const g of groups.values()) {
+      g.debriefs.sort((a, b) => {
+        const at = new Date(a.debrief_date || a.created_at || 0).getTime()
+        const bt = new Date(b.debrief_date || b.created_at || 0).getTime()
+        return bt - at
+      })
+    }
+    // Groups sorted by most-recent activity, "(No Work Item)" pinned to the
+    // bottom regardless of recency so it doesn't visually swamp the real
+    // engagements.
+    return Array.from(groups.values()).sort((a, b) => {
+      if (a.key === "__none__") return 1
+      if (b.key === "__none__") return -1
+      const at = a.latestDate ? new Date(a.latestDate).getTime() : 0
+      const bt = b.latestDate ? new Date(b.latestDate).getTime() : 0
+      return bt - at
+    })
+  }, [data])
+
   // ───────────────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -565,6 +656,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     ignitionClients,
     documents,
     karbonTimesheets,
+    debriefs,
     stats,
   } = data
   // Use the server-merged unified list when present. Older API responses
@@ -733,6 +825,14 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
             {stats.totalNotes > 0 ? (
               <Badge variant="secondary" className="ml-2 h-5 px-1.5">
                 {stats.totalNotes}
+              </Badge>
+            ) : null}
+          </TabsTrigger>
+          <TabsTrigger value="debriefs">
+            Debriefs
+            {stats.totalDebriefs > 0 ? (
+              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
+                {stats.totalDebriefs}
               </Badge>
             ) : null}
           </TabsTrigger>
@@ -1290,6 +1390,226 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </CardContent>
             </Card>
           </div>
+        </TabsContent>
+
+        {/* ── Debriefs (grouped by Karbon work item) ────────────────────── */}
+        <TabsContent value="debriefs" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center justify-between">
+                <span>Debriefs ({debriefs.length})</span>
+                {debriefsByWorkItem.length > 0 ? (
+                  <span className="text-xs font-normal text-muted-foreground">
+                    {debriefsByWorkItem.length}{" "}
+                    {debriefsByWorkItem.length === 1 ? "engagement" : "engagements"}
+                  </span>
+                ) : null}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {debriefs.length === 0 ? (
+                <EmptyState message="No debriefs recorded for this client yet." />
+              ) : (
+                <ul className="divide-y">
+                  {debriefsByWorkItem.map((group) => {
+                    const isCollapsed = collapsedDebriefGroups.has(group.key)
+                    return (
+                      <li key={group.key} className="bg-background">
+                        {/* Work-item header — click to expand/collapse the group */}
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-muted/50 transition-colors"
+                          onClick={() =>
+                            setCollapsedDebriefGroups((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(group.key)) next.delete(group.key)
+                              else next.add(group.key)
+                              return next
+                            })
+                          }
+                        >
+                          {isCollapsed ? (
+                            <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                          )}
+                          <Briefcase className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <span className="font-medium text-sm flex-1 truncate">
+                            {group.title}
+                          </span>
+                          <Badge variant="secondary" className="h-5 px-1.5 text-xs">
+                            {group.debriefs.length}
+                          </Badge>
+                          {group.latestDate ? (
+                            <span className="text-xs text-muted-foreground hidden sm:inline whitespace-nowrap">
+                              latest {formatDate(group.latestDate)}
+                            </span>
+                          ) : null}
+                          {group.karbonUrl ? (
+                            <a
+                              href={group.karbonUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-muted-foreground hover:text-foreground"
+                              title="Open work item in Karbon"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                          ) : null}
+                        </button>
+                        {!isCollapsed ? (
+                          <ul className="divide-y border-t bg-muted/20">
+                            {group.debriefs.map((d) => {
+                              const isOpen = expandedDebriefIds.has(d.id)
+                              const cleanedNotes = d.notes
+                                ? d.notes.replace(/<[^>]+>/g, " ")
+                                : ""
+                              const actionItemList = d.action_items?.items || []
+                              return (
+                                <li key={d.id} className="bg-background">
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-3 px-6 py-2.5 text-left hover:bg-muted/40 transition-colors"
+                                    onClick={() =>
+                                      setExpandedDebriefIds((prev) => {
+                                        const next = new Set(prev)
+                                        if (next.has(d.id)) next.delete(d.id)
+                                        else next.add(d.id)
+                                        return next
+                                      })
+                                    }
+                                  >
+                                    {isOpen ? (
+                                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                    ) : (
+                                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                    )}
+                                    <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                    <span className="text-sm font-medium whitespace-nowrap">
+                                      {formatDate(d.debrief_date)}
+                                    </span>
+                                    {d.debrief_type ? (
+                                      <Badge variant="outline" className="h-5 px-1.5 text-xs">
+                                        {d.debrief_type}
+                                      </Badge>
+                                    ) : null}
+                                    {d.tax_year ? (
+                                      <Badge variant="secondary" className="h-5 px-1.5 text-xs">
+                                        TY {d.tax_year}
+                                      </Badge>
+                                    ) : null}
+                                    {d.team_member_full_name ? (
+                                      <span className="text-xs text-muted-foreground hidden sm:inline truncate">
+                                        {d.team_member_full_name}
+                                      </span>
+                                    ) : null}
+                                    {!isOpen && cleanedNotes ? (
+                                      <span className="text-xs text-muted-foreground truncate hidden md:inline flex-1">
+                                        {cleanedNotes.slice(0, 120)}
+                                      </span>
+                                    ) : null}
+                                    {actionItemList.length > 0 ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="ml-auto h-5 px-1.5 text-xs"
+                                      >
+                                        {actionItemList.length} action
+                                        {actionItemList.length === 1 ? "" : "s"}
+                                      </Badge>
+                                    ) : null}
+                                  </button>
+                                  {isOpen ? (
+                                    <div className="px-6 pb-4 pt-1 space-y-3 text-sm">
+                                      {/* Notes — the full debrief content */}
+                                      {cleanedNotes ? (
+                                        <div>
+                                          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                                            Notes
+                                          </h4>
+                                          <p className="whitespace-pre-wrap text-foreground/90 leading-relaxed">
+                                            {cleanedNotes}
+                                          </p>
+                                        </div>
+                                      ) : (
+                                        <p className="text-muted-foreground italic">
+                                          No notes captured for this debrief.
+                                        </p>
+                                      )}
+
+                                      {/* Action items */}
+                                      {actionItemList.length > 0 ? (
+                                        <div>
+                                          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                                            Action Items ({actionItemList.length})
+                                          </h4>
+                                          <ul className="space-y-1.5">
+                                            {actionItemList.map((item, idx) => (
+                                              <li
+                                                key={idx}
+                                                className="flex items-start gap-2"
+                                              >
+                                                <CheckSquare className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                                                <div className="flex-1 min-w-0">
+                                                  <p className="text-foreground/90">
+                                                    {item.description}
+                                                  </p>
+                                                  <div className="flex flex-wrap gap-2 text-xs text-muted-foreground mt-0.5">
+                                                    {item.assignee_name ? (
+                                                      <span>{item.assignee_name}</span>
+                                                    ) : null}
+                                                    {item.due_date ? (
+                                                      <span>
+                                                        Due {formatDate(item.due_date)}
+                                                      </span>
+                                                    ) : null}
+                                                    {item.priority ? (
+                                                      <Badge
+                                                        variant="outline"
+                                                        className="h-4 px-1 text-[10px]"
+                                                      >
+                                                        {item.priority}
+                                                      </Badge>
+                                                    ) : null}
+                                                  </div>
+                                                </div>
+                                              </li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      ) : null}
+
+                                      {/* Footer — owner / manager / follow-up */}
+                                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground pt-1">
+                                        {d.client_owner_name ? (
+                                          <span>Owner: {d.client_owner_name}</span>
+                                        ) : null}
+                                        {d.client_manager_name ? (
+                                          <span>Manager: {d.client_manager_name}</span>
+                                        ) : null}
+                                        {d.follow_up_date ? (
+                                          <span>
+                                            Follow-up: {formatDate(d.follow_up_date)}
+                                          </span>
+                                        ) : null}
+                                        {d.filing_status ? (
+                                          <span>Filing: {d.filing_status}</span>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        ) : null}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* ── Invoices ──────────────────────────────────────────────────── */}

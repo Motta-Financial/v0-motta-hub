@@ -28,7 +28,9 @@ import {
   RefreshCw,
   Eye,
   Loader2,
+  Pencil,
 } from "lucide-react"
+import { DebriefEditSheet } from "@/components/debriefs/debrief-edit-sheet"
 
 interface Debrief {
   id: string
@@ -89,6 +91,7 @@ export default function DebriefsPage() {
   const [typeFilter, setTypeFilter] = useState<string>("all")
   const [selectedDebrief, setSelectedDebrief] = useState<Debrief | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [editingDebrief, setEditingDebrief] = useState<Debrief | null>(null)
 
   const fetchDebriefs = async () => {
     setLoading(true)
@@ -414,8 +417,20 @@ export default function DebriefsPage() {
                                   e.stopPropagation()
                                   openDetails(debrief)
                                 }}
+                                title="View details"
                               >
                                 <Eye className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setEditingDebrief(debrief)
+                                }}
+                                title="Edit debrief"
+                              >
+                                <Pencil className="h-4 w-4" />
                               </Button>
                               {karbonWorkUrl && (
                                 <Button
@@ -425,6 +440,7 @@ export default function DebriefsPage() {
                                     e.stopPropagation()
                                     window.open(karbonWorkUrl, "_blank")
                                   }}
+                                  title="Open in Karbon"
                                 >
                                   <ExternalLink className="h-4 w-4" />
                                 </Button>
@@ -602,6 +618,21 @@ export default function DebriefsPage() {
                 </div>
               )}
 
+              {/* Edit shortcut */}
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setEditingDebrief(selectedDebrief)
+                    setDetailsOpen(false)
+                  }}
+                >
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit Debrief
+                </Button>
+              </div>
+
               {/* Karbon Work Item */}
               {(selectedDebrief.work_item_title || resolveKarbonWorkUrl(selectedDebrief)) && (
                 <div className="pt-4 border-t">
@@ -630,6 +661,18 @@ export default function DebriefsPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      <DebriefEditSheet
+        debrief={editingDebrief}
+        open={!!editingDebrief}
+        onOpenChange={(o) => {
+          if (!o) setEditingDebrief(null)
+        }}
+        onSaved={() => {
+          // Re-fetch the list so the table reflects the new mapping/notes/etc.
+          fetchDebriefs()
+        }}
+      />
     </div>
   )
 }
