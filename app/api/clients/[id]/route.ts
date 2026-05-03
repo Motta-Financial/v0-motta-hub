@@ -274,16 +274,18 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         .order("scheduled_start", { ascending: false, nullsFirst: false })
         .limit(50),
 
-      // Debriefs (these get joined via a view in the existing `/api/debriefs`
-      // endpoint, but here we just return the basics for the bundle)
+      // Debriefs — pull from the pre-joined debriefs_full view so we get the
+      // work-item title + Karbon URL + team-member name in a single query.
+      // The client profile groups debriefs by work item, so the work-item
+      // columns are required for that grouping to render labels.
       supabase
-        .from("debriefs")
+        .from("debriefs_full")
         .select(
-          "id, debrief_date, debrief_type, status, follow_up_date, tax_year, filing_status, notes, action_items, client_owner_name, client_manager_name, work_item_id, contact_id, organization_id, team_member_id",
+          "id, debrief_date, debrief_type, status, follow_up_date, tax_year, filing_status, notes, action_items, client_owner_name, client_manager_name, work_item_id, work_item_title, work_item_karbon_url, contact_id, organization_id, team_member_id, team_member_full_name, karbon_work_url, created_at",
         )
         .or(`${idCol}.eq.${entityId}`)
         .order("debrief_date", { ascending: false, nullsFirst: false })
-        .limit(50),
+        .limit(100),
 
       // Client-group memberships (only contacts can be members directly)
       kind === "contact"
