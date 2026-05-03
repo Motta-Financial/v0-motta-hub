@@ -47,6 +47,12 @@ import {
   RefreshCcw,
   ExternalLink,
   Filter as FilterIcon,
+  Calculator,
+  FileText,
+  Lightbulb,
+  MoreHorizontal,
+  ChevronRight,
+  PieChart,
 } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -71,6 +77,12 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 
+import { SalesUSMap, type StateData } from "@/components/sales-us-map"
+import {
+  SERVICE_LINE_META,
+  type ServiceLine,
+} from "@/lib/sales/service-line-classifier"
+
 // ── Types matching /api/sales/dashboard response ──────────────────────────
 interface ProposalService {
   id: string
@@ -84,6 +96,13 @@ interface ProposalService {
   billing_type: string | null
   status: string | null
   ordinal: number | null
+}
+
+interface ServiceLineData {
+  serviceLine: ServiceLine
+  revenue: number
+  count: number
+  topServices: Array<{ name: string; revenue: number; count: number }>
 }
 interface Proposal {
   proposal_id: string
@@ -130,6 +149,8 @@ interface DashboardResponse {
     sentBy: string[]
     statuses: string[]
   }
+  serviceLines: ServiceLineData[]
+  stateBreakdown: StateData[]
 }
 
 const fetcher = (url: string): Promise<DashboardResponse> =>
@@ -609,6 +630,13 @@ export function SalesDashboard() {
         />
       </div>
 
+      {/* ── Service Line KPIs ─────────────────────────────────────────── */}
+      <ServiceLineSection
+        data={data?.serviceLines ?? []}
+        loading={isLoading}
+        totalAccepted={kpis.acceptedValue}
+      />
+
       {/* ── Trend + Funnel ────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2 border-stone-200">
@@ -685,50 +713,11 @@ export function SalesDashboard() {
         </Card>
       </div>
 
-      {/* ── State + Partner ───────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card className="border-stone-200">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-stone-700">
-              Sales by state · top {stateData.length}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <div className="h-[260px]">
-              {isLoading ? (
-                <Skeleton className="h-full w-full" />
-              ) : stateData.length === 0 ? (
-                <EmptyChart message="No location data in the selected window" />
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={stateData} layout="vertical" margin={{ top: 0, right: 12, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E7E2DA" horizontal={false} />
-                    <XAxis
-                      type="number"
-                      tickFormatter={(v) => fmtMoneyCompact(v as number)}
-                      tick={{ fontSize: 11, fill: "#78716C" }}
-                      stroke="#D6CFC2"
-                    />
-                    <YAxis
-                      dataKey="state"
-                      type="category"
-                      tick={{ fontSize: 11, fill: "#44403C" }}
-                      stroke="#D6CFC2"
-                      width={50}
-                    />
-                    <Tooltip
-                      formatter={(v: number, name) => [fmtMoney(v), name === "accepted" ? "Accepted" : "Total"]}
-                      contentStyle={{ borderRadius: 6, border: "1px solid #E7E2DA", fontSize: 12 }}
-                    />
-                    <Bar dataKey="total" name="Total" fill="#D6CFC2" radius={[0, 3, 3, 0]} />
-                    <Bar dataKey="accepted" name="Accepted" fill="#3F7D58" radius={[0, 3, 3, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+      {/* ── Interactive US Map ───────────────────────────────────────── */}
+      <SalesUSMap data={data?.stateBreakdown ?? []} loading={isLoading} />
 
+      {/* ── Partner Performance ───────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card className="border-stone-200">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-stone-700">
@@ -1164,6 +1153,203 @@ function EmptyChart({ message }: { message: string }) {
     <div className="flex h-full w-full items-center justify-center text-xs text-stone-500">
       {message}
     </div>
+  )
+}
+
+// ── Service Line Section ─────────────────────────────────────────────────
+const SERVICE_LINE_ICONS: Record<ServiceLine, React.ReactNode> = {
+  Tax: <FileText className="h-4 w-4" />,
+  Accounting: <Calculator className="h-4 w-4" />,
+  Advisory: <Lightbulb className="h-4 w-4" />,
+  Other: <MoreHorizontal className="h-4 w-4" />,
+}
+
+function ServiceLineSection({
+  data,
+  loading,
+  totalAccepted,
+}: {
+  data: ServiceLineData[]
+  loading: boolean
+  totalAccepted: number
+}) {
+  const [expanded, setExpanded] = useState<ServiceLine | null>(null)
+
+  if (loading) {
+    return (
+      <Card className="border-stone-200">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-stone-700 flex items-center gap-2">
+            <PieChart className="h-4 w-4 text-stone-500" />
+            Revenue by Service Line
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-24" />
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const totalRevenue = data.reduce((sum, d) => sum + d.revenue, 0)
+
+  return (
+    <Card className="border-stone-200">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-stone-700 flex items-center gap-2">
+          <PieChart className="h-4 w-4 text-stone-500" />
+          Revenue by Service Line
+          <span className="text-xs font-normal text-stone-500 ml-auto">
+            Accepted deals only
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {data.length === 0 ? (
+          <div className="py-8 text-center text-sm text-stone-500">
+            No service data available for the selected filters
+          </div>
+        ) : (
+          <>
+            {/* Service Line Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              {(["Tax", "Accounting", "Advisory", "Other"] as ServiceLine[]).map((line) => {
+                const lineData = data.find((d) => d.serviceLine === line)
+                const meta = SERVICE_LINE_META[line]
+                const pct = totalRevenue > 0 && lineData
+                  ? (lineData.revenue / totalRevenue) * 100
+                  : 0
+                const isExpanded = expanded === line
+
+                return (
+                  <button
+                    key={line}
+                    onClick={() => setExpanded(isExpanded ? null : line)}
+                    className={cn(
+                      "relative overflow-hidden rounded-lg border p-3 text-left transition-all",
+                      "hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-1",
+                      isExpanded
+                        ? `${meta.border} ${meta.bg} ring-2 ring-offset-1`
+                        : `border-stone-200 hover:${meta.border}`,
+                    )}
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <div
+                        className={cn(
+                          "w-7 h-7 rounded-full flex items-center justify-center",
+                          meta.bg, meta.text,
+                        )}
+                      >
+                        {SERVICE_LINE_ICONS[line]}
+                      </div>
+                      <span className="text-sm font-medium text-stone-800">{line}</span>
+                      {lineData && (
+                        <ChevronRight
+                          className={cn(
+                            "h-4 w-4 ml-auto text-stone-400 transition-transform",
+                            isExpanded && "rotate-90",
+                          )}
+                        />
+                      )}
+                    </div>
+
+                    {lineData ? (
+                      <>
+                        <div className="text-lg font-semibold text-stone-900 tabular-nums">
+                          {new Intl.NumberFormat("en-US", {
+                            style: "currency",
+                            currency: "USD",
+                            maximumFractionDigits: 0,
+                          }).format(lineData.revenue)}
+                        </div>
+                        <div className="flex items-center justify-between mt-1">
+                          <span className="text-xs text-stone-500">
+                            {lineData.count} services
+                          </span>
+                          <span className={cn("text-xs font-medium", meta.text)}>
+                            {pct.toFixed(1)}%
+                          </span>
+                        </div>
+                        {/* Progress bar */}
+                        <div className="mt-2 h-1.5 w-full bg-stone-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all"
+                            style={{
+                              width: `${pct}%`,
+                              backgroundColor: meta.fill,
+                            }}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-sm text-stone-400 mt-1">No data</div>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Expanded detail panel */}
+            {expanded && (
+              <div className="border border-stone-200 rounded-lg bg-stone-50/50 p-4">
+                {(() => {
+                  const lineData = data.find((d) => d.serviceLine === expanded)
+                  if (!lineData) return null
+                  const meta = SERVICE_LINE_META[expanded]
+
+                  return (
+                    <>
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className={cn("font-medium flex items-center gap-2", meta.text)}>
+                          {SERVICE_LINE_ICONS[expanded]}
+                          {expanded} Services
+                        </h4>
+                        <Badge variant="outline" className={cn("text-xs", meta.bg, meta.text, meta.border)}>
+                          {lineData.topServices.length} service types
+                        </Badge>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {lineData.topServices.map((s, i) => (
+                          <div
+                            key={s.name}
+                            className="flex items-center justify-between p-2 rounded-md bg-white border border-stone-100"
+                          >
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <span className="w-5 text-xs text-stone-400 tabular-nums shrink-0">
+                                {i + 1}.
+                              </span>
+                              <span className="text-sm text-stone-700 truncate">
+                                {s.name}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0 ml-2">
+                              <span className="text-xs text-stone-500">{s.count}x</span>
+                              <span className="text-sm font-medium text-stone-900 tabular-nums">
+                                {new Intl.NumberFormat("en-US", {
+                                  notation: "compact",
+                                  style: "currency",
+                                  currency: "USD",
+                                  maximumFractionDigits: 1,
+                                }).format(s.revenue)}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )
+                })()}
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
