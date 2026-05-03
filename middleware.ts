@@ -20,7 +20,31 @@ export async function middleware(request: NextRequest) {
     return result
   }
 
-  const { supabaseResponse, user } = result
+  const { supabaseResponse, supabase, user } = result
+
+  // Enforce platform-level deactivation. A team_member can be marked inactive
+  // (Alumni / deactivated) independently of their Karbon profile -- when that
+  // happens we sign them out immediately, even if their session cookie is
+  // still otherwise valid. We also ban the auth account separately so they
+  // can't refresh, but this catches stale sessions on the next request.
+  if (user) {
+    const { data: tm } = await supabase
+      .from("team_members")
+      .select("is_active")
+      .or(`auth_user_id.eq.${user.id},email.eq.${user.email ?? ""}`)
+      .maybeSingle()
+
+    // If we found a row and it's explicitly inactive, terminate the session.
+    // (No row = brand new auth user that hasn't been provisioned yet -- let
+    // them through so the existing onboarding flow can create their profile.)
+    if (tm && tm.is_active === false) {
+      await supabase.auth.signOut()
+      const url = request.nextUrl.clone()
+      url.pathname = "/login"
+      url.searchParams.set("reason", "deactivated")
+      return NextResponse.redirect(url)
+    }
+  }
 
   const isLoginPage = pathname === "/login"
   const isAuthCallback = pathname.startsWith("/auth")

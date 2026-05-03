@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
-import { mapKarbonUserToSupabase } from "@/lib/karbon/mappers/user"
+import { mapKarbonUserForSync, mapKarbonUserToSupabase } from "@/lib/karbon/mappers/user"
 
 function getSupabaseClient() {
   return tryCreateAdminClient()
@@ -63,13 +63,14 @@ export async function GET(request: NextRequest) {
 
           try {
             if (existing) {
-              // Update existing record
+              // Update existing record -- ONLY refresh the Karbon-link fields.
+              // The platform profile (role, title, department, is_active,
+              // names, contact info, manager, start date, avatar, etc.) is
+              // managed in-app and must not be clobbered by a sync.
+              const syncFields = mapKarbonUserForSync(user)
               const { error: updateError } = await supabase
                 .from("team_members")
-                .update({
-                  ...mapped,
-                  updated_at: new Date().toISOString(),
-                })
+                .update(syncFields)
                 .eq("id", existing.id)
 
               if (updateError) {

@@ -10,6 +10,24 @@
  * Department, PhoneNumber, AvatarUrl, etc. We derive first/last names by
  * splitting Name on whitespace, with email fallback for the local-only
  * accounts (Caleb, Amy, etc.) that aren't provisioned in Karbon.
+ *
+ * PLATFORM vs KARBON SEPARATION
+ * -----------------------------
+ * The team_members row is the canonical PLATFORM profile. Karbon is just one
+ * of several systems we link to. Concretely:
+ *
+ *   - Karbon-sourced fields (only safe to overwrite from a Karbon sync):
+ *       karbon_user_key, karbon_url, last_synced_at
+ *
+ *   - Platform-managed fields (NEVER overwritten by a Karbon sync once set):
+ *       is_active, role, title, department, start_date, manager_id,
+ *       avatar_url, phone_number, mobile_number, timezone,
+ *       first_name, last_name, full_name, email
+ *
+ * For brand-new rows that we are creating from a Karbon user we have no
+ * platform values yet, so we seed them from Karbon via mapKarbonUserForCreate.
+ * For existing rows we use mapKarbonUserForSync, which only refreshes the
+ * Karbon-link fields and leaves everything platform-managed untouched.
  */
 const KARBON_TENANT_PREFIX = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
@@ -49,6 +67,12 @@ function deriveNameFromEmail(email: string | null | undefined): {
   }
 }
 
+/**
+ * Used when CREATING a brand-new team_members row from a Karbon user. Seeds
+ * every field we can derive from Karbon since the platform record has no
+ * prior data. After creation, subsequent Karbon syncs MUST go through
+ * mapKarbonUserForSync so manual platform edits are preserved.
+ */
 export function mapKarbonUserToSupabase(user: any) {
   // Karbon list endpoint uses `Id`; legacy code occasionally references the
   // never-actually-returned `UserKey`/`MemberKey`, so we check those last.
@@ -84,6 +108,25 @@ export function mapKarbonUserToSupabase(user: any) {
     timezone: user.TimeZone || user.Timezone || null,
     start_date: user.StartDate ? String(user.StartDate).split("T")[0] : null,
     is_active: user.IsActive !== false,
+    karbon_url: userKey ? `${KARBON_TENANT_PREFIX}/team/${userKey}` : null,
+    last_synced_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
+}
+
+/**
+ * Used when UPDATING an existing team_members row from a Karbon sync.
+ *
+ * Returns ONLY the fields that Karbon owns -- the platform profile (role,
+ * title, department, is_active, names, contact info, manager, start date,
+ * avatar, etc.) is left alone. This is what makes the platform profile a
+ * superset of the Karbon profile rather than a mirror of it.
+ */
+export function mapKarbonUserForSync(user: any) {
+  const userKey: string | null = user.Id || user.UserKey || user.MemberKey || null
+
+  return {
+    karbon_user_key: userKey,
     karbon_url: userKey ? `${KARBON_TENANT_PREFIX}/team/${userKey}` : null,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
