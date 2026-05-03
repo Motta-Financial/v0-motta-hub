@@ -99,8 +99,10 @@ export async function POST() {
   try {
     const supabase = await createClient()
     // Fetch work items from Karbon
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
+    const baseUrl = appUrl.startsWith("http") ? appUrl : `https://${appUrl}`
     const karbonResponse = await fetch(
-      `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/karbon/work-items`,
+      `${baseUrl}/api/karbon/work-items`,
       { cache: "no-store" }
     )
     
@@ -232,7 +234,8 @@ export async function POST() {
     }
 
     // Fetch tasks for each work item and update task counts
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
+    const taskAppUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
+    const taskBaseUrl = taskAppUrl.startsWith("http") ? taskAppUrl : `https://${taskAppUrl}`
     
     // Get all synced items to update task info
     const { data: allItems } = await supabase
@@ -243,7 +246,7 @@ export async function POST() {
     for (const item of allItems || []) {
       try {
         const tasksResponse = await fetch(
-          `${appUrl}/api/karbon/work-items/${item.karbon_work_key}/tasks`,
+          `${taskBaseUrl}/api/karbon/work-items/${item.karbon_work_key}/tasks`,
           { cache: "no-store" }
         )
         

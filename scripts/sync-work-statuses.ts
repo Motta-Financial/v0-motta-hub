@@ -4,7 +4,8 @@
  */
 
 async function syncWorkStatuses() {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
+  const baseUrl = appUrl.startsWith("http") ? appUrl : `https://${appUrl}`
 
   console.log("Fetching work statuses from Karbon and syncing to Supabase...")
 
