@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import {
@@ -74,9 +74,16 @@ interface Debrief {
     items?: ActionItem[]
     related_clients?: { id: string; name: string; type: string }[]
     related_work_items?: { id: string; title: string }[]
+    team_member_name?: string
   } | null
   follow_up_date: string | null
   created_at: string
+  // Joined data
+  contact?: { full_name: string } | null
+  organization?: { name: string } | null
+  work_item?: { title: string } | null
+  team_member?: { id: string; full_name: string | null; avatar_url?: string | null; email?: string | null } | null
+  created_by?: { id: string; full_name: string | null } | null
   // Flat fields from debriefs_full view
   team_member_full_name?: string | null
   team_member_avatar_url?: string | null
@@ -366,6 +373,23 @@ export function ClientServiceDebriefs() {
                 <div className="flex items-start justify-between">
                   <div className="flex items-start gap-3">
                     <Avatar className="h-10 w-10">
+                      <AvatarImage src={debrief.team_member?.avatar_url || undefined} alt={debrief.team_member?.full_name || "Team Member"} />
+                      <AvatarFallback className="bg-blue-100 text-blue-700">
+                        {getInitials(
+                          debrief.team_member?.full_name ||
+                            debrief.action_items?.team_member_name ||
+                            debrief.created_by?.full_name ||
+                            "TM",
+                        )}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <p className="font-medium text-gray-900">
+                        {debrief.team_member?.full_name ||
+                          debrief.action_items?.team_member_name ||
+                          debrief.created_by?.full_name ||
+                          "Team Member"}
+                      </p>
                       {getTeamMemberAvatar(debrief) ? (
                         <img src={getTeamMemberAvatar(debrief)!} alt={getTeamMemberName(debrief)} className="h-10 w-10 rounded-full object-cover" />
                       ) : (

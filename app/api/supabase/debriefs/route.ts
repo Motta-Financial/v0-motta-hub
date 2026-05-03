@@ -12,6 +12,15 @@ export async function GET(request: Request) {
     // Query the debriefs_full view which already joins team_members,
     // contacts, organizations, and work_items via pre-built SQL view.
     let query = supabase
+      .from("debriefs")
+      .select(`
+        *,
+        contact:contacts(full_name),
+        organization:organizations(name),
+        work_item:work_items(title, karbon_work_item_key),
+        team_member:team_members!team_member_id(id, full_name, avatar_url, email),
+        created_by:team_members!created_by_id(id, full_name)
+      `)
       .from("debriefs_full")
       .select("*")
       .order("created_at", { ascending: false })

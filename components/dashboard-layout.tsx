@@ -70,6 +70,13 @@ import { WorkItemSearchTrigger } from "@/components/work-item-search"
 // absorbs both the legacy "Karbon Data" page and the engineer-facing
 // "Admin" tools so non-admins see a single configuration entry-point.
 const navigation = [
+  { name: "Dashboard", href: "/", icon: LayoutDashboard, alfredSuggestions: 3 },
+  { name: "Triage", href: "/triage", icon: Inbox, alfredSuggestions: 12 },
+  { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
+  { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
+  { name: "Debriefs", href: "/debriefs", icon: MessageSquare },
+  { name: "Teammates", href: "/teammates", icon: UserCircle },
+  { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
   {
     name: "Home",
     href: "/",
@@ -143,6 +150,7 @@ const navigation = [
         name: "Accounting",
         href: "/accounting",
         icon: Calculator,
+        children: [{ name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign }],
         children: [
           { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
           { name: "Onboarding", href: "/onboarding", icon: UserPlus },
@@ -152,6 +160,7 @@ const navigation = [
         name: "Tax",
         href: "/tax",
         icon: FileText,
+        children: [{ name: "Busy Season", href: "/tax/busy-season", icon: FileText }],
         children: [
           { name: "Busy Season", href: "/tax/busy-season", icon: FileText },
           { name: "Tax Planning", href: "/tax/planning", icon: Lightbulb },
@@ -163,6 +172,14 @@ const navigation = [
       { name: "Special Teams", href: "/special-teams", icon: Flame },
     ],
   },
+  {
+    name: "Client Services",
+    href: "/client-services",
+    icon: Headphones,
+    children: [{ name: "Payments", href: "/payments", icon: CreditCard }],
+  },
+  { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
+  { name: "Karbon Data", href: "/karbon-data", icon: Database },
   // Settings absorbed Karbon Data and the Admin sub-tree — non-admins
   // shouldn't have those at top level.
   {
@@ -201,24 +218,16 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: "#EAE6E1" }}>
-      {/* Mobile sidebar */}
-      <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetTrigger asChild>
-          <Button variant="ghost" size="icon" className="fixed top-4 left-4 z-40 md:hidden">
-            <Menu className="h-6 w-6" />
-          </Button>
-        </SheetTrigger>
-        <SheetContent side="left" className="w-64 p-0">
-          <Sidebar />
-        </SheetContent>
-      </Sheet>
+      {/* Top header banner - always visible */}
+      <HubHeader sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
 
-      {/* Desktop sidebar */}
-      <div className="hidden md:fixed md:top-0 md:bottom-0 md:flex md:w-64 md:flex-col">
+      {/* Desktop sidebar - positioned below the header */}
+      <div className="hidden md:fixed md:top-16 md:bottom-0 md:flex md:w-64 md:flex-col">
         <Sidebar />
       </div>
 
       {/* Main content */}
+      <div className="pt-16 md:pl-64">
       <div className="md:pl-64">
         {/* Sticky topbar — gives every page a global Cmd+K work-item search.
             Lives outside <main> so its sticky behavior survives any page that
@@ -238,6 +247,42 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   )
 }
 
+function HubHeader({
+  sidebarOpen,
+  setSidebarOpen,
+}: {
+  sidebarOpen: boolean
+  setSidebarOpen: (open: boolean) => void
+}) {
+  return (
+    <header
+      className="fixed top-0 left-0 right-0 z-40 h-16 bg-white border-b shadow-sm"
+      style={{ borderColor: "#8E9B79" }}
+    >
+      <div className="flex h-full items-center justify-between px-4 md:px-6">
+        <div className="flex items-center gap-3">
+          {/* Mobile menu trigger */}
+          <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon" className="md:hidden">
+                <Menu className="h-6 w-6" />
+                <span className="sr-only">Open navigation</span>
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-64 p-0">
+              <Sidebar />
+            </SheetContent>
+          </Sheet>
+          <a href="/" className="flex items-center gap-3">
+            <img src="/images/alfred-logo.png" alt="Motta Hub" className="h-10 w-auto" />
+            <div className="flex flex-col leading-tight">
+              <span className="text-base font-bold tracking-wide" style={{ color: "#6B745D" }}>
+                MOTTA HUB
+              </span>
+              <span className="text-[10px] text-gray-500 uppercase tracking-wider">Powered by ALFRED AI</span>
+            </div>
+          </a>
+        </div>
 // Does pathname match this node, or any descendant of it? Used both for
 // auto-expansion and for parent-active highlighting. Recurses through the
 // whole subtree so a deep grandchild match (e.g. /calendly while we're
@@ -316,9 +361,73 @@ function Sidebar() {
     })
   }, [pathname])
 
+        {/* User profile dropdown on right */}
+        <HeaderUserMenu />
+      </div>
+    </header>
+  )
+}
+
+function HeaderUserMenu() {
   const { teamMember, user } = useUser()
   const displayName = useDisplayName()
   const initials = useUserInitials()
+  const router = useRouter()
+
+  const handleLogout = async () => {
+    const response = await fetch("/api/auth/logout", { method: "POST" })
+    if (response.ok) {
+      router.push("/login")
+    }
+  }
+
+  if (!user) return null
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-gray-50 transition-colors">
+          <div className="hidden sm:flex flex-col items-end leading-tight">
+            <span className="text-sm font-medium text-gray-900">{displayName}</span>
+            <span className="text-xs text-gray-500">{teamMember?.title || teamMember?.role || "Team Member"}</span>
+          </div>
+          <Avatar className="h-9 w-9">
+            <AvatarImage src={teamMember?.avatar_url || undefined} alt={displayName} />
+            <AvatarFallback className="bg-[#6B745D] text-white text-sm">{initials}</AvatarFallback>
+          </Avatar>
+          <ChevronDown className="h-4 w-4 text-gray-400 hidden sm:block" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuLabel>
+          <div className="flex flex-col">
+            <span>{displayName}</span>
+            <span className="text-xs font-normal text-gray-500">{user.email}</span>
+          </div>
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => router.push("/settings/profile")}>
+          <UserCircle className="mr-2 h-4 w-4" />
+          My Profile
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => router.push("/settings")}>
+          <Settings className="mr-2 h-4 w-4" />
+          Settings
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={handleLogout} className="text-red-600">
+          <LogOut className="mr-2 h-4 w-4" />
+          Sign Out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function Sidebar() {
+  const pathname = usePathname()
+  const router = useRouter()
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({})
 
   const toggleSection = (name: string) => {
     setExpandedSections((prev) => ({
@@ -335,71 +444,12 @@ function Sidebar() {
     return children.some((child: any) => branchContainsActive(child, pathname))
   }
 
-  const handleLogout = async () => {
-    const response = await fetch("/api/auth/logout", {
-      method: "POST",
-    })
-    if (response.ok) {
-      router.push("/login")
-    }
-  }
-
   return (
     <div
       className="flex grow flex-col gap-y-5 overflow-y-auto bg-white px-6 pb-4 shadow-sm border-r"
       style={{ borderColor: "#8E9B79" }}
     >
-      <div className="flex h-20 shrink-0 items-center gap-3">
-        <img src="/images/alfred-logo.png" alt="ALFRED AI" className="h-14 w-auto" />
-        <div className="flex flex-col">
-          <span className="text-lg font-bold text-gray-900">ALFRED AI</span>
-          <span className="text-xs text-gray-500">Motta Hub</span>
-        </div>
-      </div>
-
-      {user && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="flex items-center gap-3 w-full p-2 rounded-lg hover:bg-gray-50 transition-colors text-left">
-              <Avatar className="h-10 w-10">
-                <AvatarImage src={teamMember?.avatar_url || undefined} alt={displayName} />
-                <AvatarFallback className="bg-[#6B745D] text-white">{initials}</AvatarFallback>
-              </Avatar>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-900 truncate">{displayName}</p>
-                <p className="text-xs text-gray-500 truncate">
-                  {teamMember?.title || teamMember?.role || "Team Member"}
-                </p>
-              </div>
-              <ChevronDown className="h-4 w-4 text-gray-400" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            <DropdownMenuLabel>
-              <div className="flex flex-col">
-                <span>{displayName}</span>
-                <span className="text-xs font-normal text-gray-500">{user.email}</span>
-              </div>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => router.push("/settings/profile")}>
-              <UserCircle className="mr-2 h-4 w-4" />
-              My Profile
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => router.push("/settings")}>
-              <Settings className="mr-2 h-4 w-4" />
-              Settings
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleLogout} className="text-red-600">
-              <LogOut className="mr-2 h-4 w-4" />
-              Sign Out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
-
-      <nav className="flex flex-1 flex-col">
+      <nav className="flex flex-1 flex-col pt-6">
         <ul role="list" className="flex flex-1 flex-col gap-y-7">
           <li>
             <ul role="list" className="-mx-2 space-y-1">
@@ -467,9 +517,11 @@ function Sidebar() {
                           const isChildCurrent = pathname === child.href || pathname.startsWith(child.href + "/")
                           const hasGrandchildren = child.children && child.children.length > 0
                           const isChildExpanded = expandedSections[child.name] || false
-                          const hasActiveGrandchild = hasGrandchildren && child.children!.some(
-                            (gc: any) => pathname === gc.href || pathname.startsWith(gc.href + "/")
-                          )
+                          const hasActiveGrandchild =
+                            hasGrandchildren &&
+                            child.children!.some(
+                              (gc: any) => pathname === gc.href || pathname.startsWith(gc.href + "/"),
+                            )
 
                           return (
                             <li key={child.name}>
@@ -499,7 +551,9 @@ function Sidebar() {
                                 >
                                   <child.icon
                                     className={cn(
-                                      isChildCurrent || hasActiveGrandchild ? "text-white" : "text-gray-400 group-hover:text-white",
+                                      isChildCurrent || hasActiveGrandchild
+                                        ? "text-white"
+                                        : "text-gray-400 group-hover:text-white",
                                       "h-4 w-4 shrink-0",
                                     )}
                                     aria-hidden="true"
@@ -517,7 +571,11 @@ function Sidebar() {
                                       isChildCurrent || hasActiveGrandchild ? "text-gray-600" : "text-gray-400",
                                     )}
                                   >
-                                    {isChildExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                                    {isChildExpanded ? (
+                                      <ChevronDown className="h-4 w-4" />
+                                    ) : (
+                                      <ChevronRight className="h-4 w-4" />
+                                    )}
                                   </button>
                                 )}
                               </div>
@@ -525,7 +583,8 @@ function Sidebar() {
                               {hasGrandchildren && isChildExpanded && (
                                 <ul className="mt-1 space-y-1">
                                   {child.children!.map((grandchild: any) => {
-                                    const isGrandchildCurrent = pathname === grandchild.href || pathname.startsWith(grandchild.href + "/")
+                                    const isGrandchildCurrent =
+                                      pathname === grandchild.href || pathname.startsWith(grandchild.href + "/")
 
                                     return (
                                       <li key={grandchild.name}>
@@ -554,7 +613,9 @@ function Sidebar() {
                                         >
                                           <grandchild.icon
                                             className={cn(
-                                              isGrandchildCurrent ? "text-white" : "text-gray-400 group-hover:text-white",
+                                              isGrandchildCurrent
+                                                ? "text-white"
+                                                : "text-gray-400 group-hover:text-white",
                                               "h-4 w-4 shrink-0",
                                             )}
                                             aria-hidden="true"
@@ -583,22 +644,22 @@ function Sidebar() {
         href="https://alfred.motta.cpa"
         target="_blank"
         rel="noopener noreferrer"
-        className="block rounded-xl p-4 transition-all hover:shadow-lg bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-200 mb-4"
+        className="block rounded-xl p-4 transition-all hover:shadow-lg bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-200 mb-2"
       >
         <div className="flex items-center justify-center gap-3">
           <div className="relative">
-            <img src="/images/alfred-logo.png" alt="ALFRED AI" className="h-12 w-auto" />
+            <img src="/images/alfred-logo.png" alt="ALFRED AI" className="h-10 w-auto" />
             <div className="absolute -top-1 -right-1 h-3 w-3 bg-green-400 rounded-full border-2 border-white animate-pulse" />
           </div>
           <div className="text-left">
-            <p className="font-semibold text-gray-900">ALFRED AI</p>
+            <p className="font-semibold text-gray-900 text-sm">ALFRED AI</p>
             <p className="text-xs text-gray-500">Your AI Assistant</p>
           </div>
         </div>
       </a>
 
-      <div className="pt-4">
-        <div className="flex items-center gap-2 text-sm text-gray-600">
+      <div className="pt-2">
+        <div className="flex items-center gap-2 text-xs text-gray-600">
           <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
           <span>ALFRED AI Online</span>
         </div>
