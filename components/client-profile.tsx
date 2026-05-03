@@ -518,7 +518,15 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
       isPinned?: boolean
       url?: string | null
     }> = []
-    for (const e of data.emails) {
+    // NOTE: this useMemo runs during render, BEFORE the destructure below
+    // that pulls `karbonNotes` etc. off `data`. We must read those fields
+    // straight off `data` here -- referencing the destructured const names
+    // would hit a Temporal Dead Zone error ("Cannot access 'X' before
+    // initialization") because the const bindings are hoisted into the
+    // function scope but not yet initialized at this point in execution.
+    // Each `?? []` also defends against older API responses that omit a
+    // collection entirely (the cause of the original blank-page crash).
+    for (const e of data.emails ?? []) {
       items.push({
         id: `email-${e.id}`,
         kind: "email",
@@ -529,7 +537,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         direction: e.direction,
       })
     }
-    for (const n of karbonNotes) {
+    for (const n of data.karbonNotes ?? []) {
       items.push({
         id: `note-${n.id}`,
         kind: "note",
@@ -570,7 +578,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         debriefs: ClientBundle["debriefs"]
       }
     >()
-    for (const d of data.debriefs) {
+    for (const d of data.debriefs ?? []) {
       const key = d.work_item_id || "__none__"
       if (!groups.has(key)) {
         groups.set(key, {

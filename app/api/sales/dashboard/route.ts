@@ -8,6 +8,7 @@ import {
   classifyService,
   type ServiceLine,
 } from "@/lib/sales/service-line-classifier"
+import { normalizeState } from "@/lib/sales/us-geo"
 
 /**
  * Sales Dashboard data endpoint.
@@ -27,34 +28,8 @@ import {
 
 export const dynamic = "force-dynamic"
 
-// ─── State normalization ────────────────────────────────────────────────
-// CSV imports use a mix of "MA" and "Massachusetts". The dashboard groups by
-// state, so we collapse both forms to the 2-letter postal abbreviation.
-const STATE_ABBR: Record<string, string> = {
-  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR",
-  california: "CA", colorado: "CO", connecticut: "CT", delaware: "DE",
-  florida: "FL", georgia: "GA", hawaii: "HI", idaho: "ID",
-  illinois: "IL", indiana: "IN", iowa: "IA", kansas: "KS",
-  kentucky: "KY", louisiana: "LA", maine: "ME", maryland: "MD",
-  massachusetts: "MA", michigan: "MI", minnesota: "MN", mississippi: "MS",
-  missouri: "MO", montana: "MT", nebraska: "NE", nevada: "NV",
-  "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM",
-  "new york": "NY", "north carolina": "NC", "north dakota": "ND",
-  ohio: "OH", oklahoma: "OK", oregon: "OR", pennsylvania: "PA",
-  "rhode island": "RI", "south carolina": "SC", "south dakota": "SD",
-  tennessee: "TN", texas: "TX", utah: "UT", vermont: "VT",
-  virginia: "VA", washington: "WA", "west virginia": "WV",
-  wisconsin: "WI", wyoming: "WY", "district of columbia": "DC",
-  dc: "DC",
-}
-function normState(s: string | null | undefined): string | null {
-  if (!s) return null
-  const trimmed = s.trim()
-  if (!trimmed) return null
-  if (trimmed.length === 2) return trimmed.toUpperCase()
-  const lower = trimmed.toLowerCase()
-  return STATE_ABBR[lower] ?? trimmed.toUpperCase()
-}
+// State normalization moved to lib/sales/us-geo so the same logic powers
+// API enrichment and the client-side map.
 
 export async function GET(req: Request) {
   const url = new URL(req.url)
@@ -89,7 +64,7 @@ export async function GET(req: Request) {
     .from("ignition_proposals")
     .select(
       `proposal_id, proposal_number, title, status, client_name, client_email,
-       organization_id, contact_id,
+       organization_id, contact_id, ignition_client_id,
        total_value, one_time_total, recurring_total, recurring_frequency, currency,
        sent_at, accepted_at, completed_at, lost_at, lost_reason, archived_at,
        client_manager, client_partner, proposal_sent_by,
@@ -131,18 +106,24 @@ export async function GET(req: Request) {
   // recurring_total shifted into one-time so MRR/ARR calculations are correct.
   const curatedRecurring = await loadRecurringScrubSet()
 
-  // ── Resolve states via the linked org/contact ─────────────────────────
-  // Only fetch the org/contact rows we actually need.
+  // ── Resolve states via the linked org/contact, with ignition_clients
+  //    as a third fallback ──────────────────────────────────────────────
+  // ~21% of proposals have no org/contact state on file. The original
+  // Ignition import carries its own address — we use it as a backstop so
+  // those proposals still appear on the map.
   const orgIds = new Set<string>()
   const contactIds = new Set<string>()
+  const igcIds = new Set<string>()
   for (const p of proposals ?? []) {
     if (p.organization_id) orgIds.add(p.organization_id)
     if (p.contact_id) contactIds.add(p.contact_id)
+    if (p.ignition_client_id) igcIds.add(p.ignition_client_id)
   }
 
   type EntityInfo = { state: string | null; city: string | null; country: string | null; name: string }
   const orgInfo = new Map<string, EntityInfo>()
   const contactInfo = new Map<string, EntityInfo>()
+  const igcInfo = new Map<string, { state: string | null; city: string | null; country: string | null }>()
 
   if (orgIds.size) {
     const { data: orgs } = await supabase
@@ -151,7 +132,7 @@ export async function GET(req: Request) {
       .in("id", Array.from(orgIds))
     for (const o of orgs ?? []) {
       orgInfo.set(o.id, {
-        state: normState(o.state),
+        state: normalizeState(o.state),
         city: o.city,
         country: o.country,
         name: o.name,
@@ -161,14 +142,29 @@ export async function GET(req: Request) {
   if (contactIds.size) {
     const { data: contacts } = await supabase
       .from("contacts")
-      .select("id, full_name, state, city, country")
+      .select("id, full_name, state, city, country, mailing_state, mailing_city")
       .in("id", Array.from(contactIds))
     for (const ct of contacts ?? []) {
       contactInfo.set(ct.id, {
-        state: normState(ct.state),
-        city: ct.city,
+        // contacts.state can be the residential or mailing — try residential
+        // first, then fall back to mailing
+        state: normalizeState(ct.state) ?? normalizeState(ct.mailing_state),
+        city: ct.city ?? ct.mailing_city,
         country: ct.country,
         name: ct.full_name,
+      })
+    }
+  }
+  if (igcIds.size) {
+    const { data: igcs } = await supabase
+      .from("ignition_clients")
+      .select("ignition_client_id, state, city, country")
+      .in("ignition_client_id", Array.from(igcIds))
+    for (const ig of igcs ?? []) {
+      igcInfo.set(ig.ignition_client_id, {
+        state: normalizeState(ig.state),
+        city: ig.city,
+        country: ig.country,
       })
     }
   }
@@ -188,6 +184,15 @@ export async function GET(req: Request) {
     state: string | null
     city: string | null
     country: string | null
+    /**
+     * Where did `state` come from? Drives the inline state-edit UI:
+     *  - "organization" / "contact": editing updates that table directly
+     *  - "ignition_client": original import row, also editable
+     *  - null: no state on file — the picker writes to the linked
+     *    org/contact when present, otherwise to ignition_clients
+     */
+    state_source: "organization" | "contact" | "ignition_client" | null
+    ignition_client_id: string | null
     total_value: number
     one_time_total: number
     recurring_total: number
@@ -234,6 +239,33 @@ export async function GET(req: Request) {
       ? "contact"
       : null
 
+    // State/city resolution: linked org/contact wins, then the original
+    // Ignition client record. The state_source field tells the UI whether
+    // the value came from an editable CRM record (org/contact) or from a
+    // read-only Ignition import (fallback) so the inline edit can target
+    // the right table.
+    const igc = p.ignition_client_id ? igcInfo.get(p.ignition_client_id) : null
+    let resolvedState: string | null = linked?.state ?? null
+    let resolvedCity: string | null = linked?.city ?? null
+    let resolvedCountry: string | null = linked?.country ?? null
+    let stateSource: "organization" | "contact" | "ignition_client" | null = null
+    if (resolvedState && p.organization_id && linked === orgInfo.get(p.organization_id)) {
+      stateSource = "organization"
+    } else if (resolvedState && p.contact_id && linked === contactInfo.get(p.contact_id)) {
+      stateSource = "contact"
+    }
+    if (!resolvedState && igc?.state) {
+      resolvedState = igc.state
+      resolvedCity = igc.city ?? resolvedCity
+      resolvedCountry = igc.country ?? resolvedCountry
+      stateSource = "ignition_client"
+    }
+    // Even if state came from org/contact, fill missing city from
+    // ignition_clients when available.
+    if (!resolvedCity && igc?.city) {
+      resolvedCity = igc.city
+    }
+
     // Apply curated recurring-revenue scrub: only proposals tied to a client
     // in the partner-maintained list keep their recurring_total. Everyone
     // else has it absorbed into one-time so MRR/ARR aren't inflated by
@@ -275,9 +307,11 @@ export async function GET(req: Request) {
       organization_id: p.organization_id,
       contact_id: p.contact_id,
       entity_kind,
-      state: linked?.state ?? null,
-      city: linked?.city ?? null,
-      country: linked?.country ?? null,
+      state: resolvedState,
+      city: resolvedCity,
+      country: resolvedCountry,
+      state_source: stateSource,
+      ignition_client_id: p.ignition_client_id ?? null,
       total_value: totalValue,
       one_time_total: oneTime,
       recurring_total: recurring,
@@ -401,47 +435,108 @@ export async function GET(req: Request) {
     })
     .sort((a, b) => b.revenue - a.revenue)
 
-  // ── State breakdown with clients for map expansion ────────────────────
-  const stateBreakdownMap = new Map<
-    string,
-    {
-      state: string
-      proposalCount: number
-      acceptedValue: number
-      totalValue: number
-      clients: Map<string, { name: string; id: string | null; kind: "organization" | "contact" | null; value: number }>
+  // ── State breakdown with clients, cities, and per-service-line slices ─
+  // The map exposes three toggles (metric, service line, view) — all of
+  // which the client computes from this single per-state structure.
+  const SERVICE_LINES_ORDER: ServiceLine[] = ["Tax", "Accounting", "Advisory", "Other"]
+
+  type CityStats = {
+    city: string
+    state: string
+    proposalCount: number
+    acceptedValue: number
+    clientKeys: Set<string>
+  }
+  type StateAgg = {
+    state: string
+    proposalCount: number
+    acceptedValue: number
+    totalValue: number
+    pipelineValue: number
+    clients: Map<string, { name: string; id: string | null; kind: "organization" | "contact" | null; value: number; proposals: number }>
+    /** revenue/count split by service line — only counts accepted deals */
+    byServiceLine: Record<ServiceLine, { revenue: number; count: number }>
+    cities: Map<string, CityStats>
+  }
+
+  const stateBreakdownMap = new Map<string, StateAgg>()
+  const ensureState = (st: string): StateAgg => {
+    let cur = stateBreakdownMap.get(st)
+    if (!cur) {
+      cur = {
+        state: st,
+        proposalCount: 0,
+        acceptedValue: 0,
+        totalValue: 0,
+        pipelineValue: 0,
+        clients: new Map(),
+        byServiceLine: {
+          Tax: { revenue: 0, count: 0 },
+          Accounting: { revenue: 0, count: 0 },
+          Advisory: { revenue: 0, count: 0 },
+          Other: { revenue: 0, count: 0 },
+        },
+        cities: new Map(),
+      }
+      stateBreakdownMap.set(st, cur)
     }
-  >()
+    return cur
+  }
 
   for (const p of filtered) {
     const st = p.state || "Unknown"
-    const current = stateBreakdownMap.get(st) || {
-      state: st,
-      proposalCount: 0,
-      acceptedValue: 0,
-      totalValue: 0,
-      clients: new Map(),
+    const cur = ensureState(st)
+
+    cur.proposalCount += 1
+    cur.totalValue += p.total_value
+
+    const isAccepted = p.status === "accepted" || p.status === "completed"
+    if (isAccepted) cur.acceptedValue += p.total_value
+    if (p.status === "sent") cur.pipelineValue += p.total_value
+
+    // Track client (always — not just accepted) so the "clients" toggle
+    // surfaces unique-client counts even for pipeline-only states.
+    const clientKey = p.organization_id || p.contact_id || p.client_display
+    const existingClient = cur.clients.get(clientKey) || {
+      name: p.client_display,
+      id: p.organization_id || p.contact_id,
+      kind: p.entity_kind,
+      value: 0,
+      proposals: 0,
     }
+    existingClient.proposals += 1
+    if (isAccepted) existingClient.value += p.total_value
+    cur.clients.set(clientKey, existingClient)
 
-    current.proposalCount += 1
-    current.totalValue += p.total_value
-
-    if (p.status === "accepted" || p.status === "completed") {
-      current.acceptedValue += p.total_value
-
-      // Track client in this state
-      const clientKey = p.organization_id || p.contact_id || p.client_display
-      const existingClient = current.clients.get(clientKey) || {
-        name: p.client_display,
-        id: p.organization_id || p.contact_id,
-        kind: p.entity_kind,
-        value: 0,
+    // Per-service-line revenue (only accepted, mirrors the global serviceLines table)
+    if (isAccepted) {
+      for (const s of p.services) {
+        const line = classifyService(s.service_name)
+        cur.byServiceLine[line].revenue += s.total_amount
+        cur.byServiceLine[line].count += 1
       }
-      existingClient.value += p.total_value
-      current.clients.set(clientKey, existingClient)
     }
 
-    stateBreakdownMap.set(st, current)
+    // City rollup for the map's "Cities" view. We only emit a city entry
+    // when there's a real city string — proposals without one fall back
+    // to the state-level aggregate.
+    if (p.city) {
+      const cityKey = `${p.city.trim().toLowerCase()}|${st}`
+      let cs = cur.cities.get(cityKey)
+      if (!cs) {
+        cs = {
+          city: p.city.trim(),
+          state: st,
+          proposalCount: 0,
+          acceptedValue: 0,
+          clientKeys: new Set(),
+        }
+        cur.cities.set(cityKey, cs)
+      }
+      cs.proposalCount += 1
+      if (isAccepted) cs.acceptedValue += p.total_value
+      cs.clientKeys.add(clientKey)
+    }
   }
 
   const stateBreakdown = Array.from(stateBreakdownMap.values())
@@ -450,9 +545,25 @@ export async function GET(req: Request) {
       proposalCount: s.proposalCount,
       acceptedValue: s.acceptedValue,
       totalValue: s.totalValue,
+      pipelineValue: s.pipelineValue,
+      clientCount: s.clients.size,
       clients: Array.from(s.clients.values())
         .sort((a, b) => b.value - a.value)
-        .slice(0, 15), // Top 15 clients per state
+        .slice(0, 15),
+      byServiceLine: SERVICE_LINES_ORDER.map((line) => ({
+        serviceLine: line,
+        revenue: s.byServiceLine[line].revenue,
+        count: s.byServiceLine[line].count,
+      })),
+      cities: Array.from(s.cities.values())
+        .map((c) => ({
+          city: c.city,
+          state: c.state,
+          proposalCount: c.proposalCount,
+          acceptedValue: c.acceptedValue,
+          clientCount: c.clientKeys.size,
+        }))
+        .sort((a, b) => b.acceptedValue - a.acceptedValue || b.proposalCount - a.proposalCount),
     }))
     .sort((a, b) => b.acceptedValue - a.acceptedValue)
 

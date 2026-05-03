@@ -78,6 +78,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 
 import { SalesUSMap, type StateData } from "@/components/sales-us-map"
+import { ProposalStateEdit } from "@/components/sales/proposal-state-edit"
 import {
   SERVICE_LINE_META,
   type ServiceLine,
@@ -118,6 +119,9 @@ interface Proposal {
   state: string | null
   city: string | null
   country: string | null
+  /** Where state came from — drives which table the inline editor writes to. */
+  state_source: "organization" | "contact" | "ignition_client" | null
+  ignition_client_id: string | null
   total_value: number
   one_time_total: number
   recurring_total: number
@@ -916,7 +920,14 @@ export function SalesDashboard() {
                             <span className="text-stone-600">{p.client_display}</span>
                           )}
                         </td>
-                        <td className="px-4 py-2.5 text-xs text-stone-600">{p.state || "—"}</td>
+                        <td className="px-4 py-2.5 text-xs text-stone-600">
+                          <ProposalStateEdit
+                            proposalId={p.proposal_id}
+                            value={p.state}
+                            source={p.state_source}
+                            onSaved={() => mutate()}
+                          />
+                        </td>
                         <td className="px-4 py-2.5">
                           <Badge variant="outline" className={cn("text-[10px] capitalize", meta.tone)}>
                             {meta.label}
