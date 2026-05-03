@@ -12,7 +12,6 @@ import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-contex
 import {
   LayoutDashboard,
   Users,
-  GitBranch,
   Calendar,
   Settings,
   Menu,
@@ -22,7 +21,6 @@ import {
   Database,
   ArrowRightLeft,
   Trophy,
-  Headphones,
   ChevronDown,
   ChevronRight,
   MessageSquare,
@@ -62,12 +60,46 @@ import {
 import { useRouter } from "next/navigation"
 import { WorkItemSearchTrigger } from "@/components/work-item-search"
 
+// Top-level sections are organised by *function*, not by team. The five
+// daily-driver pages (Triage, Work Items, Clients, Calendar, Debriefs) all
+// live under "Home" so the root of the app stays the launchpad. "Sales"
+// owns everything that touches a proposal-to-payment lifecycle, including
+// Payments and the Ignition admin. "Talent" is the people side of the
+// firm (directory + recognition). "Departments" is the operational
+// pipeline taxonomy (Tax / Accounting / Special Teams). "Settings"
+// absorbs both the legacy "Karbon Data" page and the engineer-facing
+// "Admin" tools so non-admins see a single configuration entry-point.
 const navigation = [
-  { name: "Dashboard", href: "/", icon: LayoutDashboard },
-  // Sales is a hub: the landing page summarises everything and four child
-  // routes drill into Dashboard analytics, the Proposals list, the Invoices
-  // list, and the Services catalog. Kept high in the nav because partners
-  // touch it daily.
+  {
+    name: "Home",
+    href: "/",
+    icon: LayoutDashboard,
+    children: [
+      { name: "Triage", href: "/triage", icon: Inbox },
+      { name: "Work Items", href: "/work-items", icon: CheckSquare },
+      { name: "Clients", href: "/clients", icon: Users },
+      {
+        name: "Calendar",
+        href: "/calendar",
+        icon: Calendar,
+        children: [
+          { name: "Calendly Admin", href: "/calendly", icon: Settings },
+          { name: "Zoom", href: "/zoom", icon: Video },
+        ],
+      },
+      {
+        name: "Debriefs",
+        href: "/debriefs",
+        icon: MessageSquare,
+        children: [
+          { name: "New Debrief", href: "/debriefs/new", icon: NotebookPen },
+        ],
+      },
+    ],
+  },
+  // Sales is the proposal-to-payment lifecycle hub. Payments and the
+  // Ignition admin queue moved here from the now-retired "Client Services"
+  // section because they're the natural follow-on to a signed proposal.
   {
     name: "Sales",
     href: "/sales",
@@ -82,23 +114,28 @@ const navigation = [
         href: "/sales/recurring-revenue",
         icon: Repeat,
       },
+      { name: "Payments", href: "/payments", icon: CreditCard },
+      // Ignition admin lives at /admin/ignition (mirrors /admin/karbon-sync);
+      // surfacing it under Sales keeps the mapping queue + Zap setup near
+      // the Proposals/Invoices it produces.
+      { name: "Ignition", href: "/admin/ignition", icon: Workflow },
     ],
   },
-  { name: "Triage", href: "/triage", icon: Inbox },
-  { name: "Work Items", href: "/work-items", icon: CheckSquare },
-  { name: "Clients", href: "/clients", icon: Users },
+  // "Talent" replaces the former "Teammates" page — same directory, more
+  // accurate label now that Tommy Awards lives underneath it.
   {
-    name: "Debriefs",
-    href: "/debriefs",
-    icon: MessageSquare,
+    name: "Talent",
+    href: "/teammates",
+    icon: UserCircle,
     children: [
-      { name: "New Debrief", href: "/debriefs/new", icon: NotebookPen },
+      { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
     ],
   },
-  { name: "Teammates", href: "/teammates", icon: UserCircle },
-  { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
+  // "Departments" replaces the former "Service Pipelines" name. Onboarding
+  // moved under Accounting because it's the kickoff step for every new
+  // bookkeeping engagement.
   {
-    name: "Service Pipelines",
+    name: "Departments",
     href: "/pipelines",
     icon: ClipboardList,
     children: [
@@ -108,6 +145,7 @@ const navigation = [
         icon: Calculator,
         children: [
           { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
+          { name: "Onboarding", href: "/onboarding", icon: UserPlus },
         ],
       },
       {
@@ -125,40 +163,8 @@ const navigation = [
       { name: "Special Teams", href: "/special-teams", icon: Flame },
     ],
   },
-  {
-    name: "Client Services",
-    href: "/client-services",
-    icon: Headphones,
-    children: [
-      { name: "Payments", href: "/payments", icon: CreditCard },
-      { name: "Onboarding", href: "/onboarding", icon: UserPlus },
-      // Ignition is the proposal/billing platform; admin lives under /admin/ignition
-      // following the same pattern as karbon-sync. Surfacing it here makes the
-      // mapping queue + Zap setup discoverable alongside Payments.
-      { name: "Ignition", href: "/admin/ignition", icon: Workflow },
-    ],
-  },
-  {
-    name: "Calendar",
-    href: "/calendar",
-    icon: Calendar,
-    children: [
-      { name: "Calendly Admin", href: "/calendly", icon: Settings },
-      { name: "Zoom", href: "/zoom", icon: Video },
-    ],
-  },
-  { name: "Karbon Data", href: "/karbon-data", icon: Database },
-  {
-    name: "Admin",
-    href: "/admin/karbon-sync",
-    icon: Settings,
-    children: [
-      { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
-      { name: "Broadcast", href: "/admin/broadcast", icon: Radio },
-      { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
-      { name: "Work Statuses", href: "/admin/work-statuses", icon: ListChecks },
-    ],
-  },
+  // Settings absorbed Karbon Data and the Admin sub-tree — non-admins
+  // shouldn't have those at top level.
   {
     name: "Settings",
     href: "/settings",
@@ -170,6 +176,18 @@ const navigation = [
       { name: "Work Statuses", href: "/settings/work-statuses", icon: ListChecks },
       { name: "Migration", href: "/settings/migration", icon: ArrowRightLeft },
       { name: "Webhooks", href: "/settings/webhooks", icon: ArrowRightLeft },
+      { name: "Karbon Data", href: "/karbon-data", icon: Database },
+      {
+        name: "Admin",
+        href: "/admin/karbon-sync",
+        icon: ShieldCheck,
+        children: [
+          { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
+          { name: "Broadcast", href: "/admin/broadcast", icon: Radio },
+          { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
+          { name: "Work Statuses", href: "/admin/work-statuses", icon: ListChecks },
+        ],
+      },
     ],
   },
 ]
@@ -220,11 +238,29 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   )
 }
 
-// Walk the navigation tree and pre-expand only the section(s) that contain
-// the currently-active route. Everything else stays collapsed so the sidebar
-// is calm by default; users will see the chevron next to a section name and
-// can click to drill in. Once they navigate into a child, that section
-// auto-opens because its branch matches `pathname`.
+// Does pathname match this node, or any descendant of it? Used both for
+// auto-expansion and for parent-active highlighting. Recurses through the
+// whole subtree so a deep grandchild match (e.g. /calendly while we're
+// inside Home → Calendar → Calendly Admin) still bubbles up to mark every
+// ancestor as active and expanded.
+function branchContainsActive(node: any, pathname: string): boolean {
+  if (
+    node.href &&
+    node.href !== "/" &&
+    (pathname === node.href || pathname.startsWith(node.href + "/"))
+  ) {
+    return true
+  }
+  if (node.children?.length) {
+    return node.children.some((child: any) => branchContainsActive(child, pathname))
+  }
+  // Special-case the root: only mark Home as active when we're literally
+  // on "/", not on every page (every pathname starts with "/").
+  return node.href === "/" && pathname === "/"
+}
+
+// Walk the navigation tree and pre-expand every ancestor of the active
+// route. Everything else stays collapsed so the sidebar is calm by default.
 function buildInitialExpandedState(
   items: typeof navigation,
   pathname: string,
@@ -232,10 +268,9 @@ function buildInitialExpandedState(
   const expanded: Record<string, boolean> = {}
   const walk = (nodes: any[]) => {
     for (const node of nodes) {
-      if (node.children && node.children.length > 0) {
-        const hasActive = node.children.some(
-          (child: any) =>
-            pathname === child.href || pathname.startsWith(child.href + "/"),
+      if (node.children?.length) {
+        const hasActive = node.children.some((child: any) =>
+          branchContainsActive(child, pathname),
         )
         if (hasActive) expanded[node.name] = true
         walk(node.children)
@@ -255,24 +290,28 @@ function Sidebar() {
     buildInitialExpandedState(navigation, pathname),
   )
 
-  // When the user navigates to a child route via a top-level link, ensure
-  // that destination section opens automatically. We never collapse a
-  // section the user explicitly opened — that would feel jumpy.
+  // When the user navigates, make sure every ancestor of the active route
+  // is expanded — including deep grandparents like Home when we're on a
+  // grandchild route such as /calendly. We never collapse a section the
+  // user explicitly opened — that would feel jumpy.
   useEffect(() => {
     setExpandedSections((prev) => {
       const next = { ...prev }
       let changed = false
-      for (const item of navigation) {
-        if (!item.children?.length) continue
-        const isActive = item.children.some(
-          (child) =>
-            pathname === child.href || pathname.startsWith(child.href + "/"),
-        )
-        if (isActive && !next[item.name]) {
-          next[item.name] = true
-          changed = true
+      const walk = (nodes: any[]) => {
+        for (const node of nodes) {
+          if (!node.children?.length) continue
+          const hasActive = node.children.some((child: any) =>
+            branchContainsActive(child, pathname),
+          )
+          if (hasActive && !next[node.name]) {
+            next[node.name] = true
+            changed = true
+          }
+          walk(node.children)
         }
       }
+      walk(navigation as any[])
       return changed ? next : prev
     })
   }, [pathname])
@@ -288,9 +327,12 @@ function Sidebar() {
     }))
   }
 
-  const hasActiveChild = (children?: (typeof navigation)[0]["children"]) => {
-    if (!children) return false
-    return children.some((child) => pathname === child.href || pathname.startsWith(child.href + "/"))
+  // Recurses through the entire subtree so a parent like Home stays
+  // highlighted even when the active route is a grandchild (e.g.
+  // /calendly under Home → Calendar → Calendly Admin).
+  const hasActiveChild = (children?: any[]) => {
+    if (!children?.length) return false
+    return children.some((child: any) => branchContainsActive(child, pathname))
   }
 
   const handleLogout = async () => {
