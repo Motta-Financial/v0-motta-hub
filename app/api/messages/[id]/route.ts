@@ -2,10 +2,10 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 
 // Add reaction to message
-export async function POST(request: Request, { params }: { params: { id: string } }) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const supabase = createAdminClient()
-    const { id } = params
+    const { id } = await params
     const body = await request.json()
     const { action, emoji, teamMemberId, comment } = body
 
@@ -76,9 +76,10 @@ export async function POST(request: Request, { params }: { params: { id: string 
 }
 
 // Delete message
-export async function DELETE(request: Request, { params }: { params: { id: string } }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { id } = params
+    const supabase = createAdminClient()
+    const { id } = await params
 
     const { error } = await supabase.from("messages").delete().eq("id", id)
 

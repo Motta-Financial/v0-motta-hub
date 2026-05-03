@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Trophy, Medal, Award, Star, Sparkles, Send, Users, Info } from "lucide-react"
+import { Trophy, Medal, Award, Star, Sparkles, Send, Users, Info, Calendar, Edit3, History, Clock } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 
 interface TeamMember {
@@ -27,15 +27,61 @@ interface VoteSelection {
   notes: string
 }
 
+interface WeekOption {
+  id: string
+  week_date: string
+  week_name: string
+  is_active: boolean
+}
+
+interface BallotSnapshot {
+  first_place_id: string | null
+  first_place_name: string
+  first_place_notes: string
+  second_place_id: string | null
+  second_place_name: string
+  second_place_notes: string
+  third_place_id: string | null
+  third_place_name: string
+  third_place_notes: string
+  honorable_mention_id: string | null
+  honorable_mention_name: string
+  honorable_mention_notes: string
+  partner_vote_id: string | null
+  partner_vote_name: string
+  partner_vote_notes: string
+}
+
+interface BallotHistoryEntry {
+  id: string
+  change_type: string
+  changed_at: string
+  changed_by_name: string
+  change_summary: {
+    changes: Array<{
+      field: string
+      from: string
+      to: string
+    }>
+  } | null
+}
+
 export function TommyVotingForm() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
+  const [availableWeeks, setAvailableWeeks] = useState<WeekOption[]>([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [currentWeekId, setCurrentWeekId] = useState<string | null>(null)
+  const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null)
+  const [selectedWeekDate, setSelectedWeekDate] = useState<string | null>(null)
   const [currentVoter, setCurrentVoter] = useState<string>("")
   const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear())
+  const [isAmendment, setIsAmendment] = useState(false)
+  const [existingBallotId, setExistingBallotId] = useState<string | null>(null)
+  const [originalBallot, setOriginalBallot] = useState<BallotSnapshot | null>(null)
+  const [ballotHistory, setBallotHistory] = useState<BallotHistoryEntry[]>([])
+  const [showHistory, setShowHistory] = useState(false)
 
   const [firstPlace, setFirstPlace] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
   const [secondPlace, setSecondPlace] = useState<VoteSelection>({ memberId: null, memberName: "", notes: "" })
@@ -50,10 +96,22 @@ export function TommyVotingForm() {
     fetchData()
   }, [])
 
+  // When voter or week changes, check for existing ballot
+  useEffect(() => {
+    if (currentVoter && selectedWeekId) {
+      checkExistingBallot()
+    }
+  }, [currentVoter, selectedWeekId])
+
   const fetchData = async () => {
     const supabase = createClient()
 
     try {
+      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
+      // Ganesh Vasan and Thameem JA vote together as "G&T"
+      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
+      
       const { data: members, error: membersError } = await supabase
         .from("team_members")
         .select("id, full_name, email, avatar_url, role")
@@ -63,19 +121,52 @@ export function TommyVotingForm() {
         .order("full_name")
 
       if (membersError) throw membersError
-      setTeamMembers(members || [])
+      
+      // Filter out hidden members and the combined voters (they'll be replaced by G&T)
+      const filteredMembers = (members || []).filter(
+        (m: { full_name: string }) => 
+          !HIDDEN_MEMBERS.includes(m.full_name) && 
+          !COMBINED_VOTERS.includes(m.full_name)
+      )
+      
+      // Add the combined "G&T" voter entry (uses a special composite ID)
+      const gtVoter: TeamMember = {
+        id: "G&T",
+        full_name: "G&T",
+        email: "",
+        avatar_url: null,
+        role: "Combined Voter",
+      }
+      
+      // Insert G&T in alphabetical position
+      const membersWithGT = [...filteredMembers, gtVoter].sort((a, b) => 
+        a.full_name.localeCompare(b.full_name)
+      )
+      
+      setTeamMembers(membersWithGT)
 
       const today = new Date()
       setCurrentYear(today.getFullYear())
       const friday = getFridayOfWeek(today)
-      const fridayStr = friday.toISOString().split("T")[0]
+      // Format as YYYY-MM-DD in LOCAL time to avoid timezone shifts
+      // (toISOString() converts to UTC which can shift Friday → Saturday for negative offsets)
+      const fridayStr = formatLocalDate(friday)
 
-      let { data: currentWeek } = await supabase
+      // Fetch ALL weeks for the dropdown - no time restrictions on submitting/editing ballots
+      const { data: weeks, error: weeksError } = await supabase
         .from("tommy_award_weeks")
-        .select("*")
-        .eq("week_date", fridayStr)
-        .single()
+        .select("id, week_date, week_name, is_active")
+        .order("week_date", { ascending: false })
 
+      if (weeksError) throw weeksError
+
+      // Deduplicate weeks by week_name (in case the database still has any duplicates)
+      // Prefer entries whose week_date falls on a Friday
+      const dedupedWeeks = dedupeWeekList(weeks || [])
+
+      // Ensure current week exists
+      let currentWeek: WeekOption | null = dedupedWeeks.find((w) => w.week_date === fridayStr) ?? null
+      
       if (!currentWeek) {
         const { data: newWeek, error: createError } = await supabase
           .from("tommy_award_weeks")
@@ -88,15 +179,205 @@ export function TommyVotingForm() {
           .single()
 
         if (createError) throw createError
-        currentWeek = newWeek
+        currentWeek = newWeek as WeekOption
+        // Add to weeks list
+        if (currentWeek) {
+          setAvailableWeeks([currentWeek, ...dedupedWeeks])
+        }
+      } else {
+        setAvailableWeeks(dedupedWeeks)
       }
 
-      setCurrentWeekId(currentWeek.id)
+      // Default to current week
+      if (currentWeek) {
+        setSelectedWeekId(currentWeek.id)
+        setSelectedWeekDate(currentWeek.week_date)
+      }
     } catch (err) {
       console.error("Error fetching data:", err)
       setError("Failed to load data. Please refresh the page.")
     } finally {
       setLoading(false)
+    }
+  }
+
+  const checkExistingBallot = async () => {
+    if (!currentVoter || !selectedWeekId) return
+
+    const supabase = createClient()
+    
+    try {
+      // For the combined "G&T" voter, look up ballots by voter_name instead of voter_id
+      // since G&T isn't a real team_member row
+      let existingBallot = null
+      let error = null
+      
+      if (currentVoter === "G&T") {
+        const result = await supabase
+          .from("tommy_award_ballots")
+          .select("*")
+          .eq("voter_name", "G&T")
+          .eq("week_id", selectedWeekId)
+          .single()
+        existingBallot = result.data
+        error = result.error
+      } else {
+        const result = await supabase
+          .from("tommy_award_ballots")
+          .select("*")
+          .eq("voter_id", currentVoter)
+          .eq("week_id", selectedWeekId)
+          .single()
+        existingBallot = result.data
+        error = result.error
+      }
+
+      if (error && error.code !== "PGRST116") {
+        // PGRST116 = no rows returned, which is fine
+        console.error("Error checking existing ballot:", error)
+        return
+      }
+
+      if (existingBallot) {
+        // Pre-fill the form with existing ballot data
+        setIsAmendment(true)
+        setExistingBallotId(existingBallot.id)
+        
+        // Store original ballot for comparison when submitting amendment
+        const snapshot: BallotSnapshot = {
+          first_place_id: existingBallot.first_place_id,
+          first_place_name: existingBallot.first_place_name || "",
+          first_place_notes: existingBallot.first_place_notes || "",
+          second_place_id: existingBallot.second_place_id,
+          second_place_name: existingBallot.second_place_name || "",
+          second_place_notes: existingBallot.second_place_notes || "",
+          third_place_id: existingBallot.third_place_id,
+          third_place_name: existingBallot.third_place_name || "",
+          third_place_notes: existingBallot.third_place_notes || "",
+          honorable_mention_id: existingBallot.honorable_mention_id,
+          honorable_mention_name: existingBallot.honorable_mention_name || "",
+          honorable_mention_notes: existingBallot.honorable_mention_notes || "",
+          partner_vote_id: existingBallot.partner_vote_id,
+          partner_vote_name: existingBallot.partner_vote_name || "",
+          partner_vote_notes: existingBallot.partner_vote_notes || "",
+        }
+        setOriginalBallot(snapshot)
+        
+        setFirstPlace({
+          memberId: existingBallot.first_place_id,
+          memberName: existingBallot.first_place_name || "",
+          notes: existingBallot.first_place_notes || "",
+        })
+        setSecondPlace({
+          memberId: existingBallot.second_place_id,
+          memberName: existingBallot.second_place_name || "",
+          notes: existingBallot.second_place_notes || "",
+        })
+        setThirdPlace({
+          memberId: existingBallot.third_place_id,
+          memberName: existingBallot.third_place_name || "",
+          notes: existingBallot.third_place_notes || "",
+        })
+        setHonorableMention({
+          memberId: existingBallot.honorable_mention_id,
+          memberName: existingBallot.honorable_mention_name || "",
+          notes: existingBallot.honorable_mention_notes || "",
+        })
+        if (existingBallot.partner_vote_id) {
+          setIsPartner(true)
+          setPartnerVote({
+            memberId: existingBallot.partner_vote_id,
+            memberName: existingBallot.partner_vote_name || "",
+            notes: existingBallot.partner_vote_notes || "",
+          })
+        }
+        
+        // Fetch ballot history
+        await fetchBallotHistory(existingBallot.id)
+      } else {
+        // Reset form for new ballot
+        setIsAmendment(false)
+        setExistingBallotId(null)
+        setOriginalBallot(null)
+        setBallotHistory([])
+        resetForm()
+      }
+    } catch (err) {
+      console.error("Error checking existing ballot:", err)
+    }
+  }
+
+  const fetchBallotHistory = async (ballotId: string) => {
+    const supabase = createClient()
+    
+    try {
+      const { data, error } = await supabase
+        .from("tommy_award_ballot_history")
+        .select("id, change_type, changed_at, changed_by_name, change_summary")
+        .eq("ballot_id", ballotId)
+        .order("changed_at", { ascending: false })
+
+      if (error) {
+        // Table might not exist yet - gracefully handle
+        if (error.code !== "42P01" && !error.message.includes("does not exist")) {
+          console.error("Error fetching ballot history:", error)
+        }
+        setBallotHistory([])
+        return
+      }
+
+      setBallotHistory(data || [])
+    } catch (err) {
+      console.error("Error fetching ballot history:", err)
+      setBallotHistory([])
+    }
+  }
+
+  const calculateChanges = (): Array<{ field: string; from: string; to: string }> => {
+    if (!originalBallot) return []
+    
+    const changes: Array<{ field: string; from: string; to: string }> = []
+    
+    if (originalBallot.first_place_name !== firstPlace.memberName) {
+      changes.push({ field: "1st Place", from: originalBallot.first_place_name || "(none)", to: firstPlace.memberName || "(none)" })
+    }
+    if (originalBallot.second_place_name !== secondPlace.memberName) {
+      changes.push({ field: "2nd Place", from: originalBallot.second_place_name || "(none)", to: secondPlace.memberName || "(none)" })
+    }
+    if (originalBallot.third_place_name !== thirdPlace.memberName) {
+      changes.push({ field: "3rd Place", from: originalBallot.third_place_name || "(none)", to: thirdPlace.memberName || "(none)" })
+    }
+    if (!is2026OrLater) {
+      if (originalBallot.honorable_mention_name !== honorableMention.memberName) {
+        changes.push({ field: "Honorable Mention", from: originalBallot.honorable_mention_name || "(none)", to: honorableMention.memberName || "(none)" })
+      }
+      const originalPartner = originalBallot.partner_vote_name || ""
+      const newPartner = isPartner ? partnerVote.memberName : ""
+      if (originalPartner !== newPartner) {
+        changes.push({ field: "Partner Vote", from: originalPartner || "(none)", to: newPartner || "(none)" })
+      }
+    }
+    
+    return changes
+  }
+
+  const resetForm = () => {
+    setFirstPlace({ memberId: null, memberName: "", notes: "" })
+    setSecondPlace({ memberId: null, memberName: "", notes: "" })
+    setThirdPlace({ memberId: null, memberName: "", notes: "" })
+    setHonorableMention({ memberId: null, memberName: "", notes: "" })
+    setPartnerVote({ memberId: null, memberName: "", notes: "" })
+    setIsPartner(false)
+  }
+
+  const handleWeekChange = (weekId: string) => {
+    const week = availableWeeks.find((w) => w.id === weekId)
+    setSelectedWeekId(weekId)
+    setSelectedWeekDate(week?.week_date || null)
+    // Update the year based on selected week (affects 2026+ rule for honorable mentions/partner votes)
+    if (week?.week_date) {
+      const yearFromWeek = parseInt(week.week_date.split("-")[0], 10)
+      setCurrentYear(yearFromWeek)
     }
   }
 
@@ -106,6 +387,44 @@ export function TommyVotingForm() {
     const friday = new Date(date)
     friday.setDate(date.getDate() + diff)
     return friday
+  }
+
+  // Format a date as YYYY-MM-DD in local time (avoids UTC timezone shifts)
+  const formatLocalDate = (date: Date) => {
+    const yyyy = date.getFullYear()
+    const mm = String(date.getMonth() + 1).padStart(2, "0")
+    const dd = String(date.getDate()).padStart(2, "0")
+    return `${yyyy}-${mm}-${dd}`
+  }
+
+  // Remove duplicate weeks (same week_name), preferring Friday-dated entries
+  const dedupeWeekList = (weeks: WeekOption[]): WeekOption[] => {
+    const groups: Record<string, WeekOption[]> = {}
+    for (const w of weeks) {
+      if (!groups[w.week_name]) groups[w.week_name] = []
+      groups[w.week_name].push(w)
+    }
+    
+    const result: WeekOption[] = []
+    for (const items of Object.values(groups)) {
+      if (items.length === 1) {
+        result.push(items[0])
+        continue
+      }
+      // Prefer Friday-dated week (parse as local date to check day-of-week)
+      const friday = items.find((it) => {
+        const [y, m, d] = it.week_date.split("-").map(Number)
+        const localDate = new Date(y, m - 1, d)
+        return localDate.getDay() === 5
+      })
+      // Prefer active over inactive as tiebreaker
+      const active = items.find((it) => it.is_active)
+      result.push(friday || active || items[0])
+    }
+    
+    // Sort by week_date descending
+    result.sort((a, b) => b.week_date.localeCompare(a.week_date))
+    return result
   }
 
   const handleMemberSelect = (value: string, setter: React.Dispatch<React.SetStateAction<VoteSelection>>) => {
@@ -135,7 +454,7 @@ export function TommyVotingForm() {
   }
 
   const handleSubmit = async () => {
-    if (!currentWeekId || !currentVoter) {
+    if (!selectedWeekId || !currentVoter) {
       setError("Please select your name before submitting")
       return
     }
@@ -148,59 +467,126 @@ export function TommyVotingForm() {
     setSubmitting(true)
     setError(null)
 
-    const supabase = createClient()
-
     try {
       const voter = teamMembers.find((m) => m.id === currentVoter)
-      const friday = getFridayOfWeek(new Date())
+      const isGT = currentVoter === "G&T"
+      const voterName = isGT ? "G&T" : (voter?.full_name || "Unknown")
 
-      const ballotData: Record<string, unknown> = {
-        week_id: currentWeekId,
-        week_date: friday.toISOString().split("T")[0],
-        voter_id: currentVoter,
-        voter_name: voter?.full_name || "Unknown",
-        first_place_id: firstPlace.memberId,
-        first_place_name: firstPlace.memberName,
-        first_place_notes: firstPlace.notes,
-        second_place_id: secondPlace.memberId,
-        second_place_name: secondPlace.memberName,
-        second_place_notes: secondPlace.notes,
-        third_place_id: thirdPlace.memberId,
-        third_place_name: thirdPlace.memberName,
-        third_place_notes: thirdPlace.notes,
+      // Build payload. We POST to our own /api/tommy-awards/ballot endpoint
+      // (same-origin, motta.cpa) instead of writing to Supabase directly so that
+      // corporate web filters (e.g. Zscaler) don't intercept the request and
+      // return an HTML block page.
+      const payload: Record<string, unknown> = {
+        weekId: selectedWeekId,
+        weekDate: selectedWeekDate,
+        voterId: currentVoter,
+        voterName,
+        firstPlace: {
+          memberId: firstPlace.memberId,
+          memberName: firstPlace.memberName,
+          notes: firstPlace.notes,
+        },
+        secondPlace: {
+          memberId: secondPlace.memberId,
+          memberName: secondPlace.memberName,
+          notes: secondPlace.notes,
+        },
+        thirdPlace: {
+          memberId: thirdPlace.memberId,
+          memberName: thirdPlace.memberName,
+          notes: thirdPlace.notes,
+        },
+        honorableMention: !is2026OrLater
+          ? {
+              memberId: honorableMention.memberId,
+              memberName: honorableMention.memberName,
+              notes: honorableMention.notes,
+            }
+          : null,
+        partnerVote:
+          !is2026OrLater && isPartner
+            ? {
+                memberId: partnerVote.memberId,
+                memberName: partnerVote.memberName,
+                notes: partnerVote.notes,
+              }
+            : null,
+        isPartner,
+        is2026OrLater,
+        amendment:
+          isAmendment && existingBallotId && originalBallot
+            ? {
+                existingBallotId,
+                originalBallot,
+                changes: calculateChanges(),
+              }
+            : null,
       }
 
-      if (!is2026OrLater) {
-        ballotData.honorable_mention_id = honorableMention.memberId
-        ballotData.honorable_mention_name = honorableMention.memberName
-        ballotData.honorable_mention_notes = honorableMention.notes
-        ballotData.partner_vote_id = isPartner ? partnerVote.memberId : null
-        ballotData.partner_vote_name = isPartner ? partnerVote.memberName : null
-        ballotData.partner_vote_notes = isPartner ? partnerVote.notes : null
-      } else {
-        ballotData.honorable_mention_id = null
-        ballotData.honorable_mention_name = null
-        ballotData.honorable_mention_notes = null
-        ballotData.partner_vote_id = null
-        ballotData.partner_vote_name = null
-        ballotData.partner_vote_notes = null
-      }
+      const res = await fetch("/api/tommy-awards/ballot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
 
-      const { error: submitError } = await supabase.from("tommy_award_ballots").insert(ballotData)
-
-      if (submitError) {
-        if (submitError.code === "23505") {
-          setError("You have already submitted a ballot this week")
+      // The request might be intercepted by a corporate proxy and return HTML.
+      // Detect that and surface a helpful message instead of trying to parse JSON.
+      const contentType = res.headers.get("content-type") || ""
+      if (!contentType.includes("application/json")) {
+        const text = await res.text()
+        const looksLikeBlockPage =
+          /zscaler|forcepoint|<\!doctype html|<html/i.test(text.slice(0, 500))
+        console.log("[v0] non-JSON response from ballot endpoint:", text.slice(0, 500))
+        if (looksLikeBlockPage) {
+          setError(
+            "Your network is blocking the submission. Please try a different network (or a hotspot) and submit again, or ask IT to allow motta.cpa.",
+          )
         } else {
-          throw submitError
+          setError(`Failed to submit ballot (HTTP ${res.status}). Please try again.`)
+        }
+        return
+      }
+
+      const result = (await res.json()) as {
+        success?: boolean
+        ballotId?: string | null
+        error?: string
+        code?: string
+        details?: string
+        hint?: string
+      }
+
+      if (!res.ok || !result.success) {
+        console.log(
+          "[v0] Submit error code:",
+          result.code,
+          "message:",
+          result.error,
+          "details:",
+          result.details,
+          "hint:",
+          result.hint,
+        )
+        if (result.code === "23505") {
+          setError(
+            "You have already submitted a ballot for this week. Select your name again to load it for amendment.",
+          )
+        } else {
+          setError(`Failed to submit ballot: ${result.error || "Unknown error"}`)
         }
         return
       }
 
       setSubmitted(true)
     } catch (err) {
-      console.error("Error submitting ballot:", err)
-      setError("Failed to submit ballot. Please try again.")
+      console.error("[v0] Error submitting ballot:", err)
+      const errorMessage =
+        err instanceof Error
+          ? err.message
+          : typeof err === "object" && err !== null && "message" in err
+            ? String((err as { message: unknown }).message)
+            : "Unknown error"
+      setError(`Failed to submit ballot: ${errorMessage}`)
     } finally {
       setSubmitting(false)
     }
@@ -221,12 +607,16 @@ export function TommyVotingForm() {
       <Card className="border-border bg-gradient-to-br from-[#0a1628] to-[#1a2744] text-white">
         <CardContent className="flex flex-col items-center justify-center py-16">
           <div className="w-20 h-20 rounded-full bg-[#c62828]/20 flex items-center justify-center mb-6 border-2 border-[#c62828]">
-            <Trophy className="h-10 w-10 text-[#c62828]" />
+            {isAmendment ? <Edit3 className="h-10 w-10 text-[#c62828]" /> : <Trophy className="h-10 w-10 text-[#c62828]" />}
           </div>
-          <h3 className="text-2xl font-bold mb-2">Championship Ballot Submitted!</h3>
+          <h3 className="text-2xl font-bold mb-2">
+            {isAmendment ? "Ballot Updated!" : "Championship Ballot Submitted!"}
+          </h3>
           <p className="text-slate-300 text-center max-w-md">
-            Thank you for recognizing your teammates' championship-level performance. Your votes have been recorded for
-            this week's Tommy Awards.
+            {isAmendment 
+              ? "Your ballot has been successfully amended. The leaderboard will reflect your updated votes."
+              : "Thank you for recognizing your teammates' championship-level performance. Your votes have been recorded for this week's Tommy Awards."
+            }
           </p>
           <Button
             variant="outline"
@@ -268,24 +658,129 @@ export function TommyVotingForm() {
           </Alert>
         )}
 
-        <div className="p-4 rounded-xl bg-muted/50 border border-border">
-          <Label className="flex items-center gap-2 mb-3 text-foreground font-medium">
-            <Users className="h-4 w-4" />
-            Your Name
-          </Label>
-          <Select value={currentVoter} onValueChange={setCurrentVoter}>
-            <SelectTrigger className="bg-background">
-              <SelectValue placeholder="Select your name" />
-            </SelectTrigger>
-            <SelectContent>
-              {teamMembers.map((member) => (
-                <SelectItem key={member.id} value={member.id}>
-                  {member.full_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="p-4 rounded-xl bg-muted/50 border border-border">
+            <Label className="flex items-center gap-2 mb-3 text-foreground font-medium">
+              <Users className="h-4 w-4" />
+              Your Name
+            </Label>
+            <Select value={currentVoter} onValueChange={setCurrentVoter}>
+              <SelectTrigger className="bg-background">
+                <SelectValue placeholder="Select your name" />
+              </SelectTrigger>
+              <SelectContent>
+                {teamMembers.map((member) => (
+                  <SelectItem key={member.id} value={member.id}>
+                    {member.full_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="p-4 rounded-xl bg-muted/50 border border-border">
+            <Label className="flex items-center gap-2 mb-3 text-foreground font-medium">
+              <Calendar className="h-4 w-4" />
+              Week
+            </Label>
+            <Select value={selectedWeekId || ""} onValueChange={handleWeekChange}>
+              <SelectTrigger className="bg-background">
+                <SelectValue placeholder="Select week" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableWeeks.map((week) => (
+                  <SelectItem key={week.id} value={week.id}>
+                    {week.week_name}
+                    {week.is_active && " (Current)"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
+
+        {isAmendment && (
+          <Alert className="bg-amber-50 border-amber-200">
+            <Edit3 className="h-4 w-4 text-amber-600" />
+            <AlertDescription className="text-amber-800">
+              <div className="flex items-center justify-between">
+                <div>
+                  <strong>Amending Previous Ballot:</strong> You already submitted a ballot for this week. 
+                  Your changes will update your existing vote.
+                </div>
+                {ballotHistory.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowHistory(!showHistory)}
+                    className="ml-2 text-amber-700 hover:text-amber-900 hover:bg-amber-100"
+                  >
+                    <History className="h-4 w-4 mr-1" />
+                    {showHistory ? "Hide" : "View"} History ({ballotHistory.length})
+                  </Button>
+                )}
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {isAmendment && showHistory && ballotHistory.length > 0 && (
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+            <h4 className="font-semibold text-slate-700 flex items-center gap-2">
+              <Clock className="h-4 w-4" />
+              Ballot Change History
+            </h4>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {ballotHistory.map((entry) => (
+                <div key={entry.id} className="p-3 bg-white rounded-lg border border-slate-100 text-sm">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      entry.change_type === "created" 
+                        ? "bg-green-100 text-green-700" 
+                        : "bg-blue-100 text-blue-700"
+                    }`}>
+                      {entry.change_type === "created" ? "Original Submission" : "Amendment"}
+                    </span>
+                    <span className="text-slate-500 text-xs">
+                      {new Date(entry.changed_at).toLocaleString()}
+                    </span>
+                  </div>
+                  {entry.change_type === "amended" && entry.change_summary?.changes && (
+                    <div className="space-y-1">
+                      {entry.change_summary.changes.map((change, idx) => (
+                        <div key={idx} className="text-slate-600">
+                          <span className="font-medium">{change.field}:</span>{" "}
+                          <span className="text-red-600 line-through">{change.from}</span>
+                          {" ��� "}
+                          <span className="text-green-600">{change.to}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {entry.change_type === "created" && (
+                    <div className="text-slate-500 text-xs">
+                      Initial ballot submitted by {entry.changed_by_name}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {isAmendment && originalBallot && (
+          <PendingChangesPreview
+            originalBallot={originalBallot}
+            currentBallot={{
+              firstPlace,
+              secondPlace,
+              thirdPlace,
+              honorableMention: !is2026OrLater ? honorableMention : { memberId: null, memberName: "", notes: "" },
+              partnerVote: !is2026OrLater && isPartner ? partnerVote : { memberId: null, memberName: "", notes: "" },
+            }}
+            is2026OrLater={is2026OrLater}
+          />
+        )}
 
         <VoteCard
           icon={<Trophy className="h-5 w-5 text-amber-600" />}
@@ -376,23 +871,86 @@ export function TommyVotingForm() {
 
         <Button
           onClick={handleSubmit}
-          disabled={submitting || !currentVoter || !firstPlace.memberId}
+          disabled={submitting || !currentVoter || !firstPlace.memberId || !selectedWeekId}
           className="w-full h-12 text-lg font-semibold bg-[#c62828] hover:bg-[#b71c1c] text-white"
         >
           {submitting ? (
             <span className="flex items-center gap-2">
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-              Submitting...
+              {isAmendment ? "Updating..." : "Submitting..."}
             </span>
           ) : (
             <span className="flex items-center gap-2">
-              <Trophy className="h-5 w-5" />
-              Submit Championship Ballot
+              {isAmendment ? <Edit3 className="h-5 w-5" /> : <Trophy className="h-5 w-5" />}
+              {isAmendment ? "Update Ballot" : "Submit Championship Ballot"}
             </span>
           )}
         </Button>
       </CardContent>
     </Card>
+  )
+}
+
+// Component to show pending changes before submitting an amendment
+function PendingChangesPreview({
+  originalBallot,
+  currentBallot,
+  is2026OrLater,
+}: {
+  originalBallot: BallotSnapshot
+  currentBallot: {
+    firstPlace: VoteSelection
+    secondPlace: VoteSelection
+    thirdPlace: VoteSelection
+    honorableMention: VoteSelection
+    partnerVote: VoteSelection
+  }
+  is2026OrLater: boolean
+}) {
+  const changes: Array<{ field: string; from: string; to: string }> = []
+
+  if (originalBallot.first_place_name !== currentBallot.firstPlace.memberName) {
+    changes.push({ field: "1st Place", from: originalBallot.first_place_name || "(none)", to: currentBallot.firstPlace.memberName || "(none)" })
+  }
+  if (originalBallot.second_place_name !== currentBallot.secondPlace.memberName) {
+    changes.push({ field: "2nd Place", from: originalBallot.second_place_name || "(none)", to: currentBallot.secondPlace.memberName || "(none)" })
+  }
+  if (originalBallot.third_place_name !== currentBallot.thirdPlace.memberName) {
+    changes.push({ field: "3rd Place", from: originalBallot.third_place_name || "(none)", to: currentBallot.thirdPlace.memberName || "(none)" })
+  }
+  if (!is2026OrLater) {
+    if (originalBallot.honorable_mention_name !== currentBallot.honorableMention.memberName) {
+      changes.push({ field: "Honorable Mention", from: originalBallot.honorable_mention_name || "(none)", to: currentBallot.honorableMention.memberName || "(none)" })
+    }
+    if (originalBallot.partner_vote_name !== currentBallot.partnerVote.memberName) {
+      changes.push({ field: "Partner Vote", from: originalBallot.partner_vote_name || "(none)", to: currentBallot.partnerVote.memberName || "(none)" })
+    }
+  }
+
+  if (changes.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="p-4 rounded-xl bg-blue-50 border border-blue-200">
+      <h4 className="font-semibold text-blue-800 mb-2 flex items-center gap-2">
+        <Edit3 className="h-4 w-4" />
+        Pending Changes
+      </h4>
+      <p className="text-sm text-blue-600 mb-3">
+        The following changes will be recorded when you submit:
+      </p>
+      <div className="space-y-1">
+        {changes.map((change, idx) => (
+          <div key={idx} className="text-sm bg-white/50 rounded px-2 py-1">
+            <span className="font-medium text-blue-800">{change.field}:</span>{" "}
+            <span className="text-red-600 line-through">{change.from}</span>
+            {" → "}
+            <span className="text-green-600 font-medium">{change.to}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 

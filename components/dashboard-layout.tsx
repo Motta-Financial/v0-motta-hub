@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -12,7 +12,6 @@ import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-contex
 import {
   LayoutDashboard,
   Users,
-  GitBranch,
   Calendar,
   Settings,
   Menu,
@@ -22,7 +21,6 @@ import {
   Database,
   ArrowRightLeft,
   Trophy,
-  Headphones,
   ChevronDown,
   ChevronRight,
   MessageSquare,
@@ -35,6 +33,21 @@ import {
   FileText,
   Flame,
   DollarSign,
+  Workflow,
+  BarChart3,
+  Video,
+  Bell,
+  Radio,
+  RefreshCw,
+  FileSpreadsheet,
+  AlertTriangle,
+  TrendingUp,
+  Lightbulb,
+  UserPlus,
+  NotebookPen,
+  Receipt,
+  Briefcase,
+  Repeat,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -45,7 +58,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useRouter } from "next/navigation"
+import { WorkItemSearchTrigger } from "@/components/work-item-search"
 
+// Top-level sections are organised by *function*, not by team. The five
+// daily-driver pages (Triage, Work Items, Clients, Calendar, Debriefs) all
+// live under "Home" so the root of the app stays the launchpad. "Sales"
+// owns everything that touches a proposal-to-payment lifecycle, including
+// Payments and the Ignition admin. "Talent" is the people side of the
+// firm (directory + recognition). "Departments" is the operational
+// pipeline taxonomy (Tax / Accounting / Special Teams). "Settings"
+// absorbs both the legacy "Karbon Data" page and the engineer-facing
+// "Admin" tools so non-admins see a single configuration entry-point.
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard, alfredSuggestions: 3 },
   { name: "Triage", href: "/triage", icon: Inbox, alfredSuggestions: 12 },
@@ -55,22 +78,96 @@ const navigation = [
   { name: "Teammates", href: "/teammates", icon: UserCircle },
   { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
   {
-    name: "Service Pipelines",
+    name: "Home",
+    href: "/",
+    icon: LayoutDashboard,
+    children: [
+      { name: "Triage", href: "/triage", icon: Inbox },
+      { name: "Work Items", href: "/work-items", icon: CheckSquare },
+      { name: "Clients", href: "/clients", icon: Users },
+      {
+        name: "Calendar",
+        href: "/calendar",
+        icon: Calendar,
+        children: [
+          { name: "Calendly Admin", href: "/calendly", icon: Settings },
+          { name: "Zoom", href: "/zoom", icon: Video },
+        ],
+      },
+      {
+        name: "Debriefs",
+        href: "/debriefs",
+        icon: MessageSquare,
+        children: [
+          { name: "New Debrief", href: "/debriefs/new", icon: NotebookPen },
+        ],
+      },
+    ],
+  },
+  // Sales is the proposal-to-payment lifecycle hub. Payments and the
+  // Ignition admin queue moved here from the now-retired "Client Services"
+  // section because they're the natural follow-on to a signed proposal.
+  {
+    name: "Sales",
+    href: "/sales",
+    icon: BarChart3,
+    children: [
+      { name: "Sales Dashboard", href: "/sales/dashboard", icon: TrendingUp },
+      { name: "Proposals", href: "/sales/proposals", icon: FileText },
+      { name: "Invoices", href: "/sales/invoices", icon: Receipt },
+      { name: "Services", href: "/sales/services", icon: Briefcase },
+      {
+        name: "Recurring Revenue",
+        href: "/sales/recurring-revenue",
+        icon: Repeat,
+      },
+      { name: "Payments", href: "/payments", icon: CreditCard },
+      // Ignition admin lives at /admin/ignition (mirrors /admin/karbon-sync);
+      // surfacing it under Sales keeps the mapping queue + Zap setup near
+      // the Proposals/Invoices it produces.
+      { name: "Ignition", href: "/admin/ignition", icon: Workflow },
+    ],
+  },
+  // "Talent" replaces the former "Teammates" page — same directory, more
+  // accurate label now that Tommy Awards lives underneath it.
+  {
+    name: "Talent",
+    href: "/teammates",
+    icon: UserCircle,
+    children: [
+      { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
+    ],
+  },
+  // "Departments" replaces the former "Service Pipelines" name. Onboarding
+  // moved under Accounting because it's the kickoff step for every new
+  // bookkeeping engagement.
+  {
+    name: "Departments",
     href: "/pipelines",
     icon: ClipboardList,
-    alfredSuggestions: 15,
     children: [
       {
         name: "Accounting",
         href: "/accounting",
         icon: Calculator,
         children: [{ name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign }],
+        children: [
+          { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
+          { name: "Onboarding", href: "/onboarding", icon: UserPlus },
+        ],
       },
       {
         name: "Tax",
         href: "/tax",
         icon: FileText,
         children: [{ name: "Busy Season", href: "/tax/busy-season", icon: FileText }],
+        children: [
+          { name: "Busy Season", href: "/tax/busy-season", icon: FileText },
+          { name: "Tax Planning", href: "/tax/planning", icon: Lightbulb },
+          { name: "Estimates", href: "/tax/estimates", icon: FileSpreadsheet },
+          { name: "IRS Notices", href: "/tax/irs-notices", icon: AlertTriangle },
+          { name: "Advisory", href: "/tax/advisory", icon: TrendingUp },
+        ],
       },
       { name: "Special Teams", href: "/special-teams", icon: Flame },
     ],
@@ -83,15 +180,31 @@ const navigation = [
   },
   { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
   { name: "Karbon Data", href: "/karbon-data", icon: Database },
+  // Settings absorbed Karbon Data and the Admin sub-tree — non-admins
+  // shouldn't have those at top level.
   {
     name: "Settings",
     href: "/settings",
     icon: Settings,
     children: [
+      { name: "Profile", href: "/settings/profile", icon: UserCircle },
+      { name: "Notifications", href: "/settings/notifications", icon: Bell },
       { name: "Users", href: "/settings/users", icon: ShieldCheck },
       { name: "Work Statuses", href: "/settings/work-statuses", icon: ListChecks },
       { name: "Migration", href: "/settings/migration", icon: ArrowRightLeft },
       { name: "Webhooks", href: "/settings/webhooks", icon: ArrowRightLeft },
+      { name: "Karbon Data", href: "/karbon-data", icon: Database },
+      {
+        name: "Admin",
+        href: "/admin/karbon-sync",
+        icon: ShieldCheck,
+        children: [
+          { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
+          { name: "Broadcast", href: "/admin/broadcast", icon: Radio },
+          { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
+          { name: "Work Statuses", href: "/admin/work-statuses", icon: ListChecks },
+        ],
+      },
     ],
   },
 ]
@@ -115,6 +228,17 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
       {/* Main content */}
       <div className="pt-16 md:pl-64">
+      <div className="md:pl-64">
+        {/* Sticky topbar — gives every page a global Cmd+K work-item search.
+            Lives outside <main> so its sticky behavior survives any page that
+            applies its own positioning context. */}
+        <div className="sticky top-0 z-30 border-b border-stone-200/70 bg-[#EAE6E1]/85 backdrop-blur supports-[backdrop-filter]:bg-[#EAE6E1]/60">
+          <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 pl-14 sm:px-6 lg:px-8 md:pl-6">
+            <div className="flex-1 max-w-xl">
+              <WorkItemSearchTrigger />
+            </div>
+          </div>
+        </div>
         <main className="py-6">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">{children}</div>
         </main>
@@ -159,6 +283,83 @@ function HubHeader({
             </div>
           </a>
         </div>
+// Does pathname match this node, or any descendant of it? Used both for
+// auto-expansion and for parent-active highlighting. Recurses through the
+// whole subtree so a deep grandchild match (e.g. /calendly while we're
+// inside Home → Calendar → Calendly Admin) still bubbles up to mark every
+// ancestor as active and expanded.
+function branchContainsActive(node: any, pathname: string): boolean {
+  if (
+    node.href &&
+    node.href !== "/" &&
+    (pathname === node.href || pathname.startsWith(node.href + "/"))
+  ) {
+    return true
+  }
+  if (node.children?.length) {
+    return node.children.some((child: any) => branchContainsActive(child, pathname))
+  }
+  // Special-case the root: only mark Home as active when we're literally
+  // on "/", not on every page (every pathname starts with "/").
+  return node.href === "/" && pathname === "/"
+}
+
+// Walk the navigation tree and pre-expand every ancestor of the active
+// route. Everything else stays collapsed so the sidebar is calm by default.
+function buildInitialExpandedState(
+  items: typeof navigation,
+  pathname: string,
+): Record<string, boolean> {
+  const expanded: Record<string, boolean> = {}
+  const walk = (nodes: any[]) => {
+    for (const node of nodes) {
+      if (node.children?.length) {
+        const hasActive = node.children.some((child: any) =>
+          branchContainsActive(child, pathname),
+        )
+        if (hasActive) expanded[node.name] = true
+        walk(node.children)
+      }
+    }
+  }
+  walk(items as any[])
+  return expanded
+}
+
+function Sidebar() {
+  const pathname = usePathname()
+  const router = useRouter()
+  // Sections collapsed by default; the section containing the active route
+  // is auto-expanded so users always see where they are.
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() =>
+    buildInitialExpandedState(navigation, pathname),
+  )
+
+  // When the user navigates, make sure every ancestor of the active route
+  // is expanded — including deep grandparents like Home when we're on a
+  // grandchild route such as /calendly. We never collapse a section the
+  // user explicitly opened — that would feel jumpy.
+  useEffect(() => {
+    setExpandedSections((prev) => {
+      const next = { ...prev }
+      let changed = false
+      const walk = (nodes: any[]) => {
+        for (const node of nodes) {
+          if (!node.children?.length) continue
+          const hasActive = node.children.some((child: any) =>
+            branchContainsActive(child, pathname),
+          )
+          if (hasActive && !next[node.name]) {
+            next[node.name] = true
+            changed = true
+          }
+          walk(node.children)
+        }
+      }
+      walk(navigation as any[])
+      return changed ? next : prev
+    })
+  }, [pathname])
 
         {/* User profile dropdown on right */}
         <HeaderUserMenu />
@@ -235,9 +436,12 @@ function Sidebar() {
     }))
   }
 
-  const hasActiveChild = (children?: (typeof navigation)[0]["children"]) => {
-    if (!children) return false
-    return children.some((child) => pathname === child.href || pathname.startsWith(child.href + "/"))
+  // Recurses through the entire subtree so a parent like Home stays
+  // highlighted even when the active route is a grandchild (e.g.
+  // /calendly under Home → Calendar → Calendly Admin).
+  const hasActiveChild = (children?: any[]) => {
+    if (!children?.length) return false
+    return children.some((child: any) => branchContainsActive(child, pathname))
   }
 
   return (
@@ -290,14 +494,6 @@ function Sidebar() {
                           aria-hidden="true"
                         />
                         <span className="flex-1">{item.name}</span>
-                        {item.alfredSuggestions && (
-                          <Badge
-                            variant="secondary"
-                            className="ml-auto text-xs px-1.5 py-0.5 bg-orange-100 text-orange-700 hover:bg-orange-200"
-                          >
-                            {item.alfredSuggestions}
-                          </Badge>
-                        )}
                       </a>
                       {hasChildren && (
                         <button
@@ -363,14 +559,6 @@ function Sidebar() {
                                     aria-hidden="true"
                                   />
                                   <span className="flex-1">{child.name}</span>
-                                  {child.alfredSuggestions && (
-                                    <Badge
-                                      variant="secondary"
-                                      className="ml-auto text-xs px-1.5 py-0.5 bg-orange-100 text-orange-700 hover:bg-orange-200"
-                                    >
-                                      {child.alfredSuggestions}
-                                    </Badge>
-                                  )}
                                 </a>
                                 {hasGrandchildren && (
                                   <button

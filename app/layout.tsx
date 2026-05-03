@@ -5,6 +5,7 @@ import "./globals.css"
 import { AlfredChatTrigger } from "@/components/alfred-chat-trigger"
 import { UserProvider } from "@/contexts/user-context"
 import { KarbonWorkItemsProvider } from "@/contexts/karbon-work-items-context"
+import { Toaster } from "sonner"
 
 const inter = Inter({
   subsets: ["latin"],
@@ -36,6 +37,7 @@ export default function RootLayout({
           <KarbonWorkItemsProvider>
             {children}
             <AlfredChatTrigger />
+            <Toaster richColors position="top-right" />
           </KarbonWorkItemsProvider>
         </UserProvider>
       </body>

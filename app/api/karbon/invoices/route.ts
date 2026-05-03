@@ -1,16 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getKarbonCredentials, karbonFetchAll, karbonFetch } from "@/lib/karbon-api"
-import { createClient } from "@supabase/supabase-js"
+import { tryCreateAdminClient } from "@/lib/supabase/server"
 
 function getSupabaseClient() {
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-  if (!supabaseUrl || !supabaseKey) {
-    return null
-  }
-
-  return createClient(supabaseUrl, supabaseKey)
+  return tryCreateAdminClient()
 }
 
 /**
@@ -79,7 +72,8 @@ export async function GET(request: NextRequest) {
       if (clientKey) query = query.eq("client_key", clientKey)
       if (workItemKey) query = query.eq("karbon_work_item_key", workItemKey)
       if (status) query = query.eq("status", status)
-      if (top) query = query.limit(Number.parseInt(top, 10))
+      // Always apply a limit to prevent unbounded queries
+      query = query.limit(top ? Number.parseInt(top, 10) : 500)
 
       const { data, error } = await query
 

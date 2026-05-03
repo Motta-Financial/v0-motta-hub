@@ -1,35 +1,63 @@
-import { NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import { fetchMe } from "@/lib/calendly-api"
 
-export async function GET() {
-  const accessToken = process.env.CALENDLY_ACCESS_TOKEN
-
-  if (!accessToken) {
-    console.error("[v0] Calendly access token not found")
-    return NextResponse.json({ error: "Calendly access token not configured" }, { status: 401 })
-  }
-
+/**
+ * Returns the Calendly user profile for either:
+ *  - the currently-authenticated team member (default), or
+ *  - a specific team member referenced by `?teamMemberId=...`
+ *
+ * Always uses the per-team-member OAuth token from `calendly_connections`
+ * — there is no fallback to a static `CALENDLY_ACCESS_TOKEN` so each
+ * user only sees their own data.
+ */
+export async function GET(request: NextRequest) {
   try {
-    console.log("[v0] Fetching Calendly user information...")
+    const supabase = await createClient()
+    const explicit = request.nextUrl.searchParams.get("teamMemberId")
 
-    const response = await fetch("https://api.calendly.com/users/me", {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error("[v0] Calendly API error:", response.status, errorText)
-      throw new Error(`Calendly API error: ${response.status}`)
+    let teamMemberId = explicit
+    if (!teamMemberId) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+      const { data: tm } = await supabase
+        .from("team_members")
+        .select("id")
+        .eq("auth_user_id", user.id)
+        .single()
+      teamMemberId = tm?.id ?? null
     }
 
-    const data = await response.json()
-    console.log("[v0] Successfully fetched Calendly user")
+    if (!teamMemberId) {
+      return NextResponse.json({ error: "Team member not found" }, { status: 404 })
+    }
 
-    return NextResponse.json(data.resource)
-  } catch (error) {
-    console.error("[v0] Error fetching Calendly user:", error)
-    return NextResponse.json({ error: "Failed to fetch Calendly user" }, { status: 500 })
+    const { data: connection } = await supabase
+      .from("calendly_connections")
+      .select("*")
+      .eq("team_member_id", teamMemberId)
+      .eq("is_active", true)
+      .maybeSingle()
+
+    if (!connection) {
+      return NextResponse.json(
+        { error: "Calendly not connected", needsConnect: true },
+        { status: 404 },
+      )
+    }
+
+    const me = await fetchMe(connection as any, supabase)
+    if (!me) {
+      return NextResponse.json(
+        { error: "Token invalid; reauthorization required", needsReauth: true },
+        { status: 401 },
+      )
+    }
+    return NextResponse.json(me)
+  } catch (err) {
+    console.error("[calendly] /user error:", err)
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

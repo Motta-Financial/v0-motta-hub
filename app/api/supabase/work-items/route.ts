@@ -9,9 +9,19 @@ export async function GET(request: Request) {
     // Get filter parameters
     const serviceLine = searchParams.get("serviceLine")
     const titleFilter = searchParams.get("titleFilter")
+    // work_type filtering — much more accurate than title-matching because Karbon
+    // populates work_type consistently (e.g. "ACCT | Bookkeeping") even when titles
+    // vary across years/clients (e.g. "BKPG | Bookkeeping | Acme | Jan 2025").
+    const workType = searchParams.get("workType") // exact match, e.g. "ACCT | Bookkeeping"
+    const workTypePrefix = searchParams.get("workTypePrefix") // starts-with, e.g. "ACCT | "
     const status = searchParams.get("status")
     const periodMonth = searchParams.get("periodMonth") // Format: "2024-01" for January 2024
     const periodYear = searchParams.get("periodYear")
+
+    // Per-route override (?includeDeleted=true) is supported for audit views;
+    // every other call gets a clean "live in Karbon" feed by default.
+    const includeDeleted = searchParams.get("includeDeleted") === "true"
+    const search = searchParams.get("search") || searchParams.get("q")
 
     let query = supabase
       .from("work_items")
@@ -42,11 +52,40 @@ export async function GET(request: Request) {
         karbon_url,
         karbon_created_at,
         karbon_modified_at,
+        deleted_in_karbon_at,
         contact_id,
         organization_id,
         client_group_id
       `)
       .order("karbon_modified_at", { ascending: false })
+
+    if (!includeDeleted) {
+      query = query.is("deleted_in_karbon_at", null)
+    }
+
+    if (search && search.trim().length >= 3) {
+      // Hit the GIN-indexed search_vector for fast multi-column text search.
+      query = query.textSearch("search_vector", search.trim(), {
+        type: "websearch",
+        config: "simple",
+      })
+    } else if (search && search.trim()) {
+      const t = search.trim()
+      query = query.or(`title.ilike.%${t}%,karbon_work_item_key.ilike.%${t}%`)
+    }
+
+    if (workType) {
+      // Exact match (case-insensitive) on work_type — preferred for the
+      // Accounting / Tax / Payroll dashboards because it's the canonical
+      // categorization Karbon ships with each work item.
+      query = query.ilike("work_type", workType)
+    } else if (workTypePrefix) {
+      // Starts-with match for grouping multiple work types under one umbrella
+      // (e.g. all "ACCT | *" rows for the Accounting overview).
+      // Escape `%` and `_` so user-supplied prefixes can't break the LIKE pattern.
+      const escaped = workTypePrefix.replace(/([%_\\])/g, "\\$1")
+      query = query.ilike("work_type", `${escaped}%`)
+    }
 
     if (titleFilter) {
       query = query.ilike("title", `%${titleFilter}%`)

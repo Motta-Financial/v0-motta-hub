@@ -1,169 +1,224 @@
-import { NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+/**
+ * Karbon webhook subscription manager.
+ *
+ * Per the Karbon API v3 spec (corrected from prior implementation):
+ *   - POST /v3/WebhookSubscriptions      body: { TargetUrl, WebhookType, SigningKey? }
+ *   - GET  /v3/WebhookSubscriptions/{WebhookType}
+ *   - DELETE /v3/WebhookSubscriptions             — deletes ALL subscriptions
+ *   - DELETE /v3/WebhookSubscriptions('{TargetUrl}')  — delete by target URL
+ *
+ * The 8 valid WebhookTypes are:
+ *   Contact, Work, Note, User, IntegrationTask, Invoice, EstimateSummary, CustomField
+ *
+ * Important: `Contact` covers Contacts, Organizations, AND ClientGroups —
+ * subscribing once gives you all three.
+ */
+import { type NextRequest, NextResponse } from "next/server"
+import { tryCreateAdminClient } from "@/lib/supabase/server"
+import { getKarbonCredentials } from "@/lib/karbon-api"
+import {
+  resolveWebhookTargetUrl,
+  KARBON_WEBHOOK_TYPES,
+  type KarbonWebhookType,
+} from "@/lib/karbon/webhook-url"
 
-const KARBON_API_BASE = "https://api.karbonhq.com/v3"
+export const runtime = "nodejs"
+export const dynamic = "force-dynamic"
 
-// Webhook subscription endpoints by type
-const WEBHOOK_ENDPOINTS: Record<string, string> = {
-  Contact: "/WebhookSubscriptions",
-  Organization: "/WebhookSubscriptions",
-  Invoice: "/WebhookSubscriptions",
-  WorkItem: "/WebhookSubscriptions/Work",
-  ContentItem: "/WebhookSubscriptions/ContentItem",
-}
+const KARBON_BASE = "https://api.karbonhq.com/v3"
 
-async function getKarbonHeaders() {
+function karbonHeaders() {
+  const creds = getKarbonCredentials()
+  if (!creds) throw new Error("Karbon API credentials not configured")
   return {
-    Authorization: `Bearer ${process.env.KARBON_BEARER_TOKEN}`,
-    AccessKey: process.env.KARBON_ACCESS_KEY || "",
+    Authorization: `Bearer ${creds.bearerToken}`,
+    AccessKey: creds.accessKey,
     "Content-Type": "application/json",
   }
 }
 
-// GET - List all webhook subscriptions
+// ---------------------------------------------------------------------------
+// GET — list subscriptions across all types, joined with our local registry
+// ---------------------------------------------------------------------------
 export async function GET() {
+  let headers: HeadersInit
   try {
-    const headers = await getKarbonHeaders()
-    const subscriptions: any[] = []
+    headers = karbonHeaders()
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 401 })
+  }
 
-    // Fetch subscriptions from each endpoint
-    for (const [type, endpoint] of Object.entries(WEBHOOK_ENDPOINTS)) {
-      try {
-        const response = await fetch(`${KARBON_API_BASE}${endpoint}`, {
-          headers,
-        })
-
-        if (response.ok) {
-          const data = await response.json()
-          const items = data.value || data || []
-          items.forEach((sub: any) => {
-            subscriptions.push({ ...sub, subscriptionType: type })
-          })
-        }
-      } catch (error) {
-        console.error(`[Karbon Webhooks] Failed to fetch ${type} subscriptions:`, error)
+  const remote: any[] = []
+  for (const type of KARBON_WEBHOOK_TYPES) {
+    try {
+      const res = await fetch(`${KARBON_BASE}/WebhookSubscriptions/${type}`, { headers })
+      if (res.ok) {
+        const json = await res.json()
+        const items = Array.isArray(json.value) ? json.value : Array.isArray(json) ? json : []
+        for (const it of items) remote.push({ ...it, _webhookType: type })
       }
+    } catch (e) {
+      console.warn(`[karbon-subs] Failed to list ${type}:`, (e as Error).message)
     }
-
-    return NextResponse.json({ subscriptions })
-  } catch (error) {
-    console.error("[Karbon Webhooks] Error fetching subscriptions:", error)
-    return NextResponse.json({ error: "Failed to fetch subscriptions" }, { status: 500 })
   }
+
+  const db = tryCreateAdminClient()
+  const local = db
+    ? (await db.from("karbon_webhook_subscriptions").select("*").order("webhook_type")).data || []
+    : []
+
+  return NextResponse.json({ remote, local })
 }
 
-// POST - Create a new webhook subscription
-export async function POST(request: Request) {
+// ---------------------------------------------------------------------------
+// POST — create subscriptions for the requested types (defaults to all 8)
+// ---------------------------------------------------------------------------
+interface SubscribeBody {
+  webhookTypes?: KarbonWebhookType[]
+  targetUrl?: string
+  signingKey?: string
+}
+
+export async function POST(request: NextRequest) {
+  let headers: HeadersInit
   try {
-    const body = await request.json()
-    const { webhookType, targetUrl, signingKey } = body
+    headers = karbonHeaders()
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 401 })
+  }
 
-    // Validate required fields
-    if (!webhookType || !targetUrl) {
-      return NextResponse.json({ error: "webhookType and targetUrl are required" }, { status: 400 })
-    }
+  const body = (await request.json().catch(() => ({}))) as SubscribeBody
+  const types =
+    body.webhookTypes && body.webhookTypes.length > 0
+      ? body.webhookTypes.filter((t) => KARBON_WEBHOOK_TYPES.includes(t))
+      : [...KARBON_WEBHOOK_TYPES]
 
-    // Ensure HTTPS
-    if (!targetUrl.startsWith("https://")) {
-      return NextResponse.json({ error: "targetUrl must use https://" }, { status: 400 })
-    }
+  let targetUrl: string
+  try {
+    targetUrl = body.targetUrl || resolveWebhookTargetUrl()
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 400 })
+  }
 
-    const endpoint = WEBHOOK_ENDPOINTS[webhookType]
-    if (!endpoint) {
-      return NextResponse.json(
-        { error: `Invalid webhookType: ${webhookType}. Valid types: ${Object.keys(WEBHOOK_ENDPOINTS).join(", ")}` },
-        { status: 400 },
-      )
-    }
+  if (!targetUrl.startsWith("https://")) {
+    return NextResponse.json({ error: "targetUrl must use https://" }, { status: 400 })
+  }
 
-    const headers = await getKarbonHeaders()
+  const signingKey = body.signingKey || process.env.KARBON_WEBHOOK_SIGNING_KEY || null
+  const db = tryCreateAdminClient()
+  if (!db) return NextResponse.json({ error: "Supabase not configured" }, { status: 500 })
 
-    // Build subscription payload
-    const subscriptionPayload: any = {
+  const results: Array<{ webhookType: string; ok: boolean; error?: string; karbonId?: string }> = []
+
+  for (const type of types) {
+    const subPayload: Record<string, string> = {
       TargetUrl: targetUrl,
+      WebhookType: type,
     }
+    if (signingKey) subPayload.SigningKey = signingKey
 
-    // Add WebhookType for Invoice subscriptions
-    if (webhookType === "Invoice") {
-      subscriptionPayload.WebhookType = "Invoice"
+    try {
+      const res = await fetch(`${KARBON_BASE}/WebhookSubscriptions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(subPayload),
+      })
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "")
+        results.push({ webhookType: type, ok: false, error: `${res.status}: ${txt}` })
+
+        // Persist as failed
+        await db
+          .from("karbon_webhook_subscriptions")
+          .upsert(
+            {
+              webhook_type: type,
+              target_url: targetUrl,
+              signing_key_configured: !!signingKey,
+              status: "failed",
+              last_failure_at: new Date().toISOString(),
+              last_failure_reason: `${res.status}: ${txt}`.slice(0, 500),
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "karbon_subscription_id", ignoreDuplicates: false },
+          )
+        continue
+      }
+
+      const json = await res.json().catch(() => ({}))
+      const karbonId =
+        json.WebhookSubscriptionPermaKey ||
+        json.PermaKey ||
+        json.SubscriptionId ||
+        `${type}::${targetUrl}`
+
+      results.push({ webhookType: type, ok: true, karbonId })
+
+      // Persist locally — use karbon_subscription_id as the conflict target
+      await db.from("karbon_webhook_subscriptions").upsert(
+        {
+          webhook_type: type,
+          karbon_subscription_id: karbonId,
+          target_url: targetUrl,
+          signing_key_configured: !!signingKey,
+          status: "active",
+          failure_count: 0,
+          last_failure_at: null,
+          last_failure_reason: null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "karbon_subscription_id", ignoreDuplicates: false },
+      )
+    } catch (e: any) {
+      results.push({ webhookType: type, ok: false, error: e?.message || String(e) })
     }
-
-    // Add signing key if provided
-    if (signingKey) {
-      subscriptionPayload.SigningKey = signingKey
-    }
-
-    console.log(`[Karbon Webhooks] Creating ${webhookType} subscription to ${targetUrl}`)
-
-    const response = await fetch(`${KARBON_API_BASE}${endpoint}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(subscriptionPayload),
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error(`[Karbon Webhooks] Failed to create subscription:`, errorText)
-      return NextResponse.json({ error: `Failed to create subscription: ${errorText}` }, { status: response.status })
-    }
-
-    const subscription = await response.json()
-
-    // Store subscription in Supabase for tracking
-    const supabase = await createClient()
-    await supabase.from("karbon_webhook_subscriptions").insert({
-      karbon_subscription_id: subscription.WebhookSubscriptionPermaKey || subscription.PermaKey,
-      webhook_type: webhookType,
-      target_url: targetUrl,
-      signing_key_configured: !!signingKey,
-      created_at: new Date().toISOString(),
-    })
-
-    return NextResponse.json({
-      success: true,
-      subscription,
-      message: `${webhookType} webhook subscription created successfully`,
-    })
-  } catch (error) {
-    console.error("[Karbon Webhooks] Error creating subscription:", error)
-    return NextResponse.json({ error: "Failed to create subscription" }, { status: 500 })
   }
+
+  return NextResponse.json({ targetUrl, results })
 }
 
-// DELETE - Remove a webhook subscription
-export async function DELETE(request: Request) {
+// ---------------------------------------------------------------------------
+// DELETE — remove a subscription (by webhookType + targetUrl, or all)
+// ---------------------------------------------------------------------------
+export async function DELETE(request: NextRequest) {
+  let headers: HeadersInit
   try {
-    const { searchParams } = new URL(request.url)
-    const subscriptionId = searchParams.get("subscriptionId")
-    const webhookType = searchParams.get("webhookType") || "Contact"
-
-    if (!subscriptionId) {
-      return NextResponse.json({ error: "subscriptionId is required" }, { status: 400 })
-    }
-
-    const endpoint = WEBHOOK_ENDPOINTS[webhookType] || "/WebhookSubscriptions"
-    const headers = await getKarbonHeaders()
-
-    const response = await fetch(`${KARBON_API_BASE}${endpoint}/${subscriptionId}`, {
-      method: "DELETE",
-      headers,
-    })
-
-    if (!response.ok && response.status !== 204) {
-      const errorText = await response.text()
-      return NextResponse.json({ error: `Failed to delete subscription: ${errorText}` }, { status: response.status })
-    }
-
-    // Remove from Supabase tracking
-    const supabase = await createClient()
-    await supabase.from("karbon_webhook_subscriptions").delete().eq("karbon_subscription_id", subscriptionId)
-
-    return NextResponse.json({
-      success: true,
-      message: "Webhook subscription deleted successfully",
-    })
-  } catch (error) {
-    console.error("[Karbon Webhooks] Error deleting subscription:", error)
-    return NextResponse.json({ error: "Failed to delete subscription" }, { status: 500 })
+    headers = karbonHeaders()
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 401 })
   }
+
+  const url = new URL(request.url)
+  const webhookType = url.searchParams.get("webhookType") as KarbonWebhookType | null
+  const targetUrl = url.searchParams.get("targetUrl")
+  const all = url.searchParams.get("all") === "true"
+  const db = tryCreateAdminClient()
+
+  // DELETE all
+  if (all) {
+    const res = await fetch(`${KARBON_BASE}/WebhookSubscriptions`, { method: "DELETE", headers })
+    if (db) await db.from("karbon_webhook_subscriptions").delete().neq("id", "00000000-0000-0000-0000-000000000000")
+    return NextResponse.json({ ok: res.ok, status: res.status })
+  }
+
+  if (!targetUrl) {
+    return NextResponse.json({ error: "targetUrl query param is required" }, { status: 400 })
+  }
+
+  // DELETE by target URL: per spec the URL form is /WebhookSubscriptions('{url}')
+  const encoded = encodeURIComponent(targetUrl)
+  const res = await fetch(`${KARBON_BASE}/WebhookSubscriptions('${encoded}')`, {
+    method: "DELETE",
+    headers,
+  })
+  const ok = res.ok || res.status === 204
+
+  if (db) {
+    let q = db.from("karbon_webhook_subscriptions").delete().eq("target_url", targetUrl)
+    if (webhookType) q = q.eq("webhook_type", webhookType)
+    await q
+  }
+
+  return NextResponse.json({ ok, status: res.status })
 }

@@ -1,55 +1,67 @@
-import { NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import { calendlyListAll } from "@/lib/calendly-api"
 
-export async function GET(request: Request) {
-  const accessToken = process.env.CALENDLY_ACCESS_TOKEN
-
-  if (!accessToken) {
-    console.error("[v0] Calendly access token not found")
-    return NextResponse.json({ error: "Calendly access token not configured" }, { status: 401 })
-  }
-
-  const { searchParams } = new URL(request.url)
-  const userUri = searchParams.get("user")
-  const status = searchParams.get("status") || "active"
-  const minStartTime = searchParams.get("min_start_time")
-  const maxStartTime = searchParams.get("max_start_time")
-
-  if (!userUri) {
-    return NextResponse.json({ error: "User URI is required" }, { status: 400 })
-  }
-
+/**
+ * Lists scheduled events for a team member's Calendly connection.
+ * Time window defaults to "from now → +90 days"; callers can override
+ * via `min_start_time` / `max_start_time`.
+ */
+export async function GET(request: NextRequest) {
   try {
-    console.log("[v0] Fetching Calendly scheduled events...")
+    const supabase = await createClient()
+    const sp = request.nextUrl.searchParams
 
-    // Build query parameters
-    const params = new URLSearchParams({
-      user: userUri,
-      status,
-      sort: "start_time:asc",
-    })
+    let teamMemberId = sp.get("teamMemberId")
+    if (!teamMemberId) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+      const { data: tm } = await supabase
+        .from("team_members")
+        .select("id")
+        .eq("auth_user_id", user.id)
+        .single()
+      teamMemberId = tm?.id ?? null
+    }
+    if (!teamMemberId) {
+      return NextResponse.json({ error: "Team member not found" }, { status: 404 })
+    }
 
-    if (minStartTime) params.append("min_start_time", minStartTime)
-    if (maxStartTime) params.append("max_start_time", maxStartTime)
+    const { data: connection } = await supabase
+      .from("calendly_connections")
+      .select("*")
+      .eq("team_member_id", teamMemberId)
+      .eq("is_active", true)
+      .maybeSingle()
+    if (!connection) {
+      return NextResponse.json(
+        { error: "Calendly not connected", needsConnect: true },
+        { status: 404 },
+      )
+    }
 
-    const response = await fetch(`https://api.calendly.com/scheduled_events?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+    const status = sp.get("status") || "active"
+    const minStartTime = sp.get("min_start_time") || new Date().toISOString()
+    const maxStartTime =
+      sp.get("max_start_time") ||
+      new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString()
+
+    const events = await calendlyListAll<any>(connection as any, supabase, "/scheduled_events", {
+      query: {
+        user: connection.calendly_user_uri,
+        status,
+        min_start_time: minStartTime,
+        max_start_time: maxStartTime,
+        sort: "start_time:asc",
+        count: 100,
       },
     })
 
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error("[v0] Calendly API error:", response.status, errorText)
-      throw new Error(`Calendly API error: ${response.status}`)
-    }
-
-    const data = await response.json()
-    console.log("[v0] Successfully fetched", data.collection?.length || 0, "scheduled events")
-
-    return NextResponse.json(data.collection || [])
-  } catch (error) {
-    console.error("[v0] Error fetching Calendly scheduled events:", error)
-    return NextResponse.json({ error: "Failed to fetch Calendly scheduled events" }, { status: 500 })
+    return NextResponse.json(events)
+  } catch (err) {
+    console.error("[calendly] /scheduled-events error:", err)
+    return NextResponse.json({ error: "Failed to fetch scheduled events" }, { status: 500 })
   }
 }

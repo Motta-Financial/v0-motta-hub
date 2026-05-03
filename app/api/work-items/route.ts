@@ -14,24 +14,35 @@ export async function GET(request: Request) {
     const limit = Math.min(Number.parseInt(searchParams.get("limit") || "100"), 5000)
     const offset = Number.parseInt(searchParams.get("offset") || "0")
 
-    // For large requests (dashboards), use a leaner select to avoid
-    // Supabase's 1000-row default and reduce payload size
+    // For large requests (dashboards), use a leaner select from the base table
+    // to avoid Supabase's 1000-row default and reduce payload size.
+    // For normal requests, use work_items_enriched view which pre-joins
+    // contacts, organizations, client_groups, and team_members.
     const isLargeRequest = limit > 1000
 
+    // `includeDeleted=true` lets ops audit the 115+ rows Karbon has dropped.
+    // Default behavior excludes them so every dashboard, search, and widget
+    // gets a clean "live in Karbon" view automatically.
+    const includeDeleted = searchParams.get("includeDeleted") === "true"
+
     let query = supabase
-      .from("work_items")
+      .from(isLargeRequest ? "work_items" : "work_items_enriched")
       .select(
         isLargeRequest
           ? `id, karbon_work_item_key, title, client_name, karbon_client_key,
              client_group_name, status, primary_status, secondary_status,
              workflow_status, work_type, due_date, start_date, completed_date,
-             assignee_name, priority, karbon_modified_at, karbon_url, description`
-          : `*, contacts:contact_id (id, full_name, primary_email, karbon_url),
-             organizations:organization_id (id, name, primary_email, karbon_url)`,
+             assignee_name, priority, karbon_modified_at, karbon_url, description,
+             deleted_in_karbon_at`
+          : "*",
         { count: "exact" },
       )
       .order("due_date", { ascending: true, nullsFirst: false })
       .range(offset, offset + limit - 1)
+
+    if (!includeDeleted) {
+      query = query.is("deleted_in_karbon_at", null)
+    }
 
     if (status) {
       query = query.eq("workflow_status", status)
@@ -46,9 +57,26 @@ export async function GET(request: Request) {
       query = query.eq("work_type", workType)
     }
     if (search) {
-      query = query.or(
-        `title.ilike.%${search}%,client_name.ilike.%${search}%,work_type.ilike.%${search}%,karbon_work_item_key.ilike.%${search}%`
-      )
+      // Prefer the GIN-indexed `search_vector` (text search across title,
+      // client_name, client_group_name, assignee_name, work_type,
+      // karbon_work_item_key, user_defined_identifier) — orders of magnitude
+      // faster than the chained ILIKE OR pattern this used to run.
+      // We fall back to ILIKE on title/key for short tokens (<3 chars) where
+      // tsquery isn't useful and for users typing partial work-item keys.
+      const trimmed = search.trim()
+      if (trimmed.length >= 3 && /[a-zA-Z]/.test(trimmed)) {
+        // websearch_to_tsquery handles user-style queries: spaces = AND,
+        // quotes for phrases, "-foo" to exclude. Postgrest exposes it as
+        // `wfts` (websearch FTS).
+        query = query.textSearch("search_vector", trimmed, {
+          type: "websearch",
+          config: "simple",
+        })
+      } else {
+        query = query.or(
+          `title.ilike.%${trimmed}%,client_name.ilike.%${trimmed}%,karbon_work_item_key.ilike.%${trimmed}%`,
+        )
+      }
     }
     if (active === "true") {
       query = query
@@ -61,12 +89,11 @@ export async function GET(request: Request) {
 
     if (error) throw error
 
-    // Transform to include client info (only for non-large requests with joins)
+    // Transform to include client info using enriched view flat fields
     const formattedItems = (workItems || []).map((item: any) => ({
       ...item,
-      client_name: item.client_name || item.contacts?.full_name || item.organizations?.name || item.client_type,
-      client_email: item.contacts?.primary_email || item.organizations?.primary_email,
-      client_karbon_url: item.contacts?.karbon_url || item.organizations?.karbon_url,
+      client_name: item.client_name || item.contact_full_name || item.org_name || item.client_type,
+      client_email: item.contact_email || item.org_email,
     }))
 
     return NextResponse.json({

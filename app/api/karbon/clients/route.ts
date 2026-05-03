@@ -1,16 +1,15 @@
 import { NextResponse } from "next/server"
 import { categorizeServiceLine } from "@/lib/service-lines"
+import { logger } from "@/lib/logger"
+
+const CONTEXT = "karbon/clients"
 
 export async function GET() {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
-  console.log("[v0] Starting clients fetch...")
-  console.log("[v0] Access Key exists:", !!accessKey)
-  console.log("[v0] Bearer Token exists:", !!bearerToken)
-
   if (!accessKey || !bearerToken) {
-    console.error("[v0] Missing Karbon API credentials")
+    logger.error(CONTEXT, "Missing Karbon API credentials")
     return NextResponse.json({ error: "Karbon API credentials not configured" }, { status: 401 })
   }
 
@@ -21,11 +20,10 @@ export async function GET() {
     let pageCount = 0
     const MAX_PAGES = 50 // Limit to prevent infinite loops and timeouts
 
-    console.log("[v0] Starting to fetch work items...")
+    logger.info(CONTEXT, "Starting work items fetch")
 
     while (nextLink && pageCount < MAX_PAGES) {
       pageCount++
-      console.log(`[v0] Fetching page ${pageCount}...`)
 
       try {
         const response = await fetch(nextLink, {
@@ -37,13 +35,11 @@ export async function GET() {
           signal: AbortSignal.timeout(60000), // 60 second timeout per request
         })
 
-        console.log(`[v0] Page ${pageCount} response status:`, response.status)
-
         if (!response.ok) {
           const errorText = await response.text()
-          console.error(`[v0] Karbon API error on page ${pageCount}:`, response.status, errorText)
+          logger.error(CONTEXT, "Karbon API error", { page: pageCount, status: response.status, error: errorText })
           if (allWorkItems.length > 0) {
-            console.log(`[v0] Continuing with ${allWorkItems.length} items fetched so far`)
+            logger.warn(CONTEXT, "Continuing with partial data", { itemsFetched: allWorkItems.length })
             break
           }
           throw new Error(`Karbon API error: ${response.status} - ${errorText}`)
@@ -53,10 +49,8 @@ export async function GET() {
           response.json(),
           new Promise((_, reject) => setTimeout(() => reject(new Error("JSON parsing timeout")), 30000)),
         ]).catch((jsonError) => {
-          console.error(`[v0] Error parsing JSON on page ${pageCount}:`, jsonError.message)
-          // If JSON parsing fails but we have data, continue with what we have
+          logger.error(CONTEXT, "JSON parsing failed", { page: pageCount, error: jsonError.message })
           if (allWorkItems.length > 0) {
-            console.log(`[v0] JSON parsing failed, continuing with ${allWorkItems.length} items`)
             return null
           }
           throw jsonError
@@ -67,45 +61,23 @@ export async function GET() {
         }
 
         const itemsInPage = data.value?.length || 0
-        console.log(`[v0] Page ${pageCount} returned ${itemsInPage} items`)
-
         allWorkItems = allWorkItems.concat(data.value || [])
         nextLink = data["@odata.nextLink"]
 
-        if (nextLink) {
-          console.log(`[v0] Next link exists, continuing...`)
-        } else {
-          console.log(`[v0] No more pages, finished fetching`)
+        if (pageCount % 10 === 0) {
+          logger.debug(CONTEXT, "Pagination progress", { page: pageCount, totalItems: allWorkItems.length })
         }
       } catch (fetchError: any) {
-        console.error(`[v0] Error fetching page ${pageCount}:`, fetchError.message)
+        logger.error(CONTEXT, "Fetch error", { page: pageCount, error: fetchError.message })
         if (allWorkItems.length >= 1000) {
-          console.log(`[v0] Continuing with ${allWorkItems.length} items fetched so far`)
+          logger.warn(CONTEXT, "Continuing with partial data", { itemsFetched: allWorkItems.length })
           break
         }
         throw fetchError
       }
     }
 
-    if (pageCount >= MAX_PAGES) {
-      console.log(`[v0] Reached max pages limit (${MAX_PAGES}), stopping pagination`)
-    }
-
-    console.log(`[v0] Successfully fetched ${allWorkItems.length} work items across ${pageCount} pages`)
-
-    const prospectWorkItems = allWorkItems.filter((item) => item.Title && item.Title.toUpperCase().includes("PROSPECT"))
-    console.log("[v0] Total work items:", allWorkItems.length)
-    console.log("[v0] Prospect work items found:", prospectWorkItems.length)
-    if (prospectWorkItems.length > 0) {
-      console.log(
-        "[v0] Sample prospect work items:",
-        prospectWorkItems.slice(0, 3).map((item) => ({
-          title: item.Title,
-          client: item.ClientName,
-          clientKey: item.ClientKey,
-        })),
-      )
-    }
+    logger.info(CONTEXT, "Work items fetched", { total: allWorkItems.length, pages: pageCount })
 
     // Create clients map from work items only
     const clientsMap = new Map()
@@ -128,7 +100,7 @@ export async function GET() {
             relatedClients: [],
             isProspect: false,
             hasProspectWorkItems: false,
-            avatarUrl: null, // Added avatarUrl field
+            avatarUrl: null,
           })
         }
 
@@ -209,20 +181,6 @@ export async function GET() {
       serviceLinesUsed: Array.from(client.serviceLinesUsed),
     }))
 
-    const prospectClients = clients.filter((c) => c.isProspect)
-    console.log("[v0] Total clients:", clients.length)
-    console.log("[v0] Prospect clients:", prospectClients.length)
-    if (prospectClients.length > 0) {
-      console.log(
-        "[v0] Sample prospect clients:",
-        prospectClients.slice(0, 3).map((c) => ({
-          name: c.clientName,
-          workItems: c.workItemCount,
-          hasProspectWorkItems: c.hasProspectWorkItems,
-        })),
-      )
-    }
-
     // Sort by last activity (most recent first), then by name
     clients.sort((a, b) => {
       if (!a.lastActivity && !b.lastActivity) return a.clientName.localeCompare(b.clientName)
@@ -231,13 +189,12 @@ export async function GET() {
       return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime()
     })
 
-    console.log("[v0] Successfully returning", clients.length, "clients")
+    const prospectCount = clients.filter((c) => c.isProspect).length
+    logger.info(CONTEXT, "Clients processed", { total: clients.length, prospects: prospectCount })
+
     return NextResponse.json({ clients, totalCount: clients.length })
   } catch (error: any) {
-    console.error("[v0] Error fetching clients:", error)
-    console.error("[v0] Error name:", error.name)
-    console.error("[v0] Error message:", error.message)
-    console.error("[v0] Error stack:", error.stack)
+    logger.error(CONTEXT, "Failed to fetch clients", { error: error.message, errorType: error.name })
     return NextResponse.json(
       {
         error: "Failed to fetch clients from Karbon",

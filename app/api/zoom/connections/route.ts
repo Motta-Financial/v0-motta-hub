@@ -38,6 +38,7 @@ export async function GET() {
 // Toggle sync enabled for a connection
 export async function PATCH(request: Request) {
   try {
+    const supabaseAdmin = createAdminClient()
     const { connection_id, sync_enabled } = await request.json()
 
     if (!connection_id) {

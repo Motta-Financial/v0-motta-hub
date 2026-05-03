@@ -3,6 +3,22 @@
     {
       "path": "/api/cron/karbon-sync",
       "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/calendly-sync",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/tommy-ballot-reminder",
+      "schedule": "0 14 * * 5"
+    },
+    {
+      "path": "/api/cron/meeting-summary",
+      "schedule": "0 13 * * 1"
+    },
+    {
+      "path": "/api/cron/tommy-weekly-recap",
+      "schedule": "0 16 * * 1"
     }
   ]
 }

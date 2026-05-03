@@ -1,161 +1,148 @@
 import { NextResponse } from "next/server"
+import { createAdminClient } from "@/lib/supabase/server"
+import {
+  calendlyRequest,
+  ensureWebhookSubscription,
+  fetchMe,
+  type CalendlyConnectionRow,
+} from "@/lib/calendly-api"
 
-const CALENDLY_ACCESS_TOKEN = process.env.CALENDLY_ACCESS_TOKEN
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL
+/**
+ * Manage Calendly webhook subscriptions. This endpoint operates on a
+ * *specific connection* (by `connectionId`) and uses that connection's
+ * OAuth token, never a static access token.
+ *
+ *  POST   { connectionId, scope?, events? } → idempotent subscribe
+ *  GET    ?connectionId=...                  → list subscriptions
+ *  DELETE ?connectionId=...&id=...           → delete a subscription
+ */
 
-// Create a webhook subscription with Calendly
+async function loadConnection(connectionId: string) {
+  const supabase = createAdminClient()
+  const { data } = await supabase
+    .from("calendly_connections")
+    .select("*")
+    .eq("id", connectionId)
+    .single()
+  return { supabase, connection: (data as CalendlyConnectionRow | null) ?? null }
+}
+
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const { events = ["invitee.created", "invitee.canceled"], scope = "user" } = body
-
-    if (!CALENDLY_ACCESS_TOKEN) {
-      return NextResponse.json({ error: "Calendly access token not configured" }, { status: 500 })
+    const body = await request.json().catch(() => ({}))
+    const { connectionId, events, scope = "user" } = body
+    if (!connectionId) {
+      return NextResponse.json({ error: "connectionId required" }, { status: 400 })
     }
 
-    if (!APP_URL) {
-      return NextResponse.json({ error: "App URL not configured" }, { status: 500 })
+    const { supabase, connection } = await loadConnection(connectionId)
+    if (!connection) {
+      return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
-    // First, get the current user to determine the organization/user URI
-    const userResponse = await fetch("https://api.calendly.com/users/me", {
-      headers: {
-        Authorization: `Bearer ${CALENDLY_ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
+    // Delegate to the shared helper so the OAuth callback and the manual
+    // "Subscribe" button in the diagnostics UI behave identically and
+    // both persist `webhook_subscribed`/`webhook_subscription_uri` to the
+    // DB. Returns the webhook resource (existing or newly created), or
+    // an error string we can surface to the user.
+    const result = await ensureWebhookSubscription(connection, supabase, {
+      scope,
+      events,
     })
 
-    if (!userResponse.ok) {
-      const error = await userResponse.text()
-      return NextResponse.json({ error: `Failed to get user: ${error}` }, { status: userResponse.status })
+    if (result.error || !result.webhook) {
+      return NextResponse.json(
+        { error: result.error || "Failed to create webhook subscription" },
+        { status: 502 },
+      )
     }
-
-    const userData = await userResponse.json()
-    const userUri = userData.resource.uri
-    const organizationUri = userData.resource.current_organization
-
-    // Create webhook subscription
-    const webhookUrl = `${APP_URL}/api/calendly/webhook`
-
-    const subscriptionPayload = {
-      url: webhookUrl,
-      events: events,
-      scope: scope,
-      ...(scope === "user" ? { user: userUri } : { organization: organizationUri }),
-    }
-
-    const webhookResponse = await fetch("https://api.calendly.com/webhook_subscriptions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${CALENDLY_ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(subscriptionPayload),
-    })
-
-    if (!webhookResponse.ok) {
-      const error = await webhookResponse.text()
-      return NextResponse.json({ error: `Failed to create webhook: ${error}` }, { status: webhookResponse.status })
-    }
-
-    const webhookData = await webhookResponse.json()
 
     return NextResponse.json({
       success: true,
-      webhook: webhookData.resource,
-      webhookUrl,
-      message: "Webhook subscription created successfully",
+      webhook: result.webhook,
+      webhookUrl: result.callbackUrl,
+      existing: result.reused,
     })
-  } catch (error) {
-    console.error("Error creating webhook subscription:", error)
-    return NextResponse.json({ error: "Failed to create webhook subscription" }, { status: 500 })
+  } catch (err: any) {
+    console.error("[calendly] webhook subscribe failed:", err)
+    return NextResponse.json(
+      { error: err?.message || "Failed to create webhook subscription" },
+      { status: err?.status || 500 },
+    )
   }
 }
 
-// List existing webhook subscriptions
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    if (!CALENDLY_ACCESS_TOKEN) {
-      return NextResponse.json({ error: "Calendly access token not configured" }, { status: 500 })
+    const { searchParams } = new URL(request.url)
+    const connectionId = searchParams.get("connectionId")
+    if (!connectionId) {
+      return NextResponse.json({ error: "connectionId required" }, { status: 400 })
     }
 
-    // Get the current user first
-    const userResponse = await fetch("https://api.calendly.com/users/me", {
-      headers: {
-        Authorization: `Bearer ${CALENDLY_ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    })
-
-    if (!userResponse.ok) {
-      const error = await userResponse.text()
-      return NextResponse.json({ error: `Failed to get user: ${error}` }, { status: userResponse.status })
+    const { supabase, connection } = await loadConnection(connectionId)
+    if (!connection) {
+      return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
-    const userData = await userResponse.json()
-    const organizationUri = userData.resource.current_organization
+    const me = await fetchMe(connection, supabase)
+    if (!me) {
+      return NextResponse.json(
+        { webhooks: [], error: "Could not fetch Calendly user" },
+        { status: 401 },
+      )
+    }
 
-    // List webhook subscriptions
-    const webhooksResponse = await fetch(
-      `https://api.calendly.com/webhook_subscriptions?organization=${encodeURIComponent(organizationUri)}&scope=organization`,
-      {
-        headers: {
-          Authorization: `Bearer ${CALENDLY_ACCESS_TOKEN}`,
-          "Content-Type": "application/json",
+    const [orgRes, userRes] = await Promise.all([
+      calendlyRequest<{ collection: any[] }>(connection, supabase, "/webhook_subscriptions", {
+        query: { organization: me.current_organization, scope: "organization", count: 100 },
+      }).catch(() => ({ collection: [] })),
+      calendlyRequest<{ collection: any[] }>(connection, supabase, "/webhook_subscriptions", {
+        query: {
+          organization: me.current_organization,
+          user: me.uri,
+          scope: "user",
+          count: 100,
         },
-      },
-    )
-
-    // Also try user scope
-    const userWebhooksResponse = await fetch(
-      `https://api.calendly.com/webhook_subscriptions?user=${encodeURIComponent(userData.resource.uri)}&scope=user`,
-      {
-        headers: {
-          Authorization: `Bearer ${CALENDLY_ACCESS_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-      },
-    )
-
-    const orgWebhooks = webhooksResponse.ok ? (await webhooksResponse.json()).collection : []
-    const userWebhooks = userWebhooksResponse.ok ? (await userWebhooksResponse.json()).collection : []
+      }).catch(() => ({ collection: [] })),
+    ])
 
     return NextResponse.json({
-      webhooks: [...orgWebhooks, ...userWebhooks],
-      user: userData.resource,
+      webhooks: [...(orgRes?.collection || []), ...(userRes?.collection || [])],
+      user: me,
     })
-  } catch (error) {
-    console.error("Error listing webhooks:", error)
-    return NextResponse.json({ error: "Failed to list webhooks" }, { status: 500 })
+  } catch (err: any) {
+    console.error("[calendly] list webhooks failed:", err)
+    return NextResponse.json(
+      { error: err?.message || "Failed to list webhooks" },
+      { status: 500 },
+    )
   }
 }
 
-// Delete a webhook subscription
 export async function DELETE(request: Request) {
   try {
     const { searchParams } = new URL(request.url)
+    const connectionId = searchParams.get("connectionId")
     const webhookId = searchParams.get("id")
-
-    if (!webhookId) {
-      return NextResponse.json({ error: "Webhook ID required" }, { status: 400 })
+    if (!connectionId || !webhookId) {
+      return NextResponse.json({ error: "connectionId and id required" }, { status: 400 })
     }
 
-    const response = await fetch(`https://api.calendly.com/webhook_subscriptions/${webhookId}`, {
+    const { supabase, connection } = await loadConnection(connectionId)
+    if (!connection) {
+      return NextResponse.json({ error: "Connection not found" }, { status: 404 })
+    }
+
+    await calendlyRequest(connection, supabase, `/webhook_subscriptions/${webhookId}`, {
       method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${CALENDLY_ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
     })
-
-    if (!response.ok && response.status !== 204) {
-      const error = await response.text()
-      return NextResponse.json({ error: `Failed to delete webhook: ${error}` }, { status: response.status })
-    }
-
-    return NextResponse.json({ success: true, message: "Webhook deleted" })
-  } catch (error) {
-    console.error("Error deleting webhook:", error)
-    return NextResponse.json({ error: "Failed to delete webhook" }, { status: 500 })
+    return NextResponse.json({ success: true })
+  } catch (err: any) {
+    console.error("[calendly] delete webhook failed:", err)
+    return NextResponse.json(
+      { error: err?.message || "Failed to delete webhook" },
+      { status: 500 },
+    )
   }
 }

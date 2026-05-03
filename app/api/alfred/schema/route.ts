@@ -100,7 +100,7 @@ const SCHEMA_DOCUMENTATION = {
       },
     },
 
-    // Debriefs & Meeting Notes
+    // Debriefs
     debriefs: {
       description: "Meeting debriefs and client interaction summaries",
       primary_key: "id",
@@ -113,20 +113,6 @@ const SCHEMA_DOCUMENTATION = {
         notes: "Detailed notes from the meeting",
         action_items: "JSON array of follow-up tasks",
         follow_up_date: "Scheduled follow-up date",
-      },
-    },
-
-    meeting_notes: {
-      description: "Structured meeting notes with attendees and action items",
-      primary_key: "id",
-      important_fields: {
-        client_name: "Client name",
-        meeting_date: "Date of meeting",
-        meeting_type: "Type of meeting",
-        attendees: "Array of attendee names",
-        notes: "Meeting notes",
-        action_items: "Array of action items",
-        status: "draft, completed",
       },
     },
 

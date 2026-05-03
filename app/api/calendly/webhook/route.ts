@@ -1,183 +1,195 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
-import crypto from "crypto"
+import {
+  calendlyListAll,
+  extractUuid,
+  verifyWebhookSignature,
+  type CalendlyConnectionRow,
+} from "@/lib/calendly-api"
 
-const CALENDLY_ACCESS_TOKEN = process.env.CALENDLY_ACCESS_TOKEN
+/**
+ * Calendly webhook receiver.
+ *
+ * Handles every event emitted by the Webhooks v2 API. Payloads are
+ * verified using the proper `t=...,v1=...` signature header before any
+ * DB write occurs. When extra invitee data must be fetched, we use the
+ * connection token belonging to the host of the event — *not* a static
+ * `CALENDLY_ACCESS_TOKEN` — so multi-team-member orgs work correctly.
+ *
+ * Reference: https://developer.calendly.com/api-docs/ZG9jOjE2OTU3NzMx-webhook-signatures
+ */
 
-// Webhook signing key (optional but recommended for security)
 const WEBHOOK_SIGNING_KEY = process.env.CALENDLY_WEBHOOK_SIGNING_KEY
 
-// Verify webhook signature if signing key is configured
-function verifyWebhookSignature(payload: string, signature: string | null): boolean {
-  if (!WEBHOOK_SIGNING_KEY || !signature) return true // Skip verification if not configured
+type WebhookEvent =
+  | "invitee.created"
+  | "invitee.canceled"
+  | "invitee_no_show.created"
+  | "invitee_no_show.deleted"
+  | "routing_form_submission.created"
 
-  const expectedSignature = crypto.createHmac("sha256", WEBHOOK_SIGNING_KEY).update(payload).digest("hex")
-
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))
+interface WebhookPayload {
+  event: WebhookEvent | string
+  created_at: string
+  payload: Record<string, any>
 }
 
-// Extract UUID from Calendly URI
-function extractUuid(uri: string): string {
-  return uri.split("/").pop() || ""
-}
+export async function POST(request: Request) {
+  const rawBody = await request.text()
+  const signatureHeader = request.headers.get("Calendly-Webhook-Signature")
 
-// Fetch invitees for an event from Calendly API
-async function fetchInvitees(eventUri: string) {
+  // In production we *require* a signing key. We only allow unsigned
+  // webhooks in non-prod when the key is intentionally absent.
+  if (WEBHOOK_SIGNING_KEY) {
+    const result = verifyWebhookSignature(rawBody, signatureHeader, WEBHOOK_SIGNING_KEY)
+    if (!result.valid) {
+      console.error("[calendly] webhook signature invalid:", result.reason)
+      return NextResponse.json({ error: "Invalid signature" }, { status: 401 })
+    }
+  } else if (process.env.NODE_ENV === "production") {
+    console.error("[calendly] webhook signing key not configured in production")
+    return NextResponse.json({ error: "Webhook not configured" }, { status: 500 })
+  }
+
+  let parsed: WebhookPayload
   try {
-    const response = await fetch(`${eventUri}/invitees`, {
-      headers: {
-        Authorization: `Bearer ${CALENDLY_ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    })
+    parsed = JSON.parse(rawBody)
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
+  }
 
-    if (!response.ok) return []
+  console.log(`[calendly] webhook received: ${parsed.event}`)
 
-    const data = await response.json()
-    return data.collection || []
-  } catch (error) {
-    console.error("Error fetching invitees:", error)
-    return []
+  try {
+    switch (parsed.event) {
+      case "invitee.created":
+        return NextResponse.json(await handleInviteeCreated(parsed.payload))
+      case "invitee.canceled":
+        return NextResponse.json(await handleInviteeCanceled(parsed.payload))
+      case "invitee_no_show.created":
+        return NextResponse.json(await handleNoShow(parsed.payload, true))
+      case "invitee_no_show.deleted":
+        return NextResponse.json(await handleNoShow(parsed.payload, false))
+      case "routing_form_submission.created":
+        return NextResponse.json(await handleRoutingFormSubmission(parsed.payload))
+      default:
+        console.log(`[calendly] ignoring unhandled event: ${parsed.event}`)
+        return NextResponse.json({ success: true, action: "ignored", event: parsed.event })
+    }
+  } catch (err) {
+    console.error("[calendly] webhook processing failed:", err)
+    return NextResponse.json({ error: "Webhook processing failed" }, { status: 500 })
   }
 }
 
-// Create notifications for all team members about a new meeting
-async function notifyTeamMembers(event: any, invitee: any, eventType: "created" | "canceled") {
-  try {
-    const supabase = createAdminClient()
-    // Get all team members
-    const { data: teamMembers, error: teamError } = await supabase
-      .from("team_members")
-      .select("id, name, email")
-      .eq("status", "active")
+export async function GET() {
+  return NextResponse.json({
+    status: "active",
+    supportedEvents: [
+      "invitee.created",
+      "invitee.canceled",
+      "invitee_no_show.created",
+      "invitee_no_show.deleted",
+      "routing_form_submission.created",
+    ],
+    signaturesVerified: !!WEBHOOK_SIGNING_KEY,
+  })
+}
 
-    if (teamError || !teamMembers?.length) {
-      console.error("Error fetching team members:", teamError)
-      return
-    }
+/* ─────────────────────────────────────────────────────────────────────────
+ * Connection resolution
+ * ───────────────────────────────────────────────────────────────────────
+ * Webhooks deliver a partial event payload that contains a host URI
+ * (`event_memberships[].user`). We use that to find the matching
+ * connection so subsequent API calls are made with the correct token.
+ */
+async function findConnectionForEvent(
+  supabase: ReturnType<typeof createAdminClient>,
+  event: any,
+): Promise<CalendlyConnectionRow | null> {
+  const memberships = event?.event_memberships || []
+  const userUris = [event?.host_user, ...memberships.map((m: any) => m?.user)].filter(Boolean)
 
-    const inviteeName = invitee?.name || invitee?.email || "A client"
-    const eventName = event.name || "Meeting"
-    const startTime = new Date(event.start_time).toLocaleString("en-US", {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      timeZoneName: "short",
-    })
+  for (const uri of userUris) {
+    const { data } = await supabase
+      .from("calendly_connections")
+      .select("*")
+      .eq("calendly_user_uri", uri)
+      .eq("is_active", true)
+      .maybeSingle()
+    if (data) return data as CalendlyConnectionRow
+  }
+  return null
+}
 
-    let title: string
-    let message: string
-    let notificationType: string
+/* ─────────────────────────────────────────────────────────────────────────
+ * Persistence helpers
+ * ─────────────────────────────────────────────────────────────────────── */
 
-    if (eventType === "created") {
-      title = "New Meeting Scheduled"
-      message = `${inviteeName} booked a ${eventName} for ${startTime}`
-      notificationType = "meeting_scheduled"
-    } else {
-      title = "Meeting Canceled"
-      message = `${inviteeName} canceled their ${eventName} scheduled for ${startTime}`
-      notificationType = "meeting_canceled"
-    }
+async function upsertEvent(
+  supabase: ReturnType<typeof createAdminClient>,
+  event: any,
+  status: "active" | "canceled",
+  connection: CalendlyConnectionRow | null,
+) {
+  const uuid = extractUuid(event.uri)
+  if (!uuid) return null
+  const location = event.location || {}
 
-    // Create notification for each team member
-    const notifications = teamMembers.map((member) => ({
-      team_member_id: member.id,
-      notification_type: notificationType,
-      title,
-      message,
-      related_entity_type: "calendly_event",
-      related_entity_id: event.calendly_uuid || extractUuid(event.uri),
-      metadata: {
-        event_name: eventName,
-        invitee_name: inviteeName,
-        invitee_email: invitee?.email,
+  const { data, error } = await supabase
+    .from("calendly_events")
+    .upsert(
+      {
+        calendly_uuid: uuid,
+        calendly_uri: event.uri,
+        calendly_connection_id: connection?.id ?? null,
+        team_member_id: connection?.team_member_id ?? null,
+        name: event.name,
+        status,
         start_time: event.start_time,
         end_time: event.end_time,
-        join_url: event.location?.join_url,
-        calendly_event_uri: event.uri,
+        event_type_uuid: extractUuid(event.event_type),
+        event_type_name: event.name,
+        location_type: location.type,
+        location: location.location,
+        join_url: location.join_url,
+        calendly_user_uri: event.event_memberships?.[0]?.user,
+        calendly_user_name:
+          event.event_memberships?.[0]?.user_name ?? connection?.calendly_user_name ?? null,
+        calendly_user_email:
+          event.event_memberships?.[0]?.user_email ?? connection?.calendly_user_email ?? null,
+        canceled_at: event.cancellation?.canceled_at ?? null,
+        canceler_type: event.cancellation?.canceler_type ?? null,
+        canceler_name: event.cancellation?.canceled_by ?? null,
+        cancel_reason: event.cancellation?.reason ?? null,
+        raw_data: event,
+        calendly_created_at: event.created_at,
+        calendly_updated_at: event.updated_at,
+        synced_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       },
-      is_read: false,
-      created_at: new Date().toISOString(),
-    }))
-
-    const { error: notifError } = await supabase.from("notifications").insert(notifications)
-
-    if (notifError) {
-      console.error("Error creating meeting notifications:", notifError)
-    } else {
-      console.log(`Created ${notifications.length} notifications for ${eventType} event`)
-    }
-  } catch (error) {
-    console.error("Error in notifyTeamMembers:", error)
-  }
-}
-
-// Sync event to Supabase
-async function syncEventToSupabase(event: any, status: "active" | "canceled" = "active") {
-  const supabase = createAdminClient()
-  const calendlyUuid = extractUuid(event.uri)
-
-  // Extract location info
-  let locationType = null
-  let location = null
-  let joinUrl = null
-
-  if (event.location) {
-    locationType = event.location.type
-    location = event.location.location
-    joinUrl = event.location.join_url
-  }
-
-  const eventData = {
-    calendly_uuid: calendlyUuid,
-    calendly_uri: event.uri,
-    name: event.name,
-    status: status,
-    start_time: event.start_time,
-    end_time: event.end_time,
-    event_type_uuid: event.event_type ? extractUuid(event.event_type) : null,
-    event_type_name: event.name,
-    location_type: locationType,
-    location: location,
-    join_url: joinUrl,
-    calendly_user_uri: event.event_memberships?.[0]?.user,
-    calendly_user_name: event.event_memberships?.[0]?.user_name,
-    calendly_user_email: event.event_memberships?.[0]?.user_email,
-    canceled_at: event.cancellation?.canceled_at || null,
-    canceler_type: event.cancellation?.canceler_type || null,
-    canceler_name: event.cancellation?.canceled_by || null,
-    cancel_reason: event.cancellation?.reason || null,
-    raw_data: event,
-    calendly_created_at: event.created_at,
-    calendly_updated_at: event.updated_at,
-    synced_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }
-
-  // Upsert the event
-  const { data: savedEvent, error: eventError } = await supabase
-    .from("calendly_events")
-    .upsert(eventData, { onConflict: "calendly_uuid" })
-    .select()
+      { onConflict: "calendly_uuid" },
+    )
+    .select("id, calendly_uuid")
     .single()
 
-  if (eventError) {
-    console.error("Error saving event:", eventError)
+  if (error) {
+    console.error("[calendly] event upsert failed:", error)
     return null
   }
-
-  return savedEvent
+  return data
 }
 
-// Sync invitee to Supabase
-async function syncInviteeToSupabase(invitee: any, calendlyEventId: string, calendlyEventUuid: string) {
-  const supabase = createAdminClient()
-  const inviteeUuid = extractUuid(invitee.uri)
+async function upsertInvitee(
+  supabase: ReturnType<typeof createAdminClient>,
+  invitee: any,
+  eventId: string,
+  eventUuid: string,
+) {
+  const uuid = extractUuid(invitee.uri)
+  if (!uuid) return null
 
-  // Try to find matching contact by email
-  let contactId = null
+  let contactId: string | null = null
   if (invitee.email) {
     const { data: contact } = await supabase
       .from("contacts")
@@ -185,130 +197,200 @@ async function syncInviteeToSupabase(invitee: any, calendlyEventId: string, cale
       .or(`primary_email.ilike.${invitee.email},secondary_email.ilike.${invitee.email}`)
       .limit(1)
       .maybeSingle()
-
-    if (contact) {
-      contactId = contact.id
-    }
+    contactId = contact?.id ?? null
   }
 
-  // Extract UTM parameters
   const tracking = invitee.tracking || {}
-
-  const inviteeData = {
-    calendly_uuid: inviteeUuid,
-    calendly_uri: invitee.uri,
-    calendly_event_id: calendlyEventId,
-    calendly_event_uuid: calendlyEventUuid,
-    name: invitee.name,
-    email: invitee.email,
-    timezone: invitee.timezone,
-    status: invitee.status || "active",
-    reschedule_url: invitee.reschedule_url,
-    cancel_url: invitee.cancel_url,
-    canceled_at: invitee.cancellation?.canceled_at || null,
-    canceler_type: invitee.cancellation?.canceler_type || null,
-    cancel_reason: invitee.cancellation?.reason || null,
-    questions_answers: invitee.questions_and_answers || null,
-    utm_source: tracking.utm_source,
-    utm_medium: tracking.utm_medium,
-    utm_campaign: tracking.utm_campaign,
-    utm_term: tracking.utm_term,
-    utm_content: tracking.utm_content,
-    contact_id: contactId,
-    raw_data: invitee,
-    calendly_created_at: invitee.created_at,
-    calendly_updated_at: invitee.updated_at,
-    synced_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }
-
-  const { error } = await supabase.from("calendly_invitees").upsert(inviteeData, { onConflict: "calendly_uuid" })
-
-  if (error) {
-    console.error("Error saving invitee:", error)
-  }
-
-  return inviteeData
+  const { error } = await supabase.from("calendly_invitees").upsert(
+    {
+      calendly_uuid: uuid,
+      calendly_uri: invitee.uri,
+      calendly_event_id: eventId,
+      calendly_event_uuid: eventUuid,
+      name: invitee.name,
+      email: invitee.email,
+      timezone: invitee.timezone,
+      status: invitee.status || "active",
+      reschedule_url: invitee.reschedule_url,
+      cancel_url: invitee.cancel_url,
+      canceled_at: invitee.cancellation?.canceled_at ?? null,
+      canceler_type: invitee.cancellation?.canceler_type ?? null,
+      cancel_reason: invitee.cancellation?.reason ?? null,
+      questions_answers: invitee.questions_and_answers ?? null,
+      utm_source: tracking.utm_source,
+      utm_medium: tracking.utm_medium,
+      utm_campaign: tracking.utm_campaign,
+      utm_term: tracking.utm_term,
+      utm_content: tracking.utm_content,
+      contact_id: contactId,
+      raw_data: invitee,
+      calendly_created_at: invitee.created_at,
+      calendly_updated_at: invitee.updated_at,
+      synced_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "calendly_uuid" },
+  )
+  if (error) console.error("[calendly] invitee upsert failed:", error)
+  return uuid
 }
 
-// Handle invitee.created event
+/**
+ * Notifies the appropriate audience about a new/canceled meeting.
+ * If we know which connection the event belongs to we notify that
+ * specific team member by default; otherwise we fall back to broadcast.
+ */
+async function notifyTeamMembers(
+  supabase: ReturnType<typeof createAdminClient>,
+  event: any,
+  invitee: any,
+  kind: "created" | "canceled",
+  connection: CalendlyConnectionRow | null,
+) {
+  const inviteeName = invitee?.name || invitee?.email || "A client"
+  const eventName = event?.name || "Meeting"
+  const startTime = event?.start_time
+    ? new Date(event.start_time).toLocaleString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZoneName: "short",
+      })
+    : ""
+
+  const isCreated = kind === "created"
+  const title = isCreated ? "New Meeting Scheduled" : "Meeting Canceled"
+  const message = isCreated
+    ? `${inviteeName} booked a ${eventName} for ${startTime}`
+    : `${inviteeName} canceled their ${eventName} scheduled for ${startTime}`
+  const notificationType = isCreated ? "meeting_scheduled" : "meeting_canceled"
+
+  // Determine recipients: the connected host first, plus any other admins.
+  let recipients: { id: string }[] = []
+  if (connection?.team_member_id) {
+    recipients = [{ id: connection.team_member_id }]
+  } else {
+    const { data: members } = await supabase
+      .from("team_members")
+      .select("id")
+      .eq("status", "active")
+    recipients = members ?? []
+  }
+  if (recipients.length === 0) return
+
+  const rows = recipients.map((member) => ({
+    team_member_id: member.id,
+    notification_type: notificationType,
+    title,
+    message,
+    related_entity_type: "calendly_event",
+    related_entity_id: extractUuid(event.uri),
+    metadata: {
+      event_name: eventName,
+      invitee_name: inviteeName,
+      invitee_email: invitee?.email,
+      start_time: event?.start_time,
+      end_time: event?.end_time,
+      join_url: event?.location?.join_url,
+      calendly_event_uri: event?.uri,
+    },
+    is_read: false,
+    created_at: new Date().toISOString(),
+  }))
+
+  const { error } = await supabase.from("notifications").insert(rows)
+  if (error) console.error("[calendly] notification insert failed:", error)
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Event handlers
+ * ─────────────────────────────────────────────────────────────────────── */
+
 async function handleInviteeCreated(payload: any) {
   const { event, invitee } = payload
+  const supabase = createAdminClient()
+  const connection = await findConnectionForEvent(supabase, event)
 
-  // Sync the event first
-  const savedEvent = await syncEventToSupabase(event, "active")
+  // Webhook payloads usually include the invitee inline; if they don't
+  // we hydrate using the connection's token.
+  const saved = await upsertEvent(supabase, event, "active", connection)
+  if (!saved) return { success: false, error: "event upsert failed" }
 
-  if (savedEvent) {
-    // Sync the invitee
-    await syncInviteeToSupabase(invitee, savedEvent.id, savedEvent.calendly_uuid)
-
-    // Notify all team members
-    await notifyTeamMembers(event, invitee, "created")
+  if (invitee?.uri) {
+    await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid)
+  } else if (connection) {
+    const fetched = await calendlyListAll<any>(connection, supabase, `${event.uri}/invitees`, {
+      query: { count: 100 },
+    }).catch(() => [])
+    for (const i of fetched) await upsertInvitee(supabase, i, saved.id, saved.calendly_uuid)
   }
 
+  await notifyTeamMembers(supabase, event, invitee, "created", connection)
   return { success: true, action: "invitee_created" }
 }
 
-// Handle invitee.canceled event
 async function handleInviteeCanceled(payload: any) {
   const { event, invitee } = payload
-
-  // Update the event status
-  const savedEvent = await syncEventToSupabase(event, "canceled")
-
-  if (savedEvent) {
-    // Update invitee status
-    await syncInviteeToSupabase(invitee, savedEvent.id, savedEvent.calendly_uuid)
-
-    // Notify all team members
-    await notifyTeamMembers(event, invitee, "canceled")
+  const supabase = createAdminClient()
+  const connection = await findConnectionForEvent(supabase, event)
+  const saved = await upsertEvent(supabase, event, "canceled", connection)
+  if (saved && invitee?.uri) {
+    await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid)
   }
-
+  await notifyTeamMembers(supabase, event, invitee, "canceled", connection)
   return { success: true, action: "invitee_canceled" }
 }
 
-// POST handler for webhook events
-export async function POST(request: Request) {
-  try {
-    const rawBody = await request.text()
-    const signature = request.headers.get("Calendly-Webhook-Signature")
+/**
+ * No-show events fire when an organizer marks an invitee as no-show
+ * (or undoes that mark). We persist this on the invitee row so
+ * downstream reporting can distinguish missed meetings.
+ */
+async function handleNoShow(payload: any, isNoShow: boolean) {
+  const supabase = createAdminClient()
+  const inviteeUri = payload?.invitee?.uri || payload?.uri
+  const inviteeUuid = extractUuid(inviteeUri)
+  if (!inviteeUuid) return { success: false, error: "missing invitee uri" }
 
-    // Verify signature if configured
-    if (!verifyWebhookSignature(rawBody, signature)) {
-      return NextResponse.json({ error: "Invalid signature" }, { status: 401 })
-    }
-
-    const payload = JSON.parse(rawBody)
-    const eventType = payload.event
-
-    console.log(`Received Calendly webhook: ${eventType}`)
-
-    let result
-
-    switch (eventType) {
-      case "invitee.created":
-        result = await handleInviteeCreated(payload.payload)
-        break
-      case "invitee.canceled":
-        result = await handleInviteeCanceled(payload.payload)
-        break
-      default:
-        console.log(`Unhandled event type: ${eventType}`)
-        result = { success: true, action: "ignored", eventType }
-    }
-
-    return NextResponse.json(result)
-  } catch (error) {
-    console.error("Webhook error:", error)
-    return NextResponse.json({ error: "Webhook processing failed" }, { status: 500 })
-  }
+  const { error } = await supabase
+    .from("calendly_invitees")
+    .update({
+      status: isNoShow ? "no_show" : "active",
+      raw_data: payload,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("calendly_uuid", inviteeUuid)
+  if (error) console.error("[calendly] no-show update failed:", error)
+  return { success: true, action: isNoShow ? "no_show_marked" : "no_show_cleared" }
 }
 
-// GET handler to check webhook status
-export async function GET() {
-  return NextResponse.json({
-    status: "active",
-    supportedEvents: ["invitee.created", "invitee.canceled"],
-    message: "Calendly webhook endpoint is ready",
-  })
+/**
+ * Routing form submissions: we don't yet have a dedicated table, so we
+ * write a notification with the raw payload. This gives ops visibility
+ * while preserving the data for later modeling.
+ */
+async function handleRoutingFormSubmission(payload: any) {
+  const supabase = createAdminClient()
+  const { data: members } = await supabase
+    .from("team_members")
+    .select("id")
+    .eq("status", "active")
+    .limit(1)
+
+  if (members && members.length > 0) {
+    await supabase.from("notifications").insert({
+      team_member_id: members[0].id,
+      notification_type: "routing_form_submission",
+      title: "Routing form submitted",
+      message: `New Calendly routing form submission received`,
+      related_entity_type: "calendly_routing_form",
+      related_entity_id: extractUuid(payload?.uri) ?? null,
+      metadata: payload,
+      is_read: false,
+      created_at: new Date().toISOString(),
+    })
+  }
+  return { success: true, action: "routing_form_submission_logged" }
 }

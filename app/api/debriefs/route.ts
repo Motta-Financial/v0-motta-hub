@@ -1,6 +1,30 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
-import { sendEmail, buildDebriefEmailHtml } from "@/lib/email"
+import {
+  buildDebriefEmailHtml,
+  buildNotificationEmailHtml,
+  resolveRecipientsForCategory,
+  sendEmail,
+} from "@/lib/email"
+import { postDebriefNoteToKarbon } from "@/lib/karbon/post-debrief-note"
+
+const KARBON_TENANT_BASE = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
+
+/**
+ * Build the same `https://app2.karbonhq.com/<tenant>#/...` URLs we already
+ * persist on contacts/organizations/work_items, derived directly from the
+ * Karbon entity key. Used for email deep-link rendering when the related
+ * record was passed in from the form (which only carries the key, not the URL).
+ */
+function buildKarbonUrl(
+  type: "contact" | "organization" | "work",
+  key?: string | null,
+): string | null {
+  if (!key) return null
+  if (type === "contact") return `${KARBON_TENANT_BASE}/contacts/${key}`
+  if (type === "organization") return `${KARBON_TENANT_BASE}/organizations/${key}`
+  return `${KARBON_TENANT_BASE}/work/${key}`
+}
 
 export async function GET(request: NextRequest) {
   const supabase = createAdminClient()
@@ -133,6 +157,28 @@ export async function POST(request: NextRequest) {
 
     await createDebriefNotifications(createdDebrief, body.team_member, body)
 
+    // Push the debrief into Karbon as a Note attached to every related work
+    // item AND every related contact/organization timeline. This is best-effort
+    // — a Karbon outage or credential issue must NOT block the debrief or the
+    // team email. We log success/failure for the admin Karbon sync dashboard.
+    try {
+      const karbonResult = await postDebriefNoteToKarbon(createdDebrief, body)
+      if (karbonResult.ok) {
+        console.log(
+          `[v0] Karbon note created (${karbonResult.noteKey}) attached to ${karbonResult.attachedTimelines} timeline(s)`,
+        )
+      } else if (karbonResult.skipped) {
+        console.log(`[v0] Karbon note push skipped: ${karbonResult.skipped}`)
+      } else if (karbonResult.error) {
+        console.warn(`[v0] Karbon note push failed: ${karbonResult.error}`)
+      }
+    } catch (karbonErr) {
+      console.warn(
+        "[v0] Unexpected error pushing debrief to Karbon:",
+        karbonErr instanceof Error ? karbonErr.message : karbonErr,
+      )
+    }
+
     return NextResponse.json({ debrief: createdDebrief })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error"
@@ -144,17 +190,10 @@ export async function POST(request: NextRequest) {
 async function createDebriefNotifications(debrief: any, authorName: string, body: any) {
   try {
     const supabase = createAdminClient()
-    // Fetch all active team members (excluding Company and Alumni roles)
-    const { data: teamMembers } = await supabase
-      .from("team_members")
-      .select("id, full_name, email, role")
-      .eq("is_active", true)
-      .not("role", "eq", "Company")
-      .not("role", "eq", "Alumni")
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://mottahub-motta.vercel.app"
+    const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
-    if (!teamMembers || teamMembers.length === 0) return
-
-    // Get client name for notification message
+    // Resolve client name for messages/subject
     let clientName = debrief.organization_name || "a client"
     if (debrief.contact_id) {
       const { data: contact } = await supabase
@@ -164,35 +203,26 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         .single()
       if (contact) clientName = contact.full_name
     }
-
-    // Also use related_clients from body for better naming
     const relatedClientNames = (body?.related_clients || []).map((c: any) => c.name).filter(Boolean)
     if (relatedClientNames.length > 0) {
       clientName = relatedClientNames.join(", ")
     }
 
-    // Create in-app notification for all team members (except the author)
-    const notifications = teamMembers
-      .filter((tm) => tm.id !== debrief.created_by_id)
-      .map((tm) => ({
-        team_member_id: tm.id,
-        notification_type: "debrief",
-        entity_type: "debrief",
-        entity_id: debrief.id,
-        title: "New Client Debrief",
-        message: `${authorName || "A team member"} submitted a debrief for ${clientName}`,
-        action_url: `/?tab=debriefs&id=${debrief.id}`,
-        is_read: false,
-      }))
-
-    if (notifications.length > 0) {
-      await supabase.from("notifications").insert(notifications)
-    }
-
-    // Send EMAIL to all active team members (except author)
-    const recipientEmails = teamMembers
-      .filter((tm) => tm.id !== debrief.created_by_id && tm.email)
-      .map((tm) => tm.email)
+    // ============================================
+    // 1. Team-wide debrief notification — UNCONDITIONAL
+    // ============================================
+    // Per firm policy: every debrief is broadcast to ALL active teammates
+    // (excluding Company / Alumni roles). The author IS included so they
+    // receive their own confirmation copy that the debrief was submitted and
+    // the team email went out. The form's notify_team toggle and recipient
+    // picker are intentionally ignored, and the per-user "debrief" email
+    // opt-out is bypassed for this broadcast so no one misses a client debrief.
+    const { data: activeTeam } = await supabase
+      .from("team_members")
+      .select("id, full_name, email, role")
+      .eq("is_active", true)
+      .not("role", "eq", "Company")
+      .not("role", "eq", "Alumni")
 
     if (recipientEmails.length > 0) {
       const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_BASE_URL || "https://mottahub-motta.vercel.app"
@@ -222,18 +252,87 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         workItemTitle,
         debriefDate: debrief.debrief_date
           ? new Date(debrief.debrief_date).toLocaleDateString("en-US", {
+    const targetMembers = activeTeam || []
+
+    if (targetMembers.length > 0) {
+      // 1a. In-app notification row for every active teammate.
+      //     The author gets a confirmation-styled message instead of the
+      //     generic team announcement so they can verify it went through.
+      const notifications = targetMembers.map((tm) => {
+        const isAuthor = tm.id === debrief.created_by_id
+        return {
+          team_member_id: tm.id,
+          notification_type: "debrief",
+          entity_type: "debrief",
+          entity_id: debrief.id,
+          title: isAuthor ? "Debrief Submitted" : "New Client Debrief",
+          message: isAuthor
+            ? `Your debrief for ${clientName} was submitted and emailed to the team.`
+            : `${authorName || "A team member"} submitted a debrief for ${clientName}`,
+          action_url: `/?tab=debriefs&id=${debrief.id}`,
+          is_read: false,
+        }
+      })
+      await supabase.from("notifications").insert(notifications)
+
+      // 1b. Email every active teammate who has an email address — author included.
+      //     No opt-out check — debriefs are mandatory firm-wide visibility.
+      const recipientEmails = targetMembers
+        .filter((tm) => !!tm.email)
+        .map((tm) => tm.email as string)
+
+      if (recipientEmails.length > 0) {
+        // Build Karbon deep-link arrays from the related entities that came in
+        // with the form payload. The URLs use the tenant-scoped Karbon UI
+        // pattern that matches what we already store on the contacts /
+        // organizations / work_items tables.
+        const relatedClientsForEmail = (body?.related_clients || [])
+          .filter((c: any) => c?.name)
+          .map((c: any) => ({
+            name: c.name,
+            type: c.type,
+            karbonUrl: buildKarbonUrl(
+              c.type === "organization" ? "organization" : "contact",
+              c.karbon_key,
+            ),
+          }))
+        const relatedWorkItemsForEmail = (body?.related_work_items || [])
+          .filter((w: any) => w?.title)
+          .map((w: any) => ({
+            title: w.title,
+            workType: w.work_type || null,
+            karbonUrl: buildKarbonUrl("work", w.karbon_key),
+          }))
+
+        const followUpDateLabel = debrief.follow_up_date
+          ? new Date(debrief.follow_up_date).toLocaleDateString("en-US", {
               month: "long",
               day: "numeric",
               year: "numeric",
             })
-          : "N/A",
-        notes: body?.notes || debrief.notes || undefined,
-        actionItems: debrief.action_items?.items || body?.action_items || [],
-        services: body?.services || [],
-        researchTopics: body?.research_topics || undefined,
-        feeAdjustment: body?.fee_adjustment || undefined,
-        debriefUrl,
-      })
+          : undefined
+
+        const html = buildDebriefEmailHtml({
+          authorName: authorName || "A team member",
+          clientName,
+          debriefDate: debrief.debrief_date
+            ? new Date(debrief.debrief_date).toLocaleDateString("en-US", {
+                month: "long",
+                day: "numeric",
+                year: "numeric",
+              })
+            : "N/A",
+          notes: body?.notes || debrief.notes || undefined,
+          actionItems: debrief.action_items?.items || body?.action_items || [],
+          services: body?.services || [],
+          researchTopics: body?.research_topics || undefined,
+          feeAdjustment: body?.fee_adjustment || undefined,
+          feeAdjustmentReason: body?.fee_adjustment_reason || undefined,
+          followUpDate: followUpDateLabel,
+          relatedClients: relatedClientsForEmail,
+          relatedWorkItems: relatedWorkItemsForEmail,
+          debriefUrl,
+        })
 
       const emailResult = await sendEmail({
         to: recipientEmails,
@@ -245,12 +344,30 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         console.warn("[debrief] Email send failed (in-app notifications still created):", emailResult.error)
       } else {
         console.log(`[debrief] Email sent to ${recipientEmails.length} active team members with subject: ${subject}`)
+        const emailResult = await sendEmail({
+          to: recipientEmails,
+          subject: `New Debrief: ${clientName} - ${authorName || "Team Member"}`,
+          html,
+        })
+
+        if (!emailResult.success) {
+          console.warn("[debrief] Team email failed:", emailResult.error)
+        } else {
+          console.log(
+            `[debrief] Team email sent to all ${recipientEmails.length} active teammates (author included)`,
+          )
+        }
       }
     }
 
-    // Action item assignment notifications
+    // ============================================
+    // 2. Action-item assignee notifications (always sent, even if notify_team=false —
+    //    direct assignments are personal and shouldn't be silenceable via the team toggle).
+    //    Uses the "action_item" category for email opt-out.
+    // ============================================
     const actionItems = debrief.action_items?.items || []
     const actionNotifications: any[] = []
+    const assigneeEmailMap = new Map<string, { description: string; assigneeName?: string }>()
 
     for (const item of actionItems) {
       if (item.assignee_id && item.assignee_id !== debrief.created_by_id) {
@@ -264,11 +381,46 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
           action_url: `/?tab=debriefs&id=${debrief.id}`,
           is_read: false,
         })
+        // Keep the most recent assignment description per assignee (in case of duplicates)
+        assigneeEmailMap.set(item.assignee_id, {
+          description: item.description,
+          assigneeName: item.assignee_name,
+        })
       }
     }
 
     if (actionNotifications.length > 0) {
       await supabase.from("notifications").insert(actionNotifications)
+    }
+
+    if (assigneeEmailMap.size > 0) {
+      const optedInAssignees = await resolveRecipientsForCategory(
+        Array.from(assigneeEmailMap.keys()),
+        "action_item",
+      )
+
+      // Send a personalized email per assignee with their specific item description
+      await Promise.all(
+        optedInAssignees.map(async (recipient) => {
+          const item = assigneeEmailMap.get(recipient.team_member_id)
+          if (!item) return
+          const html = buildNotificationEmailHtml({
+            recipientName: recipient.full_name?.split(" ")[0] || "there",
+            title: "New Action Item Assigned",
+            message: `${authorName || "A team member"} assigned you an action item from a debrief on ${clientName}:\n\n"${item.description}"`,
+            actionUrl: debriefUrl,
+            actionLabel: "View Debrief",
+          })
+          const res = await sendEmail({
+            to: recipient.email,
+            subject: `Action item: ${item.description.slice(0, 60)}${item.description.length > 60 ? "…" : ""}`,
+            html,
+          })
+          if (!res.success) {
+            console.warn(`[debrief] Action-item email to ${recipient.email} failed:`, res.error)
+          }
+        }),
+      )
     }
   } catch (error) {
     console.error("Error creating debrief notifications:", error)

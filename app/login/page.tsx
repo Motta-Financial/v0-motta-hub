@@ -41,6 +41,15 @@ function LoginContent() {
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
     }
+
+    // Set by middleware when an active session belongs to a team_member that
+    // has been marked is_active=false (e.g. an alum whose session cookie is
+    // still valid). The middleware already calls supabase.auth.signOut() and
+    // redirects here, so we just need to surface the reason.
+    const reason = searchParams.get("reason")
+    if (reason === "deactivated") {
+      setError("Your account has been deactivated. Please contact an administrator.")
+    }
   }, [searchParams])
 
   const handleLogin = async (e: React.FormEvent) => {

@@ -50,7 +50,7 @@ export function TriageSummary() {
     }
   }
 
-  const formatDueDate = (dueDate: string | null) => {
+  const formatDueDate = (dueDate: string | null | undefined) => {
     if (!dueDate) return null
 
     const date = new Date(dueDate)

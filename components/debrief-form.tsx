@@ -595,25 +595,10 @@ export function DebriefForm() {
         }
       }
 
-      // Send notifications if enabled
-      if (formData.notify_team) {
-        await fetch("/api/notifications/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: "debrief_created",
-            title: "New Meeting Debrief",
-            // Changed to use related_clients to get names
-            message: `${formData.team_member_name} created a debrief for ${formData.related_clients.map((c) => c.name).join(", ") || "a meeting"}`,
-            recipients:
-              formData.notification_recipients.length > 0
-                ? formData.notification_recipients
-                : teamMembers.map((t) => t.id),
-            entity_type: "debrief",
-            entity_id: result.debrief?.id,
-          }),
-        })
-      }
+      // Note: Team notifications (in-app + email, preference-aware) are now
+      // created server-side in POST /api/debriefs based on the notify_team
+      // and notification_recipients fields included in the debrief payload above.
+      // This avoids duplicate emails / duplicate in-app rows.
 
       alert("Debrief created successfully!")
 
@@ -801,7 +786,7 @@ export function DebriefForm() {
               <PopoverContent className="w-[500px] p-0" align="start">
                 <Command shouldFilter={false}>
                   <CommandInput
-                    placeholder="Search by title, client, or type..."
+                    placeholder="Search by title, client, work type, status, or work item ID..."
                     value={workItemSearch}
                     onValueChange={setWorkItemSearch}
                   />
@@ -863,10 +848,10 @@ export function DebriefForm() {
           <div className="space-y-2">
             <Label className="flex items-center gap-2">
               <Users className="h-4 w-4" />
-              Related Karbon Clients
+              Other Related Clients
             </Label>
             <p className="text-xs text-muted-foreground mb-2">
-              Search by client's full name (individuals or organizations)
+              Add clients not auto-populated from the work item above (e.g., spouse, related entities)
             </p>
             <Popover open={clientPopoverOpen} onOpenChange={setClientPopoverOpen}>
               <PopoverTrigger asChild>

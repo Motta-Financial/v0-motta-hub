@@ -51,7 +51,7 @@
             "name": "table",
             "in": "query",
             "required": true,
-            "description": "Table name to query. Options: work_items, contacts, organizations, team_members, debriefs, meeting_notes, invoices, tasks, services, tommy_award_ballots, tommy_award_points, karbon_notes, karbon_tasks, karbon_timesheets, client_groups, tax_returns, recurring_revenue, work_status, and more.",
+            "description": "Table name to query. Options: work_items, contacts, organizations, team_members, debriefs, invoices, tasks, services, tommy_award_ballots, tommy_award_points, karbon_notes, karbon_tasks, karbon_timesheets, client_groups, tax_returns, recurring_revenue, work_status, and more.",
             "schema": {
               "type": "string"
             }
@@ -202,7 +202,7 @@
       "get": {
         "operationId": "searchAllData",
         "summary": "Full-Text Search",
-        "description": "Search across contacts, organizations, work items, team members, debriefs, meeting notes, and services simultaneously.",
+        "description": "Search across contacts, organizations, work items, team members, debriefs, and services simultaneously.",
         "parameters": [
           {
             "name": "q",
