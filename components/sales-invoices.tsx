@@ -27,7 +27,9 @@ import {
   CheckCircle2,
   Clock,
   AlertCircle,
+  Pencil,
 } from "lucide-react"
+import { InvoiceEditSheet } from "@/components/sales/invoice-edit-sheet"
 
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -139,6 +141,7 @@ export function SalesInvoices() {
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
 
   const [searchInput, setSearchInput] = useState(search)
+  const [editing, setEditing] = useState<Invoice | null>(null)
 
   const queryString = useMemo(() => {
     const sp = new URLSearchParams()
@@ -411,17 +414,28 @@ export function SalesInvoices() {
                           {fmtDate(inv.due_date)}
                         </td>
                         <td className="px-3 py-2 text-right">
-                          {inv.stripe_invoice_id ? (
-                            <a
-                              href={`https://dashboard.stripe.com/invoices/${inv.stripe_invoice_id}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-stone-500 hover:text-stone-900"
-                              title="View in Stripe"
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-stone-500 hover:text-stone-900"
+                              onClick={() => setEditing(inv)}
+                              title="Edit invoice"
                             >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </a>
-                          ) : null}
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            {inv.stripe_invoice_id ? (
+                              <a
+                                href={`https://dashboard.stripe.com/invoices/${inv.stripe_invoice_id}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-stone-500 hover:text-stone-900 p-1"
+                                title="View in Stripe"
+                              >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </a>
+                            ) : null}
+                          </div>
                         </td>
                       </tr>
                     )
@@ -432,6 +446,16 @@ export function SalesInvoices() {
           </div>
         </CardContent>
       </Card>
+
+      <InvoiceEditSheet
+        invoice={editing}
+        statuses={data?.dimensions.statuses || []}
+        open={!!editing}
+        onOpenChange={(o) => {
+          if (!o) setEditing(null)
+        }}
+        onSaved={() => mutate()}
+      />
 
       {/* Pagination */}
       {data ? (

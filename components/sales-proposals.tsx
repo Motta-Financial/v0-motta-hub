@@ -26,7 +26,9 @@ import {
   ChevronRight,
   RefreshCcw,
   Filter as FilterIcon,
+  Pencil,
 } from "lucide-react"
+import { ProposalEditSheet } from "@/components/sales/proposal-edit-sheet"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -145,6 +147,7 @@ export function SalesProposals() {
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
 
   const [searchInput, setSearchInput] = useState(search)
+  const [editing, setEditing] = useState<Proposal | null>(null)
 
   const queryString = useMemo(() => {
     const sp = new URLSearchParams()
@@ -325,27 +328,27 @@ export function SalesProposals() {
                     sortDir={sortDir}
                     onSort={toggleSort}
                   />
-                  <th />
+                  <th className="w-20" />
                 </tr>
               </thead>
               <tbody>
                 {isLoading && !data ? (
                   Array.from({ length: 10 }).map((_, i) => (
                     <tr key={i} className="border-b">
-                      <td colSpan={10} className="px-3 py-3">
+                      <td colSpan={11} className="px-3 py-3">
                         <Skeleton className="h-5 w-full" />
                       </td>
                     </tr>
                   ))
                 ) : error ? (
                   <tr>
-                    <td colSpan={10} className="px-3 py-6 text-center text-rose-600">
+                    <td colSpan={11} className="px-3 py-6 text-center text-rose-600">
                       Failed to load proposals.
                     </td>
                   </tr>
                 ) : data && data.proposals.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-3 py-10 text-center text-muted-foreground">
+                    <td colSpan={11} className="px-3 py-10 text-center text-muted-foreground">
                       <FilterIcon className="h-6 w-6 mx-auto mb-2 opacity-40" />
                       No proposals match the current filters.
                     </td>
@@ -398,14 +401,26 @@ export function SalesProposals() {
                           {fmtDate(p.accepted_at)}
                         </td>
                         <td className="px-3 py-2 text-right">
-                          {orgHref ? (
-                            <Link
-                              href={orgHref}
-                              className="text-stone-500 hover:text-stone-900"
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-stone-500 hover:text-stone-900"
+                              onClick={() => setEditing(p)}
+                              title="Edit proposal"
                             >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </Link>
-                          ) : null}
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            {orgHref ? (
+                              <Link
+                                href={orgHref}
+                                className="text-stone-500 hover:text-stone-900 p-1"
+                                title="Open client"
+                              >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </Link>
+                            ) : null}
+                          </div>
                         </td>
                       </tr>
                     )
@@ -416,6 +431,16 @@ export function SalesProposals() {
           </div>
         </CardContent>
       </Card>
+
+      <ProposalEditSheet
+        proposal={editing}
+        statuses={data?.dimensions.statuses || []}
+        open={!!editing}
+        onOpenChange={(o) => {
+          if (!o) setEditing(null)
+        }}
+        onSaved={() => mutate()}
+      />
 
       {/* Pagination */}
       {data ? (
