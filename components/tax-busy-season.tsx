@@ -52,6 +52,7 @@ interface KarbonWorkItem {
 interface TaxWorkItem extends KarbonWorkItem {
   taxYear: number
   returnType: string
+  karbon_url?: string | null
 }
 
 const STATUS_COLORS: Record<string, string> = {

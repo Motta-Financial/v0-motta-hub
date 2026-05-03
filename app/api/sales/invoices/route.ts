@@ -16,10 +16,11 @@ const PAGE_SIZE_DEFAULT = 50
 const PAGE_SIZE_MAX = 200
 
 export async function GET(req: Request) {
-  const url = new URL(req.url)
-  const sp = url.searchParams
+  try {
+    const url = new URL(req.url)
+    const sp = url.searchParams
 
-  const page = Math.max(1, Number.parseInt(sp.get("page") || "1", 10))
+    const page = Math.max(1, Number.parseInt(sp.get("page") || "1", 10))
   const pageSize = Math.min(
     PAGE_SIZE_MAX,
     Math.max(1, Number.parseInt(sp.get("pageSize") || String(PAGE_SIZE_DEFAULT), 10)),
@@ -106,14 +107,18 @@ export async function GET(req: Request) {
     statuses: uniqueSorted(allInvoices?.map((d) => d.status)),
   }
 
-  return NextResponse.json({
-    invoices: data || [],
-    page,
-    pageSize,
-    total: count || 0,
-    stats,
-    dimensions,
-  })
+    return NextResponse.json({
+      invoices: data || [],
+      page,
+      pageSize,
+      total: count || 0,
+      stats,
+      dimensions,
+    })
+  } catch (error) {
+    console.error("[sales/invoices] Error:", error)
+    return NextResponse.json({ error: "Failed to load invoices" }, { status: 500 })
+  }
 }
 
 function sum(arr: any[] | null | undefined, key: string): number {

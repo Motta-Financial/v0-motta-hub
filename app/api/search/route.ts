@@ -38,26 +38,27 @@ function safe(input: string): string {
 }
 
 export async function GET(req: Request) {
-  const url = new URL(req.url)
-  const q = (url.searchParams.get("q") || "").trim()
-  const limit = Math.min(
-    PER_CATEGORY_MAX,
-    Math.max(1, Number.parseInt(url.searchParams.get("limit") || String(PER_CATEGORY_DEFAULT), 10)),
-  )
+  try {
+    const url = new URL(req.url)
+    const q = (url.searchParams.get("q") || "").trim()
+    const limit = Math.min(
+      PER_CATEGORY_MAX,
+      Math.max(1, Number.parseInt(url.searchParams.get("limit") || String(PER_CATEGORY_DEFAULT), 10)),
+    )
 
-  if (q.length < MIN_QUERY_LEN) {
-    return NextResponse.json({
-      query: q,
-      workItems: [],
-      clients: [],
-      debriefs: [],
-      invoices: [],
-      proposals: [],
-      totals: { workItems: 0, clients: 0, debriefs: 0, invoices: 0, proposals: 0 },
-    })
-  }
+    if (q.length < MIN_QUERY_LEN) {
+      return NextResponse.json({
+        query: q,
+        workItems: [],
+        clients: [],
+        debriefs: [],
+        invoices: [],
+        proposals: [],
+        totals: { workItems: 0, clients: 0, debriefs: 0, invoices: 0, proposals: 0 },
+      })
+    }
 
-  const supabase = createAdminClient()
+    const supabase = createAdminClient()
   const safeQ = safe(q)
   const ilike = `%${safeQ}%`
 
@@ -269,19 +270,26 @@ export async function GET(req: Request) {
     }),
   )
 
-  return NextResponse.json({
-    query: q,
-    workItems,
-    clients,
-    debriefs,
-    invoices,
-    proposals,
-    totals: {
-      workItems: workItems.length,
-      clients: clients.length,
-      debriefs: debriefs.length,
-      invoices: invoices.length,
-      proposals: proposals.length,
-    },
-  })
+    return NextResponse.json({
+      query: q,
+      workItems,
+      clients,
+      debriefs,
+      invoices,
+      proposals,
+      totals: {
+        workItems: workItems.length,
+        clients: clients.length,
+        debriefs: debriefs.length,
+        invoices: invoices.length,
+        proposals: proposals.length,
+      },
+    })
+  } catch (error) {
+    console.error("[search] Error:", error)
+    return NextResponse.json(
+      { error: "Search failed", query: "", workItems: [], clients: [], debriefs: [], invoices: [], proposals: [], totals: { workItems: 0, clients: 0, debriefs: 0, invoices: 0, proposals: 0 } },
+      { status: 500 },
+    )
+  }
 }
