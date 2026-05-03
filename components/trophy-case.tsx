@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Trophy, Medal, Award, Star, Crown, TrendingUp, Calendar, Sparkles, Loader2 } from "lucide-react"
+import { Trophy, Medal, Award, Star, Crown, TrendingUp, Calendar, Sparkles, Loader2, MessageCircle, Quote } from "lucide-react"
 
 interface TrophyCaseData {
   teamMember: { id: string; full_name: string | null }
@@ -47,6 +47,14 @@ interface TrophyCaseData {
     thirdPlace: number
     honorableMention: number
     partner: number
+  }>
+  feedbackReceived: Array<{
+    id: string
+    weekDate: string
+    voterName: string
+    placement: "1st" | "2nd" | "3rd" | "HM" | "Partner"
+    notes: string | null
+    submittedAt: string | null
   }>
 }
 
@@ -113,7 +121,7 @@ export function TrophyCase() {
     )
   }
 
-  const { lifetime, bestWeek, recentWeeks, yearly } = data
+  const { lifetime, bestWeek, recentWeeks, yearly, feedbackReceived } = data
   const hasAnyVotes =
     lifetime.firstPlace +
       lifetime.secondPlace +
@@ -306,44 +314,76 @@ export function TrophyCase() {
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <Calendar className="h-5 w-5 text-[#6B745D]" />
-                    Yearly Performance
+                    Yearly Tommy Points
                   </CardTitle>
                   <CardDescription>
-                    Final standings for each year you participated.
+                    Your standings and vote breakdown for each year.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {yearly.map((y) => (
                       <div
                         key={y.year}
-                        className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2"
+                        className="rounded-lg border bg-muted/30 p-3"
                       >
-                        <div className="flex items-center gap-3">
-                          <span className="font-semibold text-sm">{y.year}</span>
-                          {y.rank && y.rank > 0 ? (
-                            <Badge
-                              variant="outline"
-                              className={
-                                y.rank === 1
-                                  ? "border-amber-300 bg-amber-50 text-amber-800"
-                                  : y.rank === 2
-                                    ? "border-slate-300 bg-slate-50 text-slate-700"
-                                    : y.rank === 3
-                                      ? "border-orange-300 bg-orange-50 text-orange-800"
-                                      : ""
-                              }
-                            >
-                              {ordinal(y.rank)} place
-                            </Badge>
-                          ) : null}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="font-bold text-lg">{y.year}</span>
+                            {y.rank && y.rank > 0 ? (
+                              <Badge
+                                variant="outline"
+                                className={
+                                  y.rank === 1
+                                    ? "border-amber-300 bg-amber-50 text-amber-800"
+                                    : y.rank === 2
+                                      ? "border-slate-300 bg-slate-50 text-slate-700"
+                                      : y.rank === 3
+                                        ? "border-orange-300 bg-orange-50 text-orange-800"
+                                        : ""
+                                }
+                              >
+                                {y.rank === 1 && <Trophy className="h-3 w-3 mr-1" />}
+                                {ordinal(y.rank)} place
+                              </Badge>
+                            ) : null}
+                          </div>
+                          <div className="text-right">
+                            <p className="text-lg font-bold text-[#6B745D]">{y.points} pts</p>
+                            <p className="text-xs text-muted-foreground">
+                              {y.weeksParticipated}{" "}
+                              {y.weeksParticipated === 1 ? "week" : "weeks"}
+                            </p>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <p className="text-sm font-semibold">{y.points} pts</p>
-                          <p className="text-xs text-muted-foreground">
-                            {y.weeksParticipated}{" "}
-                            {y.weeksParticipated === 1 ? "week" : "weeks"}
-                          </p>
+                        {/* Vote breakdown for this year */}
+                        <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-border/50">
+                          {y.firstPlace > 0 && (
+                            <Badge variant="secondary" className="bg-amber-100 text-amber-800 text-xs">
+                              <Trophy className="h-3 w-3 mr-1" />
+                              {y.firstPlace} × 1st
+                            </Badge>
+                          )}
+                          {y.secondPlace > 0 && (
+                            <Badge variant="secondary" className="bg-slate-100 text-slate-700 text-xs">
+                              {y.secondPlace} × 2nd
+                            </Badge>
+                          )}
+                          {y.thirdPlace > 0 && (
+                            <Badge variant="secondary" className="bg-orange-100 text-orange-800 text-xs">
+                              {y.thirdPlace} × 3rd
+                            </Badge>
+                          )}
+                          {y.honorableMention > 0 && (
+                            <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
+                              {y.honorableMention} × HM
+                            </Badge>
+                          )}
+                          {y.partner > 0 && (
+                            <Badge variant="secondary" className="bg-[#8E9B79]/20 text-[#6B745D] text-xs">
+                              {y.partner} × Partner
+                            </Badge>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -422,6 +462,70 @@ export function TrophyCase() {
                       <div className="text-right shrink-0">
                         <p className="text-lg font-bold text-[#6B745D]">{w.points}</p>
                         <p className="text-xs text-muted-foreground">pts</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {/* Feedback Received — notes from teammates who voted for you */}
+          {feedbackReceived && feedbackReceived.length > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <MessageCircle className="h-5 w-5 text-[#6B745D]" />
+                  Feedback Received
+                </CardTitle>
+                <CardDescription>
+                  Kind words from teammates who recognized your contributions.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {feedbackReceived.map((fb) => (
+                    <div
+                      key={fb.id}
+                      className="rounded-lg border bg-gradient-to-br from-muted/30 to-muted/10 p-4"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="shrink-0 mt-1">
+                          <Quote className="h-4 w-4 text-[#8E9B79]" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-foreground leading-relaxed">
+                            {fb.notes}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2 mt-3">
+                            <span className="text-xs text-muted-foreground">
+                              {fb.voterName}
+                            </span>
+                            <span className="text-muted-foreground/50">·</span>
+                            <span className="text-xs text-muted-foreground">
+                              {formatWeekDate(fb.weekDate)}
+                            </span>
+                            <Badge
+                              variant="secondary"
+                              className={
+                                fb.placement === "1st"
+                                  ? "bg-amber-100 text-amber-800 text-xs"
+                                  : fb.placement === "2nd"
+                                    ? "bg-slate-100 text-slate-700 text-xs"
+                                    : fb.placement === "3rd"
+                                      ? "bg-orange-100 text-orange-800 text-xs"
+                                      : fb.placement === "HM"
+                                        ? "bg-blue-100 text-blue-800 text-xs"
+                                        : "bg-[#8E9B79]/20 text-[#6B745D] text-xs"
+                              }
+                            >
+                              {fb.placement === "1st" && (
+                                <Trophy className="h-3 w-3 mr-1" />
+                              )}
+                              {fb.placement}
+                            </Badge>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ))}
