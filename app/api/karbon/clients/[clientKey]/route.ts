@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server"
+import { logger } from "@/lib/logger"
+
+const CONTEXT = "karbon/clients/[key]"
 
 function detectJointClients(workItems: any[], currentClientName: string) {
   const jointClientNames = new Set<string>()
@@ -58,8 +61,8 @@ async function fetchOrganizationDetails(orgKey: string, accessKey: string, beare
         name: org.OrganizationName || org.FullName || "Unknown Organization",
       }
     }
-  } catch (error) {
-    console.log(`[v0] Error fetching organization ${orgKey}:`, error)
+  } catch (error: any) {
+    logger.debug(CONTEXT, "Failed to fetch organization", { orgKey, error: error.message })
   }
   return null
 }
@@ -67,16 +70,11 @@ async function fetchOrganizationDetails(orgKey: string, accessKey: string, beare
 async function extractBusinessRelationships(businessCards: any[], accessKey: string, bearerToken: string) {
   const businesses: Array<{ key: string; name: string }> = []
 
-  console.log("[v0] Business cards structure:", JSON.stringify(businessCards, null, 2))
-
   for (const card of businessCards) {
     const orgKey = card.OrganizationKey
-
     if (orgKey) {
-      console.log(`[v0] Found OrganizationKey in business card: ${orgKey}`)
       const orgDetails = await fetchOrganizationDetails(orgKey, accessKey, bearerToken)
       if (orgDetails) {
-        console.log(`[v0] Fetched organization details:`, orgDetails)
         businesses.push(orgDetails)
       }
     }
@@ -183,22 +181,16 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
       (item: any) => item.ClientKey === clientKey || (organizationKey && item.ClientKey === organizationKey),
     )
 
-    console.log(`[v0] Found ${directWorkItems.length} direct work items for client`)
-
     // Get the client group name from the first work item
     const clientGroupName = directWorkItems[0]?.ClientGroup || null
-    console.log(`[v0] Client group name: ${clientGroupName}`)
 
     let relatedWorkItems = directWorkItems
     if (clientGroupName) {
       relatedWorkItems = allWorkItems.filter((item: any) => item.ClientGroup === clientGroupName)
-      console.log(`[v0] Found ${relatedWorkItems.length} total work items in client group: ${clientGroupName}`)
     }
 
     // Remove duplicates by WorkKey
     const uniqueWorkItems = Array.from(new Map(relatedWorkItems.map((item: any) => [item.WorkKey, item])).values())
-
-    console.log(`[v0] Total unique work items: ${uniqueWorkItems.length}`)
 
     if (uniqueWorkItems.length === 0 && !clientDetails) {
       return NextResponse.json(
@@ -211,12 +203,10 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
     }
 
     const detectedSpouses = detectJointClients(uniqueWorkItems, clientName || "")
-    console.log(`[v0] Detected potential spouses from work items:`, detectedSpouses)
 
     const businessRelationships = clientDetails?.BusinessCards
       ? await extractBusinessRelationships(clientDetails.BusinessCards, accessKey, bearerToken)
       : []
-    console.log(`[v0] Business relationships from cards:`, businessRelationships)
 
     let contactInfo: any = {
       email: null,
@@ -371,8 +361,8 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
       relatedBusinesses,
       detectedSpouses,
     })
-  } catch (error) {
-    console.error("[v0] Error fetching client details:", error)
+  } catch (error: any) {
+    logger.error(CONTEXT, "Failed to fetch client details", { error: error.message })
     return NextResponse.json({ error: "Failed to fetch client details from Karbon" }, { status: 500 })
   }
 }
