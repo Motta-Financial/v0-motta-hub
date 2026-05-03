@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 
-export async function PUT(request: NextRequest, { params }: { params: { contactKey: string } }) {
+export async function PUT(request: NextRequest, { params }: { params: Promise<{ contactKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -10,7 +10,7 @@ export async function PUT(request: NextRequest, { params }: { params: { contactK
 
   try {
     const body = await request.json()
-    const { contactKey } = params
+    const { contactKey } = await params
 
     // Make PUT request to Karbon API
     const response = await fetch(`https://api.karbonhq.com/v3/Contacts/${contactKey}`, {
@@ -43,7 +43,7 @@ export async function PUT(request: NextRequest, { params }: { params: { contactK
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { contactKey: string } }) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ contactKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -53,7 +53,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { contac
 
   try {
     const body = await request.json()
-    const { contactKey } = params
+    const { contactKey } = await params
 
     // Make PATCH request to Karbon API
     const response = await fetch(`https://api.karbonhq.com/v3/Contacts/${contactKey}`, {
@@ -128,7 +128,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET(request: NextRequest, { params }: { params: { contactKey: string } }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ contactKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -137,7 +137,7 @@ export async function GET(request: NextRequest, { params }: { params: { contactK
   }
 
   try {
-    const { contactKey } = params
+    const { contactKey } = await params
     const searchParams = request.nextUrl.searchParams
     // Karbon Contact $expand options: BusinessCards, AccountingDetail
     const expand = searchParams.get("expand") || "BusinessCards,AccountingDetail"

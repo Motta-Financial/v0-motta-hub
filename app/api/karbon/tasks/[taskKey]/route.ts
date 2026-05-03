@@ -5,7 +5,7 @@ import { getKarbonCredentials, karbonFetch } from "@/lib/karbon-api"
  * GET /api/karbon/tasks/[taskKey]
  * Fetch a specific task
  */
-export async function GET(request: NextRequest, { params }: { params: { taskKey: string } }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ taskKey: string }> }) {
   const credentials = getKarbonCredentials()
 
   if (!credentials) {
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest, { params }: { params: { taskKey:
   }
 
   try {
-    const { taskKey } = params
+    const { taskKey } = await params
 
     const { data, error } = await karbonFetch<any>(`/Tasks/${taskKey}`, credentials)
 
@@ -35,7 +35,7 @@ export async function GET(request: NextRequest, { params }: { params: { taskKey:
  * PUT /api/karbon/tasks/[taskKey]
  * Update a task
  */
-export async function PUT(request: NextRequest, { params }: { params: { taskKey: string } }) {
+export async function PUT(request: NextRequest, { params }: { params: Promise<{ taskKey: string }> }) {
   const credentials = getKarbonCredentials()
 
   if (!credentials) {
@@ -43,7 +43,7 @@ export async function PUT(request: NextRequest, { params }: { params: { taskKey:
   }
 
   try {
-    const { taskKey } = params
+    const { taskKey } = await params
     const body = await request.json()
 
     const { data, error } = await karbonFetch<any>(`/Tasks/${taskKey}`, credentials, {
@@ -69,7 +69,7 @@ export async function PUT(request: NextRequest, { params }: { params: { taskKey:
  * PATCH /api/karbon/tasks/[taskKey]
  * Partially update a task
  */
-export async function PATCH(request: NextRequest, { params }: { params: { taskKey: string } }) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ taskKey: string }> }) {
   const credentials = getKarbonCredentials()
 
   if (!credentials) {
@@ -77,7 +77,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { taskKe
   }
 
   try {
-    const { taskKey } = params
+    const { taskKey } = await params
     const body = await request.json()
 
     const { data, error } = await karbonFetch<any>(`/Tasks/${taskKey}`, credentials, {
@@ -103,7 +103,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { taskKe
  * DELETE /api/karbon/tasks/[taskKey]
  * Delete a task
  */
-export async function DELETE(request: NextRequest, { params }: { params: { taskKey: string } }) {
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ taskKey: string }> }) {
   const credentials = getKarbonCredentials()
 
   if (!credentials) {
@@ -111,7 +111,7 @@ export async function DELETE(request: NextRequest, { params }: { params: { taskK
   }
 
   try {
-    const { taskKey } = params
+    const { taskKey } = await params
 
     const { error } = await karbonFetch<any>(`/Tasks/${taskKey}`, credentials, {
       method: "DELETE",

@@ -83,7 +83,7 @@ async function extractBusinessRelationships(businessCards: any[], accessKey: str
   return businesses
 }
 
-export async function GET(request: Request, { params }: { params: { clientKey: string } }) {
+export async function GET(request: Request, { params }: { params: Promise<{ clientKey: string }> }) {
   const accessKey = process.env.KARBON_ACCESS_KEY
   const bearerToken = process.env.KARBON_BEARER_TOKEN
 
@@ -92,7 +92,7 @@ export async function GET(request: Request, { params }: { params: { clientKey: s
   }
 
   try {
-    const { clientKey } = params
+    const { clientKey } = await params
 
     let clientDetails: any = null
     let isOrganization = false

@@ -136,13 +136,13 @@ export async function POST(request: NextRequest) {
  * Imported from internal helpers when needed; left here as a stub to
  * keep the route surface compatible with previous consumers.
  */
-export async function _notifyMeetingCreated() {
+async function _notifyMeetingCreated() {
   // No-op placeholder retained for backward compatibility.
   return null
 }
 
 // Internal helper kept for any legacy import paths
-export async function notifyMeeting(
+async function notifyMeeting(
   supabase: ReturnType<typeof createClient> extends Promise<infer T> ? T : never,
   event: any,
   invitees: any[],

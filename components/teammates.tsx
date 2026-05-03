@@ -73,7 +73,10 @@ export function Teammates() {
 
   const fetchUsers = async () => {
     try {
-      const response = await fetch("/api/team-members")
+      // Directory page intentionally shows inactive members too -- it has
+      // Active / Inactive tabs and stats. The default API response excludes
+      // them so they never end up in assignment / mention selectors.
+      const response = await fetch("/api/team-members?include_inactive=true")
       if (!response.ok) throw new Error("Failed to fetch users")
       const data = await response.json()
       const usersArray = data.team_members || data.teamMembers || []

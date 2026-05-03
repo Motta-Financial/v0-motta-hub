@@ -2,10 +2,10 @@ import { type NextRequest, NextResponse } from "next/server"
 import crypto from "crypto"
 import { createClient } from "@/lib/supabase/server"
 import {
+  ensureWebhookSubscription,
   exchangeAuthorizationCode,
-  fetchMe,
   extractUuid,
-  getAppBaseUrl,
+  fetchMe,
   type CalendlyConnectionRow,
 } from "@/lib/calendly-api"
 
@@ -123,25 +123,32 @@ export async function GET(request: NextRequest) {
           scope: tokens.scope,
           is_active: true,
           sync_enabled: true,
+          last_sync_error: null,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "team_member_id" },
       )
-      .select("id")
+      .select("*")
       .single()
 
-    if (upsertError) {
+    if (upsertError || !connectionRow) {
       console.error("[calendly] connection upsert failed:", upsertError)
       return fail(request, "save_failed")
     }
 
-    // Fire-and-forget webhook subscription. We deliberately don't await
-    // this — connection success should not depend on webhook success,
-    // and the user can always retry from the diagnostics page.
-    if (connectionRow?.id) {
-      void ensureWebhookSubscription(connectionRow.id, request.url).catch((err) =>
-        console.error("[calendly] post-connect webhook subscribe failed:", err),
-      )
+    // Subscribe webhook inline. Previously this was fire-and-forget over
+    // HTTP, which meant the subscription frequently never landed (the
+    // request was canceled by the redirect, errors were swallowed, and
+    // the DB never reflected the result). Calling the helper directly
+    // ensures the user lands on /calendly with webhooks already wired
+    // up — or at least with a precise error to surface in the UI.
+    const sub = await ensureWebhookSubscription(
+      connectionRow as CalendlyConnectionRow,
+      supabase,
+      { scope: "user" },
+    )
+    if (sub.error) {
+      console.error("[calendly] post-connect webhook subscribe failed:", sub.error)
     }
 
     return NextResponse.redirect(new URL(SUCCESS_REDIRECT, request.url))
@@ -149,18 +156,4 @@ export async function GET(request: NextRequest) {
     console.error("[calendly] callback failure:", err)
     return fail(request, "callback_failed")
   }
-}
-
-/**
- * Triggers our internal subscription endpoint asynchronously so newly
- * connected users start receiving real-time webhook updates without
- * needing to push a button.
- */
-async function ensureWebhookSubscription(connectionId: string, requestUrl: string) {
-  const base = getAppBaseUrl() || new URL(requestUrl).origin
-  await fetch(`${base}/api/calendly/webhook/subscribe`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ connectionId, scope: "user" }),
-  })
 }
