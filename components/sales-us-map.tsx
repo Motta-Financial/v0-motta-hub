@@ -241,7 +241,7 @@ export function SalesUSMap({ data, loading }: SalesUSMapProps) {
   }, [data, viewMode])
 
   const cityScale = useMemo(() => {
-    if (cityMarkers.length === 0) return () => 4
+    if (cityMarkers.length === 0) return (_c: CityMarker) => 4
     const accessor =
       metric === "revenue"
         ? (c: CityMarker) => c.acceptedValue
@@ -249,10 +249,14 @@ export function SalesUSMap({ data, loading }: SalesUSMapProps) {
         ? (c: CityMarker) => c.clientCount
         : (c: CityMarker) => c.proposalCount
     const max = Math.max(...cityMarkers.map(accessor), 1)
-    return scaleSqrt<number, number>()
+    // d3's scaleSqrt expects a number, so we wrap it in an accessor so
+    // callers can pass the marker directly. Without this wrapper the
+    // scale silently produced NaN radii.
+    const scale = scaleSqrt<number, number>()
       .domain([0, max])
       .range([3, 22])
-      .clamp(true) as unknown as (c: CityMarker) => number
+      .clamp(true)
+    return (c: CityMarker): number => scale(accessor(c))
   }, [cityMarkers, metric])
 
   const handleMouseMove = useCallback((e: React.MouseEvent, key: string) => {
