@@ -56,9 +56,22 @@ export function mapKarbonOrganizationToSupabase(org: any) {
     else if (regType.includes("gst")) gstNumber = regNum
   }
 
+  // Karbon's /Organizations list endpoint returns FullName as the canonical
+  // organization display name (e.g. "145 High St LLC"). The detail endpoint
+  // may also expose OrganizationName / Name on richer payloads, so we keep
+  // those as preferred sources before falling back to FullName. The
+  // "Organization {key}" placeholder is a last-resort guard against fully
+  // empty rows — but we should NEVER use it when FullName is available
+  // (otherwise Top Clients shows "Organization 7N3TRbHH6ls").
+  const resolvedName: string =
+    org.OrganizationName ||
+    org.Name ||
+    org.FullName ||
+    (org.OrganizationKey ? `Organization ${org.OrganizationKey}` : "Unnamed Organization")
+
   return {
     karbon_organization_key: org.OrganizationKey,
-    name: org.OrganizationName || org.Name || `Organization ${org.OrganizationKey}`,
+    name: resolvedName,
     full_name: org.FullName || org.OrganizationName || org.Name || null,
     legal_name: org.LegalName || null,
     trading_name: org.TradingName || null,

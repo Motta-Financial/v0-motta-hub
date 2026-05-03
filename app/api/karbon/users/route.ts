@@ -1,36 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
+import { mapKarbonUserToSupabase } from "@/lib/karbon/mappers/user"
 
 function getSupabaseClient() {
   return tryCreateAdminClient()
-}
-
-function mapKarbonUserToSupabase(user: any) {
-  const firstName = user.FirstName || null
-  const lastName = user.LastName || null
-  const fullName = user.FullName || `${firstName || ""} ${lastName || ""}`.trim() || "Unknown User"
-
-  const userKey = user.UserKey || user.MemberKey
-
-  return {
-    karbon_user_key: userKey,
-    first_name: firstName,
-    last_name: lastName,
-    full_name: fullName,
-    email: user.EmailAddress || user.Email || null,
-    title: user.Title || user.JobTitle || null,
-    role: user.Role || user.UserRole || null,
-    department: user.Department || null,
-    phone_number: user.PhoneNumber || user.WorkPhone || null,
-    mobile_number: user.MobileNumber || user.Mobile || null,
-    avatar_url: user.AvatarUrl || user.ProfileImageUrl || null,
-    timezone: user.TimeZone || user.Timezone || null,
-    start_date: user.StartDate ? user.StartDate.split("T")[0] : null,
-    is_active: user.IsActive !== false,
-    karbon_url: userKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/team/${userKey}` : null,
-    last_synced_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }
 }
 
 export async function GET(request: NextRequest) {
@@ -139,24 +112,31 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const allUsers = usersArray.map((user: any) => ({
-      userKey: user.UserKey || user.MemberKey,
-      fullName: user.FullName || `${user.FirstName || ""} ${user.LastName || ""}`.trim(),
-      firstName: user.FirstName,
-      lastName: user.LastName,
-      email: user.EmailAddress || user.Email,
-      title: user.Title || user.JobTitle,
-      department: user.Department,
-      role: user.Role || user.UserRole,
-      isActive: user.IsActive !== false,
-      avatarUrl: user.AvatarUrl || user.ProfileImageUrl,
-      phoneNumber: user.PhoneNumber || user.WorkPhone,
-      mobileNumber: user.MobileNumber || user.Mobile,
-      timezone: user.TimeZone || user.Timezone,
-      startDate: user.StartDate,
-      lastLoginDate: user.LastLoginDate,
-      createdDate: user.CreatedDate,
-    }))
+    // Project the Karbon list response into a stable client-side shape.
+    // Karbon's /Users list endpoint returns Id, Name, EmailAddress only —
+    // we run it through the shared mapper so first/last names are derived
+    // consistently (split on whitespace, with email fallback).
+    const allUsers = usersArray.map((user: any) => {
+      const mapped = mapKarbonUserToSupabase(user)
+      return {
+        userKey: mapped.karbon_user_key,
+        fullName: mapped.full_name,
+        firstName: mapped.first_name,
+        lastName: mapped.last_name,
+        email: mapped.email,
+        title: mapped.title,
+        department: mapped.department,
+        role: mapped.role,
+        isActive: mapped.is_active,
+        avatarUrl: mapped.avatar_url,
+        phoneNumber: mapped.phone_number,
+        mobileNumber: mapped.mobile_number,
+        timezone: mapped.timezone,
+        startDate: mapped.start_date,
+        lastLoginDate: user.LastLoginDate || null,
+        createdDate: user.CreatedDate || null,
+      }
+    })
 
     return NextResponse.json({
       users: allUsers,
