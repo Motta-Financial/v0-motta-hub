@@ -95,13 +95,24 @@ export function getCalendlyOAuthConfig(): {
   return { clientId, clientSecret, redirectUri }
 }
 
+/**
+ * Returns the canonical https:// base URL for this deployment.
+ *
+ * Some env vars in this project are set as bare hostnames (e.g.
+ * `NEXT_PUBLIC_APP_URL=motta.cpa`). Calendly's webhook API rejects any
+ * callback URL that isn't a fully-qualified absolute URL with scheme,
+ * so we normalize:
+ *   - prepend `https://` if no scheme is present
+ *   - strip trailing slashes so callers can append paths cleanly
+ */
 export function getAppBaseUrl(): string {
-  return (
+  const raw =
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.APP_BASE_URL ||
     process.env.AUTH0_BASE_URL ||
     "https://motta.cpa"
-  )
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
+  return withScheme.replace(/\/+$/, "")
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -442,7 +453,7 @@ export async function calendlyListAll<T = unknown>(
   return collected
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────���───────────────────────────────────────────
  * Webhook signatures
  * ─────────────────────────────────────────────────────────────────────── */
 
@@ -556,13 +567,36 @@ export async function getActiveConnectionForTeamMember(
  * our callback URL.
  */
 
-export const DEFAULT_WEBHOOK_EVENTS = [
+/**
+ * Webhook events available at *user* scope.
+ *
+ * Note: `routing_form_submission.created` is intentionally NOT here —
+ * Calendly only allows that event at organization scope, and including
+ * it in a user-scope subscription causes the entire request to fail
+ * with HTTP 400 ("routing_form_submission.created event only supports
+ * 'organization' scope").
+ */
+export const USER_SCOPE_WEBHOOK_EVENTS = [
   "invitee.created",
   "invitee.canceled",
   "invitee_no_show.created",
   "invitee_no_show.deleted",
+] as const
+
+/**
+ * Webhook events available at *organization* scope. Superset of the
+ * user-scope events plus org-only events (routing forms).
+ */
+export const ORG_SCOPE_WEBHOOK_EVENTS = [
+  ...USER_SCOPE_WEBHOOK_EVENTS,
   "routing_form_submission.created",
 ] as const
+
+/**
+ * @deprecated Use `USER_SCOPE_WEBHOOK_EVENTS` or `ORG_SCOPE_WEBHOOK_EVENTS`.
+ * Kept for backward compatibility with any external imports.
+ */
+export const DEFAULT_WEBHOOK_EVENTS = USER_SCOPE_WEBHOOK_EVENTS
 
 export interface EnsureWebhookResult {
   webhook: { uri: string; callback_url: string; state: string; events?: string[] } | null
@@ -588,7 +622,11 @@ export async function ensureWebhookSubscription(
   } = {},
 ): Promise<EnsureWebhookResult> {
   const scope = options.scope ?? "user"
-  const events = options.events ?? DEFAULT_WEBHOOK_EVENTS
+  // Default events depend on scope: org-scope can include routing forms,
+  // user-scope cannot (Calendly rejects the request otherwise).
+  const events =
+    options.events ??
+    (scope === "organization" ? ORG_SCOPE_WEBHOOK_EVENTS : USER_SCOPE_WEBHOOK_EVENTS)
   const callbackUrl = `${getAppBaseUrl()}/api/calendly/webhook`
 
   try {

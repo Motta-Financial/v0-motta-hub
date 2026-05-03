@@ -35,7 +35,8 @@ export async function GET(request: Request) {
 
   // Always include the past 7d so cancellations or reschedules that
   // happened during a webhook outage get reconciled even though they're
-  // now in the past.
+  // now in the past. POST callers can override the window for one-time
+  // backfills (e.g. immediately after enabling webhooks).
   try {
     const result = await runCalendlySync({
       syncPast: true,
@@ -56,4 +57,43 @@ export async function GET(request: Request) {
   }
 }
 
-export const POST = GET
+export async function POST(request: Request) {
+  const secret = process.env.CRON_SECRET
+  if (!secret) {
+    return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 500 })
+  }
+  const auth = request.headers.get("authorization") || ""
+  const provided = auth.startsWith("Bearer ") ? auth.slice(7) : null
+  if (provided !== secret) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  // POST allows callers (operators, one-off backfill scripts) to widen
+  // the date range. Falls back to the same defaults as GET.
+  let body: any = {}
+  try {
+    body = await request.json()
+  } catch {
+    body = {}
+  }
+
+  try {
+    const result = await runCalendlySync({
+      syncPast: body.syncPast ?? true,
+      daysBack: typeof body.daysBack === "number" ? body.daysBack : 7,
+      daysForward: typeof body.daysForward === "number" ? body.daysForward : 60,
+      syncEventTypes: body.syncEventTypes ?? true,
+      teamMemberId: body.teamMemberId,
+    })
+    return NextResponse.json(result)
+  } catch (err) {
+    console.error("[cron/calendly-sync] POST failed:", err)
+    return NextResponse.json(
+      {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      { status: 500 },
+    )
+  }
+}
