@@ -16,6 +16,7 @@ export async function GET() {
         gif_url,
         is_pinned,
         created_at,
+        updated_at,
         message_reactions (
           id,
           emoji,
@@ -43,6 +44,7 @@ export async function GET() {
       teamMemberId: msg.author_id,
       content: msg.content,
       timestamp: msg.created_at,
+      updatedAt: msg.updated_at,
       gifUrl: msg.gif_url,
       isPinned: msg.is_pinned,
       reactions: aggregateReactions(msg.message_reactions || []),
