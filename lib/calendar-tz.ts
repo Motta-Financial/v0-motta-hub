@@ -129,6 +129,84 @@ export function tzDayOfWeek(iso: string | Date, timeZone: string): number {
 }
 
 /**
+ * Backwards-compatible alias. Some callers import `COMMON_TIMEZONES`
+ * (no underscore) so we re-export the same array under that name. The
+ * shape callers expect is `{ id, label }` so we map it here once.
+ */
+export const COMMON_TIMEZONES: { id: string; label: string }[] = COMMON_TIME_ZONES.map(
+  (z) => ({ id: z.value, label: z.label }),
+)
+
+/**
+ * Decompose an instant into year/month/day/hour/minute as observed in
+ * `timeZone`. Used by the grid for cell-anchoring, month boundaries,
+ * and "same day in tz" comparisons. Month is 1-indexed (Jan = 1) to
+ * match how humans (and SQL) think about months.
+ */
+export function partsInTz(
+  date: Date,
+  timeZone: string,
+): { year: number; month: number; day: number; hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(date)
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? "0")
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    // "24" can appear in some locales for midnight — normalize to 0.
+    hour: get("hour") % 24,
+    minute: get("minute"),
+  }
+}
+
+/**
+ * Returns the offset (in minutes) between UTC and `timeZone` *at the
+ * given instant*. Positive when `timeZone` is east of UTC. Computed by
+ * formatting the instant with a long-offset token, e.g. "GMT-05:00",
+ * which gives DST-aware results without external libraries.
+ */
+export function getTzOffsetMinutes(date: Date, timeZone: string): number {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "longOffset",
+  })
+  const part = fmt.formatToParts(date).find((p) => p.type === "timeZoneName")?.value ?? "GMT+00:00"
+  // Examples: "GMT-05:00", "GMT", "GMT+11:00".
+  const m = /GMT([+-])(\d{1,2})(?::(\d{2}))?/.exec(part)
+  if (!m) return 0
+  const sign = m[1] === "-" ? -1 : 1
+  const hours = Number(m[2]) || 0
+  const mins = Number(m[3]) || 0
+  return sign * (hours * 60 + mins)
+}
+
+/**
+ * Returns midnight local-to-`timeZone` for the day containing `date`,
+ * expressed as a UTC `Date`. Used by the week/month grid to anchor
+ * column starts. Implemented by computing the tz offset, subtracting
+ * the wall-clock time-of-day, and re-adding the offset.
+ */
+export function startOfDayInTz(date: Date, timeZone: string): Date {
+  const p = partsInTz(date, timeZone)
+  // Anchor at 12:00 UTC on the wall-clock date and walk to 00:00 in the
+  // target zone. The 12:00 anchor avoids landing on the previous day in
+  // far-east zones.
+  const guess = new Date(Date.UTC(p.year, p.month - 1, p.day, 12, 0, 0))
+  const offsetMin = getTzOffsetMinutes(guess, timeZone)
+  // 12:00 local minus 12 hours = 00:00 local; offsetMin moves us back
+  // into UTC instant.
+  return new Date(guess.getTime() - 12 * 60 * 60 * 1000 - offsetMin * 60 * 1000)
+}
+
+/**
  * Returns minutes-since-midnight for the given instant in the given tz.
  * The day-view grid uses this to position events vertically.
  */

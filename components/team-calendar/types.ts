@@ -6,6 +6,13 @@
  * want the client surface to reflect the trimmed shape, not the raw DB.
  */
 
+/**
+ * The four built-in views. Day/week/month follow the obvious calendar
+ * conventions; "list" is a flat agenda for users who prefer reading
+ * over scanning a grid.
+ */
+export type CalendarView = "day" | "week" | "month" | "list"
+
 export interface TeamCalendarHost {
   id: string
   full_name: string | null
