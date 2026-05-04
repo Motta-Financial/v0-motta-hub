@@ -48,6 +48,7 @@ import {
   Receipt,
   Briefcase,
   Repeat,
+  Headphones,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -150,7 +151,6 @@ const navigation = [
         name: "Accounting",
         href: "/accounting",
         icon: Calculator,
-        children: [{ name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign }],
         children: [
           { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
           { name: "Onboarding", href: "/onboarding", icon: UserPlus },
@@ -160,7 +160,6 @@ const navigation = [
         name: "Tax",
         href: "/tax",
         icon: FileText,
-        children: [{ name: "Busy Season", href: "/tax/busy-season", icon: FileText }],
         children: [
           { name: "Busy Season", href: "/tax/busy-season", icon: FileText },
           { name: "Tax Planning", href: "/tax/planning", icon: Lightbulb },
@@ -307,7 +306,7 @@ function HubHeader({
 // Does pathname match this node, or any descendant of it? Used both for
 // auto-expansion and for parent-active highlighting. Recurses through the
 // whole subtree so a deep grandchild match (e.g. /calendly while we're
-// inside Home → Calendar → Calendly Admin) still bubbles up to mark every
+// inside Home �� Calendar → Calendly Admin) still bubbles up to mark every
 // ancestor as active and expanded.
 function branchContainsActive(node: any, pathname: string): boolean {
   if (
@@ -492,7 +491,7 @@ function Sidebar() {
 
                     {hasChildren && isExpanded && (
                       <ul className="mt-1 space-y-1">
-                        {item.children!.map((child) => {
+                        {(item.children as any[])!.map((child: any) => {
                           const isChildCurrent = pathname === child.href || pathname.startsWith(child.href + "/")
                           const hasGrandchildren = child.children && child.children.length > 0
                           const isChildExpanded = expandedSections[child.name] || false

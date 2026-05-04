@@ -792,7 +792,7 @@ export default function DebriefsPage() {
         </Dialog>
 
         <DebriefEditSheet
-          debrief={editingDebrief}
+          debrief={editingDebrief as any}
           open={!!editingDebrief}
           onOpenChange={(o) => {
             if (!o) setEditingDebrief(null)

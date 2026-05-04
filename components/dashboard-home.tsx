@@ -81,6 +81,7 @@ export function DashboardHome() {
         }
         defaultExpanded={true}
         collapsible={true}
+        maximizable={false}
         className="bg-white shadow-sm border-gray-200 w-full"
         actions={
           <div className="text-right">
