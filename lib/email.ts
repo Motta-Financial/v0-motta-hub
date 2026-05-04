@@ -188,6 +188,12 @@ export function buildDebriefEmailHtml({
           `,
             )
             .join("")}
+        </tbody>
+      </table>
+    </div>
+  `
+      : ""
+
   // Helper to render a Karbon deep link
   const renderKarbonLink = (label: string, url?: string | null) => {
     if (!url) {

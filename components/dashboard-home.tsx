@@ -1,10 +1,11 @@
 "use client"
 
-import { Users, CheckSquare, Clock, FileText, TrendingUp, Loader2 } from "lucide-react"
+import { Users, CheckSquare, Clock, FileText, Loader2 } from "lucide-react"
 import { MessageBoard } from "@/components/message-board"
 import { WorldClocks } from "@/components/world-clocks"
 import { ClientServiceDebriefs } from "@/components/client-service-debriefs"
 import { ExpandableCard } from "@/components/ui/expandable-card"
+import { StatDrillCard } from "@/components/stat-drill-card"
 import { useUser, useDisplayName } from "@/contexts/user-context"
 import { useEffect, useState } from "react"
 
@@ -65,8 +66,12 @@ export function DashboardHome() {
     )
   }
 
+  // Append `?teamMemberId=` only when we know who the user is — otherwise the
+  // API falls back to the firm-wide view.
+  const tmQuery = teamMember?.id ? `?teamMemberId=${teamMember.id}` : ""
+
   return (
-    <div className="space-y-6">
+    <div className="w-full space-y-6">
       <ExpandableCard
         title={`Welcome back, ${displayName}`}
         description={
@@ -75,8 +80,8 @@ export function DashboardHome() {
             : "Here's what's happening with your clients today."
         }
         defaultExpanded={true}
-        collapsible={false}
-        className="bg-white shadow-sm border-gray-200"
+        collapsible={true}
+        className="bg-white shadow-sm border-gray-200 w-full"
         actions={
           <div className="text-right">
             <p className="text-sm text-gray-500">Today</p>
@@ -92,69 +97,76 @@ export function DashboardHome() {
         }
       >
         <div className="space-y-6">
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-3">Global Time Zones</p>
+          <ExpandableCard
+            title="Global Time Zones"
+            defaultExpanded={true}
+            collapsible={true}
+            className="bg-gray-50 border-gray-200 shadow-none w-full"
+          >
             <WorldClocks />
-          </div>
+          </ExpandableCard>
 
-          <div className="border-t pt-6">
+          <ExpandableCard
+            title="Team Message Board"
+            defaultExpanded={true}
+            collapsible={true}
+            className="bg-gray-50 border-gray-200 shadow-none w-full"
+            contentClassName="pt-0"
+          >
             <MessageBoard />
-          </div>
+          </ExpandableCard>
 
-          {/* Replaces the former Microsoft Teams Chat slot. */}
-          <div className="border-t pt-6">
+          <ExpandableCard
+            title="Client Service Updates"
+            description="Recent debriefs across the firm"
+            defaultExpanded={true}
+            collapsible={true}
+            className="bg-gray-50 border-gray-200 shadow-none w-full"
+            contentClassName="pt-0"
+          >
             <ClientServiceDebriefs />
-          </div>
+          </ExpandableCard>
         </div>
       </ExpandableCard>
 
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
-        <ExpandableCard
+      <div className="grid w-full grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-4">
+        <StatDrillCard
           title="Active Clients"
           icon={<Users className="h-4 w-4 text-emerald-600" />}
-          defaultExpanded={true}
-          collapsible={false}
-          headerClassName="pb-2"
-        >
-          <div className="text-2xl font-bold text-gray-900">{stats.activeClients}</div>
-          <p className="text-xs text-emerald-600 flex items-center mt-1">
-            <TrendingUp className="h-3 w-3 mr-1" />
-            Total active
-          </p>
-        </ExpandableCard>
+          value={stats.activeClients}
+          hint="Total active"
+          hintClassName="text-emerald-600 flex items-center"
+          detailsEndpoint={`/api/dashboard/details?kind=active-clients`}
+          viewAllHref="/clients"
+        />
 
-        <ExpandableCard
+        <StatDrillCard
           title={teamMember ? "My Open Tasks" : "Open Tasks"}
           icon={<CheckSquare className="h-4 w-4 text-blue-600" />}
-          defaultExpanded={true}
-          collapsible={false}
-          headerClassName="pb-2"
-        >
-          <div className="text-2xl font-bold text-gray-900">{stats.openTasks}</div>
-          <p className="text-xs text-gray-500 mt-1">{stats.tasksToday} due today</p>
-        </ExpandableCard>
+          value={stats.openTasks}
+          hint={`${stats.tasksToday} due today`}
+          detailsEndpoint={`/api/dashboard/details?kind=open-tasks${tmQuery ? `&teamMemberId=${teamMember!.id}` : ""}`}
+          viewAllHref="/work-items"
+        />
 
-        <ExpandableCard
+        <StatDrillCard
           title={teamMember ? "My Deadlines" : "Upcoming Deadlines"}
           icon={<Clock className="h-4 w-4 text-orange-600" />}
-          defaultExpanded={true}
-          collapsible={false}
-          headerClassName="pb-2"
-        >
-          <div className="text-2xl font-bold text-gray-900">{stats.upcomingDeadlines}</div>
-          <p className="text-xs text-orange-600 mt-1">{stats.criticalDeadlines} critical this week</p>
-        </ExpandableCard>
+          value={stats.upcomingDeadlines}
+          hint={`${stats.criticalDeadlines} critical this week`}
+          hintClassName="text-orange-600"
+          detailsEndpoint={`/api/dashboard/details?kind=upcoming-deadlines${tmQuery ? `&teamMemberId=${teamMember!.id}` : ""}`}
+          viewAllHref="/work-items"
+        />
 
-        <ExpandableCard
+        <StatDrillCard
           title="Pending Documents"
           icon={<FileText className="h-4 w-4 text-purple-600" />}
-          defaultExpanded={true}
-          collapsible={false}
-          headerClassName="pb-2"
-        >
-          <div className="text-2xl font-bold text-gray-900">{stats.pendingDocuments}</div>
-          <p className="text-xs text-gray-500 mt-1">Awaiting client review</p>
-        </ExpandableCard>
+          value={stats.pendingDocuments}
+          hint="Awaiting client review"
+          detailsEndpoint={`/api/dashboard/details?kind=pending-documents`}
+          viewAllHref="/clients"
+        />
       </div>
     </div>
   )

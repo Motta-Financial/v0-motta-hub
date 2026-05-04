@@ -373,30 +373,13 @@ export function ClientServiceDebriefs() {
                 <div className="flex items-start justify-between">
                   <div className="flex items-start gap-3">
                     <Avatar className="h-10 w-10">
-                      <AvatarImage src={debrief.team_member?.avatar_url || undefined} alt={debrief.team_member?.full_name || "Team Member"} />
+                      <AvatarImage
+                        src={getTeamMemberAvatar(debrief) || undefined}
+                        alt={getTeamMemberName(debrief)}
+                      />
                       <AvatarFallback className="bg-blue-100 text-blue-700">
-                        {getInitials(
-                          debrief.team_member?.full_name ||
-                            debrief.action_items?.team_member_name ||
-                            debrief.created_by?.full_name ||
-                            "TM",
-                        )}
+                        {getInitials(getTeamMemberName(debrief))}
                       </AvatarFallback>
-                    </Avatar>
-                    <div>
-                      <p className="font-medium text-gray-900">
-                        {debrief.team_member?.full_name ||
-                          debrief.action_items?.team_member_name ||
-                          debrief.created_by?.full_name ||
-                          "Team Member"}
-                      </p>
-                      {getTeamMemberAvatar(debrief) ? (
-                        <img src={getTeamMemberAvatar(debrief)!} alt={getTeamMemberName(debrief)} className="h-10 w-10 rounded-full object-cover" />
-                      ) : (
-                        <AvatarFallback className="bg-blue-100 text-blue-700">
-                          {getInitials(getTeamMemberName(debrief))}
-                        </AvatarFallback>
-                      )}
                     </Avatar>
                     <div>
                       <p className="font-medium text-gray-900">{getTeamMemberName(debrief)}</p>

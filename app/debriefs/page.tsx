@@ -11,8 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { DebriefForm } from "@/components/debrief-form"
-import DashboardLayout from "@/components/dashboard-layout"
+import { DashboardLayout } from "@/components/dashboard-layout"
 
 import { format } from "date-fns"
 import {
@@ -32,7 +31,6 @@ import {
   Check,
   Pencil,
   X,
-  Pencil,
 } from "lucide-react"
 import { DebriefEditSheet } from "@/components/debriefs/debrief-edit-sheet"
 
@@ -51,10 +49,6 @@ interface Debrief {
   team_member?: TeamMemberRef | null
   created_by_id: string | null
   created_by?: TeamMemberRef | null
-  organization_name: string | null
-  team_member: string | null
-  // Backing IDs
-  team_member_id: string | null
   contact_id: string | null
   organization_id: string | null
   work_item_id: string | null
@@ -106,10 +100,6 @@ interface TeamMember {
   email: string
   role?: string
   is_active: boolean
-}
-
-function DebriefFormWrapper() {
-  return <DebriefForm />
 }
 
 function getTeamMemberName(d: Debrief | null): string {
@@ -176,11 +166,6 @@ export default function DebriefsPage() {
   }, [])
 
   // Resolve the best display name for the client tied to this debrief.
-  // Preference order:
-  //   1. Joined organization name from the live organizations table
-  //   2. organization_name captured on the debrief row at creation time
-  //   3. Joined contact full_name (when the debrief is for an individual)
-  //   4. Work-item-side client name (last-resort fallback before showing nothing)
   const resolveClientName = (d: Debrief) =>
     d.organization_display_name ||
     d.organization_name ||
@@ -194,26 +179,22 @@ export default function DebriefsPage() {
     return "unknown"
   }
 
-  // Prefer the canonical work_items.karbon_url (always tenant-scoped and valid)
-  // over the user-pasted karbon_work_url, but fall back to it so older debriefs
-  // that pre-date the work item join still get a Karbon link.
+  // Prefer the canonical work_items.karbon_url over the user-pasted
+  // karbon_work_url, falling back when older debriefs pre-date the join.
   const resolveKarbonWorkUrl = (d: Debrief) => d.work_item_karbon_url || d.karbon_work_url || null
 
-  // Filter debriefs based on search and type
   const filteredDebriefs = debriefs.filter((debrief) => {
     const memberName = getTeamMemberName(debrief).toLowerCase()
+    const clientName = (resolveClientName(debrief) || "").toLowerCase()
+    const q = searchQuery.toLowerCase()
     const matchesSearch =
       !searchQuery ||
-      debrief.organization_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      memberName.includes(searchQuery.toLowerCase()) ||
-    const clientName = resolveClientName(debrief) || ""
-    const matchesSearch =
-      !searchQuery ||
-      clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      debrief.team_member?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      debrief.notes?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      debrief.debrief_type?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      debrief.work_item_title?.toLowerCase().includes(searchQuery.toLowerCase())
+      clientName.includes(q) ||
+      memberName.includes(q) ||
+      debrief.organization_name?.toLowerCase().includes(q) ||
+      debrief.notes?.toLowerCase().includes(q) ||
+      debrief.debrief_type?.toLowerCase().includes(q) ||
+      debrief.work_item_title?.toLowerCase().includes(q)
 
     const matchesType = typeFilter === "all" || debrief.debrief_type === typeFilter
 
@@ -281,529 +262,272 @@ export default function DebriefsPage() {
 
   return (
     <DashboardLayout>
-      <div className="flex flex-col gap-6">
+      <div className="flex w-full flex-col gap-6">
+        {/*
+          Header: title + the "New Debrief" launcher. The new-debrief view
+          opens in a separate browser tab so that submitting it never
+          unmounts the search input on this page.
+        */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Debriefs</h1>
             <p className="text-muted-foreground">Manage client meeting debriefs and notes</p>
           </div>
+          <Button onClick={() => window.open("/debriefs/new", "_blank")} className="gap-2">
+            <Plus className="h-4 w-4" />
+            New Debrief
+            <ExternalLink className="h-3 w-3 opacity-70" />
+          </Button>
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full max-w-md grid-cols-2">
-            <TabsTrigger value="all" className="gap-2">
-              <FileText className="h-4 w-4" />
-              All Debriefs
-            </TabsTrigger>
-            <TabsTrigger value="new" className="gap-2">
-              <Plus className="h-4 w-4" />
-              New Debrief
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="all" className="mt-6">
-            <Card>
-              <CardHeader>
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <CardTitle>All Debriefs</CardTitle>
-                    <CardDescription>
-                      {filteredDebriefs.length} debrief{filteredDebriefs.length !== 1 ? "s" : ""} found
-                    </CardDescription>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={fetchDebriefs} disabled={loading}>
-                      <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                      Refresh
-    <div className="flex flex-col gap-6 p-6">
-      {/*
-        Header: title + the "New Debrief" launcher.
-
-        Previously this page used <Tabs> to switch between "All Debriefs"
-        and "New Debrief", with the New tab patched to call
-        window.open(...) inside e.preventDefault(). Even with
-        preventDefault Radix still flips the active tab to "new" via its
-        keyboard / data-state machinery, which unmounted the
-        TabsContent value="all" — taking the search input with it. That
-        was the source of two complaints at once: the New Debrief view
-        opened in-place AND the search field stopped accepting input.
-
-        The new view is plain: render the list, render a button that
-        opens /debriefs/new in a new browser tab. No tab state, no
-        unmounted content.
-      */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Debriefs</h1>
-          <p className="text-muted-foreground">Manage client meeting debriefs and notes</p>
-        </div>
-        <Button onClick={() => window.open("/debriefs/new", "_blank")} className="gap-2">
-          <Plus className="h-4 w-4" />
-          New Debrief
-          <ExternalLink className="h-3 w-3 opacity-70" />
-        </Button>
-      </div>
-
-      <div className="w-full">
-        <div>
-          <Card>
-            <CardHeader>
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <CardTitle>All Debriefs</CardTitle>
-                  <CardDescription>
-                    {filteredDebriefs.length} debrief{filteredDebriefs.length !== 1 ? "s" : ""} found
-                  </CardDescription>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={fetchDebriefs} disabled={loading}>
-                    <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                    Refresh
-                  </Button>
-                </div>
+        <Card className="w-full">
+          <CardHeader>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>All Debriefs</CardTitle>
+                <CardDescription>
+                  {filteredDebriefs.length} debrief{filteredDebriefs.length !== 1 ? "s" : ""} found
+                </CardDescription>
               </div>
-
-              {/* Filters */}
-              <div className="flex flex-col gap-4 pt-4 sm:flex-row">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder="Search by client, team member, or notes..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-                <Select value={typeFilter} onValueChange={setTypeFilter}>
-                  <SelectTrigger className="w-full sm:w-48">
-                    <Filter className="mr-2 h-4 w-4" />
-                    <SelectValue placeholder="Filter by type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Types</SelectItem>
-                    {debriefTypes.map((type) => (
-                      <SelectItem key={type} value={type}>
-                        {type}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={fetchDebriefs} disabled={loading}>
+                  <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                  Refresh
+                </Button>
               </div>
-            </CardHeader>
-            <CardContent>
-              {error && (
-                <Alert variant="destructive" className="mb-4">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertDescription className="flex items-center justify-between">
-                    {error}
-                    <Button variant="outline" size="sm" onClick={fetchDebriefs}>
-                      Try Again
-                    </Button>
-                  </AlertDescription>
-                </Alert>
-              )}
+            </div>
 
-              {loading ? (
-                <div className="space-y-4">
-                  {[...Array(5)].map((_, i) => (
-                    <div key={i} className="flex items-center gap-4">
-                      <Skeleton className="h-10 w-10 rounded-full" />
-                      <div className="flex-1 space-y-2">
-                        <Skeleton className="h-4 w-1/3" />
-                        <Skeleton className="h-3 w-1/2" />
-                      </div>
-                      <Skeleton className="h-6 w-20" />
-                    </div>
+            {/* Filters */}
+            <div className="flex flex-col gap-4 pt-4 sm:flex-row">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder="Search by client, team member, or notes..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <Select value={typeFilter} onValueChange={setTypeFilter}>
+                <SelectTrigger className="w-full sm:w-48">
+                  <Filter className="mr-2 h-4 w-4" />
+                  <SelectValue placeholder="Filter by type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Types</SelectItem>
+                  {debriefTypes.map((type) => (
+                    <SelectItem key={type} value={type}>
+                      {type}
+                    </SelectItem>
                   ))}
-                </div>
-              ) : filteredDebriefs.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-12 text-center">
-                  <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
-                  <h3 className="text-lg font-medium">No debriefs found</h3>
-                  <p className="text-sm text-muted-foreground">
-                    {searchQuery || typeFilter !== "all"
-                      ? "Try adjusting your filters"
-                      : "Create a new debrief to get started"}
-                  </p>
-                  {!searchQuery && typeFilter === "all" && (
-                    <Button
-                      className="mt-4"
-                      onClick={() => window.open("/debriefs/new", "_blank")}
-                    >
-                      <Plus className="mr-2 h-4 w-4" />
-                      Create Debrief
-                      <ExternalLink className="h-3 w-3 ml-1 opacity-50" />
-                    </Button>
+                </SelectContent>
+              </Select>
+            </div>
+          </CardHeader>
+
+          <CardContent>
+            {error && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription className="flex items-center justify-between">
+                  {error}
+                  <Button variant="outline" size="sm" onClick={fetchDebriefs}>
+                    Try Again
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {loading ? (
+              <div className="space-y-4">
+                {[...Array(5)].map((_, i) => (
+                  <div key={i} className="flex items-center gap-4">
+                    <Skeleton className="h-10 w-10 rounded-full" />
+                    <div className="flex-1 space-y-2">
+                      <Skeleton className="h-4 w-1/3" />
+                      <Skeleton className="h-3 w-1/2" />
+                    </div>
+                    <Skeleton className="h-6 w-20" />
                   </div>
-                </div>
-
-                <div className="flex flex-col gap-4 pt-4 sm:flex-row">
-                  <div className="relative flex-1">
-                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      placeholder="Search by client, team member, or notes..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-9"
-                    />
-                  </div>
-                  <Select value={typeFilter} onValueChange={setTypeFilter}>
-                    <SelectTrigger className="w-full sm:w-48">
-                      <Filter className="mr-2 h-4 w-4" />
-                      <SelectValue placeholder="Filter by type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Types</SelectItem>
-                      {debriefTypes.map((type) => (
-                        <SelectItem key={type} value={type}>
-                          {type}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-              ) : (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Date</TableHead>
-                        <TableHead>Client / Organization</TableHead>
-                        <TableHead>Karbon Work Item</TableHead>
-                        <TableHead>Team Member</TableHead>
-                        <TableHead>Type</TableHead>
-                        <TableHead className="min-w-[18rem]">Notes</TableHead>
-                        <TableHead>Action Items</TableHead>
-                        <TableHead className="text-right">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredDebriefs.map((debrief) => {
-                        const clientName = resolveClientName(debrief)
-                        const clientType = resolveClientType(debrief)
-                        const karbonWorkUrl = resolveKarbonWorkUrl(debrief)
-                        return (
-                          <TableRow
-                            key={debrief.id}
-                            className="cursor-pointer hover:bg-muted/50"
-                            onClick={() => openDetails(debrief)}
-                          >
-                            <TableCell className="whitespace-nowrap">
-                              <div className="flex items-center gap-2">
-                                <Calendar className="h-4 w-4 text-muted-foreground" />
-                                {debrief.debrief_date ? format(new Date(debrief.debrief_date), "MMM d, yyyy") : "-"}
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex items-center gap-2">
-                                {clientType === "organization" ? (
-                                  <Building2 className="h-4 w-4 text-muted-foreground" />
-                                ) : clientType === "contact" ? (
-                                  <User className="h-4 w-4 text-muted-foreground" />
-                                ) : (
-                                  <User className="h-4 w-4 text-muted-foreground/60" />
-                                )}
-                                <span className="font-medium">{clientName || "Unmapped"}</span>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              {debrief.work_item_title || karbonWorkUrl ? (
-                                <div className="flex items-center gap-1">
-                                  <Briefcase className="h-3.5 w-3.5 text-muted-foreground" />
-                                  {karbonWorkUrl ? (
-                                    <a
-                                      href={karbonWorkUrl}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="line-clamp-1 max-w-[16rem] text-sm text-primary underline-offset-2 hover:underline"
-                                      title={debrief.work_item_title || karbonWorkUrl}
-                                    >
-                                      {debrief.work_item_title || "Open in Karbon"}
-                                    </a>
-                                  ) : (
-                                    <span className="line-clamp-1 max-w-[16rem] text-sm">
-                                      {debrief.work_item_title}
-                                    </span>
-                                  )}
-                                </div>
-                              ) : (
-                                <span className="text-muted-foreground">-</span>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex items-center gap-2">
-                                <Avatar className="h-6 w-6">
-                                  <AvatarFallback className="text-xs">{getInitials(debrief.team_member)}</AvatarFallback>
-                                </Avatar>
-                                <span className="whitespace-nowrap">{debrief.team_member || "-"}</span>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              {debrief.debrief_type && (
-                                <Badge variant="secondary" className={getTypeColor(debrief.debrief_type)}>
-                                  {debrief.debrief_type}
-                                </Badge>
-                              )}
-                            </TableCell>
-                            <TableCell className="max-w-md">
-                              {debrief.notes ? (
-                                <p className="line-clamp-2 whitespace-pre-wrap text-sm text-muted-foreground">
-                                  {debrief.notes}
-                                </p>
-                              ) : (
-                                <span className="text-muted-foreground">-</span>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              {debrief.action_items?.items?.length ? (
-                                <Badge variant="outline">
-                                  {debrief.action_items.items.length} item
-                                  {debrief.action_items.items.length !== 1 ? "s" : ""}
-                                </Badge>
-                              ) : (
-                                <span className="text-muted-foreground">-</span>
-                              )}
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  openDetails(debrief)
-                                }}
-                                title="View details"
-                              >
-                                <Eye className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setEditingDebrief(debrief)
-                                }}
-                                title="Edit debrief"
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                              {karbonWorkUrl && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    window.open(karbonWorkUrl, "_blank")
-                                  }}
-                                  title="Open in Karbon"
-                                >
-                                  <ExternalLink className="h-4 w-4" />
-                                </Button>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-
-      {/* Debrief Details Dialog */}
-      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5" />
-              Debrief Details
-            </DialogTitle>
-            <DialogDescription>
-              {selectedDebrief?.debrief_date
-                ? format(new Date(selectedDebrief.debrief_date), "MMMM d, yyyy")
-                : "No date"}
-              {selectedDebrief && resolveClientName(selectedDebrief)
-                ? ` - ${resolveClientName(selectedDebrief)}`
-                : ""}
-            </DialogDescription>
-          </DialogHeader>
-
-          {selectedDebrief && (
-            <div className="space-y-6">
-              {/* Basic Info */}
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1">
-                  <p className="text-sm font-medium text-muted-foreground">Team Member</p>
-                  <p className="flex items-center gap-2">
-                    <Avatar className="h-6 w-6">
-                      <AvatarFallback className="text-xs">{getInitials(selectedDebrief.team_member)}</AvatarFallback>
-                    </Avatar>
-                    {selectedDebrief.team_member || "-"}
-                  </p>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {error && (
-                  <Alert variant="destructive" className="mb-4">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertDescription className="flex items-center justify-between">
-                      {error}
-                      <Button variant="outline" size="sm" onClick={fetchDebriefs}>
-                        Try Again
-                      </Button>
-                    </AlertDescription>
-                  </Alert>
+                ))}
+              </div>
+            ) : filteredDebriefs.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
+                <h3 className="text-lg font-medium">No debriefs found</h3>
+                <p className="text-sm text-muted-foreground">
+                  {searchQuery || typeFilter !== "all"
+                    ? "Try adjusting your filters"
+                    : "Create a new debrief to get started"}
+                </p>
+                {!searchQuery && typeFilter === "all" && (
+                  <Button
+                    className="mt-4"
+                    onClick={() => window.open("/debriefs/new", "_blank")}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create Debrief
+                    <ExternalLink className="h-3 w-3 ml-1 opacity-50" />
+                  </Button>
                 )}
-
-                {loading ? (
-                  <div className="space-y-4">
-                    {[...Array(5)].map((_, i) => (
-                      <div key={i} className="flex items-center gap-4">
-                        <Skeleton className="h-10 w-10 rounded-full" />
-                        <div className="flex-1 space-y-2">
-                          <Skeleton className="h-4 w-1/3" />
-                          <Skeleton className="h-3 w-1/2" />
-                        </div>
-                        <Skeleton className="h-6 w-20" />
-                      </div>
-                    ))}
-                  </div>
-                ) : filteredDebriefs.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-center">
-                    <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
-                    <h3 className="text-lg font-medium">No debriefs found</h3>
-                    <p className="text-sm text-muted-foreground">
-                      {searchQuery || typeFilter !== "all"
-                        ? "Try adjusting your filters"
-                        : "Create a new debrief to get started"}
-                    </p>
-                    {!searchQuery && typeFilter === "all" && (
-                      <Button className="mt-4" onClick={() => setActiveTab("new")}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        Create Debrief
-                      </Button>
-                    )}
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Date</TableHead>
-                          <TableHead>Client</TableHead>
-                          <TableHead>Team Member</TableHead>
-                          <TableHead>Type</TableHead>
-                          <TableHead>Tax Year</TableHead>
-                          <TableHead>Action Items</TableHead>
-                          <TableHead className="text-right">Actions</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {filteredDebriefs.map((debrief) => {
-                          const memberName = getTeamMemberName(debrief)
-                          return (
-                            <TableRow
-                              key={debrief.id}
-                              className="cursor-pointer hover:bg-muted/50"
-                              onClick={() => openDetails(debrief)}
-                            >
-                              <TableCell>
-                                <div className="flex items-center gap-2">
-                                  <Calendar className="h-4 w-4 text-muted-foreground" />
-                                  {debrief.debrief_date ? format(new Date(debrief.debrief_date), "MMM d, yyyy") : "-"}
-                                </div>
-                              </TableCell>
-                              <TableCell>
-                                <div className="flex items-center gap-2">
-                                  {debrief.organization_id ? (
-                                    <Building2 className="h-4 w-4 text-muted-foreground" />
-                                  ) : (
-                                    <User className="h-4 w-4 text-muted-foreground" />
-                                  )}
-                                  <span className="font-medium">
-                                    {debrief.contact?.full_name || debrief.organization?.name || debrief.organization_name || "-"}
-                                  </span>
-                                </div>
-                              </TableCell>
-                              <TableCell>
-                                <div className="flex items-center gap-2">
-                                  <Avatar className="h-6 w-6">
-                                    {debrief.team_member?.avatar_url && (
-                                      <AvatarImage src={debrief.team_member.avatar_url} alt={memberName} />
-                                    )}
-                                    <AvatarFallback className="text-xs">{getInitials(memberName)}</AvatarFallback>
-                                  </Avatar>
-                                  <span>{memberName}</span>
-                                </div>
-                              </TableCell>
-                              <TableCell>
-                                {debrief.debrief_type && (
-                                  <Badge variant="secondary" className={getTypeColor(debrief.debrief_type)}>
-                                    {debrief.debrief_type}
-                                  </Badge>
-                                )}
-                              </TableCell>
-                              <TableCell>{debrief.tax_year || "-"}</TableCell>
-                              <TableCell>
-                                {debrief.action_items?.items?.length ? (
-                                  <Badge variant="outline">
-                                    {debrief.action_items.items.length} item
-                                    {debrief.action_items.items.length !== 1 ? "s" : ""}
-                                  </Badge>
-                                ) : (
-                                  <span className="text-muted-foreground">-</span>
-                                )}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    openDetails(debrief)
-                                  }}
-                                >
-                                  <Eye className="h-4 w-4" />
-                                </Button>
-                                {debrief.karbon_work_url && (
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      window.open(debrief.karbon_work_url!, "_blank")
-                                    }}
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Client / Organization</TableHead>
+                      <TableHead>Karbon Work Item</TableHead>
+                      <TableHead>Team Member</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead className="min-w-[18rem]">Notes</TableHead>
+                      <TableHead>Action Items</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredDebriefs.map((debrief) => {
+                      const clientName = resolveClientName(debrief)
+                      const clientType = resolveClientType(debrief)
+                      const karbonWorkUrl = resolveKarbonWorkUrl(debrief)
+                      const memberName = getTeamMemberName(debrief)
+                      return (
+                        <TableRow
+                          key={debrief.id}
+                          className="cursor-pointer hover:bg-muted/50"
+                          onClick={() => openDetails(debrief)}
+                        >
+                          <TableCell className="whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              <Calendar className="h-4 w-4 text-muted-foreground" />
+                              {debrief.debrief_date
+                                ? format(new Date(debrief.debrief_date), "MMM d, yyyy")
+                                : "-"}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              {clientType === "organization" ? (
+                                <Building2 className="h-4 w-4 text-muted-foreground" />
+                              ) : clientType === "contact" ? (
+                                <User className="h-4 w-4 text-muted-foreground" />
+                              ) : (
+                                <User className="h-4 w-4 text-muted-foreground/60" />
+                              )}
+                              <span className="font-medium">{clientName || "Unmapped"}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            {debrief.work_item_title || karbonWorkUrl ? (
+                              <div className="flex items-center gap-1">
+                                <Briefcase className="h-3.5 w-3.5 text-muted-foreground" />
+                                {karbonWorkUrl ? (
+                                  <a
+                                    href={karbonWorkUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="line-clamp-1 max-w-[16rem] text-sm text-primary underline-offset-2 hover:underline"
+                                    title={debrief.work_item_title || karbonWorkUrl}
                                   >
-                                    <ExternalLink className="h-4 w-4" />
-                                  </Button>
+                                    {debrief.work_item_title || "Open in Karbon"}
+                                  </a>
+                                ) : (
+                                  <span className="line-clamp-1 max-w-[16rem] text-sm">
+                                    {debrief.work_item_title}
+                                  </span>
                                 )}
-                              </TableCell>
-                            </TableRow>
-                          )
-                        })}
-                      </TableBody>
-                    </Table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="new" className="mt-6">
-            <Suspense
-              fallback={
-                <div className="flex items-center justify-center py-12">
-                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                </div>
-              }
-            >
-              <DebriefFormWrapper />
-            </Suspense>
-          </TabsContent>
-        </Tabs>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Avatar className="h-6 w-6">
+                                {debrief.team_member?.avatar_url && (
+                                  <AvatarImage src={debrief.team_member.avatar_url} alt={memberName} />
+                                )}
+                                <AvatarFallback className="text-xs">
+                                  {getInitials(memberName)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span className="whitespace-nowrap">{memberName}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            {debrief.debrief_type && (
+                              <Badge variant="secondary" className={getTypeColor(debrief.debrief_type)}>
+                                {debrief.debrief_type}
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="max-w-md">
+                            {debrief.notes ? (
+                              <p className="line-clamp-2 whitespace-pre-wrap text-sm text-muted-foreground">
+                                {debrief.notes}
+                              </p>
+                            ) : (
+                              <span className="text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {debrief.action_items?.items?.length ? (
+                              <Badge variant="outline">
+                                {debrief.action_items.items.length} item
+                                {debrief.action_items.items.length !== 1 ? "s" : ""}
+                              </Badge>
+                            ) : (
+                              <span className="text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                openDetails(debrief)
+                              }}
+                              title="View details"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setEditingDebrief(debrief)
+                              }}
+                              title="Edit debrief"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            {karbonWorkUrl && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  window.open(karbonWorkUrl, "_blank")
+                                }}
+                                title="Open in Karbon"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Debrief Details Dialog */}
         <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
@@ -817,7 +541,9 @@ export default function DebriefsPage() {
                 {selectedDebrief?.debrief_date
                   ? format(new Date(selectedDebrief.debrief_date), "MMMM d, yyyy")
                   : "No date"}
-                {selectedDebrief?.organization_name && ` - ${selectedDebrief.organization_name}`}
+                {selectedDebrief && resolveClientName(selectedDebrief)
+                  ? ` - ${resolveClientName(selectedDebrief)}`
+                  : ""}
               </DialogDescription>
             </DialogHeader>
 
@@ -864,7 +590,11 @@ export default function DebriefsPage() {
                           onClick={handleSaveTeamMember}
                           disabled={savingTeamMember || !pendingTeamMemberId}
                         >
-                          {savingTeamMember ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                          {savingTeamMember ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Check className="h-4 w-4" />
+                          )}
                         </Button>
                         <Button
                           size="sm"
@@ -951,14 +681,18 @@ export default function DebriefsPage() {
                 {selectedDebrief.notes && (
                   <div>
                     <h4 className="mb-3 font-semibold">Notes</h4>
-                    <p className="whitespace-pre-wrap rounded-lg bg-muted p-4 text-sm">{selectedDebrief.notes}</p>
+                    <p className="whitespace-pre-wrap rounded-lg bg-muted p-4 text-sm">
+                      {selectedDebrief.notes}
+                    </p>
                   </div>
                 )}
 
                 {/* Action Items */}
                 {selectedDebrief.action_items?.items && selectedDebrief.action_items.items.length > 0 && (
                   <div>
-                    <h4 className="mb-3 font-semibold">Action Items ({selectedDebrief.action_items.items.length})</h4>
+                    <h4 className="mb-3 font-semibold">
+                      Action Items ({selectedDebrief.action_items.items.length})
+                    </h4>
                     <div className="space-y-2">
                       {selectedDebrief.action_items.items.map((item, index) => (
                         <div key={index} className="flex items-start gap-3 rounded-lg border p-3">
@@ -1011,90 +745,64 @@ export default function DebriefsPage() {
                   </div>
                 )}
 
-                {/* Karbon Link */}
-                {selectedDebrief.karbon_work_url && (
-                  <div className="pt-4 border-t">
-                    <Button variant="outline" onClick={() => window.open(selectedDebrief.karbon_work_url!, "_blank")}>
-                      <ExternalLink className="mr-2 h-4 w-4" />
-                      Open in Karbon
-                    </Button>
+                {/* Karbon Work Item */}
+                {(selectedDebrief.work_item_title || resolveKarbonWorkUrl(selectedDebrief)) && (
+                  <div className="border-t pt-4">
+                    <h4 className="mb-2 font-semibold">Karbon Work Item</h4>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {selectedDebrief.work_item_title && (
+                        <span className="flex items-center gap-2 text-sm">
+                          <Briefcase className="h-4 w-4 text-muted-foreground" />
+                          {selectedDebrief.work_item_title}
+                        </span>
+                      )}
+                      {resolveKarbonWorkUrl(selectedDebrief) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            window.open(resolveKarbonWorkUrl(selectedDebrief)!, "_blank")
+                          }
+                        >
+                          <ExternalLink className="mr-2 h-4 w-4" />
+                          Open in Karbon
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 )}
+
+                {/* Edit shortcut */}
+                <div className="flex justify-end border-t pt-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setEditingDebrief(selectedDebrief)
+                      setDetailsOpen(false)
+                    }}
+                  >
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Edit Debrief
+                  </Button>
+                </div>
               </div>
             )}
           </DialogContent>
         </Dialog>
+
+        <DebriefEditSheet
+          debrief={editingDebrief}
+          open={!!editingDebrief}
+          onOpenChange={(o) => {
+            if (!o) setEditingDebrief(null)
+          }}
+          onSaved={() => {
+            // Re-fetch the list so the table reflects the new mapping/notes/etc.
+            fetchDebriefs()
+          }}
+        />
       </div>
     </DashboardLayout>
-                </div>
-              )}
-
-              {/* Follow-up */}
-              {selectedDebrief.follow_up_date && (
-                <div>
-                  <h4 className="mb-3 font-semibold">Follow-up Date</h4>
-                  <p className="flex items-center gap-2">
-                    <Calendar className="h-4 w-4 text-muted-foreground" />
-                    {format(new Date(selectedDebrief.follow_up_date), "MMMM d, yyyy")}
-                  </p>
-                </div>
-              )}
-
-              {/* Edit shortcut */}
-              <div className="flex justify-end">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setEditingDebrief(selectedDebrief)
-                    setDetailsOpen(false)
-                  }}
-                >
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Edit Debrief
-                </Button>
-              </div>
-
-              {/* Karbon Work Item */}
-              {(selectedDebrief.work_item_title || resolveKarbonWorkUrl(selectedDebrief)) && (
-                <div className="pt-4 border-t">
-                  <h4 className="mb-2 font-semibold">Karbon Work Item</h4>
-                  <div className="flex flex-wrap items-center gap-3">
-                    {selectedDebrief.work_item_title && (
-                      <span className="flex items-center gap-2 text-sm">
-                        <Briefcase className="h-4 w-4 text-muted-foreground" />
-                        {selectedDebrief.work_item_title}
-                      </span>
-                    )}
-                    {resolveKarbonWorkUrl(selectedDebrief) && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => window.open(resolveKarbonWorkUrl(selectedDebrief)!, "_blank")}
-                      >
-                        <ExternalLink className="mr-2 h-4 w-4" />
-                        Open in Karbon
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <DebriefEditSheet
-        debrief={editingDebrief}
-        open={!!editingDebrief}
-        onOpenChange={(o) => {
-          if (!o) setEditingDebrief(null)
-        }}
-        onSaved={() => {
-          // Re-fetch the list so the table reflects the new mapping/notes/etc.
-          fetchDebriefs()
-        }}
-      />
-    </div>
   )
 }
