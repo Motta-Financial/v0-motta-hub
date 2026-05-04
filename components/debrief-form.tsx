@@ -731,7 +731,11 @@ export function DebriefForm() {
           {/* Team Member */}
           <div className="space-y-2">
             <Label>Team Member Providing Notes *</Label>
-            <Popover open={teamMemberPopoverOpen} onOpenChange={setTeamMemberPopoverOpen}>
+            {/* `modal` keeps CommandInput keystrokes alive even when this
+                form is rendered inside a Dialog/Sheet. Harmless on a normal
+                page but required for the search field to be typeable when
+                the form is mounted in a modal context. */}
+            <Popover open={teamMemberPopoverOpen} onOpenChange={setTeamMemberPopoverOpen} modal>
               <PopoverTrigger asChild>
                 <Button variant="outline" role="combobox" className="w-full justify-between bg-transparent">
                   {formData.team_member_name || "Select team member..."}
@@ -776,7 +780,7 @@ export function DebriefForm() {
             <p className="text-xs text-muted-foreground mb-2">
               Selecting a work item will auto-populate the related client
             </p>
-            <Popover open={workItemPopoverOpen} onOpenChange={setWorkItemPopoverOpen}>
+            <Popover open={workItemPopoverOpen} onOpenChange={setWorkItemPopoverOpen} modal>
               <PopoverTrigger asChild>
                 <Button variant="outline" className="w-full justify-start bg-transparent">
                   <Plus className="mr-2 h-4 w-4" />
@@ -853,7 +857,7 @@ export function DebriefForm() {
             <p className="text-xs text-muted-foreground mb-2">
               Add clients not auto-populated from the work item above (e.g., spouse, related entities)
             </p>
-            <Popover open={clientPopoverOpen} onOpenChange={setClientPopoverOpen}>
+            <Popover open={clientPopoverOpen} onOpenChange={setClientPopoverOpen} modal>
               <PopoverTrigger asChild>
                 <Button variant="outline" className="w-full justify-start bg-transparent">
                   <Plus className="mr-2 h-4 w-4" />
@@ -1074,6 +1078,7 @@ export function DebriefForm() {
           <div className="space-y-2">
             <Label>Related Services</Label>
             <Popover
+              modal
               open={servicePopoverOpen}
               onOpenChange={(open) => {
                 setServicePopoverOpen(open)
