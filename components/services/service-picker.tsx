@@ -90,7 +90,13 @@ export function ServicePicker({
 
   return (
     <div className={cn("flex items-center gap-2", className)}>
-      <Popover open={open} onOpenChange={setOpen}>
+      {/*
+        `modal` keeps the search input alive when the picker is mounted
+        inside a Dialog/Sheet — without it the parent focus trap swallows
+        keystrokes and the field looks dead. Safe to leave on outside a
+        Dialog too.
+      */}
+      <Popover open={open} onOpenChange={setOpen} modal>
         <PopoverTrigger asChild>
           <Button
             type="button"

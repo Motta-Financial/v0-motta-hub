@@ -127,7 +127,15 @@ export function ClientPicker({
 
   return (
     <div className={cn("flex items-center gap-2", className)}>
-      <Popover open={open} onOpenChange={setOpen}>
+      {/*
+        `modal` is critical when the picker is rendered inside a Radix
+        Dialog/Sheet. Without it the parent's focus trap eats every keystroke
+        we'd otherwise route into the CommandInput, so the search field
+        appears completely dead. Setting modal makes the Popover install its
+        own focus scope and pass keys through correctly even on a normal
+        page (where it's effectively a no-op).
+      */}
+      <Popover open={open} onOpenChange={setOpen} modal>
         <PopoverTrigger asChild>
           <Button
             type="button"
