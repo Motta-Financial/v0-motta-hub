@@ -71,13 +71,9 @@ import { WorkItemSearchTrigger } from "@/components/work-item-search"
 // absorbs both the legacy "Karbon Data" page and the engineer-facing
 // "Admin" tools so non-admins see a single configuration entry-point.
 const navigation = [
-  { name: "Dashboard", href: "/", icon: LayoutDashboard, alfredSuggestions: 3 },
-  { name: "Triage", href: "/triage", icon: Inbox, alfredSuggestions: 12 },
-  { name: "Work Items", href: "/work-items", icon: CheckSquare, alfredSuggestions: 7 },
-  { name: "Clients", href: "/clients", icon: Users, alfredSuggestions: 5 },
-  { name: "Debriefs", href: "/debriefs", icon: MessageSquare },
-  { name: "Teammates", href: "/teammates", icon: UserCircle },
-  { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
+  // Home is the launchpad — everything that's part of a teammate's daily
+  // driver workflow lives here. Calendar and Debriefs each have their own
+  // sub-tree so things like /calendly and /debriefs/new are reachable.
   {
     name: "Home",
     href: "/",
@@ -99,15 +95,13 @@ const navigation = [
         name: "Debriefs",
         href: "/debriefs",
         icon: MessageSquare,
-        children: [
-          { name: "New Debrief", href: "/debriefs/new", icon: NotebookPen },
-        ],
+        children: [{ name: "New Debrief", href: "/debriefs/new", icon: NotebookPen }],
       },
     ],
   },
   // Sales is the proposal-to-payment lifecycle hub. Payments and the
-  // Ignition admin queue moved here from the now-retired "Client Services"
-  // section because they're the natural follow-on to a signed proposal.
+  // Ignition admin queue live here because they're the natural follow-on
+  // to a signed proposal.
   {
     name: "Sales",
     href: "/sales",
@@ -117,11 +111,7 @@ const navigation = [
       { name: "Proposals", href: "/sales/proposals", icon: FileText },
       { name: "Invoices", href: "/sales/invoices", icon: Receipt },
       { name: "Services", href: "/sales/services", icon: Briefcase },
-      {
-        name: "Recurring Revenue",
-        href: "/sales/recurring-revenue",
-        icon: Repeat,
-      },
+      { name: "Recurring Revenue", href: "/sales/recurring-revenue", icon: Repeat },
       { name: "Payments", href: "/payments", icon: CreditCard },
       // Ignition admin lives at /admin/ignition (mirrors /admin/karbon-sync);
       // surfacing it under Sales keeps the mapping queue + Zap setup near
@@ -129,18 +119,15 @@ const navigation = [
       { name: "Ignition", href: "/admin/ignition", icon: Workflow },
     ],
   },
-  // "Talent" replaces the former "Teammates" page — same directory, more
-  // accurate label now that Tommy Awards lives underneath it.
+  // "Talent" is the people side of the firm — directory + recognition.
   {
     name: "Talent",
     href: "/teammates",
     icon: UserCircle,
-    children: [
-      { name: "Tommy Awards", href: "/tommy-awards", icon: Trophy },
-    ],
+    children: [{ name: "Tommy Awards", href: "/tommy-awards", icon: Trophy }],
   },
-  // "Departments" replaces the former "Service Pipelines" name. Onboarding
-  // moved under Accounting because it's the kickoff step for every new
+  // "Departments" is the operational pipeline taxonomy. Onboarding moved
+  // under Accounting because it's the kickoff step for every new
   // bookkeeping engagement.
   {
     name: "Departments",
@@ -171,14 +158,6 @@ const navigation = [
       { name: "Special Teams", href: "/special-teams", icon: Flame },
     ],
   },
-  {
-    name: "Client Services",
-    href: "/client-services",
-    icon: Headphones,
-    children: [{ name: "Payments", href: "/payments", icon: CreditCard }],
-  },
-  { name: "Calendar", href: "/calendar", icon: Calendar, alfredSuggestions: 2 },
-  { name: "Karbon Data", href: "/karbon-data", icon: Database },
   // Settings absorbed Karbon Data and the Admin sub-tree — non-admins
   // shouldn't have those at top level.
   {
@@ -359,7 +338,21 @@ function HeaderUserMenu() {
     }
   }
 
-  if (!user) return null
+  // When nobody is signed in, surface a Sign In affordance instead of
+  // hiding the menu entirely. Without this the header looked empty on
+  // every public-facing page and made the login flow undiscoverable.
+  if (!user) {
+    return (
+      <Button
+        size="sm"
+        onClick={() => router.push("/login")}
+        className="bg-[#6B745D] text-white hover:bg-[#8E9B79]"
+      >
+        <UserCircle className="mr-2 h-4 w-4" />
+        Sign In
+      </Button>
+    )
+  }
 
   return (
     <DropdownMenu>
