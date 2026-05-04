@@ -149,16 +149,23 @@ export function buildDebriefEmailHtml({
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_BASE_URL || "https://mottahub-motta.vercel.app"
   const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
 
-  // Helper to render a Karbon deep link
+  // Helper to render a Karbon deep link, themed to the Motta brand palette.
   const renderKarbonLink = (label: string, url?: string | null) => {
     if (!url) {
-      return `<span style="color: #333;">${label}</span>`
+      return `<span style="color: ${BRAND.textPrimary};">${label}</span>`
     }
-    return `<a href="${url}" style="color: #2563eb; text-decoration: underline;">${label}</a>`
+    return `<a href="${url}" style="color: ${BRAND.primaryDark}; text-decoration: underline; font-weight: 500;">${label}</a>`
   }
 
   const workItemLinks = (relatedWorkItems || []).filter((w) => w.title)
   const clientLinks = (relatedClients || []).filter((c) => c.name)
+
+  // Reusable styles built from the BRAND palette so every section reads as
+  // the same brand system (header bar + body content + finance callout).
+  const sectionHeading = `color: ${BRAND.textPrimary}; font-size: 14px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid ${BRAND.border}; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700;`
+  const subHeading = `color: ${BRAND.primaryDark}; font-size: 11px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700;`
+  const labelCell = `padding: 8px 12px; font-size: 12px; color: ${BRAND.textMuted}; width: 140px; vertical-align: top; letter-spacing: 0.02em;`
+  const valueCell = `padding: 8px 12px; font-size: 14px; color: ${BRAND.textPrimary};`
 
   // ========================================
   // SECTION 1: Project Details
@@ -168,16 +175,16 @@ export function buildDebriefEmailHtml({
   // Submitted By
   projectDetailsRows.push(`
     <tr>
-      <td style="padding: 8px 12px; font-size: 13px; color: #666; width: 140px; vertical-align: top;">Submitted By</td>
-      <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${authorName}</td>
+      <td style="${labelCell}">Submitted By</td>
+      <td style="${valueCell}">${authorName}</td>
     </tr>
   `)
 
   // Date of Meeting
   projectDetailsRows.push(`
     <tr>
-      <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Date of Meeting</td>
-      <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${debriefDate}</td>
+      <td style="${labelCell}">Date of Meeting</td>
+      <td style="${valueCell}">${debriefDate}</td>
     </tr>
   `)
 
@@ -188,8 +195,8 @@ export function buildDebriefEmailHtml({
       .join("<br />")
     projectDetailsRows.push(`
       <tr>
-        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Karbon Work Item</td>
-        <td style="padding: 8px 12px; font-size: 14px;">${workItemsHtml}</td>
+        <td style="${labelCell}">Karbon Work Item</td>
+        <td style="${valueCell}">${workItemsHtml}</td>
       </tr>
     `)
   }
@@ -199,13 +206,13 @@ export function buildDebriefEmailHtml({
     const clientsHtml = clientLinks
       .map((c) => {
         const typeLabel = c.type === "organization" ? " (Organization)" : c.type === "contact" ? " (Contact)" : ""
-        return `${renderKarbonLink(c.name, c.karbonUrl)}${typeLabel ? `<span style="color: #999; font-size: 12px;">${typeLabel}</span>` : ""}`
+        return `${renderKarbonLink(c.name, c.karbonUrl)}${typeLabel ? `<span style="color: ${BRAND.textMuted}; font-size: 12px;">${typeLabel}</span>` : ""}`
       })
       .join("<br />")
     projectDetailsRows.push(`
       <tr>
-        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Related Clients</td>
-        <td style="padding: 8px 12px; font-size: 14px;">${clientsHtml}</td>
+        <td style="${labelCell}">Related Clients</td>
+        <td style="${valueCell}">${clientsHtml}</td>
       </tr>
     `)
   }
@@ -214,8 +221,8 @@ export function buildDebriefEmailHtml({
   if (services && services.length > 0) {
     projectDetailsRows.push(`
       <tr>
-        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Service Lines</td>
-        <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${services.join(", ")}</td>
+        <td style="${labelCell}">Service Lines</td>
+        <td style="${valueCell}">${services.join(", ")}</td>
       </tr>
     `)
   }
@@ -224,15 +231,15 @@ export function buildDebriefEmailHtml({
   if (followUpDate) {
     projectDetailsRows.push(`
       <tr>
-        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Follow-Up Date</td>
-        <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${followUpDate}</td>
+        <td style="${labelCell}">Follow-Up Date</td>
+        <td style="${valueCell}">${followUpDate}</td>
       </tr>
     `)
   }
 
   const projectDetailsHtml = `
     <div style="margin-bottom: 24px;">
-      <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Project Details</h2>
+      <h2 style="${sectionHeading}">Project Details</h2>
       <table style="width: 100%; border-collapse: collapse;">
         <tbody>
           ${projectDetailsRows.join("")}
@@ -246,47 +253,51 @@ export function buildDebriefEmailHtml({
   // ========================================
   const meetingNotesSections: string[] = []
 
-  // Notes
+  // Notes — surfaced inside a soft cream BRAND.background card so it reads
+  // as a quoted excerpt from the meeting rather than a raw paragraph.
   if (notes) {
     meetingNotesSections.push(`
       <div style="margin-bottom: 16px;">
-        <h3 style="color: #666; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Notes</h3>
-        <div style="background: #f9fafb; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #333; white-space: pre-wrap; line-height: 1.5;">${notes}</div>
+        <h3 style="${subHeading}">Notes</h3>
+        <div style="background: ${BRAND.background}; border-left: 3px solid ${BRAND.secondary}; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: ${BRAND.textPrimary}; white-space: pre-wrap; line-height: 1.5;">${notes}</div>
       </div>
     `)
   }
 
-  // Action Items
+  // Action Items — branded table. Priority badges keep their semantic
+  // red/amber/green colors because they encode meaning, not styling.
   if (actionItems && actionItems.length > 0) {
     const actionItemsTableHtml = `
       <div style="margin-bottom: 16px;">
-        <h3 style="color: #666; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Action Items</h3>
-        <table style="width: 100%; border-collapse: collapse; background: #f9fafb; border-radius: 6px; overflow: hidden;">
+        <h3 style="${subHeading}">Action Items</h3>
+        <table style="width: 100%; border-collapse: collapse; background: ${BRAND.surface}; border: 1px solid ${BRAND.border}; border-radius: 6px; overflow: hidden;">
           <thead>
-            <tr style="background: #e5e5e5;">
-              <th style="text-align: left; padding: 8px 12px; font-size: 12px; color: #666;">Task</th>
-              <th style="text-align: left; padding: 8px 12px; font-size: 12px; color: #666;">Assignee</th>
-              <th style="text-align: left; padding: 8px 12px; font-size: 12px; color: #666;">Due</th>
-              <th style="text-align: left; padding: 8px 12px; font-size: 12px; color: #666;">Priority</th>
+            <tr style="background: ${BRAND.background};">
+              <th style="text-align: left; padding: 10px 12px; font-size: 11px; color: ${BRAND.textMuted}; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;">Task</th>
+              <th style="text-align: left; padding: 10px 12px; font-size: 11px; color: ${BRAND.textMuted}; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;">Assignee</th>
+              <th style="text-align: left; padding: 10px 12px; font-size: 11px; color: ${BRAND.textMuted}; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;">Due</th>
+              <th style="text-align: left; padding: 10px 12px; font-size: 11px; color: ${BRAND.textMuted}; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;">Priority</th>
             </tr>
           </thead>
           <tbody>
             ${actionItems
               .map(
                 (item) => `
-              <tr style="border-bottom: 1px solid #e5e5e5;">
-                <td style="padding: 10px 12px; font-size: 14px; color: #1a1a1a;">${item.description}</td>
-                <td style="padding: 10px 12px; font-size: 14px; color: #333;">${item.assignee_name || "-"}</td>
-                <td style="padding: 10px 12px; font-size: 14px; color: #333;">${item.due_date || "-"}</td>
+              <tr style="border-top: 1px solid ${BRAND.border};">
+                <td style="padding: 10px 12px; font-size: 14px; color: ${BRAND.textPrimary};">${item.description}</td>
+                <td style="padding: 10px 12px; font-size: 14px; color: ${BRAND.textPrimary};">${item.assignee_name || "-"}</td>
+                <td style="padding: 10px 12px; font-size: 14px; color: ${BRAND.textPrimary};">${item.due_date || "-"}</td>
                 <td style="padding: 10px 12px; font-size: 14px;">
                   <span style="
                     display: inline-block;
                     padding: 2px 8px;
-                    border-radius: 4px;
-                    font-size: 11px;
-                    font-weight: 600;
-                    background: ${item.priority === "high" ? "#fee2e2" : item.priority === "medium" ? "#fef3c7" : "#dcfce7"};
-                    color: ${item.priority === "high" ? "#991b1b" : item.priority === "medium" ? "#92400e" : "#166534"};
+                    border-radius: 999px;
+                    font-size: 10px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    letter-spacing: 0.06em;
+                    background: ${item.priority === "high" ? "#FBE2D6" : item.priority === "medium" ? "#F4E4CC" : "#E1E8D6"};
+                    color: ${item.priority === "high" ? BRAND.accent : item.priority === "medium" ? "#7A5A2C" : BRAND.primaryDark};
                   ">${item.priority}</span>
                 </td>
               </tr>
@@ -300,12 +311,13 @@ export function buildDebriefEmailHtml({
     meetingNotesSections.push(actionItemsTableHtml)
   }
 
-  // Research Topics
+  // Research Topics — flagged with the warm BRAND.accent so it visibly
+  // differs from "notes" without breaking the brand palette.
   if (researchTopics) {
     meetingNotesSections.push(`
       <div style="margin-bottom: 16px;">
-        <h3 style="color: #666; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Research Topics</h3>
-        <div style="background: #fef3c7; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #92400e; white-space: pre-wrap;">${researchTopics}</div>
+        <h3 style="${subHeading}">Research Topics</h3>
+        <div style="background: ${BRAND.background}; border-left: 3px solid ${BRAND.accent}; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: ${BRAND.textPrimary}; white-space: pre-wrap;">${researchTopics}</div>
       </div>
     `)
   }
@@ -314,7 +326,7 @@ export function buildDebriefEmailHtml({
     meetingNotesSections.length > 0
       ? `
     <div style="margin-bottom: 24px;">
-      <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Meeting Notes</h2>
+      <h2 style="${sectionHeading}">Meeting Notes</h2>
       ${meetingNotesSections.join("")}
     </div>
   `
@@ -326,13 +338,13 @@ export function buildDebriefEmailHtml({
   const projectFinanceHtml = feeAdjustment
     ? `
     <div style="margin-bottom: 24px;">
-      <h2 style="color: ${BRAND.textPrimary}; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid ${BRAND.border};">Project Finance</h2>
-      <div style="background: #f0fdf4; border-radius: 6px; padding: 16px; border-left: 4px solid #22c55e;">
-        <h3 style="color: #166534; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Pricing Adjustment / Payment Structure</h3>
-        <p style="font-size: 14px; color: ${BRAND.textPrimary}; margin: 0 0 8px;">${feeAdjustment}</p>
+      <h2 style="${sectionHeading}">Project Finance</h2>
+      <div style="background: ${BRAND.background}; border-radius: 6px; padding: 16px; border-left: 4px solid ${BRAND.primary};">
+        <h3 style="${subHeading}">Pricing Adjustment / Payment Structure</h3>
+        <p style="font-size: 14px; color: ${BRAND.textPrimary}; margin: 0 0 8px; line-height: 1.5;">${feeAdjustment}</p>
         ${
           feeAdjustmentReason
-            ? `<p style="font-size: 13px; color: ${BRAND.textMuted}; margin: 0;"><strong>Reason:</strong> ${feeAdjustmentReason}</p>`
+            ? `<p style="font-size: 13px; color: ${BRAND.textMuted}; margin: 0;"><strong style="color: ${BRAND.textPrimary};">Reason:</strong> ${feeAdjustmentReason}</p>`
             : ""
         }
       </div>

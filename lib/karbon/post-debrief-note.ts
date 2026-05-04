@@ -214,11 +214,98 @@ function buildNoteBody(
 }
 
 /**
+ * Map Karbon's `ClientType` string onto the EntityType expected by the
+ * `/Notes` `Timelines` array. Karbon's WorkItem payload uses values like
+ * "Contact" or "Organization" (occasionally "ClientGroup"). We mirror that
+ * onto the Note timeline EntityType which uses the same vocabulary.
+ */
+function clientTypeToTimelineEntity(
+  clientType?: string | null,
+): "Contact" | "Organization" | "ClientGroup" | null {
+  if (!clientType) return null
+  const t = clientType.trim().toLowerCase()
+  if (t === "contact") return "Contact"
+  if (t === "organization" || t === "org") return "Organization"
+  if (t === "clientgroup" || t === "client_group" || t === "client group") return "ClientGroup"
+  return null
+}
+
+/**
+ * Resolve a work item's "client" (Contact / Organization / ClientGroup) using
+ * the Supabase mirror first, with a fallback to Karbon's `GET /WorkItems/{key}`
+ * if the work item isn't yet cached locally. Returns the Karbon client key
+ * and the timeline EntityType so the caller can attach the debrief note to
+ * the client's timeline as well as the work item's.
+ *
+ * This is what closes the gap the firm flagged: a debrief logged on a
+ * work item should always also surface on the related client's profile
+ * timeline, even if the user didn't manually pick the client in the form.
+ */
+async function resolveWorkItemClient(
+  workItem: RelatedWorkItem,
+  credentials: ReturnType<typeof getKarbonCredentials>,
+): Promise<{ entityType: "Contact" | "Organization" | "ClientGroup"; clientKey: string } | null> {
+  const supabase = createAdminClient()
+
+  // Try our Supabase mirror first (it's already kept in sync by the Karbon
+  // sync jobs, so this avoids a network round-trip for the common case).
+  let dbRow:
+    | { karbon_client_key: string | null; client_type: string | null }
+    | null = null
+  if (workItem.id) {
+    const { data } = await supabase
+      .from("work_items")
+      .select("karbon_client_key, client_type")
+      .eq("id", workItem.id)
+      .maybeSingle()
+    if (data) dbRow = data
+  }
+  if (!dbRow && workItem.karbon_key) {
+    const { data } = await supabase
+      .from("work_items")
+      .select("karbon_client_key, client_type")
+      .eq("karbon_work_item_key", workItem.karbon_key)
+      .maybeSingle()
+    if (data) dbRow = data
+  }
+
+  if (dbRow?.karbon_client_key) {
+    const entityType = clientTypeToTimelineEntity(dbRow.client_type)
+    if (entityType) return { entityType, clientKey: dbRow.karbon_client_key }
+  }
+
+  // Fall back to Karbon directly. This matters for work items created in
+  // Karbon since the last sync (e.g. a new engagement debriefed minutes
+  // after Karbon creation, before our incremental sync caught it up).
+  if (credentials && workItem.karbon_key) {
+    const { data, error } = await karbonFetch<{
+      ClientKey?: string
+      ClientType?: string
+    }>(`/WorkItems/${workItem.karbon_key}`, credentials)
+    if (!error && data?.ClientKey) {
+      const entityType = clientTypeToTimelineEntity(data.ClientType)
+      if (entityType) return { entityType, clientKey: data.ClientKey }
+    }
+  }
+
+  return null
+}
+
+/**
  * Build the `Timelines` array — one entry per Karbon entity the debrief
  * touches. De-duplicates by `EntityKey` since the same key can appear via
  * both related_clients and related_work_items.
+ *
+ * In addition to the entities the form picker explicitly attached, we walk
+ * each related work item and resolve its parent client (Contact /
+ * Organization / ClientGroup) so the note also lands on that client's
+ * timeline — matching the firm rule that every debrief follow the
+ * relationship, not just the engagement.
  */
-function buildTimelines(body: DebriefBodyForKarbon): Array<{ EntityType: string; EntityKey: string }> {
+async function buildTimelines(
+  body: DebriefBodyForKarbon,
+  credentials: ReturnType<typeof getKarbonCredentials>,
+): Promise<Array<{ EntityType: string; EntityKey: string }>> {
   const seen = new Set<string>()
   const out: Array<{ EntityType: string; EntityKey: string }> = []
 
@@ -236,6 +323,24 @@ function buildTimelines(body: DebriefBodyForKarbon): Array<{ EntityType: string;
   for (const c of body.related_clients || []) {
     if (c.type === "contact") add("Contact", c.karbon_key)
     else if (c.type === "organization") add("Organization", c.karbon_key)
+  }
+
+  // For every related work item, look up the underlying client in Karbon
+  // (via our Supabase mirror, falling back to a live Karbon GET) and add
+  // it to the timeline if not already present from the form payload.
+  for (const wi of body.related_work_items || []) {
+    if (!wi.karbon_key && !wi.id) continue
+    try {
+      const resolved = await resolveWorkItemClient(wi, credentials)
+      if (resolved) {
+        add(resolved.entityType, resolved.clientKey)
+      }
+    } catch (err) {
+      console.warn(
+        "[karbon-debrief-note] Failed to resolve work item client:",
+        err instanceof Error ? err.message : err,
+      )
+    }
   }
 
   return out
@@ -272,7 +377,7 @@ export async function postDebriefNoteToKarbon(
     return { ok: false, skipped: "no_credentials" }
   }
 
-  const timelines = buildTimelines(body)
+  const timelines = await buildTimelines(body, credentials)
   if (timelines.length === 0) {
     // Nothing to attach to — pushing an unattached note creates a floating
     // timeline entry the firm can't navigate to. Skip cleanly.
