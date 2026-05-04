@@ -4,6 +4,11 @@ import {
   extractUuid,
   type CalendlyConnectionRow,
 } from "@/lib/calendly-api"
+import {
+  extractPhoneFromInvitee,
+  matchInviteeToContact,
+  upsertAutoClientLink,
+} from "@/lib/calendly-invitee-match"
 
 /**
  * Reusable Calendly sync engine.
@@ -323,16 +328,23 @@ async function syncEventsForConnection(
           const inviteeUuid = extractUuid(invitee.uri)
           if (!inviteeUuid) continue
 
-          // Best-effort link to existing CRM contact by email.
-          let contactId: string | null = null
-          if (invitee.email) {
-            const { data: contact } = await supabase
-              .from("contacts")
-              .select("id")
-              .or(`primary_email.ilike.${invitee.email},secondary_email.ilike.${invitee.email}`)
-              .limit(1)
-              .maybeSingle()
-            contactId = contact?.id ?? null
+          // Best-effort link to existing CRM contact using email →
+          // name+phone → unique-name fallback. When a match is found we
+          // also persist a `calendly_event_clients` auto-link so the
+          // Team Calendar can render the meeting as belonging to the
+          // matched client without a separate manual tagging step.
+          const match = await matchInviteeToContact(supabase, {
+            email: invitee.email,
+            name: invitee.name,
+            phone: extractPhoneFromInvitee(invitee),
+          })
+          const contactId = match?.contactId ?? null
+          if (match?.contactId && savedEvent?.id) {
+            await upsertAutoClientLink(supabase, {
+              calendlyEventId: savedEvent.id,
+              contactId: match.contactId,
+              matchMethod: match.matchMethod,
+            })
           }
 
           const { error: invErr } = await supabase.from("calendly_invitees").upsert(
