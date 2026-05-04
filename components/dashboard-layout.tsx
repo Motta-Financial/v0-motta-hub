@@ -48,6 +48,7 @@ import {
   Receipt,
   Briefcase,
   Repeat,
+  Headphones,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -150,7 +151,6 @@ const navigation = [
         name: "Accounting",
         href: "/accounting",
         icon: Calculator,
-        children: [{ name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign }],
         children: [
           { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
           { name: "Onboarding", href: "/onboarding", icon: UserPlus },
@@ -160,7 +160,6 @@ const navigation = [
         name: "Tax",
         href: "/tax",
         icon: FileText,
-        children: [{ name: "Busy Season", href: "/tax/busy-season", icon: FileText }],
         children: [
           { name: "Busy Season", href: "/tax/busy-season", icon: FileText },
           { name: "Tax Planning", href: "/tax/planning", icon: Lightbulb },
@@ -226,21 +225,26 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         <Sidebar />
       </div>
 
-      {/* Main content */}
+      {/* Main content. The sidebar is fixed-position 16rem wide, so the
+          content area only needs ONE `md:pl-64` to clear it. The previous
+          version stacked two of these, pushing content 32rem past the left
+          edge and overflowing the viewport on the right. */}
       <div className="pt-16 md:pl-64">
-      <div className="md:pl-64">
         {/* Sticky topbar — gives every page a global Cmd+K work-item search.
             Lives outside <main> so its sticky behavior survives any page that
             applies its own positioning context. */}
         <div className="sticky top-0 z-30 border-b border-stone-200/70 bg-[#EAE6E1]/85 backdrop-blur supports-[backdrop-filter]:bg-[#EAE6E1]/60">
-          <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 pl-14 sm:px-6 lg:px-8 md:pl-6">
+          <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-3 px-4 pl-14 sm:px-6 lg:px-8 md:pl-6">
             <div className="flex-1 max-w-xl">
               <WorkItemSearchTrigger />
             </div>
           </div>
         </div>
         <main className="py-6">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">{children}</div>
+          {/* Bumped from `max-w-7xl` (1280px) to 1600px so wide-screen
+              monitors actually use the available width instead of leaving a
+              huge dead zone on the right of every dashboard. */}
+          <div className="mx-auto w-full max-w-[1600px] px-4 sm:px-6 lg:px-8">{children}</div>
         </main>
       </div>
     </div>
@@ -283,10 +287,26 @@ function HubHeader({
             </div>
           </a>
         </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative h-9 w-9"
+            aria-label="Notifications"
+          >
+            <Bell className="h-5 w-5 text-gray-600" />
+          </Button>
+          <HeaderUserMenu />
+        </div>
+      </div>
+    </header>
+  )
+}
+
 // Does pathname match this node, or any descendant of it? Used both for
 // auto-expansion and for parent-active highlighting. Recurses through the
 // whole subtree so a deep grandchild match (e.g. /calendly while we're
-// inside Home → Calendar → Calendly Admin) still bubbles up to mark every
+// inside Home �� Calendar → Calendly Admin) still bubbles up to mark every
 // ancestor as active and expanded.
 function branchContainsActive(node: any, pathname: string): boolean {
   if (
@@ -324,48 +344,6 @@ function buildInitialExpandedState(
   }
   walk(items as any[])
   return expanded
-}
-
-function Sidebar() {
-  const pathname = usePathname()
-  const router = useRouter()
-  // Sections collapsed by default; the section containing the active route
-  // is auto-expanded so users always see where they are.
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() =>
-    buildInitialExpandedState(navigation, pathname),
-  )
-
-  // When the user navigates, make sure every ancestor of the active route
-  // is expanded — including deep grandparents like Home when we're on a
-  // grandchild route such as /calendly. We never collapse a section the
-  // user explicitly opened — that would feel jumpy.
-  useEffect(() => {
-    setExpandedSections((prev) => {
-      const next = { ...prev }
-      let changed = false
-      const walk = (nodes: any[]) => {
-        for (const node of nodes) {
-          if (!node.children?.length) continue
-          const hasActive = node.children.some((child: any) =>
-            branchContainsActive(child, pathname),
-          )
-          if (hasActive && !next[node.name]) {
-            next[node.name] = true
-            changed = true
-          }
-          walk(node.children)
-        }
-      }
-      walk(navigation as any[])
-      return changed ? next : prev
-    })
-  }, [pathname])
-
-        {/* User profile dropdown on right */}
-        <HeaderUserMenu />
-      </div>
-    </header>
-  )
 }
 
 function HeaderUserMenu() {
@@ -513,7 +491,7 @@ function Sidebar() {
 
                     {hasChildren && isExpanded && (
                       <ul className="mt-1 space-y-1">
-                        {item.children!.map((child) => {
+                        {(item.children as any[])!.map((child: any) => {
                           const isChildCurrent = pathname === child.href || pathname.startsWith(child.href + "/")
                           const hasGrandchildren = child.children && child.children.length > 0
                           const isChildExpanded = expandedSections[child.name] || false

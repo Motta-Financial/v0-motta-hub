@@ -224,41 +224,13 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
       .not("role", "eq", "Company")
       .not("role", "eq", "Alumni")
 
-    if (recipientEmails.length > 0) {
-      const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_BASE_URL || "https://mottahub-motta.vercel.app"
-      const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
-
-      // Resolve the primary work item title for the subject line
-      let workItemTitle: string | null = null
-      const relatedWorkItemsForSubject = body?.related_work_items || []
-      if (relatedWorkItemsForSubject.length > 0) {
-        workItemTitle = relatedWorkItemsForSubject[0].title || null
-      }
-      if (!workItemTitle && debrief.work_item_id) {
-        const { data: workItem } = await supabase
-          .from("work_items")
-          .select("title")
-          .eq("id", debrief.work_item_id)
-          .single()
-        if (workItem) workItemTitle = workItem.title
-      }
-
-      const subjectName = workItemTitle || clientName
-      const subject = `DEBRIEF: ${subjectName}`
-
-      const html = buildDebriefEmailHtml({
-        authorName: authorName || "A team member",
-        clientName,
-        workItemTitle,
-        debriefDate: debrief.debrief_date
-          ? new Date(debrief.debrief_date).toLocaleDateString("en-US", {
     const targetMembers = activeTeam || []
 
     if (targetMembers.length > 0) {
       // 1a. In-app notification row for every active teammate.
       //     The author gets a confirmation-styled message instead of the
       //     generic team announcement so they can verify it went through.
-      const notifications = targetMembers.map((tm) => {
+      const notifications = targetMembers.map((tm: any) => {
         const isAuthor = tm.id === debrief.created_by_id
         return {
           team_member_id: tm.id,
@@ -278,12 +250,27 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
       // 1b. Email every active teammate who has an email address — author included.
       //     No opt-out check — debriefs are mandatory firm-wide visibility.
       const recipientEmails = targetMembers
-        .filter((tm) => !!tm.email)
-        .map((tm) => tm.email as string)
+        .filter((tm: any) => !!tm.email)
+        .map((tm: any) => tm.email as string)
 
       if (recipientEmails.length > 0) {
-        // Build Karbon deep-link arrays from the related entities that came in
-        // with the form payload. The URLs use the tenant-scoped Karbon UI
+        // Resolve the primary work item title for the subject line.
+        let workItemTitle: string | null = null
+        const relatedWorkItemsForSubject = body?.related_work_items || []
+        if (relatedWorkItemsForSubject.length > 0) {
+          workItemTitle = relatedWorkItemsForSubject[0].title || null
+        }
+        if (!workItemTitle && debrief.work_item_id) {
+          const { data: workItem } = await supabase
+            .from("work_items")
+            .select("title")
+            .eq("id", debrief.work_item_id)
+            .single()
+          if (workItem) workItemTitle = workItem.title
+        }
+
+        // Build Karbon deep-link arrays from the related entities that came
+        // in with the form payload. The URLs use the tenant-scoped Karbon UI
         // pattern that matches what we already store on the contacts /
         // organizations / work_items tables.
         const relatedClientsForEmail = (body?.related_clients || [])
@@ -304,6 +291,14 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
             karbonUrl: buildKarbonUrl("work", w.karbon_key),
           }))
 
+        const debriefDateLabel = debrief.debrief_date
+          ? new Date(debrief.debrief_date).toLocaleDateString("en-US", {
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
+          : "N/A"
+
         const followUpDateLabel = debrief.follow_up_date
           ? new Date(debrief.follow_up_date).toLocaleDateString("en-US", {
               month: "long",
@@ -315,13 +310,8 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         const html = buildDebriefEmailHtml({
           authorName: authorName || "A team member",
           clientName,
-          debriefDate: debrief.debrief_date
-            ? new Date(debrief.debrief_date).toLocaleDateString("en-US", {
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              })
-            : "N/A",
+          workItemTitle,
+          debriefDate: debriefDateLabel,
           notes: body?.notes || debrief.notes || undefined,
           actionItems: debrief.action_items?.items || body?.action_items || [],
           services: body?.services || [],
@@ -334,27 +324,20 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
           debriefUrl,
         })
 
-      const emailResult = await sendEmail({
-        to: recipientEmails,
-        subject,
-        html,
-      })
+        const subjectName = workItemTitle || clientName
+        const subject = `DEBRIEF: ${subjectName}`
 
-      if (!emailResult.success) {
-        console.warn("[debrief] Email send failed (in-app notifications still created):", emailResult.error)
-      } else {
-        console.log(`[debrief] Email sent to ${recipientEmails.length} active team members with subject: ${subject}`)
         const emailResult = await sendEmail({
           to: recipientEmails,
-          subject: `New Debrief: ${clientName} - ${authorName || "Team Member"}`,
+          subject,
           html,
         })
 
         if (!emailResult.success) {
-          console.warn("[debrief] Team email failed:", emailResult.error)
+          console.warn("[debrief] Email send failed (in-app notifications still created):", emailResult.error)
         } else {
           console.log(
-            `[debrief] Team email sent to all ${recipientEmails.length} active teammates (author included)`,
+            `[debrief] Email sent to ${recipientEmails.length} active team members with subject: ${subject}`,
           )
         }
       }
