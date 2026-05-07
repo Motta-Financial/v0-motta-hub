@@ -36,6 +36,29 @@ import {
 } from "@/components/ui/command"
 import { cn } from "@/lib/utils"
 
+/**
+ * Defensive cleanup. Radix occasionally fails to clear the inline
+ * `pointer-events: none` it stamps on `<body>` while a modal Popover is
+ * open — when that happens the entire page (incl. the freeform search
+ * input that lives next to these chips) silently rejects clicks and
+ * keystrokes. The chips themselves now default to `modal={false}` to
+ * avoid the issue, but we run this hook whenever a chip closes (and on
+ * mount) to undo any stale style left behind by an earlier render or by
+ * a sibling component that did set modal. It's a no-op when the style
+ * isn't there.
+ */
+function useUnstickBodyOnClose(open: boolean) {
+  useEffect(() => {
+    if (open) return
+    if (typeof document === "undefined") return
+    const body = document.body
+    if (!body) return
+    if (body.style.pointerEvents === "none") {
+      body.style.pointerEvents = ""
+    }
+  }, [open])
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * MultiSelectChip — pick zero or more from a list of options
  * ────────────────────────────────────────────────────────────────────────*/
@@ -59,6 +82,16 @@ export interface MultiSelectChipProps {
   formatLabel?: (v: string) => string
   /** Override the placeholder shown in the popover's filter input. */
   searchPlaceholder?: string
+  /**
+   * Set to `true` ONLY when the chip is rendered inside another
+   * Radix modal (Dialog, Sheet, AlertDialog). Default is `false` because
+   * the modal flag installs `pointer-events: none` on document.body while
+   * the popover is open, and Radix occasionally fails to clean that up on
+   * close — which makes surrounding inputs (incl. the freeform search
+   * bar) refuse keystrokes. When the chip lives on a regular page, leave
+   * this off.
+   */
+  modal?: boolean
 }
 
 export function MultiSelectChip({
@@ -68,18 +101,17 @@ export function MultiSelectChip({
   onChange,
   formatLabel,
   searchPlaceholder,
+  modal = false,
 }: MultiSelectChipProps) {
   const [open, setOpen] = useState(false)
+  useUnstickBodyOnClose(open)
   const cleanOptions = useMemo(
     () => options.filter((o): o is string => typeof o === "string" && o.length > 0),
     [options],
   )
 
   return (
-    // `modal` is set so this chip behaves correctly when used inside a
-    // Sheet/Dialog (e.g. the proposal edit sheet). It's a no-op on a
-    // normal page, so it's safe to leave on everywhere.
-    <Popover modal open={open} onOpenChange={setOpen}>
+    <Popover modal={modal} open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
@@ -169,6 +201,12 @@ export interface RangeChipProps {
   prefix?: string
   /** Step value for the number inputs. Defaults to 100. */
   step?: number
+  /**
+   * Same opt-in modal flag as MultiSelectChip — see the comment there.
+   * Default is `false` so the chip plays nicely on regular pages without
+   * ever stamping `pointer-events: none` on document.body.
+   */
+  modal?: boolean
 }
 
 export function RangeChip({
@@ -178,8 +216,10 @@ export function RangeChip({
   onChange,
   prefix = "$",
   step = 100,
+  modal = false,
 }: RangeChipProps) {
   const [open, setOpen] = useState(false)
+  useUnstickBodyOnClose(open)
   // We hold local state inside the popover so users can type freely
   // without triggering a fetch on every keystroke. The committed values
   // only flow back when they hit Apply (or close-without-Cancel).
@@ -198,7 +238,7 @@ export function RangeChip({
   const active = (min !== "" && min !== null) || (max !== "" && max !== null)
 
   return (
-    <Popover modal open={open} onOpenChange={setOpen}>
+    <Popover modal={modal} open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
@@ -316,6 +356,8 @@ export interface DateRangeChipProps {
    */
   fieldOptions?: DateFieldOption[]
   onChange: (next: { from: string; to: string; field: string }) => void
+  /** Same opt-in modal flag — see MultiSelectChip. Default `false`. */
+  modal?: boolean
 }
 
 export function DateRangeChip({
@@ -325,8 +367,10 @@ export function DateRangeChip({
   field,
   fieldOptions,
   onChange,
+  modal = false,
 }: DateRangeChipProps) {
   const [open, setOpen] = useState(false)
+  useUnstickBodyOnClose(open)
   const [draftFrom, setDraftFrom] = useState(from)
   const [draftTo, setDraftTo] = useState(to)
   const [draftField, setDraftField] = useState(field)
@@ -344,7 +388,7 @@ export function DateRangeChip({
     fieldOptions?.find((o) => o.value === field)?.label ?? null
 
   return (
-    <Popover modal open={open} onOpenChange={setOpen}>
+    <Popover modal={modal} open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
@@ -437,7 +481,7 @@ export function DateRangeChip({
   )
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────��───────────────────────
  * Helpers
  * ────────────────────────────────────────────────────────────────────────*/
 
