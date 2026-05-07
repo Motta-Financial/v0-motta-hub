@@ -33,20 +33,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command"
 import { cn } from "@/lib/utils"
+import { MultiSelectChip } from "@/components/sales/filter-chips"
+import {
+  classifyService,
+  SERVICE_LINE_META,
+  type ServiceLine,
+} from "@/lib/sales/service-line-classifier"
 
 interface ServiceRow {
   ignition_service_id: string
@@ -108,12 +101,20 @@ export function SalesServices() {
   const search = searchParams.get("search") || ""
   const category = (searchParams.get("category") || "").split(",").filter(Boolean)
   const billingType = (searchParams.get("billingType") || "").split(",").filter(Boolean)
+  const serviceLine = (searchParams.get("serviceLine") || "")
+    .split(",")
+    .filter(Boolean) as ServiceLine[]
   const activeOnly = searchParams.get("activeOnly") === "true"
+  const pitchedOnly = searchParams.get("pitchedOnly") === "true"
   const sortBy = searchParams.get("sortBy") || "totalRevenue"
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
 
   const [searchInput, setSearchInput] = useState(search)
 
+  // Service-line and pitched-only filtering happens client-side because the
+  // values aren't on the catalog row directly — they're derived from the
+  // service name (classifier) and proposal usage stats. Keeping it in JS
+  // also means we don't need to touch the API contract for these two.
   const queryString = useMemo(() => {
     const sp = new URLSearchParams()
     if (search) sp.set("search", search)

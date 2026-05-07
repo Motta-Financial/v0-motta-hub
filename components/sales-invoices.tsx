@@ -6,6 +6,9 @@
  * Server-paginated invoice table with KPI strip showing total billed, paid,
  * and outstanding across the full set (not the current page). Stripe invoice
  * IDs link out to the Stripe dashboard when present.
+ *
+ * URL state covers every filter (page, search, status, state, amount range,
+ * date range/field, sort) so the view is shareable and reload-stable.
  */
 
 import { useMemo, useState } from "react"
@@ -28,28 +31,23 @@ import {
   Clock,
   AlertCircle,
   Pencil,
+  MapPin,
 } from "lucide-react"
 import { InvoiceEditSheet } from "@/components/sales/invoice-edit-sheet"
+import {
+  MultiSelectChip,
+  RangeChip,
+  DateRangeChip,
+  type DateFieldOption,
+} from "@/components/sales/filter-chips"
 
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command"
 import { cn } from "@/lib/utils"
+import { US_STATE_NAMES } from "@/lib/sales/us-geo"
 
 interface Invoice {
   ignition_invoice_id: string
@@ -70,12 +68,16 @@ interface Invoice {
   contact_id: string | null
   organizations: { id: string; name: string } | null
   contacts: { id: string; full_name: string } | null
+  /** Geographic state resolved via org → contact → ignition_client. */
+  state: string | null
+  city: string | null
 }
 interface InvoicesResponse {
   invoices: Invoice[]
   page: number
   pageSize: number
   total: number
+  totalUnfiltered: number
   stats: {
     total: number
     totalAmount: number
@@ -85,6 +87,7 @@ interface InvoicesResponse {
   }
   dimensions: {
     statuses: string[]
+    states: string[]
   }
 }
 
@@ -98,6 +101,14 @@ const STATUS_TONE: Record<string, string> = {
   voided: "bg-stone-100 text-stone-500 border-stone-200",
   draft: "bg-stone-100 text-stone-700 border-stone-200",
 }
+
+const INVOICE_DATE_FIELDS: DateFieldOption[] = [
+  { value: "invoice_date", label: "Invoice date" },
+  { value: "due_date", label: "Due date" },
+  { value: "paid_at", label: "Paid date" },
+  { value: "sent_at", label: "Sent date" },
+  { value: "created_at", label: "Created" },
+]
 
 function fmtMoney(n: number | null | undefined, currency = "USD") {
   const v = Number(n) || 0
@@ -137,6 +148,12 @@ export function SalesInvoices() {
   const pageSize = 50
   const search = searchParams.get("search") || ""
   const status = (searchParams.get("status") || "").split(",").filter(Boolean)
+  const state = (searchParams.get("state") || "").split(",").filter(Boolean)
+  const minAmount = searchParams.get("minAmount") || ""
+  const maxAmount = searchParams.get("maxAmount") || ""
+  const dateField = searchParams.get("dateField") || "invoice_date"
+  const dateFrom = searchParams.get("dateFrom") || ""
+  const dateTo = searchParams.get("dateTo") || ""
   const sortBy = searchParams.get("sortBy") || "invoice_date"
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
 
@@ -149,10 +166,28 @@ export function SalesInvoices() {
     sp.set("pageSize", String(pageSize))
     if (search) sp.set("search", search)
     if (status.length) sp.set("status", status.join(","))
+    if (state.length) sp.set("state", state.join(","))
+    if (minAmount) sp.set("minAmount", minAmount)
+    if (maxAmount) sp.set("maxAmount", maxAmount)
+    if (dateField !== "invoice_date") sp.set("dateField", dateField)
+    if (dateFrom) sp.set("dateFrom", dateFrom)
+    if (dateTo) sp.set("dateTo", dateTo)
     sp.set("sortBy", sortBy)
     sp.set("sortDir", sortDir)
     return sp.toString()
-  }, [page, search, status, sortBy, sortDir])
+  }, [
+    page,
+    search,
+    status,
+    state,
+    minAmount,
+    maxAmount,
+    dateField,
+    dateFrom,
+    dateTo,
+    sortBy,
+    sortDir,
+  ])
 
   const { data, error, isLoading, mutate } = useSWR<InvoicesResponse>(
     `/api/sales/invoices?${queryString}`,
@@ -179,7 +214,12 @@ export function SalesInvoices() {
   }
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1
-  const activeFilterCount = (search ? 1 : 0) + status.length
+  const activeFilterCount =
+    (search ? 1 : 0) +
+    status.length +
+    state.length +
+    (minAmount || maxAmount ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0)
 
   return (
     <div className="flex flex-col gap-4">
@@ -188,7 +228,7 @@ export function SalesInvoices() {
         <p className="text-sm text-muted-foreground">
           {data ? `${data.total.toLocaleString()} invoices` : "Loading invoices…"}
           {data && activeFilterCount > 0
-            ? ` matching ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""}`
+            ? ` matching ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""} (of ${data.totalUnfiltered.toLocaleString()})`
             : ""}
         </p>
       </div>
@@ -247,7 +287,7 @@ export function SalesInvoices() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") updateParams({ search: searchInput || null })
               }}
-              placeholder="Search invoice # or proposal #…"
+              placeholder="Search invoice #, proposal #, client…"
               className="pl-8"
             />
           </div>
@@ -264,6 +304,40 @@ export function SalesInvoices() {
             options={data?.dimensions.statuses || []}
             value={status}
             onChange={(v) => updateParams({ status: v.length ? v.join(",") : null })}
+          />
+          <MultiSelectChip
+            label="State"
+            options={data?.dimensions.states || []}
+            value={state}
+            formatLabel={(v) =>
+              v === "(unknown)" ? "(no state on file)" : US_STATE_NAMES[v] || v
+            }
+            onChange={(v) => updateParams({ state: v.length ? v.join(",") : null })}
+          />
+          <RangeChip
+            label="Amount"
+            min={minAmount}
+            max={maxAmount}
+            onChange={({ min, max }) =>
+              updateParams({
+                minAmount: min || null,
+                maxAmount: max || null,
+              })
+            }
+          />
+          <DateRangeChip
+            label="Date"
+            field={dateField}
+            from={dateFrom}
+            to={dateTo}
+            fieldOptions={INVOICE_DATE_FIELDS}
+            onChange={({ from, to, field }) =>
+              updateParams({
+                dateField: field === "invoice_date" ? null : field,
+                dateFrom: from || null,
+                dateTo: to || null,
+              })
+            }
           />
 
           {activeFilterCount > 0 ? (
@@ -385,13 +459,24 @@ export function SalesInvoices() {
                           {inv.invoice_number || inv.ignition_invoice_id.slice(0, 8)}
                         </td>
                         <td className="px-3 py-2">
-                          {orgHref ? (
-                            <Link href={orgHref} className="hover:underline font-medium">
-                              {orgName}
-                            </Link>
-                          ) : (
-                            <span className="font-medium">{orgName}</span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {orgHref ? (
+                              <Link href={orgHref} className="hover:underline font-medium">
+                                {orgName}
+                              </Link>
+                            ) : (
+                              <span className="font-medium">{orgName}</span>
+                            )}
+                            {inv.state ? (
+                              <span
+                                title={US_STATE_NAMES[inv.state] || inv.state}
+                                className="inline-flex items-center gap-0.5 text-[10px] font-medium text-stone-500 bg-stone-100 border border-stone-200 rounded px-1 py-0.5"
+                              >
+                                <MapPin className="h-2.5 w-2.5" />
+                                {inv.state}
+                              </span>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <Badge variant="outline" className={cn("border", tone)}>
@@ -557,70 +642,5 @@ function SortableHeader({
         <Icon className="h-3 w-3" />
       </button>
     </th>
-  )
-}
-
-function MultiSelectChip({
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  label: string
-  options: string[]
-  value: string[]
-  onChange: (next: string[]) => void
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          className={cn(
-            "h-9 gap-1",
-            value.length > 0 ? "border-stone-900 bg-stone-50" : "",
-          )}
-        >
-          <FilterIcon className="h-3.5 w-3.5" />
-          {label}
-          {value.length > 0 ? (
-            <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
-              {value.length}
-            </Badge>
-          ) : null}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="p-0 w-64" align="start">
-        <Command>
-          <CommandInput placeholder={`Filter ${label.toLowerCase()}…`} />
-          <CommandList>
-            <CommandEmpty>No matches.</CommandEmpty>
-            <CommandGroup>
-              {options.map((opt) => {
-                const active = value.includes(opt)
-                return (
-                  <CommandItem
-                    key={opt}
-                    onSelect={() => {
-                      onChange(active ? value.filter((v) => v !== opt) : [...value, opt])
-                    }}
-                  >
-                    <span
-                      className={cn(
-                        "mr-2 inline-block h-3 w-3 rounded-sm border",
-                        active ? "bg-stone-900 border-stone-900" : "border-stone-300",
-                      )}
-                    />
-                    {titleCase(opt)}
-                  </CommandItem>
-                )
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
   )
 }
