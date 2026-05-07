@@ -92,6 +92,12 @@ interface ProposalsResponse {
     sentBy: string[]
     states: string[]
     serviceLines: string[]
+    /**
+     * Canonical service catalog (rolled-up de-duplicated names).
+     * `id` is what we POST back as the filter value; `label` is what
+     * the user picks in the dropdown.
+     */
+    canonicalServices: { id: string; label: string; serviceLine: string }[]
   }
 }
 
@@ -160,6 +166,11 @@ export function SalesProposals() {
   const serviceLine = (searchParams.get("serviceLine") || "")
     .split(",")
     .filter(Boolean)
+  // Canonical-service ids stored in URL — we resolve their human labels
+  // from `data.dimensions.canonicalServices` once the response arrives.
+  const canonicalService = (searchParams.get("canonicalService") || "")
+    .split(",")
+    .filter(Boolean)
   const minValue = searchParams.get("minValue") || ""
   const maxValue = searchParams.get("maxValue") || ""
   const dateField = searchParams.get("dateField") || "created_at"
@@ -182,6 +193,8 @@ export function SalesProposals() {
     if (sentBy.length) sp.set("sentBy", sentBy.join(","))
     if (state.length) sp.set("state", state.join(","))
     if (serviceLine.length) sp.set("serviceLine", serviceLine.join(","))
+    if (canonicalService.length)
+      sp.set("canonicalService", canonicalService.join(","))
     if (minValue) sp.set("minValue", minValue)
     if (maxValue) sp.set("maxValue", maxValue)
     if (dateField !== "created_at") sp.set("dateField", dateField)
@@ -199,6 +212,7 @@ export function SalesProposals() {
     sentBy,
     state,
     serviceLine,
+    canonicalService,
     minValue,
     maxValue,
     dateField,
@@ -242,6 +256,7 @@ export function SalesProposals() {
     sentBy.length +
     state.length +
     serviceLine.length +
+    canonicalService.length +
     (minValue || maxValue ? 1 : 0) +
     (dateFrom || dateTo ? 1 : 0)
 
@@ -294,6 +309,26 @@ export function SalesProposals() {
             // so links remain compact and don't change when the lookup table grows.
             formatLabel={(v) => (v === "(unknown)" ? "(no state on file)" : US_STATE_NAMES[v] || v)}
             onChange={(v) => updateParams({ state: v.length ? v.join(",") : null })}
+          />
+          <MultiSelectChip
+            label="Service"
+            // Canonical (rolled-up) service catalog. We pass ids as
+            // `options` and supply formatLabel so the dropdown shows
+            // human names like "Tax Prep — Individual Federal (1040)"
+            // rather than "tax-prep-1040". Selecting one or more
+            // canonicals filters proposals whose line items rolled up
+            // into ANY of those canonicals — handles the duplicate-name
+            // problem (e.g. "Individual Tax Return (1040)" vs
+            // "Tax | Prep (1040): Federal Return (Individual)" all
+            // collapse into the same canonical id).
+            options={(data?.dimensions.canonicalServices || []).map((c) => c.id)}
+            value={canonicalService}
+            formatLabel={(id) =>
+              data?.dimensions.canonicalServices.find((c) => c.id === id)?.label ?? id
+            }
+            onChange={(v) =>
+              updateParams({ canonicalService: v.length ? v.join(",") : null })
+            }
           />
           <MultiSelectChip
             label="Service Line"
