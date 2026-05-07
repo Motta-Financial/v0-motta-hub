@@ -15,7 +15,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/server"
-import { getKarbonCredentials, karbonFetch } from "@/lib/karbon-api"
+import { getKarbonCredentials, karbonFetch, type KarbonApiConfig } from "@/lib/karbon-api"
 
 const KARBON_TENANT_BASE = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
@@ -214,11 +214,92 @@ function buildNoteBody(
 }
 
 /**
+ * Resolve a Karbon `ClientType` string to the timeline `EntityType` Karbon
+ * expects. Karbon returns the value as `"Contact"` or `"Organization"` but
+ * we normalize defensively in case casing/labels drift across endpoints.
+ */
+function normalizeClientType(
+  clientType?: string | null,
+): "Contact" | "Organization" | null {
+  if (!clientType) return null
+  const t = clientType.toLowerCase().trim()
+  if (t === "contact" || t.startsWith("contact")) return "Contact"
+  if (t === "organization" || t.startsWith("org")) return "Organization"
+  return null
+}
+
+/**
+ * Look up the Contact or Organization that owns a given work item so we can
+ * post the debrief note onto that client's timeline as well.
+ *
+ * Strategy:
+ *   1. Try Supabase first (`work_items.karbon_client_key` + `client_type`)
+ *      — already populated by our hourly Karbon sync, no API call needed.
+ *   2. Fall back to a live `GET /v3/WorkItems/{WorkItemKey}` if the work
+ *      item isn't in our cache yet (e.g. brand-new in Karbon, or the user
+ *      created the debrief before the next sync run). Karbon's WorkItem
+ *      payload returns both `ClientKey` and `ClientType`.
+ *
+ * Returns `null` when nothing usable can be resolved — caller treats that
+ * as a no-op rather than failing the whole note push.
+ */
+async function fetchWorkItemClient(
+  workItemKarbonKey: string,
+  credentials: KarbonApiConfig,
+): Promise<{ entityType: "Contact" | "Organization"; entityKey: string } | null> {
+  // 1. Cached lookup
+  const supabase = createAdminClient()
+  const { data: cached, error: cacheErr } = await supabase
+    .from("work_items")
+    .select("karbon_client_key, client_type")
+    .eq("karbon_work_item_key", workItemKarbonKey)
+    .maybeSingle()
+  if (cacheErr) {
+    console.warn(
+      `[karbon-debrief-note] Supabase work_items lookup failed for ${workItemKarbonKey}:`,
+      cacheErr.message,
+    )
+  }
+  if (cached?.karbon_client_key) {
+    const entityType = normalizeClientType(cached.client_type)
+    if (entityType) {
+      return { entityType, entityKey: cached.karbon_client_key }
+    }
+  }
+
+  // 2. Live Karbon fallback
+  const { data, error } = await karbonFetch<any>(
+    `/WorkItems/${encodeURIComponent(workItemKarbonKey)}`,
+    credentials,
+  )
+  if (error || !data) {
+    console.warn(
+      `[karbon-debrief-note] GET /WorkItems/${workItemKarbonKey} failed:`,
+      error,
+    )
+    return null
+  }
+  const entityType = normalizeClientType(data.ClientType)
+  if (!entityType || !data.ClientKey) return null
+  return { entityType, entityKey: String(data.ClientKey) }
+}
+
+/**
  * Build the `Timelines` array — one entry per Karbon entity the debrief
  * touches. De-duplicates by `EntityKey` since the same key can appear via
  * both related_clients and related_work_items.
+ *
+ * In addition to the explicitly-selected related clients, we resolve every
+ * related work item's owning Contact/Organization (Karbon stores these as
+ * `ClientKey` + `ClientType` on each work item) and add THAT to the
+ * timeline list too. This guarantees a debrief always lands on the client
+ * profile timeline — not just the work item — even when the teammate
+ * forgot to add a related client manually.
  */
-function buildTimelines(body: DebriefBodyForKarbon): Array<{ EntityType: string; EntityKey: string }> {
+async function buildTimelines(
+  body: DebriefBodyForKarbon,
+  credentials: KarbonApiConfig,
+): Promise<Array<{ EntityType: string; EntityKey: string }>> {
   const seen = new Set<string>()
   const out: Array<{ EntityType: string; EntityKey: string }> = []
 
@@ -230,12 +311,28 @@ function buildTimelines(body: DebriefBodyForKarbon): Array<{ EntityType: string;
     out.push({ EntityType: entityType, EntityKey: key })
   }
 
+  // Explicit selections from the debrief form
   for (const wi of body.related_work_items || []) {
     add("WorkItem", wi.karbon_key)
   }
   for (const c of body.related_clients || []) {
     if (c.type === "contact") add("Contact", c.karbon_key)
     else if (c.type === "organization") add("Organization", c.karbon_key)
+  }
+
+  // Derive the owning Contact/Organization for every related work item.
+  // Run these in parallel since they're independent network calls; a single
+  // failed lookup is logged but doesn't prevent the others from succeeding.
+  const workItemKeys = (body.related_work_items || [])
+    .map((wi) => wi.karbon_key)
+    .filter((k): k is string => Boolean(k))
+  if (workItemKeys.length > 0) {
+    const resolved = await Promise.all(
+      workItemKeys.map((key) => fetchWorkItemClient(key, credentials)),
+    )
+    for (const r of resolved) {
+      if (r) add(r.entityType, r.entityKey)
+    }
   }
 
   return out
@@ -272,7 +369,7 @@ export async function postDebriefNoteToKarbon(
     return { ok: false, skipped: "no_credentials" }
   }
 
-  const timelines = buildTimelines(body)
+  const timelines = await buildTimelines(body, credentials)
   if (timelines.length === 0) {
     // Nothing to attach to — pushing an unattached note creates a floating
     // timeline entry the firm can't navigate to. Skip cleanly.
