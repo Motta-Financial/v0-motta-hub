@@ -37,6 +37,29 @@ function LoginContent() {
   const searchParams = useSearchParams()
 
   useEffect(() => {
+    // Recovery / invite hash-fragment forwarder.
+    //
+    // When an admin clicks "Send password recovery" inside Supabase Studio
+    // (or anywhere else that uses Supabase's built-in email pipeline), the
+    // emailed link sends the user back to the project's configured Site URL
+    // with a `#access_token=...&type=recovery` hash fragment.
+    //
+    // Hash fragments aren't sent to the server, so our middleware sees no
+    // session cookie on the request, redirects to /login, and the user is
+    // stranded with their recovery tokens parked in the URL fragment of the
+    // login page. We rescue them here by forwarding to /auth/reset-password
+    // with the fragment intact -- that page knows how to call setSession()
+    // from a hash and then prompt for a new password.
+    if (typeof window !== "undefined" && window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.substring(1))
+      const hashType = hashParams.get("type")
+      const accessToken = hashParams.get("access_token")
+      if (accessToken && (hashType === "recovery" || hashType === "invite")) {
+        window.location.replace(`/auth/reset-password${window.location.hash}`)
+        return
+      }
+    }
+
     const message = searchParams.get("message")
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
