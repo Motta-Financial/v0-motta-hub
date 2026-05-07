@@ -33,20 +33,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command"
 import { cn } from "@/lib/utils"
+import { MultiSelectChip } from "@/components/sales/filter-chips"
+import {
+  classifyService,
+  SERVICE_LINE_META,
+  type ServiceLine,
+} from "@/lib/sales/service-line-classifier"
 
 interface ServiceRow {
   ignition_service_id: string
@@ -108,12 +101,20 @@ export function SalesServices() {
   const search = searchParams.get("search") || ""
   const category = (searchParams.get("category") || "").split(",").filter(Boolean)
   const billingType = (searchParams.get("billingType") || "").split(",").filter(Boolean)
+  const serviceLine = (searchParams.get("serviceLine") || "")
+    .split(",")
+    .filter(Boolean) as ServiceLine[]
   const activeOnly = searchParams.get("activeOnly") === "true"
+  const pitchedOnly = searchParams.get("pitchedOnly") === "true"
   const sortBy = searchParams.get("sortBy") || "totalRevenue"
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
 
   const [searchInput, setSearchInput] = useState(search)
 
+  // Service-line and pitched-only filtering happens client-side because the
+  // values aren't on the catalog row directly — they're derived from the
+  // service name (classifier) and proposal usage stats. Keeping it in JS
+  // also means we don't need to touch the API contract for these two.
   const queryString = useMemo(() => {
     const sp = new URLSearchParams()
     if (search) sp.set("search", search)
@@ -130,6 +131,27 @@ export function SalesServices() {
     fetcher,
     { keepPreviousData: true },
   )
+
+  // Derive each row's service line on the fly using the shared classifier.
+  // The classifier uses the service name (and falls back to a generic
+  // "advisory" bucket if nothing matches) so we always have a value to
+  // filter against. Memoized so re-renders that don't change the data
+  // don't re-classify ~150 rows.
+  const classifiedServices = useMemo(() => {
+    return (data?.services ?? []).map((s) => ({
+      ...s,
+      serviceLine: classifyService(s.name),
+    }))
+  }, [data?.services])
+
+  // Apply the two client-side filters that aren't part of the API contract.
+  const visibleServices = useMemo(() => {
+    return classifiedServices.filter((s) => {
+      if (serviceLine.length && !serviceLine.includes(s.serviceLine)) return false
+      if (pitchedOnly && s.proposalCount === 0) return false
+      return true
+    })
+  }, [classifiedServices, serviceLine, pitchedOnly])
 
   function updateParams(next: Record<string, string | null>) {
     const sp = new URLSearchParams(searchParams.toString())
@@ -152,7 +174,16 @@ export function SalesServices() {
     (search ? 1 : 0) +
     category.length +
     billingType.length +
-    (activeOnly ? 1 : 0)
+    serviceLine.length +
+    (activeOnly ? 1 : 0) +
+    (pitchedOnly ? 1 : 0)
+
+  // Service-line dropdown options are derived from the classifier metadata
+  // so they show in a sensible order (Tax → Bookkeeping → … → Advisory).
+  const serviceLineOptions = useMemo(
+    () => Object.keys(SERVICE_LINE_META) as ServiceLine[],
+    [],
+  )
 
   return (
     <div className="flex flex-col gap-4">
@@ -160,7 +191,7 @@ export function SalesServices() {
         <h1 className="text-2xl font-semibold text-stone-900">Services</h1>
         <p className="text-sm text-muted-foreground">
           {data
-            ? `${data.services.length.toLocaleString()} of ${data.stats.totalServices.toLocaleString()} services`
+            ? `${visibleServices.length.toLocaleString()} of ${data.stats.totalServices.toLocaleString()} services`
             : "Loading services…"}
           {data && activeFilterCount > 0
             ? ` matching ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""}`
@@ -226,6 +257,19 @@ export function SalesServices() {
           </Button>
 
           <MultiSelectChip
+            label="Service line"
+            // The ServiceLine type values ("Tax", "Accounting", "Advisory",
+            // "Other") are already the human-readable labels, so we pass
+            // them as plain strings — same shape as Category and Billing.
+            options={serviceLineOptions}
+            value={serviceLine}
+            onChange={(v) =>
+              updateParams({
+                serviceLine: v.length ? v.join(",") : null,
+              })
+            }
+          />
+          <MultiSelectChip
             label="Category"
             options={data?.dimensions.categories || []}
             value={category}
@@ -244,6 +288,15 @@ export function SalesServices() {
               onCheckedChange={(v) => updateParams({ activeOnly: v ? "true" : null })}
             />
             Active only
+          </label>
+          <label className="flex items-center gap-2 text-sm px-2">
+            {/* Hide unused services so users can focus on the catalog
+                items that are actually being pitched. */}
+            <Switch
+              checked={pitchedOnly}
+              onCheckedChange={(v) => updateParams({ pitchedOnly: v ? "true" : null })}
+            />
+            Pitched only
           </label>
 
           {activeFilterCount > 0 ? (
@@ -352,7 +405,7 @@ export function SalesServices() {
                       Failed to load services.
                     </td>
                   </tr>
-                ) : data && data.services.length === 0 ? (
+                ) : visibleServices.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">
                       <FilterIcon className="h-6 w-6 mx-auto mb-2 opacity-40" />
@@ -360,7 +413,7 @@ export function SalesServices() {
                     </td>
                   </tr>
                 ) : (
-                  data?.services.map((s) => {
+                  visibleServices.map((s) => {
                     const winRate =
                       s.proposalCount > 0
                         ? Math.round((s.acceptedCount / s.proposalCount) * 100)
@@ -376,11 +429,30 @@ export function SalesServices() {
                               </Badge>
                             ) : null}
                           </div>
-                          {s.description ? (
-                            <div className="text-xs text-muted-foreground truncate">
-                              {s.description}
-                            </div>
-                          ) : null}
+                          <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                            {/* Service-line tag mirrors the chip filter so
+                                people understand which bucket each row falls
+                                into. Colors come from the shared classifier
+                                metadata so Tax = blue, Accounting = emerald,
+                                Advisory = amber, Other = stone — consistent
+                                with the dashboard breakdown chart. */}
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "text-[10px] h-4 px-1 font-normal",
+                                SERVICE_LINE_META[s.serviceLine].bg,
+                                SERVICE_LINE_META[s.serviceLine].text,
+                                SERVICE_LINE_META[s.serviceLine].border,
+                              )}
+                            >
+                              {s.serviceLine}
+                            </Badge>
+                            {s.description ? (
+                              <span className="text-xs text-muted-foreground truncate">
+                                {s.description}
+                              </span>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="px-3 py-2 text-xs text-stone-700">
                           {s.category || "—"}
@@ -508,67 +580,6 @@ function SortableHeader({
   )
 }
 
-function MultiSelectChip({
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  label: string
-  options: string[]
-  value: string[]
-  onChange: (next: string[]) => void
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          className={cn(
-            "h-9 gap-1",
-            value.length > 0 ? "border-stone-900 bg-stone-50" : "",
-          )}
-        >
-          <FilterIcon className="h-3.5 w-3.5" />
-          {label}
-          {value.length > 0 ? (
-            <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
-              {value.length}
-            </Badge>
-          ) : null}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="p-0 w-64" align="start">
-        <Command>
-          <CommandInput placeholder={`Filter ${label.toLowerCase()}…`} />
-          <CommandList>
-            <CommandEmpty>No matches.</CommandEmpty>
-            <CommandGroup>
-              {options.map((opt) => {
-                const active = value.includes(opt)
-                return (
-                  <CommandItem
-                    key={opt}
-                    onSelect={() => {
-                      onChange(active ? value.filter((v) => v !== opt) : [...value, opt])
-                    }}
-                  >
-                    <span
-                      className={cn(
-                        "mr-2 inline-block h-3 w-3 rounded-sm border",
-                        active ? "bg-stone-900 border-stone-900" : "border-stone-300",
-                      )}
-                    />
-                    {titleCase(opt)}
-                  </CommandItem>
-                )
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
-  )
-}
+// `MultiSelectChip` now lives in components/sales/filter-chips.tsx so that
+// every Sales surface (Proposals, Invoices, Services, Recurring Revenue)
+// shares one consistent chip experience. Imported at the top of the file.

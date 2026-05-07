@@ -8,7 +8,9 @@
  * users come here to find a specific proposal, sort by value, scan recent
  * activity. The Dashboard remains the analytics surface.
  *
- * URL state: page, search, status, sort. SWR re-fetches on any change.
+ * URL state covers every filter (page, search, status, partner, manager,
+ * sentBy, state, serviceLine, value range, date range/field, sort) so the
+ * view is shareable and browser-back-button friendly.
  */
 
 import { useMemo, useState } from "react"
@@ -27,28 +29,24 @@ import {
   RefreshCcw,
   Filter as FilterIcon,
   Pencil,
+  MapPin,
 } from "lucide-react"
 import { ProposalEditSheet } from "@/components/sales/proposal-edit-sheet"
+import {
+  MultiSelectChip,
+  RangeChip,
+  DateRangeChip,
+  type DateFieldOption,
+} from "@/components/sales/filter-chips"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command"
 import { cn } from "@/lib/utils"
+import { US_STATE_NAMES } from "@/lib/sales/us-geo"
+import { SERVICE_LINE_META, type ServiceLine } from "@/lib/sales/service-line-classifier"
 
 interface Proposal {
   proposal_id: string
@@ -75,17 +73,25 @@ interface Proposal {
   updated_at: string | null
   organization_id: string | null
   organizations: { id: string; name: string } | null
+  /** Geographic state resolved via org → contact → ignition_client. */
+  state: string | null
+  city: string | null
+  /** Service lines this proposal touches (Tax / Accounting / Advisory / Other). */
+  service_lines: ServiceLine[]
 }
 interface ProposalsResponse {
   proposals: Proposal[]
   page: number
   pageSize: number
   total: number
+  totalUnfiltered: number
   dimensions: {
     statuses: string[]
     partners: string[]
     managers: string[]
     sentBy: string[]
+    states: string[]
+    serviceLines: string[]
   }
 }
 
@@ -101,6 +107,13 @@ const STATUS_TONE: Record<string, string> = {
   archived: "bg-stone-100 text-stone-500 border-stone-200",
   revoked: "bg-amber-100 text-amber-900 border-amber-200",
 }
+
+const PROPOSAL_DATE_FIELDS: DateFieldOption[] = [
+  { value: "created_at", label: "Created" },
+  { value: "sent_at", label: "Sent" },
+  { value: "accepted_at", label: "Accepted" },
+  { value: "completed_at", label: "Completed" },
+]
 
 function fmtMoney(n: number | null | undefined, currency = "USD") {
   const v = Number(n) || 0
@@ -143,6 +156,15 @@ export function SalesProposals() {
   const partner = (searchParams.get("partner") || "").split(",").filter(Boolean)
   const manager = (searchParams.get("manager") || "").split(",").filter(Boolean)
   const sentBy = (searchParams.get("sentBy") || "").split(",").filter(Boolean)
+  const state = (searchParams.get("state") || "").split(",").filter(Boolean)
+  const serviceLine = (searchParams.get("serviceLine") || "")
+    .split(",")
+    .filter(Boolean)
+  const minValue = searchParams.get("minValue") || ""
+  const maxValue = searchParams.get("maxValue") || ""
+  const dateField = searchParams.get("dateField") || "created_at"
+  const dateFrom = searchParams.get("dateFrom") || ""
+  const dateTo = searchParams.get("dateTo") || ""
   const sortBy = searchParams.get("sortBy") || "created_at"
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
 
@@ -158,10 +180,33 @@ export function SalesProposals() {
     if (partner.length) sp.set("partner", partner.join(","))
     if (manager.length) sp.set("manager", manager.join(","))
     if (sentBy.length) sp.set("sentBy", sentBy.join(","))
+    if (state.length) sp.set("state", state.join(","))
+    if (serviceLine.length) sp.set("serviceLine", serviceLine.join(","))
+    if (minValue) sp.set("minValue", minValue)
+    if (maxValue) sp.set("maxValue", maxValue)
+    if (dateField !== "created_at") sp.set("dateField", dateField)
+    if (dateFrom) sp.set("dateFrom", dateFrom)
+    if (dateTo) sp.set("dateTo", dateTo)
     sp.set("sortBy", sortBy)
     sp.set("sortDir", sortDir)
     return sp.toString()
-  }, [page, search, status, partner, manager, sentBy, sortBy, sortDir])
+  }, [
+    page,
+    search,
+    status,
+    partner,
+    manager,
+    sentBy,
+    state,
+    serviceLine,
+    minValue,
+    maxValue,
+    dateField,
+    dateFrom,
+    dateTo,
+    sortBy,
+    sortDir,
+  ])
 
   const { data, error, isLoading, mutate } = useSWR<ProposalsResponse>(
     `/api/sales/proposals?${queryString}`,
@@ -194,7 +239,11 @@ export function SalesProposals() {
     status.length +
     partner.length +
     manager.length +
-    sentBy.length
+    sentBy.length +
+    state.length +
+    serviceLine.length +
+    (minValue || maxValue ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0)
 
   return (
     <div className="flex flex-col gap-4">
@@ -203,7 +252,7 @@ export function SalesProposals() {
         <p className="text-sm text-muted-foreground">
           {data ? `${data.total.toLocaleString()} proposals` : "Loading proposals…"}
           {data && activeFilterCount > 0
-            ? ` matching ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""}`
+            ? ` matching ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""} (of ${data.totalUnfiltered.toLocaleString()})`
             : ""}
         </p>
       </div>
@@ -238,6 +287,24 @@ export function SalesProposals() {
             onChange={(v) => updateParams({ status: v.length ? v.join(",") : null })}
           />
           <MultiSelectChip
+            label="State"
+            options={data?.dimensions.states || []}
+            value={state}
+            // The picker shows "Massachusetts" but the URL stores the abbr "MA"
+            // so links remain compact and don't change when the lookup table grows.
+            formatLabel={(v) => (v === "(unknown)" ? "(no state on file)" : US_STATE_NAMES[v] || v)}
+            onChange={(v) => updateParams({ state: v.length ? v.join(",") : null })}
+          />
+          <MultiSelectChip
+            label="Service Line"
+            options={data?.dimensions.serviceLines || []}
+            value={serviceLine}
+            // Pass through verbatim: the values are already user-facing
+            // ("Tax", "Accounting", "Advisory", "Other").
+            formatLabel={(v) => v}
+            onChange={(v) => updateParams({ serviceLine: v.length ? v.join(",") : null })}
+          />
+          <MultiSelectChip
             label="Partner"
             options={data?.dimensions.partners || []}
             value={partner}
@@ -254,6 +321,31 @@ export function SalesProposals() {
             options={data?.dimensions.sentBy || []}
             value={sentBy}
             onChange={(v) => updateParams({ sentBy: v.length ? v.join(",") : null })}
+          />
+          <RangeChip
+            label="Value"
+            min={minValue}
+            max={maxValue}
+            onChange={({ min, max }) =>
+              updateParams({
+                minValue: min || null,
+                maxValue: max || null,
+              })
+            }
+          />
+          <DateRangeChip
+            label="Date"
+            field={dateField}
+            from={dateFrom}
+            to={dateTo}
+            fieldOptions={PROPOSAL_DATE_FIELDS}
+            onChange={({ from, to, field }) =>
+              updateParams({
+                dateField: field === "created_at" ? null : field,
+                dateFrom: from || null,
+                dateTo: to || null,
+              })
+            }
           />
 
           {activeFilterCount > 0 ? (
@@ -362,21 +454,56 @@ export function SalesProposals() {
                       <tr key={p.proposal_id} className="border-b hover:bg-stone-50/60">
                         <td className="px-3 py-2 font-mono text-xs">{p.proposal_number || p.proposal_id.slice(0, 8)}</td>
                         <td className="px-3 py-2">
-                          {orgHref ? (
-                            <Link href={orgHref} className="hover:underline font-medium">
-                              {orgName}
-                            </Link>
-                          ) : (
-                            <span className="font-medium">{orgName}</span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {orgHref ? (
+                              <Link href={orgHref} className="hover:underline font-medium">
+                                {orgName}
+                              </Link>
+                            ) : (
+                              <span className="font-medium">{orgName}</span>
+                            )}
+                            {p.state ? (
+                              // The little state pill carries an icon to read
+                              // as "location" rather than another generic tag.
+                              // Title attribute spells out the full state name
+                              // for users who don't know the abbreviation.
+                              <span
+                                title={US_STATE_NAMES[p.state] || p.state}
+                                className="inline-flex items-center gap-0.5 text-[10px] font-medium text-stone-500 bg-stone-100 border border-stone-200 rounded px-1 py-0.5"
+                              >
+                                <MapPin className="h-2.5 w-2.5" />
+                                {p.state}
+                              </span>
+                            ) : null}
+                          </div>
                           {p.client_email ? (
                             <div className="text-xs text-muted-foreground truncate max-w-[200px]">
                               {p.client_email}
                             </div>
                           ) : null}
                         </td>
-                        <td className="px-3 py-2 max-w-[260px] truncate text-stone-700">
-                          {p.title || "—"}
+                        <td className="px-3 py-2 max-w-[260px] text-stone-700">
+                          <div className="truncate">{p.title || "—"}</div>
+                          {p.service_lines.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {p.service_lines.map((line) => {
+                                const meta = SERVICE_LINE_META[line]
+                                return (
+                                  <span
+                                    key={line}
+                                    className={cn(
+                                      "text-[10px] px-1.5 py-0.5 rounded border",
+                                      meta.bg,
+                                      meta.text,
+                                      meta.border,
+                                    )}
+                                  >
+                                    {line}
+                                  </span>
+                                )
+                              })}
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-3 py-2">
                           <Badge variant="outline" className={cn("border", tone)}>
@@ -502,70 +629,5 @@ function SortableHeader({
         <Icon className="h-3 w-3" />
       </button>
     </th>
-  )
-}
-
-function MultiSelectChip({
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  label: string
-  options: string[]
-  value: string[]
-  onChange: (next: string[]) => void
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          className={cn(
-            "h-9 gap-1",
-            value.length > 0 ? "border-stone-900 bg-stone-50" : "",
-          )}
-        >
-          <FilterIcon className="h-3.5 w-3.5" />
-          {label}
-          {value.length > 0 ? (
-            <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
-              {value.length}
-            </Badge>
-          ) : null}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="p-0 w-64" align="start">
-        <Command>
-          <CommandInput placeholder={`Filter ${label.toLowerCase()}…`} />
-          <CommandList>
-            <CommandEmpty>No matches.</CommandEmpty>
-            <CommandGroup>
-              {options.map((opt) => {
-                const active = value.includes(opt)
-                return (
-                  <CommandItem
-                    key={opt}
-                    onSelect={() => {
-                      onChange(active ? value.filter((v) => v !== opt) : [...value, opt])
-                    }}
-                  >
-                    <span
-                      className={cn(
-                        "mr-2 inline-block h-3 w-3 rounded-sm border",
-                        active ? "bg-stone-900 border-stone-900" : "border-stone-300",
-                      )}
-                    />
-                    {titleCase(opt)}
-                  </CommandItem>
-                )
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
   )
 }

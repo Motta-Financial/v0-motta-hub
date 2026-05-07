@@ -1,13 +1,17 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { normalizeState } from "@/lib/sales/us-geo"
 
 /**
  * Sales > Invoices listing endpoint.
  *
  * Returns paginated, filterable Ignition invoices with their linked
- * organization and proposal context. Stats block summarises totals across
- * the full filtered set (not just the current page) so the UI can render
- * "Total / Paid / Outstanding" without a second round-trip.
+ * organization or contact and a resolved geographic state (org → contact
+ * → ignition_client fallback). Stats block summarises totals across the
+ * full unfiltered set so the KPI strip stays stable as filters change.
+ *
+ * Volumes are tiny (~660 invoices) so we pull the full set, enrich, and
+ * filter in JS — same approach as the proposals endpoint.
  */
 
 export const dynamic = "force-dynamic"
@@ -21,97 +25,251 @@ export async function GET(req: Request) {
     const sp = url.searchParams
 
     const page = Math.max(1, Number.parseInt(sp.get("page") || "1", 10))
-  const pageSize = Math.min(
-    PAGE_SIZE_MAX,
-    Math.max(1, Number.parseInt(sp.get("pageSize") || String(PAGE_SIZE_DEFAULT), 10)),
-  )
-  const status = sp.get("status") || ""
-  const search = (sp.get("search") || "").trim()
-  const dateField = (sp.get("dateField") || "invoice_date") as
-    | "invoice_date"
-    | "due_date"
-    | "paid_at"
-    | "sent_at"
-    | "created_at"
-  const dateFrom = sp.get("dateFrom") || ""
-  const dateTo = sp.get("dateTo") || ""
-  const sortBy = sp.get("sortBy") || "invoice_date"
-  const sortDir = (sp.get("sortDir") || "desc") as "asc" | "desc"
-
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  )
-
-  let query = supabase
-    .from("ignition_invoices")
-    .select(
-      `ignition_invoice_id, invoice_number, status, amount, amount_paid, amount_outstanding,
-       currency, invoice_date, due_date, sent_at, paid_at, voided_at, stripe_invoice_id,
-       proposal_id, organization_id, contact_id, created_at, updated_at,
-       organizations(id, name),
-       contacts(id, full_name)`,
-      { count: "exact" },
+    const pageSize = Math.min(
+      PAGE_SIZE_MAX,
+      Math.max(
+        1,
+        Number.parseInt(sp.get("pageSize") || String(PAGE_SIZE_DEFAULT), 10),
+      ),
     )
 
-  if (status) {
-    const list = status.split(",").filter(Boolean)
-    if (list.length > 0) query = query.in("status", list)
-  }
-  if (dateFrom) query = query.gte(dateField, dateFrom)
-  if (dateTo) query = query.lte(dateField, dateTo)
-  if (search) {
-    const safe = search.replace(/[%,]/g, "")
-    query = query.or(`invoice_number.ilike.%${safe}%,proposal_id.ilike.%${safe}%`)
-  }
+    const search = (sp.get("search") || "").trim()
+    const statusFilter = (sp.get("status") || "").split(",").filter(Boolean)
+    const stateFilter = (sp.get("state") || "").split(",").filter(Boolean)
+    const minAmount =
+      sp.get("minAmount") !== null && sp.get("minAmount") !== ""
+        ? Number(sp.get("minAmount"))
+        : null
+    const maxAmount =
+      sp.get("maxAmount") !== null && sp.get("maxAmount") !== ""
+        ? Number(sp.get("maxAmount"))
+        : null
 
-  const validSortFields = new Set([
-    "invoice_date",
-    "due_date",
-    "paid_at",
-    "sent_at",
-    "created_at",
-    "amount",
-    "amount_paid",
-    "amount_outstanding",
-    "status",
-    "invoice_number",
-  ])
-  const finalSort = validSortFields.has(sortBy) ? sortBy : "invoice_date"
-  query = query.order(finalSort, { ascending: sortDir === "asc", nullsFirst: false })
+    const dateField = (sp.get("dateField") || "invoice_date") as
+      | "invoice_date"
+      | "due_date"
+      | "paid_at"
+      | "sent_at"
+      | "created_at"
+    const dateFrom = sp.get("dateFrom") || ""
+    const dateTo = sp.get("dateTo") || ""
 
-  const from = (page - 1) * pageSize
-  const to = from + pageSize - 1
-  query = query.range(from, to)
+    const sortBy = sp.get("sortBy") || "invoice_date"
+    const sortDir = (sp.get("sortDir") || "desc") as "asc" | "desc"
 
-  const { data, error, count } = await query
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    )
 
-  // Aggregate stats — across ALL invoices regardless of status filter so the
-  // header KPIs are consistent. Cheap because table is small (~118 rows).
-  const { data: allInvoices } = await supabase
-    .from("ignition_invoices")
-    .select("status, amount, amount_paid, amount_outstanding")
+    // ── Pull all invoices ────────────────────────────────────────────────
+    // Supabase / PostgREST hard-caps result sets at `db.max-rows` (1000 in
+    // this project). With ~1,012 invoices today and growth ahead, we must
+    // page with `range()` instead of a single `limit()` call to avoid
+    // silently dropping the tail. We fetch in 1k chunks until we get back
+    // a short page.
+    const PAGE = 1000
+    const invoices: any[] = []
+    for (let offset = 0; ; offset += PAGE) {
+      const { data, error } = await supabase
+        .from("ignition_invoices")
+        .select(
+          `ignition_invoice_id, invoice_number, status, amount, amount_paid, amount_outstanding,
+           currency, invoice_date, due_date, sent_at, paid_at, voided_at, stripe_invoice_id,
+           proposal_id, organization_id, contact_id, ignition_client_id, created_at, updated_at,
+           organizations(id, name),
+           contacts(id, full_name)`,
+        )
+        .range(offset, offset + PAGE - 1)
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 })
+      }
+      const chunk = data ?? []
+      invoices.push(...chunk)
+      if (chunk.length < PAGE) break
+      // Safety stop in case max-rows is even smaller than 1000 — bail out
+      // after 20k rows.
+      if (offset >= 20_000) break
+    }
 
-  const stats = {
-    total: allInvoices?.length || 0,
-    totalAmount: sum(allInvoices, "amount"),
-    totalPaid: sum(allInvoices, "amount_paid"),
-    totalOutstanding: sum(allInvoices, "amount_outstanding"),
-    byStatus: countBy(allInvoices, "status"),
-  }
+    // ── Resolve state via the org → contact → ignition_client chain ──────
+    const orgIds = new Set<string>()
+    const contactIds = new Set<string>()
+    const igcIds = new Set<string>()
+    for (const inv of invoices) {
+      if (inv.organization_id) orgIds.add(inv.organization_id)
+      if (inv.contact_id) contactIds.add(inv.contact_id)
+      if (inv.ignition_client_id) igcIds.add(inv.ignition_client_id)
+    }
 
-  const dimensions = {
-    statuses: uniqueSorted(allInvoices?.map((d) => d.status)),
-  }
+    const orgInfo = new Map<string, { state: string | null; city: string | null }>()
+    const contactInfo = new Map<string, { state: string | null; city: string | null }>()
+    const igcInfo = new Map<string, { state: string | null; city: string | null }>()
+
+    if (orgIds.size) {
+      const { data } = await supabase
+        .from("organizations")
+        .select("id, state, city")
+        .in("id", Array.from(orgIds))
+      for (const o of data ?? []) {
+        orgInfo.set(o.id, { state: normalizeState(o.state), city: o.city ?? null })
+      }
+    }
+    if (contactIds.size) {
+      const { data } = await supabase
+        .from("contacts")
+        .select("id, state, city, mailing_state, mailing_city")
+        .in("id", Array.from(contactIds))
+      for (const ct of data ?? []) {
+        contactInfo.set(ct.id, {
+          state: normalizeState(ct.state) ?? normalizeState(ct.mailing_state),
+          city: ct.city ?? ct.mailing_city ?? null,
+        })
+      }
+    }
+    if (igcIds.size) {
+      const { data } = await supabase
+        .from("ignition_clients")
+        .select("ignition_client_id, state, city")
+        .in("ignition_client_id", Array.from(igcIds))
+      for (const ig of data ?? []) {
+        igcInfo.set(ig.ignition_client_id, {
+          state: normalizeState(ig.state),
+          city: ig.city ?? null,
+        })
+      }
+    }
+
+    // ── Enrich every invoice ─────────────────────────────────────────────
+    type EnrichedInvoice = {
+      ignition_invoice_id: string
+      invoice_number: string | null
+      status: string | null
+      amount: number | null
+      amount_paid: number | null
+      amount_outstanding: number | null
+      currency: string | null
+      invoice_date: string | null
+      due_date: string | null
+      sent_at: string | null
+      paid_at: string | null
+      voided_at: string | null
+      stripe_invoice_id: string | null
+      proposal_id: string | null
+      organization_id: string | null
+      contact_id: string | null
+      organizations: { id: string; name: string } | null
+      contacts: { id: string; full_name: string } | null
+      state: string | null
+      city: string | null
+    }
+
+    const enriched: EnrichedInvoice[] = invoices.map((inv: any) => {
+      const orgState = inv.organization_id ? orgInfo.get(inv.organization_id) : null
+      const ctState = inv.contact_id ? contactInfo.get(inv.contact_id) : null
+      const igcState = inv.ignition_client_id
+        ? igcInfo.get(inv.ignition_client_id)
+        : null
+      const state =
+        orgState?.state ?? ctState?.state ?? igcState?.state ?? null
+      const city = orgState?.city ?? ctState?.city ?? igcState?.city ?? null
+      return { ...inv, state, city }
+    })
+
+    // ── Stats from the unfiltered set (so KPI strip stays stable) ────────
+    const stats = {
+      total: enriched.length,
+      totalAmount: sum(enriched, "amount"),
+      totalPaid: sum(enriched, "amount_paid"),
+      totalOutstanding: sum(enriched, "amount_outstanding"),
+      byStatus: countBy(enriched, "status"),
+    }
+
+    // ── Filter dimensions (full domain, ignoring current filters) ────────
+    const dimensions = {
+      statuses: uniqueSorted(enriched.map((d) => d.status)),
+      states: uniqueSorted(enriched.map((d) => d.state)),
+    }
+
+    // ── Apply filters ────────────────────────────────────────────────────
+    const lcSearch = search.toLowerCase()
+    let filtered = enriched.filter((inv) => {
+      if (statusFilter.length && (!inv.status || !statusFilter.includes(inv.status)))
+        return false
+      if (stateFilter.length) {
+        const st = inv.state ?? "(unknown)"
+        if (!stateFilter.includes(st)) return false
+      }
+      if (
+        minAmount !== null &&
+        !Number.isNaN(minAmount) &&
+        (Number(inv.amount) || 0) < minAmount
+      )
+        return false
+      if (
+        maxAmount !== null &&
+        !Number.isNaN(maxAmount) &&
+        (Number(inv.amount) || 0) > maxAmount
+      )
+        return false
+      if (dateFrom || dateTo) {
+        const dv = (inv as any)[dateField] as string | null
+        if (!dv) return false
+        if (dateFrom && dv < dateFrom) return false
+        if (dateTo && dv > dateTo + "T23:59:59") return false
+      }
+      if (lcSearch) {
+        const hay =
+          (inv.invoice_number || "").toLowerCase() +
+          " " +
+          (inv.proposal_id || "").toLowerCase() +
+          " " +
+          (inv.organizations?.name || "").toLowerCase() +
+          " " +
+          (inv.contacts?.full_name || "").toLowerCase()
+        if (!hay.includes(lcSearch)) return false
+      }
+      return true
+    })
+
+    // ── Sort ─────────────────────────────────────────────────────────────
+    const validSortFields = new Set([
+      "invoice_date",
+      "due_date",
+      "paid_at",
+      "sent_at",
+      "created_at",
+      "amount",
+      "amount_paid",
+      "amount_outstanding",
+      "status",
+      "invoice_number",
+    ])
+    const finalSort = validSortFields.has(sortBy) ? sortBy : "invoice_date"
+    filtered = [...filtered].sort((a: any, b: any) => {
+      const av = a[finalSort]
+      const bv = b[finalSort]
+      if (av == null && bv == null) return 0
+      if (av == null) return 1
+      if (bv == null) return -1
+      if (typeof av === "string") {
+        return sortDir === "asc"
+          ? String(av).localeCompare(String(bv))
+          : String(bv).localeCompare(String(av))
+      }
+      return sortDir === "asc" ? av - bv : bv - av
+    })
+
+    const totalFiltered = filtered.length
+    const from = (page - 1) * pageSize
+    const paged = filtered.slice(from, from + pageSize)
 
     return NextResponse.json({
-      invoices: data || [],
+      invoices: paged,
       page,
       pageSize,
-      total: count || 0,
+      total: totalFiltered,
+      totalUnfiltered: enriched.length,
       stats,
       dimensions,
     })
