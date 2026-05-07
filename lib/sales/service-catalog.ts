@@ -65,7 +65,6 @@ export type CanonicalServiceId =
   | "bookkeeping-monthly"
   | "bookkeeping-quarterly"
   | "bookkeeping-onboarding"
-  | "bookkeeping-cleanup"
   | "acct-reconciliations"
   | "acct-payable"
   | "acct-qbo-subscription"
@@ -222,12 +221,24 @@ export const CANONICAL_SERVICES: CanonicalService[] = [
     label: "Tax Prep — S-Corp (1120s)",
     shortLabel: "1120s",
     serviceLine: "Tax",
+    // All five observed names — three from proposal lines plus two
+    // catalog SKUs ("Tax | Prep (1120s): S-Corporation" and
+    // "Outsourced | Tax Prep (1120s): S-Corporation"). Listing every
+    // catalog row explicitly (instead of relying on the regex pattern
+    // below) keeps the rollup deterministic and makes the mapping
+    // self-documenting in the canonical view.
     aliases: [
       "Tax Prep (1120s): S-Corporation",
       "Tax | Prep (1120s): S-Corporation",
       "Tax Preparation: S-Corp (1120s)",
+      "Outsourced | Tax Prep (1120s): S-Corporation",
     ],
-    patterns: [/\b1120s\b/i, /s[-\s]?corp(oration)?/i],
+    // Pattern fallback covers any future spelling variant — "S Corp",
+    // "S-Corporation", "1120-S", etc. — without needing a code change.
+    // We DO NOT match "Entity Formation … S-Corporation (1120s)" here
+    // because that catalog row has its own exact alias on
+    // `advisory-entity-formation-scorp`, and exact aliases beat patterns.
+    patterns: [/\b1120s\b/i, /\bs[-\s]?corp(oration)?\b/i],
   },
   {
     id: "tax-prep-1120c",
@@ -420,27 +431,32 @@ export const CANONICAL_SERVICES: CanonicalService[] = [
   },
   {
     id: "bookkeeping-onboarding",
-    label: "Bookkeeping — Onboarding & Setup",
+    // A bookkeeping onboarding engagement IS a clean-up + optimization
+    // pass — historically Motta has used "Onboarding", "Set Up &
+    // Optimization", and "Review, Clean Up & Optimization" to describe
+    // the same offering. Treating them as one canonical service
+    // collapses the 18 historical proposals (~$21k) that were getting
+    // split across two near-identical rows in the consolidated view.
+    label: "Bookkeeping — Onboarding, Clean Up & Optimization",
     shortLabel: "BK Onboarding",
     serviceLine: "Accounting",
     aliases: [
+      // Onboarding / Set Up family
       "Bookkeeping (Onboarding)",
       "Bookkeeping | Onboarding & Optimization",
       "Bookkeeping Set Up & Optimization",
       "Accounting | Bookkeeping | Onboarding & Optimization",
-    ],
-    patterns: [/bookkeeping.*onboard/i, /bookkeeping.*set\s*up/i],
-  },
-  {
-    id: "bookkeeping-cleanup",
-    label: "Bookkeeping — Clean Up & Optimization",
-    shortLabel: "BK Cleanup",
-    serviceLine: "Accounting",
-    aliases: [
+      "Outsourced | Bookkeeping Set Up & Optimization",
+      // Clean Up / Review family — same offering, different historical
+      // naming. Merged in per Motta product team direction.
       "Bookkeeping: Review, Clean Up & Optimization",
       "Accounting | Bookkeeping | Review, Clean Up & Optimization",
     ],
-    patterns: [/bookkeeping.*(clean[-\s]?up|review)/i],
+    patterns: [
+      /bookkeeping.*onboard/i,
+      /bookkeeping.*set\s*up/i,
+      /bookkeeping.*(clean[-\s]?up|review)/i,
+    ],
   },
   {
     id: "acct-reconciliations",
