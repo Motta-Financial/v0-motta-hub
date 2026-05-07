@@ -546,7 +546,9 @@ export function buildNotificationEmailHtml(opts: {
 }
 
 /**
- * Tommy Awards weekly Friday ballot reminder.
+ * Tommy Awards weekly ballot reminder. Sent Thursday afternoons (Eastern
+ * Time) so voters have Thursday evening + Friday morning to submit their
+ * ballots before the Friday-noon firm-wide recap.
  */
 export function buildTommyReminderHtml(opts: {
   recipientName: string
@@ -554,7 +556,7 @@ export function buildTommyReminderHtml(opts: {
   ballotUrl: string
 }) {
   const body = `<p style="margin:0 0 16px;">Hi ${opts.recipientName},</p>
-    <p style="margin:0 0 16px;">It's Tommy Awards day! Take a moment to recognize the teammates who best represented Tom Brady this week — going the extra mile, client wins, and being a great teammate.</p>
+    <p style="margin:0 0 16px;">It's almost Tommy Awards time — take a moment this evening or tomorrow morning to recognize the teammates who best represented Tom Brady this week. Going the extra mile, client wins, and being a great teammate all count.</p>
     <div style="background:#f9fafb;border-left:4px solid #c62828;padding:12px 16px;border-radius:4px;margin:0 0 20px;">
       <strong>Voting for: ${opts.weekLabel}</strong>
     </div>
@@ -563,8 +565,93 @@ export function buildTommyReminderHtml(opts: {
          style="display:inline-block;background:#c62828;color:#fff;padding:14px 36px;border-radius:8px;text-decoration:none;font-size:15px;font-weight:600;">
         Submit Your Ballot
       </a>
-    </div>`
+    </div>
+    <p style="margin:20px 0 0;color:${BRAND.textMuted};font-size:13px;text-align:center;">
+      Ballots close at 12:00 PM Eastern on Friday — the recap goes out right after.
+    </p>`
   return baseEmailWrapper("Tommy Awards — Cast Your Vote", body)
+}
+
+/**
+ * Tommy Awards weekly recap. Sent Friday at 12:00 PM Eastern Time.
+ *
+ * Uses the shared MOTTA HUB email wrapper (header/footer) so it matches the
+ * reminder and every other transactional email in the firm. Keeps the
+ * functional medal colors (gold / silver / bronze) for the top-three
+ * podium and the red Tommy accent for the CTA.
+ */
+export function buildTommyRecapHtml(opts: {
+  weekLabel: string
+  aiSummary: string
+  topThree: Array<{
+    name: string
+    totalPoints: number
+    first: number
+    second: number
+    third: number
+  }>
+  totalBallots: number
+  leaderboardUrl: string
+}) {
+  // Functional medal palette — these are NOT brand colors, they communicate
+  // 1st/2nd/3rd place at a glance and shouldn't be repainted with the Motta
+  // olive palette without breaking that visual language.
+  const MEDAL_COLORS = ["#FFD700", "#C0C0C0", "#CD7F32"] as const
+
+  const podiumHtml =
+    opts.topThree.length > 0
+      ? opts.topThree
+          .map((winner, i) => {
+            const medal = MEDAL_COLORS[i] ?? MEDAL_COLORS[2]
+            return `
+              <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="width:100%;margin:0 0 12px;">
+                <tr>
+                  <td style="width:48px;vertical-align:middle;padding-right:14px;">
+                    <div style="background:${medal};color:#1a1a1a;font-size:18px;font-weight:700;width:44px;height:44px;border-radius:50%;text-align:center;line-height:44px;">${i + 1}</div>
+                  </td>
+                  <td style="vertical-align:middle;">
+                    <div style="font-size:16px;font-weight:600;color:${BRAND.textPrimary};">${winner.name}</div>
+                    <div style="font-size:13px;color:${BRAND.textMuted};margin-top:2px;">
+                      ${winner.totalPoints} pts &middot; ${winner.first} first &middot; ${winner.second} second &middot; ${winner.third} third
+                    </div>
+                  </td>
+                </tr>
+              </table>`
+          })
+          .join("")
+      : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No votes recorded this week.</p>`
+
+  const body = `
+    <p style="margin:0 0 8px;color:${BRAND.textMuted};font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">
+      Week of ${opts.weekLabel}
+    </p>
+    <h2 style="margin:0 0 20px;font-size:20px;color:${BRAND.textPrimary};">This Week's Tommy Awards</h2>
+
+    <div style="background:${BRAND.background};border-left:4px solid ${BRAND.primary};padding:18px 20px;border-radius:6px;margin:0 0 28px;">
+      <div style="font-size:12px;font-weight:600;color:${BRAND.primary};text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;">
+        From ALFRED Ai
+      </div>
+      <div style="font-size:15px;color:${BRAND.textPrimary};line-height:1.7;white-space:pre-wrap;">${opts.aiSummary}</div>
+    </div>
+
+    <h3 style="font-size:16px;color:${BRAND.textPrimary};margin:0 0 16px;">Top 3 Finishers</h3>
+    ${podiumHtml}
+
+    <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="width:100%;margin:24px 0 0;background:${BRAND.background};border-radius:6px;">
+      <tr>
+        <td style="padding:14px 18px;font-size:13px;color:${BRAND.textMuted};">Total Ballots Submitted</td>
+        <td style="padding:14px 18px;font-size:13px;color:${BRAND.textPrimary};font-weight:600;text-align:right;">${opts.totalBallots}</td>
+      </tr>
+    </table>
+
+    <div style="margin-top:28px;text-align:center;">
+      <a href="${opts.leaderboardUrl}"
+         style="display:inline-block;background:#c62828;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
+        View Full Leaderboard
+      </a>
+    </div>`
+
+  return baseEmailWrapper("Tommy Awards Weekly Recap", body)
 }
 
 /**

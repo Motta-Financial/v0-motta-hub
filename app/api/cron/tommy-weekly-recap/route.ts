@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
-import { sendCategoryEmail } from "@/lib/email"
+import { buildTommyRecapHtml, sendCategoryEmail } from "@/lib/email"
 import { generateText } from "ai"
 
 // AI generation can take 10-30s with a long prompt; bump from the default 10s.
@@ -8,17 +8,20 @@ export const maxDuration = 60
 
 /**
  * Vercel Cron endpoint that sends a weekly Tommy Awards recap email to the
- * entire firm every Monday at 12:00 PM Eastern Time.
+ * entire firm every Friday at 12:00 PM Eastern Time, immediately after the
+ * Thursday-afternoon ballot reminder closes out the voting window.
  *
  * The email:
- *   - Recaps the previous week's Tommy Awards voting results
+ *   - Recaps THIS week's Tommy Awards voting results
  *   - Uses AI to analyze all the ballot notes and write a witty summary
  *   - Written by "ALFRED Ai" in the tone of an old British butler
  *   - Includes vote tallies and highlights the week's winners
+ *   - Renders through the shared baseEmailWrapper in lib/email.ts so the
+ *     header/footer/palette match every other Motta Hub transactional email
  *
  * Auth: validates the standard Vercel cron Authorization: Bearer ${CRON_SECRET} header.
  *
- * Scheduled in vercel.json to run Mondays at 16:00 UTC, which is:
+ * Scheduled in vercel.json to run Fridays at 16:00 UTC, which is:
  *   - 12:00 PM EDT (March-November, ~8 months/year)
  *   - 11:00 AM EST (November-March, ~4 months/year)
  * Vercel Cron doesn't support timezone-aware schedules; we optimize for the
@@ -43,8 +46,11 @@ export async function GET(request: Request) {
   try {
     const supabase = createAdminClient()
 
-    // Get the most recent week that has ballots submitted.
-    // We recap the PREVIOUS week (week_date is Friday; email sends Monday).
+    // Get the most recent week that has ballots submitted. With the new
+    // schedule (recap fires Friday at noon ET, after the Thursday-afternoon
+    // reminder) the most recent week_date will normally be TODAY's Friday —
+    // i.e. we recap THIS week's votes. If somehow no votes came in for
+    // today, this falls back to whichever week last had ballots.
     const { data: latestWeek, error: weekErr } = await supabase
       .from("tommy_award_ballots")
       .select("week_id, week_date")
@@ -207,12 +213,15 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
         "I regret to inform you that my circuits experienced a momentary disruption whilst composing this week's recap. One does hope you'll forgive the lapse and simply refer to the results below."
     }
 
-    // Build the email HTML
-    const html = buildTommyRecapEmailHtml({
+    // Build the email HTML using the shared MOTTA HUB wrapper so the header,
+    // footer, and brand palette match the Thursday reminder email exactly.
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+    const html = buildTommyRecapHtml({
       weekLabel,
       aiSummary,
       topThree,
       totalBallots: ballots.length,
+      leaderboardUrl: `${appUrl}/tommy-awards`,
     })
 
     // Send to all active team members (respecting their "tommy_recap" email preference).
@@ -273,109 +282,4 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
   }
 }
 
-// Helper: build the weekly recap email HTML with ALFRED branding.
-function buildTommyRecapEmailHtml(opts: {
-  weekLabel: string
-  aiSummary: string
-  topThree: Array<{
-    name: string
-    totalPoints: number
-    first: number
-    second: number
-    third: number
-  }>
-  totalBallots: number
-}) {
-  const topThreeHtml =
-    opts.topThree.length > 0
-      ? opts.topThree
-          .map(
-            (winner, i) => `
-        <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 12px;">
-          <div style="
-            background: ${i === 0 ? "#FFD700" : i === 1 ? "#C0C0C0" : "#CD7F32"};
-            color: #1a1a1a;
-            font-size: 20px;
-            font-weight: 700;
-            width: 48px;
-            height: 48px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-shrink: 0;
-          ">${i + 1}</div>
-          <div style="flex: 1;">
-            <div style="font-size: 17px; font-weight: 600; color: #1a1a1a; margin-bottom: 2px;">
-              ${winner.name}
-            </div>
-            <div style="font-size: 13px; color: #666;">
-              ${winner.totalPoints} points &nbsp;·&nbsp; ${winner.first} first-place, ${winner.second} second-place, ${winner.third} third-place
-            </div>
-          </div>
-        </div>
-      `,
-          )
-          .join("")
-      : `<p style="color:#888;font-size:14px;">No votes recorded this week.</p>`
 
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;">
-  <div style="max-width:640px;margin:0 auto;padding:24px;">
-    <div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
-      <!-- Header -->
-      <div style="background:#1a1a1a;padding:28px 32px;">
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-          <div style="background:#c62828;color:#fff;font-size:20px;font-weight:700;width:40px;height:40px;border-radius:8px;display:flex;align-items:center;justify-content:center;">
-            T
-          </div>
-          <h1 style="color:#fff;font-size:22px;margin:0;">Tommy Awards Weekly Recap</h1>
-        </div>
-        <p style="color:#a3a3a3;font-size:14px;margin:0;">Week of ${opts.weekLabel}</p>
-      </div>
-
-      <!-- Body -->
-      <div style="padding:32px;">
-        <!-- AI-powered summary from ALFRED -->
-        <div style="background:#f9fafb;border-left:4px solid #1a1a1a;padding:20px;border-radius:8px;margin-bottom:28px;">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-            <div style="font-size:24px;">🎩</div>
-            <div style="font-weight:600;font-size:15px;color:#1a1a1a;">From ALFRED Ai</div>
-          </div>
-          <div style="font-size:15px;color:#333;line-height:1.7;white-space:pre-wrap;">${opts.aiSummary}</div>
-        </div>
-
-        <!-- Top 3 Finishers -->
-        <h2 style="font-size:18px;color:#1a1a1a;margin:0 0 16px;">Top 3 Finishers</h2>
-        ${topThreeHtml}
-
-        <!-- Stats -->
-        <div style="background:#f9fafb;border-radius:8px;padding:16px;margin-top:24px;">
-          <div style="font-size:13px;color:#666;display:flex;justify-content:space-between;">
-            <span>Total Ballots Submitted</span>
-            <span style="font-weight:600;color:#1a1a1a;">${opts.totalBallots}</span>
-          </div>
-        </div>
-
-        <!-- CTA -->
-        <div style="margin-top:28px;text-align:center;">
-          <a href="${process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"}/tommy-awards"
-             style="display:inline-block;background:#c62828;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
-            View Full Leaderboard
-          </a>
-        </div>
-      </div>
-
-      <!-- Footer -->
-      <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #eee;">
-        <p style="font-size:12px;color:#999;margin:0;text-align:center;">
-          This recap is generated by ALFRED Ai and sent weekly. Manage your email preferences in settings.
-        </p>
-      </div>
-    </div>
-  </div>
-</body>
-</html>`
-}
