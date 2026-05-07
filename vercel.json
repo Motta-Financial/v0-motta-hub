@@ -17,6 +17,10 @@
       "schedule": "0 13 * * 1"
     },
     {
+      "path": "/api/cron/daily-briefing",
+      "schedule": "0 12 * * 1-5"
+    },
+    {
       "path": "/api/cron/tommy-weekly-recap",
       "schedule": "0 16 * * 5"
     }
