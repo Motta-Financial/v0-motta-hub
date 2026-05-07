@@ -623,3 +623,63 @@ export function buildBroadcastHtml(opts: {
     <div style="font-size:15px;color:#1a1a1a;">${opts.bodyHtml}</div>`
   return baseEmailWrapper(opts.subject, body, `Sent by ${opts.fromName} via MOTTA HUB.`)
 }
+
+/**
+ * Password-reset / invite email. Used by both the self-service "Forgot
+ * password?" flow on the login screen and the admin "Send Password Reset"
+ * action in User Auth Manager.
+ *
+ * `actionUrl` should be a /auth/confirm?token_hash=...&type=recovery URL
+ * generated server-side via supabase.auth.admin.generateLink().
+ */
+export function buildPasswordResetEmailHtml(opts: {
+  recipientName?: string
+  actionUrl: string
+  mode: "reset" | "invite"
+  expiresInHours?: number
+}) {
+  const { recipientName, actionUrl, mode, expiresInHours = 1 } = opts
+  const isInvite = mode === "invite"
+  const headline = isInvite ? "Welcome to Motta Hub" : "Reset your password"
+  const ctaLabel = isInvite ? "Set Up Your Password" : "Reset My Password"
+  const intro = isInvite
+    ? `You've been invited to join Motta Hub. Click the button below to set a password and access the portal.`
+    : `We received a request to reset the password on your Motta Hub account. Click the button below to choose a new one.`
+  const greeting = recipientName ? `Hi ${recipientName},` : "Hi,"
+
+  const body = `
+    <p style="margin:0 0 16px;color:${BRAND.textPrimary};">${greeting}</p>
+    <p style="margin:0 0 20px;color:${BRAND.textPrimary};line-height:1.6;">${intro}</p>
+    <div style="text-align:center;margin:28px 0;">
+      <a href="${actionUrl}"
+         style="display:inline-block;background:${BRAND.primary};color:#fff;padding:14px 36px;border-radius:8px;text-decoration:none;font-size:15px;font-weight:600;letter-spacing:0.02em;">
+        ${ctaLabel}
+      </a>
+    </div>
+    <p style="margin:0 0 12px;color:${BRAND.textMuted};font-size:13px;line-height:1.6;">
+      Or copy and paste this link into your browser:
+    </p>
+    <p style="margin:0 0 24px;font-size:12px;word-break:break-all;">
+      <a href="${actionUrl}" style="color:${BRAND.primary};">${actionUrl}</a>
+    </p>
+    <div style="border-top:1px solid ${BRAND.border};padding-top:16px;margin-top:24px;">
+      <p style="margin:0 0 8px;color:${BRAND.textMuted};font-size:12px;line-height:1.5;">
+        <strong>This link will expire in ${expiresInHours} hour${expiresInHours === 1 ? "" : "s"}</strong> for your security.
+      </p>
+      ${
+        isInvite
+          ? ""
+          : `<p style="margin:0;color:${BRAND.textMuted};font-size:12px;line-height:1.5;">
+              If you didn't request a password reset, you can safely ignore this email — your password won't change.
+            </p>`
+      }
+    </div>
+  `
+  return baseEmailWrapper(
+    headline,
+    body,
+    isInvite
+      ? "You're receiving this because someone at Motta Financial invited you to Motta Hub."
+      : "This email was sent to confirm a password reset on your Motta Hub account.",
+  )
+}

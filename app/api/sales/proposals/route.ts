@@ -5,6 +5,11 @@ import {
   normalizeClientName,
 } from "@/lib/sales/recurring-scrub"
 import { classifyService, type ServiceLine } from "@/lib/sales/service-line-classifier"
+import {
+  canonicalIdFor,
+  getCanonicalService,
+  CANONICAL_SERVICES,
+} from "@/lib/sales/service-catalog"
 import { normalizeState } from "@/lib/sales/us-geo"
 
 /**
@@ -56,6 +61,13 @@ export async function GET(req: Request) {
     const sentByFilter = (sp.get("sentBy") || "").split(",").filter(Boolean)
     const stateFilter = (sp.get("state") || "").split(",").filter(Boolean)
     const serviceLineFilter = (sp.get("serviceLine") || "")
+      .split(",")
+      .filter(Boolean)
+    // Canonical-service filter: any of the supplied canonical ids must
+    // appear in this proposal's `canonical_services` set. Uses canonical
+    // ids (e.g. "tax-prep-1040") not display labels — the UI looks up
+    // the label from the dimensions array we return below.
+    const canonicalServiceFilter = (sp.get("canonicalService") || "")
       .split(",")
       .filter(Boolean)
 
@@ -207,6 +219,11 @@ export async function GET(req: Request) {
       state: string | null
       city: string | null
       service_lines: ServiceLine[]
+      /** Canonical service ids (e.g. "tax-prep-1040") matched by this
+       *  proposal's line items. Lets users filter by what a proposal
+       *  actually contained, regardless of how the line was named on the
+       *  Ignition side. */
+      canonical_services: string[]
       is_curated_recurring: boolean
     }
 
@@ -227,8 +244,17 @@ export async function GET(req: Request) {
       // (e.g. an engagement bundling Tax + Advisory) and we want it to
       // surface under either filter.
       const serviceLineSet = new Set<ServiceLine>()
+      // Canonical-service set: same idea but at the catalog-rollup level
+      // ("Tax Prep — Individual Federal (1040)" etc.) so the UI can
+      // filter on the unified service rather than on whatever name the
+      // proposal happened to use that day.
+      const canonicalSet = new Set<string>()
       for (const s of p.services ?? []) {
-        if (s.service_name) serviceLineSet.add(classifyService(s.service_name))
+        if (s.service_name) {
+          serviceLineSet.add(classifyService(s.service_name))
+          const cid = canonicalIdFor(s.service_name)
+          if (cid) canonicalSet.add(cid)
+        }
       }
 
       // Curated-recurring scrub
@@ -274,6 +300,7 @@ export async function GET(req: Request) {
         state,
         city,
         service_lines: Array.from(serviceLineSet),
+        canonical_services: Array.from(canonicalSet),
         is_curated_recurring: isCurated,
       }
     })
@@ -288,6 +315,20 @@ export async function GET(req: Request) {
       serviceLines: SERVICE_LINES.filter((line) =>
         enriched.some((p) => p.service_lines.includes(line)),
       ) as string[],
+      // Only emit canonical services that actually appear on at least
+      // one proposal — keeps the dropdown short and relevant. The UI
+      // displays the label but submits the id back as the filter value.
+      canonicalServices: (() => {
+        const seen = new Set<string>()
+        for (const p of enriched) for (const id of p.canonical_services) seen.add(id)
+        return CANONICAL_SERVICES.filter((c) => seen.has(c.id))
+          .map((c) => ({
+            id: c.id,
+            label: c.label,
+            serviceLine: c.serviceLine as string,
+          }))
+          .sort((a, b) => a.label.localeCompare(b.label))
+      })(),
     }
 
     // ── Apply filters ────────────────────────────────────────────────────
@@ -306,6 +347,15 @@ export async function GET(req: Request) {
       if (serviceLineFilter.length) {
         const has = p.service_lines.some((line) =>
           serviceLineFilter.includes(line),
+        )
+        if (!has) return false
+      }
+      if (canonicalServiceFilter.length) {
+        // OR-match: keep the proposal if ANY of its line items rolled up
+        // into one of the selected canonical services. This mirrors how
+        // serviceLine works above so the UX is consistent.
+        const has = p.canonical_services.some((id) =>
+          canonicalServiceFilter.includes(id),
         )
         if (!has) return false
       }

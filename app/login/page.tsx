@@ -115,18 +115,24 @@ function LoginContent() {
     }
 
     try {
-      const supabase = createClient()
-      const redirectUrl = `${window.location.origin}/auth/callback?type=recovery`
-
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: redirectUrl,
+      // Hit our server-side endpoint instead of supabase.auth.resetPasswordForEmail.
+      // The server uses Resend + admin.generateLink so the email is delivered
+      // reliably and the recovery link uses our own /auth/confirm verifier
+      // (no PKCE code-verifier dependency, works across devices).
+      const response = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
       })
 
-      if (error) {
-        setError(error.message)
-      } else {
-        setResetEmailSent(true)
+      const data = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        setError(data?.error || "Unable to send reset link. Please try again.")
+        return
       }
+
+      setResetEmailSent(true)
     } catch (err) {
       setError("An unexpected error occurred. Please try again.")
     } finally {

@@ -128,9 +128,34 @@ const ADVISORY_KEYWORDS = [
 
 /**
  * Classifies a service name into one of the four service lines.
- * Uses keyword matching with priority: Tax > Advisory > Accounting > Other
+ *
+ * Priority:
+ *   1. Canonical catalog match (lib/sales/service-catalog.ts) — the
+ *      authoritative source. If a name is a known alias / pattern, we
+ *      trust the canonical service's `serviceLine`.
+ *   2. Keyword fallback for names that haven't been added to the catalog
+ *      yet (Tax → Advisory → Accounting → Other).
+ *
+ * The catalog import is local to this function to avoid a hot circular
+ * import chain at module-evaluation time (service-catalog.ts imports the
+ * `ServiceLine` type from this file).
  */
 export function classifyService(serviceName: string): ServiceLine {
+  // Lazy require so the type-only import in service-catalog.ts doesn't
+  // pull this module into a value-level cycle. `require` is fine here
+  // because Next compiles to CJS at runtime; the static `import` graph
+  // remains type-only.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { canonicalIdFor, getCanonicalService } = require("./service-catalog") as {
+    canonicalIdFor: (name: string) => string | null
+    getCanonicalService: (id: string | null) => { serviceLine: ServiceLine } | null
+  }
+  const canonicalId = canonicalIdFor(serviceName)
+  if (canonicalId) {
+    const canon = getCanonicalService(canonicalId)
+    if (canon) return canon.serviceLine
+  }
+
   const lower = serviceName.toLowerCase()
 
   // Check tax first (most specific)
