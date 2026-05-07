@@ -47,6 +47,7 @@ import {
   type ClientType,
   type ClientTypeCode,
 } from "@/lib/client-type"
+import { clientSearchParts, matchesAllTokens } from "@/lib/search-utils"
 import { cn } from "@/lib/utils"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -415,21 +416,16 @@ export function ClientsList() {
 
   // ── Apply filters ────────────────────────────────────────────────────────
   const filteredClients = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase()
-
     return allClients.filter((client) => {
       // Status tab
       if (statusTab === "active" && client.isProspect) return false
       if (statusTab === "prospects" && !client.isProspect) return false
 
-      // Search
-      if (q) {
-        const haystack = [client.name, client.email, client.city, client.state, client.entityType]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase()
-        if (!haystack.includes(q)) return false
-      }
+      // Search — delegate to the shared helper so phone, Karbon keys,
+      // first/last/preferred names, contact_type, industry, etc. are all
+      // searchable from this input (matches every other client filter in
+      // the app).
+      if (!matchesAllTokens(clientSearchParts(client), searchQuery)) return false
 
       // Client type
       if (selectedTypes.length > 0 && !selectedTypes.includes(client.clientType.code)) return false
@@ -622,7 +618,7 @@ export function ClientsList() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               type="text"
-              placeholder="Search by name, email, city, or entity type..."
+              placeholder="Search name, email, phone, city, state, Karbon key…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10 h-9"

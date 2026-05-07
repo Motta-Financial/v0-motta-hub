@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 
+/**
+ * PostgREST `.or(...)` uses commas to separate clauses and `%` as a
+ * wildcard inside `ilike`. If we splat raw user input into a clause string,
+ * a comma in the query would terminate the `or()` early (PostgREST silently
+ * drops the rest), so strip both characters before interpolation.
+ */
+function safe(input: string): string {
+  return input.replace(/[%,]/g, "")
+}
+
 export async function GET(request: Request) {
   try {
     const supabase = createAdminClient()
@@ -11,6 +21,9 @@ export async function GET(request: Request) {
     const limit = Number.parseInt(searchParams.get("limit") || "100")
 
     const clients: any[] = []
+    // Pre-build the ilike pattern once so we don't repeat the escape +
+    // wrap dance in every clause.
+    const ilike = search ? `%${safe(search)}%` : null
 
     // Fetch contacts
     if (!type || type === "contacts" || type === "all") {
@@ -27,13 +40,33 @@ export async function GET(request: Request) {
           contact_type,
           status,
           karbon_url,
+          city,
+          state,
           created_at,
           updated_at
         `)
         .limit(limit)
 
-      if (search) {
-        contactsQuery = contactsQuery.or(`full_name.ilike.%${search}%,primary_email.ilike.%${search}%`)
+      if (ilike) {
+        // Search every field a teammate might paste into the picker — full
+        // name, name parts, preferred name, both emails, primary phone,
+        // Karbon contact key, contact type, city, state. Keeps the
+        // ClientPicker's UX consistent with the global Cmd+K palette.
+        contactsQuery = contactsQuery.or(
+          [
+            `full_name.ilike.${ilike}`,
+            `first_name.ilike.${ilike}`,
+            `last_name.ilike.${ilike}`,
+            `preferred_name.ilike.${ilike}`,
+            `primary_email.ilike.${ilike}`,
+            `secondary_email.ilike.${ilike}`,
+            `phone_primary.ilike.${ilike}`,
+            `karbon_contact_key.ilike.${ilike}`,
+            `contact_type.ilike.${ilike}`,
+            `city.ilike.${ilike}`,
+            `state.ilike.${ilike}`,
+          ].join(","),
+        )
       }
       if (status) {
         contactsQuery = contactsQuery.eq("status", status)
@@ -68,18 +101,39 @@ export async function GET(request: Request) {
           id,
           karbon_organization_key,
           name,
+          full_name,
+          legal_name,
+          trading_name,
           primary_email,
           phone,
           entity_type,
           status,
           karbon_url,
+          city,
+          state,
           created_at,
           updated_at
         `)
         .limit(limit)
 
-      if (search) {
-        orgsQuery = orgsQuery.or(`name.ilike.%${search}%,primary_email.ilike.%${search}%`)
+      if (ilike) {
+        // Cover every legibly-named variant we store on an org row plus the
+        // Karbon key, primary email, phone, entity type, city, and state —
+        // matches the field set used by /api/search for the Cmd+K palette.
+        orgsQuery = orgsQuery.or(
+          [
+            `name.ilike.${ilike}`,
+            `full_name.ilike.${ilike}`,
+            `legal_name.ilike.${ilike}`,
+            `trading_name.ilike.${ilike}`,
+            `primary_email.ilike.${ilike}`,
+            `phone.ilike.${ilike}`,
+            `karbon_organization_key.ilike.${ilike}`,
+            `entity_type.ilike.${ilike}`,
+            `city.ilike.${ilike}`,
+            `state.ilike.${ilike}`,
+          ].join(","),
+        )
       }
       if (status) {
         orgsQuery = orgsQuery.eq("status", status)

@@ -26,6 +26,7 @@ import {
   Search,
 } from "lucide-react"
 import { TAX_RETURN_WORK_TYPES } from "@/lib/karbon-api"
+import { matchesAllTokens, workItemSearchParts } from "@/lib/search-utils"
 import { useKarbonWorkItems } from "@/contexts/karbon-work-items-context"
 
 interface KarbonWorkItem {
@@ -280,16 +281,11 @@ export function TaxBusySeason() {
   // Filtered work items
   const filteredItems = useMemo(() => {
     let filtered = workItems.filter((item) => {
-      // Search filter
-      if (searchQuery.trim()) {
-        const query = searchQuery.toLowerCase()
-        const clientName = (item.ClientName || "").toLowerCase()
-        const title = (item.Title || "").toLowerCase()
-        const assignees = normalizeAssignedTo(item.AssignedTo).map(a => a.FullName.toLowerCase()).join(" ")
-        if (!clientName.includes(query) && !title.includes(query) && !assignees.includes(query)) {
-          return false
-        }
-      }
+      // Search filter — shared helper covers Title, Description, WorkKey,
+      // WorkType, all assignees (FullName + Email), Status, Priority,
+      // ClientName, ClientGroup, plus the derived returnType/taxYear we
+      // attach to each tax work item.
+      if (!matchesAllTokens(workItemSearchParts(item), searchQuery)) return false
 
       // Return type filter
       if (selectedReturnTypes.length > 0 && !selectedReturnTypes.includes(item.returnType)) {
@@ -388,7 +384,7 @@ export function TaxBusySeason() {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search clients, titles..."
+              placeholder="Search client, title, work key, return type, assignee, status…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 w-[280px]"
