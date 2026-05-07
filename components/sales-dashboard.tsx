@@ -88,6 +88,16 @@ import {
 interface ProposalService {
   id: string
   service_name: string
+  /**
+   * Canonical-catalog label resolved server-side. UI surfaces should use
+   * this so historical naming variants (e.g. "Outsourced | Tax Prep
+   * (1120s): S-Corporation") collapse into the canonical
+   * "Tax Prep — S-Corp (1120s)" row. Falls back to `service_name` when
+   * the line item doesn't match any catalog entry, so it's always safe
+   * to render directly without a `??`.
+   */
+  display_name: string
+  canonical_id: string | null
   description: string | null
   quantity: number | null
   unit_price: number | null
@@ -390,13 +400,17 @@ export function SalesDashboard() {
   }, [proposals])
 
   // ── Top services by accepted-revenue (acceptance signals real revenue) ─
+  // Buckets by `display_name` so historical naming variants roll up to one
+  // canonical row. The API resolved the catalog label per line item; we
+  // intentionally don't re-resolve here — keeping a single source of truth
+  // (the server) prevents the client from drifting if the catalog evolves.
   const topServices = useMemo(() => {
     const map = new Map<string, { name: string; count: number; revenue: number; avg: number }>()
     for (const p of proposals) {
       // Service-level revenue is only meaningful for proposals that closed.
       if (p.status !== "accepted" && p.status !== "completed") continue
       for (const s of p.services) {
-        const key = s.service_name
+        const key = s.display_name || s.service_name
         const cur = map.get(key) ?? { name: key, count: 0, revenue: 0, avg: 0 }
         cur.count += 1
         cur.revenue += s.total_amount
@@ -409,7 +423,7 @@ export function SalesDashboard() {
       .slice(0, 10)
   }, [proposals])
 
-  // ── Top clients by accepted-value ─────────────────────────────────────
+  // ── Top clients by accepted-value ──────────���──────────────────────────
   const topClients = useMemo(() => {
     const map = new Map<string, {
       key: string; name: string;
@@ -753,7 +767,7 @@ export function SalesDashboard() {
       {/* ── Interactive US Map ───────────────────────────────────────── */}
       <SalesUSMap data={data?.stateBreakdown ?? []} loading={isLoading} />
 
-      {/* ── Partner Performance ───────────────────────────────────────── */}
+      {/* ── Partner Performance ───────────────────���───────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card className="border-stone-200">
           <CardHeader className="pb-2">
