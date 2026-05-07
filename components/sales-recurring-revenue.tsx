@@ -37,7 +37,10 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { MultiSelectChip, RangeChip } from "@/components/sales/filter-chips"
+import { X } from "lucide-react"
 
 type DepartmentKey = "All" | "Accounting" | "Tax"
 
@@ -127,6 +130,53 @@ export function SalesRecurringRevenue() {
     "client_name" | "mrr" | "arr" | "service_lines"
   >("mrr")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
+  // Cadence / service-type / MRR-range filters live in local state (not the
+  // URL) because this surface is a focused drilldown — users are typically
+  // filtering ad-hoc rather than sharing links. Keep it simple.
+  const [cadence, setCadence] = useState<string[]>([])
+  const [serviceType, setServiceType] = useState<string[]>([])
+  // MRR range mirrors RangeChip's contract — strings ("" means "no
+  // bound"). We coerce to numbers at filter-time.
+  const [mrrMin, setMrrMin] = useState("")
+  const [mrrMax, setMrrMax] = useState("")
+
+  // Cadence/service-type option lists derived from the loaded rows so the
+  // dropdown only shows values that exist in the data after the
+  // department-tab filter is applied.
+  const cadenceOptions = useMemo(() => {
+    if (!data) return []
+    const set = new Set<string>()
+    for (const c of data.clients) {
+      if (dept !== "All" && c.department !== dept) continue
+      for (const cad of c.cadences) set.add(cad)
+    }
+    return [...set].sort()
+  }, [data, dept])
+
+  const serviceTypeOptions = useMemo(() => {
+    if (!data) return []
+    const set = new Set<string>()
+    for (const c of data.clients) {
+      if (dept !== "All" && c.department !== dept) continue
+      for (const st of c.service_types) set.add(st)
+    }
+    return [...set].sort()
+  }, [data, dept])
+
+  const activeFilterCount =
+    (search ? 1 : 0) +
+    cadence.length +
+    serviceType.length +
+    (mrrMin ? 1 : 0) +
+    (mrrMax ? 1 : 0)
+
+  function clearAllFilters() {
+    setSearch("")
+    setCadence([])
+    setServiceType([])
+    setMrrMin("")
+    setMrrMax("")
+  }
 
   const filteredClients = useMemo(() => {
     if (!data) return []
@@ -139,6 +189,29 @@ export function SalesRecurringRevenue() {
           c.client_name.toLowerCase().includes(q) ||
           c.service_types.some((s) => s.toLowerCase().includes(q)),
       )
+    // Cadence: at least one of the client's cadences is selected.
+    if (cadence.length) {
+      list = list.filter((c) =>
+        c.cadences.some((cad) => cadence.includes(cad)),
+      )
+    }
+    // Service Type: at least one of the client's service types matches.
+    if (serviceType.length) {
+      list = list.filter((c) =>
+        c.service_types.some((st) => serviceType.includes(st)),
+      )
+    }
+    // MRR range: inclusive on both ends so $0 as a min still includes
+    // legitimate $0 cases (rare but possible). Empty string means "no
+    // bound". `Number("")` is 0, so we test the raw string first.
+    if (mrrMin !== "") {
+      const lo = Number(mrrMin)
+      if (!Number.isNaN(lo)) list = list.filter((c) => c.mrr >= lo)
+    }
+    if (mrrMax !== "") {
+      const hi = Number(mrrMax)
+      if (!Number.isNaN(hi)) list = list.filter((c) => c.mrr <= hi)
+    }
     list = [...list].sort((a, b) => {
       const dir = sortDir === "asc" ? 1 : -1
       switch (sortBy) {
@@ -154,7 +227,7 @@ export function SalesRecurringRevenue() {
       }
     })
     return list
-  }, [data, dept, search, sortBy, sortDir])
+  }, [data, dept, search, sortBy, sortDir, cadence, serviceType, mrrMin, mrrMax])
 
   const filteredService = useMemo(() => {
     if (!data) return []
@@ -420,6 +493,41 @@ export function SalesRecurringRevenue() {
                   onChange={(e) => setSearch(e.target.value)}
                   className="pl-9 h-9"
                 />
+              </div>
+              {/* Filter chip rail. Shows the same MultiSelect/Range chips
+                  used elsewhere on Sales so the experience is consistent. */}
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                <MultiSelectChip
+                  label="Cadence"
+                  options={cadenceOptions}
+                  value={cadence}
+                  onChange={setCadence}
+                />
+                <MultiSelectChip
+                  label="Service type"
+                  options={serviceTypeOptions}
+                  value={serviceType}
+                  onChange={setServiceType}
+                />
+                <RangeChip
+                  label="MRR"
+                  min={mrrMin}
+                  max={mrrMax}
+                  onChange={({ min, max }) => {
+                    setMrrMin(min)
+                    setMrrMax(max)
+                  }}
+                />
+                {activeFilterCount > 0 ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearAllFilters}
+                    className="h-9"
+                  >
+                    <X className="h-3.5 w-3.5 mr-1" /> Clear ({activeFilterCount})
+                  </Button>
+                ) : null}
               </div>
             </CardHeader>
             <CardContent className="px-0">

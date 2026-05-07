@@ -63,22 +63,34 @@ export async function GET(req: Request) {
     )
 
     // ── Pull all invoices ────────────────────────────────────────────────
-    const { data: invoicesRaw, error } = await supabase
-      .from("ignition_invoices")
-      .select(
-        `ignition_invoice_id, invoice_number, status, amount, amount_paid, amount_outstanding,
-         currency, invoice_date, due_date, sent_at, paid_at, voided_at, stripe_invoice_id,
-         proposal_id, organization_id, contact_id, ignition_client_id, created_at, updated_at,
-         organizations(id, name),
-         contacts(id, full_name)`,
-      )
-      .limit(2000)
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    // Supabase / PostgREST hard-caps result sets at `db.max-rows` (1000 in
+    // this project). With ~1,012 invoices today and growth ahead, we must
+    // page with `range()` instead of a single `limit()` call to avoid
+    // silently dropping the tail. We fetch in 1k chunks until we get back
+    // a short page.
+    const PAGE = 1000
+    const invoices: any[] = []
+    for (let offset = 0; ; offset += PAGE) {
+      const { data, error } = await supabase
+        .from("ignition_invoices")
+        .select(
+          `ignition_invoice_id, invoice_number, status, amount, amount_paid, amount_outstanding,
+           currency, invoice_date, due_date, sent_at, paid_at, voided_at, stripe_invoice_id,
+           proposal_id, organization_id, contact_id, ignition_client_id, created_at, updated_at,
+           organizations(id, name),
+           contacts(id, full_name)`,
+        )
+        .range(offset, offset + PAGE - 1)
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 })
+      }
+      const chunk = data ?? []
+      invoices.push(...chunk)
+      if (chunk.length < PAGE) break
+      // Safety stop in case max-rows is even smaller than 1000 — bail out
+      // after 20k rows.
+      if (offset >= 20_000) break
     }
-
-    const invoices = invoicesRaw ?? []
 
     // ── Resolve state via the org → contact → ignition_client chain ──────
     const orgIds = new Set<string>()

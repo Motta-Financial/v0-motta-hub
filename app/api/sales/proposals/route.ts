@@ -89,25 +89,35 @@ export async function GET(req: Request) {
     // previous implementation — once we have the fully enriched set in
     // memory, total count comes from `filteredCount` after JS-side
     // filtering, which is the only count that matches what the user sees.
-    const { data: proposalsRaw, error } = await supabase
-      .from("ignition_proposals")
-      .select(
-        `proposal_id, proposal_number, title, status, total_value, one_time_total,
-         recurring_total, recurring_frequency, currency, client_name, client_email,
-         client_partner, client_manager, proposal_sent_by, billing_starts_on,
-         sent_at, accepted_at, completed_at, lost_at, lost_reason, created_at, updated_at,
-         organization_id, contact_id, ignition_client_id,
-         organizations(id, name),
-         services:ignition_proposal_services(service_name)`,
-      )
-      .is("archived_at", null)
-      .limit(2000)
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    //
+    // Supabase / PostgREST hard-caps result sets at db.max-rows (1000 on
+    // this project). We're at ~880 non-archived proposals today; once
+    // growth crosses the cap, a single `.limit(2000)` would silently
+    // truncate. Paginate with `.range()` to be safe.
+    const PAGE = 1000
+    const proposals: any[] = []
+    for (let offset = 0; ; offset += PAGE) {
+      const { data, error } = await supabase
+        .from("ignition_proposals")
+        .select(
+          `proposal_id, proposal_number, title, status, total_value, one_time_total,
+           recurring_total, recurring_frequency, currency, client_name, client_email,
+           client_partner, client_manager, proposal_sent_by, billing_starts_on,
+           sent_at, accepted_at, completed_at, lost_at, lost_reason, created_at, updated_at,
+           organization_id, contact_id, ignition_client_id,
+           organizations(id, name),
+           services:ignition_proposal_services(service_name)`,
+        )
+        .is("archived_at", null)
+        .range(offset, offset + PAGE - 1)
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 })
+      }
+      const chunk = data ?? []
+      proposals.push(...chunk)
+      if (chunk.length < PAGE) break
+      if (offset >= 20_000) break
     }
-
-    const proposals = proposalsRaw ?? []
 
     // ── Resolve state via the org → contact → ignition_client chain ─────
     // Identical resolution to /api/sales/dashboard so both pages agree on
