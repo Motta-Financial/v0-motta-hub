@@ -155,6 +155,20 @@ interface DashboardResponse {
   }
   serviceLines: ServiceLineData[]
   stateBreakdown: StateData[]
+  /**
+   * Authoritative MRR/ARR roll-up from the curated `motta_recurring_revenue`
+   * table — same source as the dedicated /sales/recurring-revenue page.
+   * Used by the "Annualized Recurring" KPI so the two surfaces never disagree.
+   * Always reflects the current snapshot (not subject to the dashboard's
+   * date filter), since the curated CSV represents engagements in force today.
+   */
+  recurringSummary: {
+    mrr: number
+    arr: number
+    one_time_total: number
+    distinct_clients: number
+    service_lines: number
+  }
 }
 
 const fetcher = (url: string): Promise<DashboardResponse> =>
@@ -260,6 +274,16 @@ export function SalesDashboard() {
   const proposals = data?.proposals ?? []
 
   // ── KPI aggregations ──────────────────────────────────────────────────
+  // Note on recurring revenue: the "Annualized Recurring" KPI is NOT
+  // computed here. It used to be `sum(p.annualized_recurring)` over
+  // accepted proposals, which double-counted clients with multiple
+  // historical renewals AND mis-classified annual engagements that
+  // Ignition exports as monthly billing schedules ($300/mo × 12 priced
+  // engagements showed as $300/mo recurring). The authoritative number
+  // comes from `motta_recurring_revenue` via `data.recurringSummary` so
+  // the dashboard and the dedicated /sales/recurring-revenue page always
+  // agree. We still keep `oneTimeAccepted` here because that's a true
+  // sum-of-proposals metric.
   const kpis = useMemo(() => {
     let totalCount = 0
     let acceptedCount = 0
@@ -269,7 +293,6 @@ export function SalesDashboard() {
     let lostValue = 0
     let lostCount = 0
     let oneTimeAccepted = 0
-    let arrAccepted = 0
     let totalContractValue = 0
 
     for (const p of proposals) {
@@ -280,7 +303,6 @@ export function SalesDashboard() {
         acceptedCount++
         acceptedValue += p.total_value
         oneTimeAccepted += p.one_time_total
-        arrAccepted += p.annualized_recurring
       } else if (s === "sent") {
         pipelineCount++
         pipelineValue += p.total_value
@@ -298,7 +320,7 @@ export function SalesDashboard() {
 
     return {
       totalCount, totalContractValue,
-      acceptedCount, acceptedValue, oneTimeAccepted, arrAccepted, avgDealSize,
+      acceptedCount, acceptedValue, oneTimeAccepted, avgDealSize,
       pipelineCount, pipelineValue,
       lostCount, lostValue,
       winRate,
@@ -611,8 +633,19 @@ export function SalesDashboard() {
         <KpiCard
           icon={<Repeat2 className="h-4 w-4" />}
           label="Annualized Recurring"
-          value={fmtMoney(kpis.arrAccepted)}
-          sub={`${fmtMoneyCompact(kpis.oneTimeAccepted)} one-time`}
+          value={fmtMoney(data?.recurringSummary?.arr ?? 0)}
+          // Pull the authoritative MRR/client count from the curated
+          // `motta_recurring_revenue` table (same source as the
+          // /sales/recurring-revenue page) so the two surfaces never
+          // disagree. Date filters do NOT apply — this is a current
+          // snapshot of engagements in force.
+          sub={
+            data?.recurringSummary
+              ? `${fmtMoneyCompact(data.recurringSummary.mrr)}/mo · ${fmtCount(
+                  data.recurringSummary.distinct_clients,
+                )} clients`
+              : "—"
+          }
           tone="emerald"
           loading={isLoading}
         />

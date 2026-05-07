@@ -106,6 +106,43 @@ export async function GET(req: Request) {
   // recurring_total shifted into one-time so MRR/ARR calculations are correct.
   const curatedRecurring = await loadRecurringScrubSet()
 
+  // ── Authoritative MRR/ARR roll-up from the curated table ──────────────
+  // The dashboard's "Annualized Recurring" KPI used to sum
+  // `recurring_total × 12` across every accepted Ignition proposal, which
+  // double-counted clients with multiple historical renewals AND
+  // mis-classified annual engagements that Ignition exports as monthly
+  // billing schedules. We now mirror /api/sales/recurring-revenue and pull
+  // the curated CSV totals so both pages quote the same number.
+  // Quarterly fees contribute fee/3 to MRR and fee*4 to ARR.
+  const { data: curatedRows } = await supabase
+    .from("motta_recurring_revenue")
+    .select("normalized_name, cadence, service_fee, one_time_fee")
+  let curatedMrr = 0
+  let curatedArr = 0
+  let curatedOneTime = 0
+  const curatedClientSet = new Set<string>()
+  for (const r of curatedRows ?? []) {
+    const fee = Number(r.service_fee) || 0
+    const oneTime = Number(r.one_time_fee) || 0
+    curatedClientSet.add(r.normalized_name)
+    curatedOneTime += oneTime
+    if (r.cadence === "Monthly") {
+      curatedMrr += fee
+      curatedArr += fee * 12
+    } else if (r.cadence === "Quarterly") {
+      curatedMrr += fee / 3
+      curatedArr += fee * 4
+    }
+  }
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  const recurringSummary = {
+    mrr: round2(curatedMrr),
+    arr: round2(curatedArr),
+    one_time_total: round2(curatedOneTime),
+    distinct_clients: curatedClientSet.size,
+    service_lines: curatedRows?.length ?? 0,
+  }
+
   // ── Resolve states via the linked org/contact, with ignition_clients
   //    as a third fallback ──────────────────────────────────────────────
   // ~21% of proposals have no org/contact state on file. The original
@@ -579,5 +616,10 @@ export async function GET(req: Request) {
     },
     serviceLines,
     stateBreakdown,
+    // Authoritative recurring-revenue roll-up from the curated CSV table.
+    // The dashboard's ARR KPI reads this so it matches /sales/recurring-revenue
+    // exactly. It is intentionally not subject to the date-range filter
+    // because the curated CSV is a current-state snapshot, not history.
+    recurringSummary,
   })
 }
