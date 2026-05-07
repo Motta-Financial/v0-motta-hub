@@ -99,7 +99,16 @@ export function ProposalStateEdit({
       : "Click to set"
 
   return (
-    <Popover open={open} onOpenChange={(o) => !saving && setOpen(o)}>
+    {/*
+      `modal` is critical here because this picker is rendered inside the
+      Proposal Edit Sheet. Without it, the parent Sheet's focus trap eats
+      every keystroke we'd otherwise route into the CommandInput, so the
+      "Search state…" field appears completely dead. Setting modal makes
+      the Popover install its own focus scope and pass keys through
+      correctly. (Same reason as the inline pickers in clients/services/
+      work-items.)
+    */}
+    <Popover modal open={open} onOpenChange={(o) => !saving && setOpen(o)}>
       <PopoverTrigger asChild>
         <button
           type="button"
