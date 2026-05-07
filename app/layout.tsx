@@ -3,6 +3,7 @@ import type { Metadata } from "next"
 import { Inter, Source_Code_Pro } from "next/font/google"
 import "./globals.css"
 import { AlfredChatTrigger } from "@/components/alfred-chat-trigger"
+import { AuthHashForwarder } from "@/components/auth-hash-forwarder"
 import { UserProvider } from "@/contexts/user-context"
 import { KarbonWorkItemsProvider } from "@/contexts/karbon-work-items-context"
 import { Toaster } from "sonner"
@@ -33,6 +34,9 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${sourceCodePro.variable} antialiased`}>
       <body>
+        {/* Catches Supabase implicit-flow recovery / invite hash fragments
+            on any landing page and forwards them to /auth/reset-password. */}
+        <AuthHashForwarder />
         <UserProvider>
           <KarbonWorkItemsProvider>
             {children}
