@@ -24,6 +24,7 @@ import {
   ChevronLeft,
   Calendar,
 } from "lucide-react"
+import { matchesAllTokens } from "@/lib/search-utils"
 
 const BOOKKEEPING_TASKS = [
   { id: "A", label: "Review work item", assignee: "P24" },
@@ -251,7 +252,14 @@ export function AccountingBookkeepingTracker() {
   const uniqueLeads = Array.from(new Set(bookkeepingClients.map((c) => c.lead).filter((lead) => lead !== "")))
 
   const allFilteredClients = bookkeepingClients.filter((client) => {
-    const matchesSearch = client.clientName.toLowerCase().includes(searchQuery.toLowerCase())
+    // Shared helper buys us multi-token AND-matching plus widened field
+    // coverage — searching for a Karbon work-item key, lead name, or
+    // status (Active / Need Info / etc.) now narrows the list, where
+    // before only the client name was searchable.
+    const matchesSearch = matchesAllTokens(
+      [client.clientName, client.karbonWorkItemKey, client.lead, client.status],
+      searchQuery,
+    )
     const matchesLead = filterLead === "all" || client.lead === filterLead
     const matchesStatus = filterStatus === "all" || client.status === filterStatus
 
@@ -412,7 +420,7 @@ export function AccountingBookkeepingTracker() {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search clients..."
+                  placeholder="Search client, work key, lead, status…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10"

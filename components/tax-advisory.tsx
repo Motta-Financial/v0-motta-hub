@@ -21,6 +21,7 @@ import {
   Users,
 } from "lucide-react"
 import { useKarbonWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
+import { matchesAllTokens, workItemSearchParts } from "@/lib/search-utils"
 
 interface AdvisoryItem extends KarbonWorkItem {
   advisoryType?: string
@@ -58,14 +59,10 @@ export function TaxAdvisory() {
 
   const filteredItems = useMemo(() => {
     if (!searchQuery) return advisoryItems
-    const q = searchQuery.toLowerCase()
-    return advisoryItems.filter(
-      (item) =>
-        item.Title?.toLowerCase().includes(q) ||
-        item.ClientName?.toLowerCase().includes(q) ||
-        item.AssigneeName?.toLowerCase().includes(q) ||
-        item.advisoryType?.toLowerCase().includes(q),
-    )
+    // Shared helper widens the haystack to WorkKey, WorkType, Description,
+    // PrimaryStatus, ClientGroup, and assignee email on top of what was
+    // already covered (Title / ClientName / AssigneeName / advisoryType).
+    return advisoryItems.filter((item) => matchesAllTokens(workItemSearchParts(item), searchQuery))
   }, [advisoryItems, searchQuery])
 
   const typeGroups = useMemo(() => {
@@ -191,7 +188,7 @@ export function TaxAdvisory() {
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
-          placeholder="Search advisory items..."
+              placeholder="Search client, title, work key, type, assignee, status…"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="pl-10"

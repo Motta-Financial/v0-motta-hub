@@ -23,6 +23,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { getServiceLineColor, type ServiceLine } from "@/lib/service-lines"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
+import { matchesAllTokens, workItemSearchParts } from "@/lib/search-utils"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ViewManager } from "@/components/view-manager"
@@ -302,13 +303,11 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
     }
 
     if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase()
-      filtered = filtered.filter(
-        (item) =>
-          item.Title?.toLowerCase().includes(query) ||
-          item.ClientName?.toLowerCase().includes(query) ||
-          item.WorkKey?.toLowerCase().includes(query),
-      )
+      // Delegate to the shared helper so the user can type a description
+      // fragment, work type, status, priority, assignee email, or client
+      // group and have it match — same field coverage as every other
+      // work-item search surface in the app.
+      filtered = filtered.filter((item) => matchesAllTokens(workItemSearchParts(item), searchQuery))
     }
 
     if (showAssignedToMe && currentUserEmail) {
@@ -731,7 +730,7 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
                 <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
                   type="text"
-                  placeholder="Search..."
+                  placeholder="Search title, client, work key, work type, assignee, status…"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="pl-7 h-8 text-xs"

@@ -63,16 +63,29 @@ export async function GET(req: Request) {
   const ilike = `%${safeQ}%`
 
   // ─── WORK ITEMS ─────────────────────────────────────────────────────────
-  // Same fields the existing /api/supabase/work-items search uses — title,
-  // karbon key, client name, work_type. We keep this in-line (rather than
-  // self-fetching) so we don't pay a round-trip for nothing.
+  // Search every field a teammate might paste into the palette: title,
+  // description, Karbon key, work_type, primary_status, denormalized
+  // client_name and client_group_name (the work_items table carries
+  // both as text columns), and the assignee's name. Keeps the palette
+  // in lock-step with the broader client-side haystack helpers in
+  // lib/search-utils.ts.
   const workItemsP = supabase
     .from("work_items")
     .select(
       "id, karbon_work_item_key, title, work_type, primary_status, status, due_date, completed_date, assignee_name, karbon_url, organization_id, contact_id, client_group_id, organizations(name), contacts(full_name), client_groups(name)",
     )
     .or(
-      `title.ilike.${ilike},karbon_work_item_key.ilike.${ilike},work_type.ilike.${ilike},assignee_name.ilike.${ilike}`,
+      [
+        `title.ilike.${ilike}`,
+        `description.ilike.${ilike}`,
+        `karbon_work_item_key.ilike.${ilike}`,
+        `user_defined_identifier.ilike.${ilike}`,
+        `work_type.ilike.${ilike}`,
+        `primary_status.ilike.${ilike}`,
+        `assignee_name.ilike.${ilike}`,
+        `client_name.ilike.${ilike}`,
+        `client_group_name.ilike.${ilike}`,
+      ].join(","),
     )
     .limit(limit)
 
@@ -85,7 +98,18 @@ export async function GET(req: Request) {
       "id, karbon_organization_key, name, full_name, primary_email, city, state, entity_type",
     )
     .or(
-      `name.ilike.${ilike},full_name.ilike.${ilike},legal_name.ilike.${ilike},trading_name.ilike.${ilike},primary_email.ilike.${ilike}`,
+      [
+        `name.ilike.${ilike}`,
+        `full_name.ilike.${ilike}`,
+        `legal_name.ilike.${ilike}`,
+        `trading_name.ilike.${ilike}`,
+        `primary_email.ilike.${ilike}`,
+        `phone.ilike.${ilike}`,
+        `karbon_organization_key.ilike.${ilike}`,
+        `entity_type.ilike.${ilike}`,
+        `city.ilike.${ilike}`,
+        `state.ilike.${ilike}`,
+      ].join(","),
     )
     .limit(limit)
 
@@ -95,7 +119,20 @@ export async function GET(req: Request) {
       "id, karbon_contact_key, full_name, first_name, last_name, primary_email, phone_primary, city, state, entity_type, is_prospect",
     )
     .or(
-      `full_name.ilike.${ilike},first_name.ilike.${ilike},last_name.ilike.${ilike},preferred_name.ilike.${ilike},primary_email.ilike.${ilike}`,
+      [
+        `full_name.ilike.${ilike}`,
+        `first_name.ilike.${ilike}`,
+        `last_name.ilike.${ilike}`,
+        `preferred_name.ilike.${ilike}`,
+        `primary_email.ilike.${ilike}`,
+        `secondary_email.ilike.${ilike}`,
+        `phone_primary.ilike.${ilike}`,
+        `karbon_contact_key.ilike.${ilike}`,
+        `contact_type.ilike.${ilike}`,
+        `entity_type.ilike.${ilike}`,
+        `city.ilike.${ilike}`,
+        `state.ilike.${ilike}`,
+      ].join(","),
     )
     .limit(limit)
 

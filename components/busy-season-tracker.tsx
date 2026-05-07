@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback } from "react"
 import useSWR from "swr"
 import { useTaxWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
 import type { TeamMember } from "@/contexts/user-context"
+import { matchesAllTokens, workItemSearchParts } from "@/lib/search-utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -312,16 +313,10 @@ export function BusySeasonTracker() {
   // ── Apply filters ──
   const filteredItems = useMemo(() => {
     return queueItems.filter((item) => {
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase()
-        if (
-          !item.clientName.toLowerCase().includes(q) &&
-          !item.title.toLowerCase().includes(q) &&
-          !item.assigneeName.toLowerCase().includes(q) &&
-          !item.entityType.toLowerCase().includes(q)
-        )
-          return false
-      }
+      // Delegate to the shared helper so `workKey`, `workType`, status,
+      // priority, etc. are all searchable from this input — same field
+      // coverage as every other work-item search surface in the app.
+      if (!matchesAllTokens(workItemSearchParts(item), searchQuery)) return false
       if (entityFilter !== "all" && !item.entityType.toLowerCase().includes(entityFilter.toLowerCase())) return false
       if (assigneeFilter !== "all") {
         if (assigneeFilter === "unassigned" && item.assigneeName) return false
@@ -468,7 +463,7 @@ export function BusySeasonTracker() {
         <div className="relative flex-1 min-w-[240px] max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Search client, preparer, entity..."
+                placeholder="Search client, preparer, entity, work key, status…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-9"

@@ -28,6 +28,7 @@ import {
   XCircle,
 } from "lucide-react"
 import { useKarbonWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
+import { matchesAllTokens, workItemSearchParts } from "@/lib/search-utils"
 
 interface NoticeItem extends KarbonWorkItem {
   noticeType?: string
@@ -109,14 +110,10 @@ export function IrsNotices() {
 
   const filteredItems = useMemo(() => {
     if (!searchQuery) return noticeItems
-    const q = searchQuery.toLowerCase()
-    return noticeItems.filter(
-      (item) =>
-        item.Title?.toLowerCase().includes(q) ||
-        item.ClientName?.toLowerCase().includes(q) ||
-        item.AssigneeName?.toLowerCase().includes(q) ||
-        item.noticeType?.toLowerCase().includes(q),
-    )
+    // Shared helper widens the haystack to WorkKey, WorkType, Description,
+    // PrimaryStatus, ClientGroup, and assignee email on top of what was
+    // already covered (Title / ClientName / AssigneeName / noticeType).
+    return noticeItems.filter((item) => matchesAllTokens(workItemSearchParts(item), searchQuery))
   }, [noticeItems, searchQuery])
 
   const criticalCount = filteredItems.filter((i) => i.urgency === "critical").length
@@ -229,7 +226,7 @@ export function IrsNotices() {
         <div className="relative max-w-sm flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Search by client, title, or type..."
+                placeholder="Search client, title, work key, type, assignee, status…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-10"
