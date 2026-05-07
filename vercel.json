@@ -10,15 +10,19 @@
     },
     {
       "path": "/api/cron/tommy-ballot-reminder",
-      "schedule": "0 14 * * 5"
+      "schedule": "0 20 * * 4"
     },
     {
       "path": "/api/cron/meeting-summary",
       "schedule": "0 13 * * 1"
     },
     {
+      "path": "/api/cron/daily-briefing",
+      "schedule": "0 12 * * 1-5"
+    },
+    {
       "path": "/api/cron/tommy-weekly-recap",
-      "schedule": "0 16 * * 1"
+      "schedule": "0 16 * * 5"
     }
   ]
 }

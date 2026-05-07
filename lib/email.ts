@@ -14,6 +14,7 @@ export const EMAIL_CATEGORIES = {
   tommy_reminder: { label: "Tommy Awards Reminder", description: "Weekly Friday reminder to submit your Tommy Awards ballot" },
   tommy_recap: { label: "Tommy Awards Weekly Recap", description: "Weekly Monday recap of Tommy Awards results, written by ALFRED Ai" },
   meeting_summary: { label: "Meeting Summary", description: "Daily / weekly digest of upcoming and recent Calendly & Zoom meetings" },
+  daily_briefing: { label: "Daily Briefing", description: "Weekday morning briefing from ALFRED Ai — debriefs, meetings, reminders, and news" },
   broadcast: { label: "Firm Announcements", description: "Custom announcement emails sent by partners or admins" },
   general: { label: "General Notifications", description: "Other in-app notifications not in a more specific category" },
 } as const
@@ -31,6 +32,7 @@ export function mapNotificationTypeToCategory(notificationType?: string | null):
   if (t.includes("work_item") || t.includes("workitem") || t === "assignment") return "work_item"
   if (t.includes("tommy_recap") || t.includes("tommy-recap")) return "tommy_recap"
   if (t.includes("tommy")) return "tommy_reminder"
+  if (t.includes("daily_brief") || t.includes("daily-brief") || t.includes("morning_brief")) return "daily_briefing"
   if (t.includes("meeting") || t.includes("calendly") || t.includes("zoom")) return "meeting_summary"
   if (t.includes("broadcast") || t.includes("announcement")) return "broadcast"
   return "general"
@@ -546,7 +548,9 @@ export function buildNotificationEmailHtml(opts: {
 }
 
 /**
- * Tommy Awards weekly Friday ballot reminder.
+ * Tommy Awards weekly ballot reminder. Sent Thursday afternoons (Eastern
+ * Time) so voters have Thursday evening + Friday morning to submit their
+ * ballots before the Friday-noon firm-wide recap.
  */
 export function buildTommyReminderHtml(opts: {
   recipientName: string
@@ -554,7 +558,7 @@ export function buildTommyReminderHtml(opts: {
   ballotUrl: string
 }) {
   const body = `<p style="margin:0 0 16px;">Hi ${opts.recipientName},</p>
-    <p style="margin:0 0 16px;">It's Tommy Awards day! Take a moment to recognize the teammates who best represented Tom Brady this week — going the extra mile, client wins, and being a great teammate.</p>
+    <p style="margin:0 0 16px;">It's almost Tommy Awards time — take a moment this evening or tomorrow morning to recognize the teammates who best represented Tom Brady this week. Going the extra mile, client wins, and being a great teammate all count.</p>
     <div style="background:#f9fafb;border-left:4px solid #c62828;padding:12px 16px;border-radius:4px;margin:0 0 20px;">
       <strong>Voting for: ${opts.weekLabel}</strong>
     </div>
@@ -563,8 +567,93 @@ export function buildTommyReminderHtml(opts: {
          style="display:inline-block;background:#c62828;color:#fff;padding:14px 36px;border-radius:8px;text-decoration:none;font-size:15px;font-weight:600;">
         Submit Your Ballot
       </a>
-    </div>`
+    </div>
+    <p style="margin:20px 0 0;color:${BRAND.textMuted};font-size:13px;text-align:center;">
+      Ballots close at 12:00 PM Eastern on Friday — the recap goes out right after.
+    </p>`
   return baseEmailWrapper("Tommy Awards — Cast Your Vote", body)
+}
+
+/**
+ * Tommy Awards weekly recap. Sent Friday at 12:00 PM Eastern Time.
+ *
+ * Uses the shared MOTTA HUB email wrapper (header/footer) so it matches the
+ * reminder and every other transactional email in the firm. Keeps the
+ * functional medal colors (gold / silver / bronze) for the top-three
+ * podium and the red Tommy accent for the CTA.
+ */
+export function buildTommyRecapHtml(opts: {
+  weekLabel: string
+  aiSummary: string
+  topThree: Array<{
+    name: string
+    totalPoints: number
+    first: number
+    second: number
+    third: number
+  }>
+  totalBallots: number
+  leaderboardUrl: string
+}) {
+  // Functional medal palette — these are NOT brand colors, they communicate
+  // 1st/2nd/3rd place at a glance and shouldn't be repainted with the Motta
+  // olive palette without breaking that visual language.
+  const MEDAL_COLORS = ["#FFD700", "#C0C0C0", "#CD7F32"] as const
+
+  const podiumHtml =
+    opts.topThree.length > 0
+      ? opts.topThree
+          .map((winner, i) => {
+            const medal = MEDAL_COLORS[i] ?? MEDAL_COLORS[2]
+            return `
+              <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="width:100%;margin:0 0 12px;">
+                <tr>
+                  <td style="width:48px;vertical-align:middle;padding-right:14px;">
+                    <div style="background:${medal};color:#1a1a1a;font-size:18px;font-weight:700;width:44px;height:44px;border-radius:50%;text-align:center;line-height:44px;">${i + 1}</div>
+                  </td>
+                  <td style="vertical-align:middle;">
+                    <div style="font-size:16px;font-weight:600;color:${BRAND.textPrimary};">${winner.name}</div>
+                    <div style="font-size:13px;color:${BRAND.textMuted};margin-top:2px;">
+                      ${winner.totalPoints} pts &middot; ${winner.first} first &middot; ${winner.second} second &middot; ${winner.third} third
+                    </div>
+                  </td>
+                </tr>
+              </table>`
+          })
+          .join("")
+      : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No votes recorded this week.</p>`
+
+  const body = `
+    <p style="margin:0 0 8px;color:${BRAND.textMuted};font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">
+      Week of ${opts.weekLabel}
+    </p>
+    <h2 style="margin:0 0 20px;font-size:20px;color:${BRAND.textPrimary};">This Week's Tommy Awards</h2>
+
+    <div style="background:${BRAND.background};border-left:4px solid ${BRAND.primary};padding:18px 20px;border-radius:6px;margin:0 0 28px;">
+      <div style="font-size:12px;font-weight:600;color:${BRAND.primary};text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;">
+        From ALFRED Ai
+      </div>
+      <div style="font-size:15px;color:${BRAND.textPrimary};line-height:1.7;white-space:pre-wrap;">${opts.aiSummary}</div>
+    </div>
+
+    <h3 style="font-size:16px;color:${BRAND.textPrimary};margin:0 0 16px;">Top 3 Finishers</h3>
+    ${podiumHtml}
+
+    <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="width:100%;margin:24px 0 0;background:${BRAND.background};border-radius:6px;">
+      <tr>
+        <td style="padding:14px 18px;font-size:13px;color:${BRAND.textMuted};">Total Ballots Submitted</td>
+        <td style="padding:14px 18px;font-size:13px;color:${BRAND.textPrimary};font-weight:600;text-align:right;">${opts.totalBallots}</td>
+      </tr>
+    </table>
+
+    <div style="margin-top:28px;text-align:center;">
+      <a href="${opts.leaderboardUrl}"
+         style="display:inline-block;background:#c62828;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
+        View Full Leaderboard
+      </a>
+    </div>`
+
+  return baseEmailWrapper("Tommy Awards Weekly Recap", body)
 }
 
 /**
@@ -608,6 +697,271 @@ export function buildMeetingDigestHtml(opts: {
       </a>
     </div>`
   return baseEmailWrapper("Your Meeting Digest", body)
+}
+
+/**
+ * ALFRED Ai's weekday morning briefing.
+ *
+ * Combines five sections in a single MOTTA HUB-themed email:
+ *   1. Today's executive summary (AI-generated, witty British butler tone)
+ *   2. Yesterday's debriefs (with deep links into the hub)
+ *   3. Upcoming client meetings for the next 7 days
+ *   4. Team reminders — holidays, tax deadlines, Tommy Awards Thursdays
+ *   5. Topical news links — markets and tax/IRS
+ *
+ * Sender identity (ALFRED Ai) is set at the transport layer via
+ * RESEND_FROM_EMAIL; this builder only paints the body. Keeping the
+ * wrapper consistent means daily briefings render identically to debrief,
+ * Tommy, and meeting-digest emails in every inbox we test against.
+ */
+export function buildDailyBriefingHtml(opts: {
+  recipientName: string
+  dateLabel: string
+  /** "Mon, Jan 13 - Sun, Jan 19" range covered by the upcoming-meetings section. */
+  weekRangeLabel: string
+  /** AI-generated witty butler exec summary. Plain text — wrapped by us. */
+  executiveSummary: string
+  yesterdayDebriefs: Array<{
+    clientName: string
+    authorName: string
+    workItemTitle?: string | null
+    debriefDate: string
+    url: string
+  }>
+  upcomingMeetings: Array<{
+    when: string
+    title: string
+    hostName?: string
+    source: string
+    url?: string
+    with?: string
+  }>
+  teamReminders: Array<{
+    relativeLabel: string
+    dateLabel: string
+    kind: "holiday" | "tax" | "tommy" | "firm" | "other"
+    label: string
+    notes?: string
+  }>
+  marketNews: Array<{ title: string; url: string; source: string }>
+  taxNews: Array<{ title: string; url: string; source: string }>
+  /** Witty butler closing line. */
+  signOff: string
+  hubUrl: string
+}) {
+  const {
+    recipientName,
+    dateLabel,
+    weekRangeLabel,
+    executiveSummary,
+    yesterdayDebriefs,
+    upcomingMeetings,
+    teamReminders,
+    marketNews,
+    taxNews,
+    signOff,
+    hubUrl,
+  } = opts
+
+  // ── Section: Executive summary (AI-written) ────────────────────────────
+  const summaryHtml = `
+    <div style="background:${BRAND.background};border-left:4px solid ${BRAND.primary};padding:16px 20px;border-radius:6px;margin:0 0 24px;">
+      <p style="margin:0 0 8px;color:${BRAND.textMuted};font-size:11px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;">
+        From the desk of ALFRED
+      </p>
+      <div style="color:${BRAND.textPrimary};font-size:14px;line-height:1.65;white-space:pre-wrap;">${escapeBriefingText(
+        executiveSummary,
+      )}</div>
+    </div>`
+
+  // ── Section: Yesterday's debriefs ──────────────────────────────────────
+  const debriefsHtml = yesterdayDebriefs.length
+    ? `<table style="width:100%;border-collapse:collapse;">
+        ${yesterdayDebriefs
+          .map(
+            (d) => `
+              <tr style="border-bottom:1px solid ${BRAND.border};">
+                <td style="padding:10px 12px;font-size:14px;vertical-align:top;">
+                  <a href="${d.url}" style="color:${BRAND.textPrimary};font-weight:600;text-decoration:none;">${escapeHtml(
+                    d.workItemTitle || d.clientName,
+                  )}</a>
+                  <div style="color:${BRAND.textMuted};font-size:12px;margin-top:2px;">
+                    ${escapeHtml(d.clientName)} &middot; submitted by ${escapeHtml(d.authorName)} &middot; ${escapeHtml(d.debriefDate)}
+                  </div>
+                </td>
+                <td style="padding:10px 12px;font-size:12px;color:${BRAND.primary};white-space:nowrap;text-align:right;vertical-align:top;">
+                  <a href="${d.url}" style="color:${BRAND.primary};text-decoration:none;font-weight:600;">View &rarr;</a>
+                </td>
+              </tr>`,
+          )
+          .join("")}
+      </table>`
+    : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No debriefs were submitted yesterday — a quiet day on the field.</p>`
+
+  // ── Section: Upcoming meetings ─────────────────────────────────────────
+  const meetingsHtml = upcomingMeetings.length
+    ? `<table style="width:100%;border-collapse:collapse;">
+        ${upcomingMeetings
+          .map(
+            (m) => `
+              <tr style="border-bottom:1px solid ${BRAND.border};">
+                <td style="padding:10px 12px;font-size:13px;color:${BRAND.textMuted};white-space:nowrap;vertical-align:top;">${escapeHtml(m.when)}</td>
+                <td style="padding:10px 12px;font-size:14px;vertical-align:top;">
+                  ${
+                    m.url
+                      ? `<a href="${m.url}" style="color:${BRAND.textPrimary};font-weight:600;text-decoration:none;">${escapeHtml(m.title)}</a>`
+                      : `<span style="font-weight:600;">${escapeHtml(m.title)}</span>`
+                  }
+                  ${
+                    m.hostName || m.with
+                      ? `<div style="color:${BRAND.textMuted};font-size:12px;margin-top:2px;">${
+                          m.hostName ? `Host: ${escapeHtml(m.hostName)}` : ""
+                        }${m.hostName && m.with ? " &middot; " : ""}${m.with ? `with ${escapeHtml(m.with)}` : ""}</div>`
+                      : ""
+                  }
+                </td>
+                <td style="padding:10px 12px;font-size:11px;color:${BRAND.textMuted};text-transform:uppercase;letter-spacing:0.06em;text-align:right;vertical-align:top;">${escapeHtml(m.source)}</td>
+              </tr>`,
+          )
+          .join("")}
+      </table>`
+    : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No client meetings on the firm's schedule for the week ahead.</p>`
+
+  // ── Section: Team reminders ────────────────────────────────────────────
+  const reminderBadge = (kind: string) => {
+    const map: Record<string, { bg: string; fg: string; label: string }> = {
+      holiday: { bg: "#FEF3E7", fg: "#A35219", label: "Holiday" },
+      tax: { bg: "#EAE6E1", fg: "#5A6250", label: "Tax" },
+      tommy: { bg: "#FBE9E9", fg: "#A11F1F", label: "Tommy" },
+      firm: { bg: "#EAE6E1", fg: "#5A6250", label: "Firm" },
+      other: { bg: "#EAE6E1", fg: "#5A6250", label: "Reminder" },
+    }
+    const cfg = map[kind] || map.other
+    return `<span style="display:inline-block;background:${cfg.bg};color:${cfg.fg};font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;padding:3px 8px;border-radius:10px;">${cfg.label}</span>`
+  }
+
+  const remindersHtml = teamReminders.length
+    ? `<table style="width:100%;border-collapse:collapse;">
+        ${teamReminders
+          .map(
+            (r) => `
+              <tr style="border-bottom:1px solid ${BRAND.border};">
+                <td style="padding:10px 12px;font-size:13px;white-space:nowrap;vertical-align:top;width:120px;">
+                  <div style="color:${BRAND.textPrimary};font-weight:600;">${escapeHtml(r.relativeLabel)}</div>
+                  <div style="color:${BRAND.textMuted};font-size:11px;margin-top:2px;">${escapeHtml(r.dateLabel)}</div>
+                </td>
+                <td style="padding:10px 12px;font-size:14px;vertical-align:top;">
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span style="font-weight:600;color:${BRAND.textPrimary};">${escapeHtml(r.label)}</span>
+                    ${reminderBadge(r.kind)}
+                  </div>
+                  ${
+                    r.notes
+                      ? `<div style="color:${BRAND.textMuted};font-size:12px;margin-top:4px;line-height:1.5;">${escapeHtml(r.notes)}</div>`
+                      : ""
+                  }
+                </td>
+              </tr>`,
+          )
+          .join("")}
+      </table>`
+    : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">Nothing on the firm's calendar this week — a rare and welcome lull.</p>`
+
+  // ── Section: News ──────────────────────────────────────────────────────
+  const renderNewsList = (items: Array<{ title: string; url: string; source: string }>) =>
+    items.length
+      ? `<ul style="list-style:none;padding:0;margin:0;">
+          ${items
+            .map(
+              (n) => `
+                <li style="padding:8px 0;border-bottom:1px solid ${BRAND.border};">
+                  <a href="${n.url}" style="color:${BRAND.textPrimary};font-size:14px;font-weight:600;text-decoration:none;">${escapeHtml(n.title)}</a>
+                  <div style="color:${BRAND.textMuted};font-size:12px;margin-top:2px;">${escapeHtml(n.source)}</div>
+                </li>`,
+            )
+            .join("")}
+        </ul>`
+      : `<p style="color:${BRAND.textMuted};font-size:13px;margin:0;">No notable headlines surfaced this morning.</p>`
+
+  const newsHtml = `
+    <div style="display:block;margin-top:8px;">
+      <div style="margin:0 0 16px;">
+        <h4 style="font-size:13px;color:${BRAND.textMuted};text-transform:uppercase;letter-spacing:0.08em;margin:0 0 8px;font-weight:700;">Markets</h4>
+        ${renderNewsList(marketNews)}
+      </div>
+      <div>
+        <h4 style="font-size:13px;color:${BRAND.textMuted};text-transform:uppercase;letter-spacing:0.08em;margin:16px 0 8px;font-weight:700;">Tax &amp; IRS</h4>
+        ${renderNewsList(taxNews)}
+      </div>
+    </div>`
+
+  // ── Compose ────────────────────────────────────────────────────────────
+  const sectionHeader = (title: string, subtitle?: string) => `
+    <div style="margin:32px 0 12px;">
+      <h3 style="font-size:16px;color:${BRAND.textPrimary};margin:0;font-weight:700;letter-spacing:-0.01em;">${escapeHtml(title)}</h3>
+      ${subtitle ? `<p style="color:${BRAND.textMuted};font-size:12px;margin:2px 0 0;">${escapeHtml(subtitle)}</p>` : ""}
+    </div>`
+
+  const body = `
+    <p style="margin:0 0 4px;color:${BRAND.textMuted};font-size:12px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;">${escapeHtml(dateLabel)}</p>
+    <h2 style="margin:0 0 20px;font-size:22px;color:${BRAND.textPrimary};letter-spacing:-0.01em;">Good morning, ${escapeHtml(recipientName)}.</h2>
+
+    ${summaryHtml}
+
+    ${sectionHeader("Yesterday's Debriefs")}
+    ${debriefsHtml}
+
+    ${sectionHeader("Client Meetings This Week", weekRangeLabel)}
+    ${meetingsHtml}
+
+    ${sectionHeader("Team Reminders")}
+    ${remindersHtml}
+
+    ${sectionHeader("In the News")}
+    ${newsHtml}
+
+    <div style="margin:32px 0 8px;text-align:center;">
+      <a href="${hubUrl}"
+         style="display:inline-block;background:${BRAND.primary};color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;letter-spacing:0.02em;">
+        Open the Hub
+      </a>
+    </div>
+
+    <p style="margin:24px 0 0;color:${BRAND.textMuted};font-size:13px;font-style:italic;line-height:1.6;">
+      ${escapeHtml(signOff)}
+    </p>
+    <p style="margin:8px 0 0;color:${BRAND.textPrimary};font-size:13px;font-weight:600;">
+      &mdash; ALFRED Ai
+    </p>`
+
+  return baseEmailWrapper("Daily Briefing", body)
+}
+
+/**
+ * Encodes a small set of HTML-significant characters so user-controlled
+ * strings (client names, debrief titles, news headlines) can't break the
+ * surrounding markup or smuggle inline scripts into the email body.
+ */
+function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+/**
+ * Same as escapeHtml but preserves paragraph breaks so the AI-generated
+ * butler intro reads as multi-paragraph prose. We rely on the wrapping
+ * div's `white-space:pre-wrap` to render the newlines.
+ */
+function escapeBriefingText(value: string): string {
+  // Strip stray markdown emphasis the model occasionally emits despite the
+  // "no markdown" instruction — em/asterisks inside an HTML email render
+  // literally and look broken.
+  const cleaned = value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(^|\s)\*([^*]+)\*/g, "$1$2")
+  return escapeHtml(cleaned)
 }
 
 /**

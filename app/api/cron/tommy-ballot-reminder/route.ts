@@ -4,7 +4,15 @@ import { buildTommyReminderHtml, sendCategoryEmail } from "@/lib/email"
 
 /**
  * Vercel Cron endpoint that emails every active team member a Tommy Awards
- * ballot reminder. Configured in vercel.json to run Friday morning.
+ * ballot reminder.
+ *
+ * Schedule: Thursdays at 20:00 UTC (vercel.json), which lands at:
+ *   - 4:00 PM EDT (March-November, ~8 months/year) — late afternoon
+ *   - 3:00 PM EST (November-March, ~4 months/year) — mid afternoon
+ * Vercel Cron is timezone-naive, so we optimize for the longer Daylight
+ * Saving period to hit late afternoon Eastern most of the year. Voting
+ * stays open through Friday morning, with the firm-wide recap going out
+ * Friday at noon Eastern.
  *
  * Auth: validates the standard Vercel cron Authorization: Bearer ${CRON_SECRET} header.
  */
