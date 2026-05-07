@@ -48,7 +48,10 @@ export async function middleware(request: NextRequest) {
 
   const isLoginPage = pathname === "/login"
   const isAuthCallback = pathname.startsWith("/auth")
-  const isPublicApi = pathname.startsWith("/api/alfred")
+  // Public auth API: /api/auth/forgot-password is the entrypoint for the
+  // self-service password reset flow and must be reachable without a session.
+  const isPublicAuthApi = pathname.startsWith("/api/auth/forgot-password")
+  const isPublicApi = pathname.startsWith("/api/alfred") || isPublicAuthApi
   const isWebhook =
     pathname.startsWith("/api/webhooks") ||
     pathname.startsWith("/api/karbon/webhooks") ||
