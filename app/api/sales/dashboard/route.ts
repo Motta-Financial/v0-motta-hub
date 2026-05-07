@@ -8,6 +8,10 @@ import {
   classifyService,
   type ServiceLine,
 } from "@/lib/sales/service-line-classifier"
+import {
+  canonicalIdFor,
+  getCanonicalService,
+} from "@/lib/sales/service-catalog"
 import { normalizeState } from "@/lib/sales/us-geo"
 
 /**
@@ -253,6 +257,16 @@ export async function GET(req: Request) {
     services: Array<{
       id: string
       service_name: string
+      /**
+       * Canonical-catalog display name. Falls back to the raw `service_name`
+       * when the line item doesn't match any catalog alias/pattern. Always
+       * use this value when rendering or aggregating in UI surfaces so
+       * historical naming variants (e.g. "Outsourced | Tax Prep (1120s):
+       * S-Corporation") roll up to their canonical label
+       * ("Tax Prep — S-Corp (1120s)").
+       */
+      display_name: string
+      canonical_id: string | null
       description: string | null
       quantity: number | null
       unit_price: number | null
@@ -369,10 +383,21 @@ export async function GET(req: Request) {
       effective_start_date: p.effective_start_date,
       last_event_at: p.last_event_at,
       created_at: p.created_at,
-      services: (p.services || []).map((s: any) => ({
-        ...s,
-        total_amount: Number(s.total_amount) || 0,
-      })),
+      services: (p.services || []).map((s: any) => {
+        // Resolve each line item to its canonical catalog entry once at the
+        // API layer so every downstream aggregation (top-services list,
+        // per-service-line rollup, future drilldowns) shares one
+        // authoritative display name. Lines that don't match any catalog
+        // alias/pattern keep their raw name so we never silently lose data.
+        const canonicalId = canonicalIdFor(s.service_name)
+        const canonical = getCanonicalService(canonicalId)
+        return {
+          ...s,
+          canonical_id: canonicalId,
+          display_name: canonical?.label || s.service_name,
+          total_amount: Number(s.total_amount) || 0,
+        }
+      }),
     }
   })
 
@@ -430,7 +455,13 @@ export async function GET(req: Request) {
     if (p.status !== "accepted" && p.status !== "completed") continue
 
     for (const s of p.services) {
+      // Use display_name (canonical-catalog label, raw fallback) so the
+      // per-service-line "Top services" list rolls historical naming
+      // variants up to one canonical row instead of showing them as
+      // separate items. The keyword classifier still owns the Tax /
+      // Accounting / Advisory / Other bucket — it accepts either form.
       const line = classifyService(s.service_name)
+      const bucketName = s.display_name
       const current = serviceLineMap.get(line) || {
         revenue: 0,
         count: 0,
@@ -440,13 +471,13 @@ export async function GET(req: Request) {
       current.revenue += s.total_amount
       current.count += 1
 
-      const serviceCurrent = current.servicesMap.get(s.service_name) || {
+      const serviceCurrent = current.servicesMap.get(bucketName) || {
         revenue: 0,
         count: 0,
       }
       serviceCurrent.revenue += s.total_amount
       serviceCurrent.count += 1
-      current.servicesMap.set(s.service_name, serviceCurrent)
+      current.servicesMap.set(bucketName, serviceCurrent)
 
       serviceLineMap.set(line, current)
     }
