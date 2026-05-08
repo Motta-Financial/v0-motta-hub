@@ -26,6 +26,16 @@ export const metadata: Metadata = {
   generator: "v0.app",
 }
 
+// NOTE: The root layout sits at the top of every route's chunk graph, so
+// when a multi-file branch sync happens mid-session (e.g. a v0 PR merge)
+// the dev server can end up with a build manifest that references chunk
+// hashes the file watcher has already invalidated, surfacing as a
+// `ChunkLoadError` originating from RootLayout. Editing this file forces
+// a clean re-bundle of the layout's client-component dependencies
+// (UserProvider, KarbonWorkItemsProvider, AlfredChatTrigger,
+// AuthHashForwarder, Toaster) so that the manifest the browser fetches
+// on the next request is consistent with what's actually on disk.
+
 export default function RootLayout({
   children,
 }: Readonly<{

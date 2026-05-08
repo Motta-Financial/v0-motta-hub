@@ -74,7 +74,16 @@ export default function AccountingPage() {
             <ServiceLineDashboard
               serviceLine="ACCOUNTING"
               title="Accounting Stats"
-              description="Overview of all accounting clients and work items"
+              description="Overview of all clients and work items where work_type starts with 'ACCT | '"
+              // Strict filter on Karbon's canonical work_type column instead
+              // of the older title-keyword heuristic. This keeps the widget
+              // perfectly consistent with the Overview / Bookkeeping /
+              // Onboarding sections above (which all already query
+              // /api/supabase/work-items?workTypePrefix=ACCT | ).
+              workTypePrefix="ACCT | "
+              // serviceLineKeywords is now a no-op when workTypePrefix is
+              // set; we keep it filled in so the prop contract holds and so
+              // it stays meaningful if a caller drops the prefix.
               serviceLineKeywords={["ACCOUNTING", "ACCT", "BOOKKEEPING", "BK", "PAYROLL", "PR"]}
             />
           </TabsContent>
