@@ -2,7 +2,7 @@
  * Karbon sync cron — runs every 15 min (see vercel.json).
  *
  * In the new live-sync architecture this cron is no longer the primary
- * data path (webhooks are). It now performs three jobs in order:
+ * data path (webhooks are). It now performs four jobs in order:
  *
  *   1. REPLAY  — drain `karbon_webhook_events` rows stuck in pending/failed.
  *                Karbon retries up to 10 times then gives up; this catches
@@ -18,6 +18,12 @@
  *   3. DRIFT   — once per N runs (or when a sub was just re-created), kick
  *                off an incremental `/api/karbon/sync` to reconcile any
  *                changes we missed during webhook downtime.
+ *
+ *   4. TENANT-CONFIG — every ~4 hours, refresh Work Statuses, Work Types,
+ *                and Work Templates from /TenantSettings + /WorkTemplates.
+ *                Karbon doesn't emit webhooks for these so we poll. They
+ *                rarely change so a 4h cadence is plenty. Manual override
+ *                via `?force=tenant-config`.
  */
 import { NextResponse } from "next/server"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
@@ -28,6 +34,7 @@ import {
   resolveWebhookTargetUrl,
   type KarbonWebhookType,
 } from "@/lib/karbon/webhook-url"
+import { syncKarbonTenantConfig, type TenantConfigSyncReport } from "@/lib/karbon/sync-tenant-config"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -45,6 +52,11 @@ const REPLAY_MAX_ATTEMPTS = 5
 // 15-min schedule × 16 = ~4 hours.
 const DRIFT_RUN_INTERVAL = 16
 
+// Tenant-config (Work Statuses / Types / Templates): same 4-hour cadence as
+// drift. Karbon doesn't emit webhooks for these so we have to poll, but they
+// rarely change.
+const TENANT_CONFIG_INTERVAL_MS = 4 * 60 * 60 * 1000
+
 interface CronResult {
   ok: boolean
   startedAt: string
@@ -59,6 +71,11 @@ interface CronResult {
     details: Array<{ webhookType: string; action: string; reason?: string }>
   }
   drift: { triggered: boolean; reason?: string; result?: any }
+  tenantConfig: {
+    triggered: boolean
+    reason?: string
+    report?: TenantConfigSyncReport
+  }
 }
 
 function authorizeRequest(request: Request): boolean {
@@ -362,6 +379,9 @@ export async function GET(request: Request) {
     )
   }
 
+  const url = new URL(request.url)
+  const force = url.searchParams.get("force") // e.g. "tenant-config"
+
   const result: CronResult = {
     ok: true,
     startedAt,
@@ -369,6 +389,7 @@ export async function GET(request: Request) {
     replay: { attempted: 0, succeeded: 0, failed: 0, skipped: 0 },
     watchdog: { checked: 0, healthy: 0, stale: 0, recreated: 0, failed: 0, details: [] },
     drift: { triggered: false },
+    tenantConfig: { triggered: false },
   }
 
   // 1. Replay
@@ -395,6 +416,68 @@ export async function GET(request: Request) {
     result.ok = false
   }
 
+  // 4. Tenant config (Work Statuses, Work Types, Work Templates)
+  try {
+    result.tenantConfig = await maybeRunTenantConfigSync(db, force === "tenant-config")
+    if (result.tenantConfig.report && !result.tenantConfig.report.ok) {
+      result.ok = false
+    }
+  } catch (e) {
+    console.error("[karbon-cron] tenant-config failed:", (e as Error).message)
+    result.ok = false
+    result.tenantConfig = { triggered: true, reason: "error", report: undefined }
+  }
+
   result.durationMs = Date.now() - t0
   return NextResponse.json(result)
+}
+
+// ---------------------------------------------------------------------------
+// 4. TENANT-CONFIG: refresh Work Statuses / Types / Templates every 4 hours
+// ---------------------------------------------------------------------------
+async function maybeRunTenantConfigSync(
+  db: NonNullable<ReturnType<typeof tryCreateAdminClient>>,
+  force: boolean,
+): Promise<CronResult["tenantConfig"]> {
+  if (!force) {
+    // Throttle: skip if a tenant-config sync ran successfully within the last
+    // TENANT_CONFIG_INTERVAL_MS. We look for the most recent sync_log row of
+    // type 'tenant-config' regardless of status — even a partial failure
+    // counts so we don't hammer Karbon when something is broken.
+    const { data: last } = await db
+      .from("sync_log")
+      .select("started_at")
+      .eq("sync_type", "tenant-config")
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (last?.started_at) {
+      const ageMs = Date.now() - new Date(last.started_at).getTime()
+      if (ageMs < TENANT_CONFIG_INTERVAL_MS) {
+        return {
+          triggered: false,
+          reason: `last tenant-config sync ${Math.round(ageMs / 60000)}m ago (interval: ${
+            TENANT_CONFIG_INTERVAL_MS / 60000
+          }m)`,
+        }
+      }
+    }
+  }
+
+  const creds = getKarbonCredentials()
+  if (!creds) {
+    return { triggered: false, reason: "no Karbon credentials" }
+  }
+
+  const report = await syncKarbonTenantConfig(creds, db, {
+    isManual: false,
+    source: force ? "cron-forced" : "cron",
+  })
+
+  return {
+    triggered: true,
+    reason: force ? "force=tenant-config" : "scheduled (>4h since last)",
+    report,
+  }
 }

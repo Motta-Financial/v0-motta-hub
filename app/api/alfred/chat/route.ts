@@ -1,6 +1,7 @@
 import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from "ai"
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/server"
+import { browsePageTool, webSearchTool } from "@/lib/alfred/tools"
 
 export const maxDuration = 60
 
@@ -474,6 +475,12 @@ const alfredTools = {
       }
     },
   }),
+
+  // ── Web research ────────────────────────────────────────────────────────
+  // Two complementary tools for questions that go beyond Motta's internal
+  // database. See lib/alfred/tools/{web-search,browse-page}.ts for details.
+  webSearch: webSearchTool,
+  browsePage: browsePageTool,
 }
 
 // System prompt for ALFRED
@@ -487,6 +494,7 @@ const SYSTEM_PROMPT = `You are ALFRED, the AI assistant for Motta Hub - Motta Fi
 6. **Debriefs**: Review recent client debriefs and meeting notes captured on the Debriefs page
 7. **Tommy Awards**: Check the leaderboard and recognition program standings
 8. **Services**: Look up service offerings and pricing
+9. **Web Research**: Look up information from the public internet when the answer isn't in Motta's database
 
 When answering questions:
 - Be concise but thorough
@@ -495,6 +503,13 @@ When answering questions:
 - If you need more context, ask clarifying questions
 - Always protect sensitive information (don't expose SSNs, full EINs, etc.)
 - When showing lists, summarize key information rather than dumping raw data
+
+**Web Research guidance**:
+- For questions about Motta's internal data (clients, work, debriefs, financials), ALWAYS prefer the database tools — never search the web for info we already have.
+- Use \`webSearch\` (Parallel Web) for broad research questions: recent regulations, IRS guidance, industry news, competitor info, software documentation, etc. It returns ranked excerpts with source URLs.
+- Use \`browsePage\` (Browserbase) ONLY when you have a specific URL to read in full — either provided by the user or surfaced by \`webSearch\`. Each browse call takes ~5-10s, so don't use it for general research.
+- Always cite sources with their URL when you've used web research.
+- If the user asks about tax law, deadlines, or compliance, lean on \`webSearch\` results from official .gov sources (irs.gov, state DORs) over third-party blogs.
 
 You work for Motta Financial, a San Francisco-based CPA firm specializing in tax, accounting, and advisory services.`
 
@@ -509,7 +524,9 @@ export async function POST(req: Request) {
     system: SYSTEM_PROMPT,
     messages: modelMessages,
     tools: alfredTools,
-    stopWhen: stepCountIs(10),
+    // 12 steps lets ALFRED chain webSearch → pick a result → browsePage →
+    // reply, with a couple DB lookups in the same turn if needed.
+    stopWhen: stepCountIs(12),
     abortSignal: req.signal,
   })
 
