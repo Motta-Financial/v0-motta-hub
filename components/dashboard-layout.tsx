@@ -449,6 +449,15 @@ function Sidebar() {
     }))
   }
 
+  // Used by parent/child *row* clicks (the link, not the chevron). Always
+  // OPENS the section — never collapses — so navigating to a section
+  // never hides its kids. Collapsing stays the chevron's job, which keeps
+  // the link's primary purpose (navigate) and the chip's purpose
+  // (expand/collapse) cleanly separated. No-op when already expanded.
+  const expandSection = (name: string) => {
+    setExpandedSections((prev) => (prev[name] ? prev : { ...prev, [name]: true }))
+  }
+
   // Recurses through the entire subtree so a parent like Home stays
   // highlighted even when the active route is a grandchild (e.g.
   // /calendly under Home → Calendar → Calendly Admin).
@@ -478,6 +487,13 @@ function Sidebar() {
                     <div className="flex items-center">
                       <a
                         href={item.href}
+                        // Clicking the row opens its subpages alongside the
+                        // navigation. Skipped when there are no children so
+                        // we don't pay for unnecessary state writes on leaf
+                        // nav items.
+                        onClick={() => {
+                          if (hasChildren) expandSection(item.name)
+                        }}
                         className={cn(
                           isCurrent || isParentActive
                             ? "text-white border-r-2"
@@ -571,6 +587,13 @@ function Sidebar() {
                               <div className="flex items-center">
                                 <a
                                   href={child.href}
+                                  // Same expand-on-navigate behavior as the
+                                  // parent row, scoped to whichever child
+                                  // has its own grandchildren (e.g. Talent →
+                                  // Tommy Awards → Submit Ballot).
+                                  onClick={() => {
+                                    if (hasGrandchildren) expandSection(child.name)
+                                  }}
                                   className={cn(
                                     isChildCurrent || hasActiveGrandchild
                                       ? "text-white border-r-2"
