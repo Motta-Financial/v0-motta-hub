@@ -43,6 +43,13 @@ interface Props {
   events: TeamCalendarEvent[]
   /** Optional: only render events whose host team_member_id is in this set. */
   hostFilter?: Set<string> | null
+  /**
+   * Pre-resolved firm-wide color for each event_type_name. When present,
+   * the chip uses this hex; when absent (e.g. a brand-new type that
+   * hasn't reached our color endpoint yet) the chip falls back to a
+   * deterministic name-hash hue so it's still distinguishable.
+   */
+  typeColorMap?: Map<string, string> | null
   onSelectEvent: (event: TeamCalendarEvent) => void
 }
 
@@ -123,15 +130,61 @@ function startOfMonthInTz(date: Date, tz: string): Date {
 // Event chip — shared across all views
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Parse `#rrggbb` (or `#rrggbbaa`, alpha discarded) into 0-255 channels.
+ * Any malformed input falls back to slate-500 so we never throw at render.
+ */
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const m = /^#([0-9a-f]{6})/i.exec(hex)
+  if (!m) return { r: 100, g: 116, b: 139 } // slate-500
+  const v = m[1]
+  return {
+    r: parseInt(v.slice(0, 2), 16),
+    g: parseInt(v.slice(2, 4), 16),
+    b: parseInt(v.slice(4, 6), 16),
+  }
+}
+
+/**
+ * Resolve the chip palette from a single base hex. We derive everything
+ * the chip needs in one pass:
+ *  - `bgSoft`:   pale tint behind the chip text (background)
+ *  - `border`:   muted edge that matches the bg
+ *  - `accent`:   saturated line on the left edge — the visual "type" cue
+ *  - `text`:     darkened brand color used for chip text on the soft bg
+ *
+ * We use `color-mix(in srgb, …)` so the math runs in the browser and
+ * automatically adapts to whatever hex the user picks (unlike fixed
+ * Tailwind palettes). Fallback is the same color across the board for
+ * environments without color-mix support.
+ */
+function chipPalette(hex: string): {
+  bgSoft: string
+  border: string
+  accent: string
+  text: string
+} {
+  // color-mix was Baseline 2023+ so it's safe to assume; the worst case
+  // in an old browser is the chip uses the raw hex which is still legible.
+  return {
+    bgSoft: `color-mix(in srgb, ${hex} 14%, white)`,
+    border: `color-mix(in srgb, ${hex} 38%, white)`,
+    accent: hex,
+    text: `color-mix(in srgb, ${hex} 75%, black)`,
+  }
+}
+
 function EventChip({
   event,
   tz,
   variant,
+  typeColorMap,
   onClick,
 }: {
   event: TeamCalendarEvent
   tz: string
   variant: "stacked" | "month" | "list"
+  typeColorMap?: Map<string, string> | null
   onClick: () => void
 }) {
   const start = new Date(event.start_time)
@@ -143,16 +196,45 @@ function EventChip({
   const commentCount = event.commentCount ?? 0
   const hostName = event.team_members?.full_name ?? event.calendly_user_name ?? null
 
-  // The host's team_member_id seeds a deterministic color so each
-  // teammate's events read as a coherent column at a glance. We tweak
-  // the saturation/lightness pair by variant so chips stay legible on
-  // both the dark hour-grid background and the light month grid.
-  const hue = useMemo(() => {
-    const seed = event.team_member_id ?? event.id
+  // The chip color is keyed off `event_type_name` so meetings of the
+  // same type read as a single visual category across the team. The
+  // map is firm-wide (overrides → Calendly default → server-provided
+  // hex). For events without a type entry yet (rare — newly synced
+  // event types), we fall back to a deterministic name-hash hue so
+  // they're still distinguishable from neighbors.
+  const baseHex = useMemo(() => {
+    const name = event.event_type_name
+    if (name && typeColorMap?.has(name)) return typeColorMap.get(name)!
+    // Hash either the event_type_name (preferred — same color for same
+    // type across users) or fall back to event id. Convert to a saturated
+    // HSL → hex so the color-mix calculations downstream stay consistent.
+    const seed = name || event.id
     let h = 0
     for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360
-    return h
-  }, [event.team_member_id, event.id])
+    // Convert HSL(h, 65%, 50%) to hex via canvas-free arithmetic.
+    const s = 0.65,
+      l = 0.5
+    const c = (1 - Math.abs(2 * l - 1)) * s
+    const hp = h / 60
+    const x = c * (1 - Math.abs((hp % 2) - 1))
+    let r = 0,
+      g = 0,
+      b = 0
+    if (hp < 1) [r, g, b] = [c, x, 0]
+    else if (hp < 2) [r, g, b] = [x, c, 0]
+    else if (hp < 3) [r, g, b] = [0, c, x]
+    else if (hp < 4) [r, g, b] = [0, x, c]
+    else if (hp < 5) [r, g, b] = [x, 0, c]
+    else [r, g, b] = [c, 0, x]
+    const m = l - c / 2
+    const to2 = (n: number) => Math.round((n + m) * 255).toString(16).padStart(2, "0")
+    return `#${to2(r)}${to2(g)}${to2(b)}`
+  }, [event.event_type_name, event.id, typeColorMap])
+
+  const palette = useMemo(() => chipPalette(baseHex), [baseHex])
+  // Suppress unused-import lint when we eventually drop hexToRgb if not
+  // referenced — keep it accessible in case future variants need raw rgb.
+  void hexToRgb
 
   if (variant === "stacked") {
     return (
@@ -161,11 +243,11 @@ function EventChip({
         onClick={onClick}
         className="group absolute left-1 right-1 overflow-hidden rounded-md border border-l-4 px-2 py-1 text-left text-xs shadow-sm transition hover:shadow-md"
         style={{
-          background: `hsl(${hue} 88% 96%)`,
-          borderColor: `hsl(${hue} 60% 80%)`,
-          borderLeftColor: `hsl(${hue} 70% 50%)`,
+          background: palette.bgSoft,
+          borderColor: palette.border,
+          borderLeftColor: palette.accent,
         }}
-        title={event.name}
+        title={event.event_type_name ? `${event.name} · ${event.event_type_name}` : event.name}
       >
         <div className="font-medium leading-tight text-stone-900 line-clamp-2">{event.name}</div>
         <div className="mt-0.5 text-[10px] text-stone-600">
@@ -204,7 +286,8 @@ function EventChip({
         type="button"
         onClick={onClick}
         className="group flex w-full items-center gap-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] hover:opacity-90"
-        style={{ background: `hsl(${hue} 80% 92%)`, color: `hsl(${hue} 60% 25%)` }}
+        style={{ background: palette.bgSoft, color: palette.text }}
+        title={event.event_type_name ? `${event.name} · ${event.event_type_name}` : event.name}
       >
         <span className="font-semibold tabular-nums">
           {formatInTz(start, tz, { hour: "numeric", minute: "2-digit" })}
@@ -214,12 +297,14 @@ function EventChip({
     )
   }
 
-  // List view
+  // List view — keep the neutral card surface, but accent the leading
+  // edge with the type color so the eye still gets the categorical cue.
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center justify-between gap-3 rounded-md border bg-card px-3 py-2 text-left transition hover:border-stone-300 hover:shadow-sm"
+      className="flex w-full items-center justify-between gap-3 rounded-md border-l-4 border bg-card px-3 py-2 text-left transition hover:border-stone-300 hover:shadow-sm"
+      style={{ borderLeftColor: palette.accent }}
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
@@ -230,6 +315,9 @@ function EventChip({
         </div>
         <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
           {hostName ? <span>{hostName}</span> : null}
+          {event.event_type_name ? (
+            <span className="truncate">{event.event_type_name}</span>
+          ) : null}
           {inviteeCount > 0 ? (
             <span className="inline-flex items-center gap-1">
               <Users className="h-3 w-3" />
@@ -287,12 +375,14 @@ function DayColumn({
   day,
   tz,
   events,
+  typeColorMap,
   onSelectEvent,
   showHeader,
 }: {
   day: Date
   tz: string
   events: TeamCalendarEvent[]
+  typeColorMap?: Map<string, string> | null
   onSelectEvent: (e: TeamCalendarEvent) => void
   showHeader: boolean
 }) {
@@ -364,7 +454,13 @@ function DayColumn({
                 width: `calc(${widthPct}% - 4px)`,
               }}
             >
-              <EventChip event={event} tz={tz} variant="stacked" onClick={() => onSelectEvent(event)} />
+              <EventChip
+                event={event}
+                tz={tz}
+                variant="stacked"
+                typeColorMap={typeColorMap}
+                onClick={() => onSelectEvent(event)}
+              />
             </div>
           )
         })}
@@ -373,16 +469,35 @@ function DayColumn({
   )
 }
 
-function DayView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "hostFilter">) {
+function DayView({
+  anchor,
+  tz,
+  events,
+  typeColorMap,
+  onSelectEvent,
+}: Omit<Props, "view" | "hostFilter">) {
   return (
     <div className="flex h-[680px] overflow-hidden rounded-lg border bg-card">
       <HourGutter tz={tz} />
-      <DayColumn day={anchor} tz={tz} events={events} onSelectEvent={onSelectEvent} showHeader />
+      <DayColumn
+        day={anchor}
+        tz={tz}
+        events={events}
+        typeColorMap={typeColorMap}
+        onSelectEvent={onSelectEvent}
+        showHeader
+      />
     </div>
   )
 }
 
-function WeekView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "hostFilter">) {
+function WeekView({
+  anchor,
+  tz,
+  events,
+  typeColorMap,
+  onSelectEvent,
+}: Omit<Props, "view" | "hostFilter">) {
   const weekStart = useMemo(() => startOfWeekInTz(anchor, tz), [anchor, tz])
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart])
   return (
@@ -394,6 +509,7 @@ function WeekView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "h
           day={day}
           tz={tz}
           events={events}
+          typeColorMap={typeColorMap}
           onSelectEvent={onSelectEvent}
           showHeader
         />
@@ -406,7 +522,13 @@ function WeekView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "h
 // Month view — 6-row fixed grid with chip overflow
 // ─────────────────────────────────────────────────────────────────────
 
-function MonthView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "hostFilter">) {
+function MonthView({
+  anchor,
+  tz,
+  events,
+  typeColorMap,
+  onSelectEvent,
+}: Omit<Props, "view" | "hostFilter">) {
   const monthStart = useMemo(() => startOfMonthInTz(anchor, tz), [anchor, tz])
   const monthLabel = formatInTz(anchor, tz, { month: "long", year: "numeric" })
   const gridStart = useMemo(() => startOfWeekInTz(monthStart, tz), [monthStart, tz])
@@ -473,6 +595,7 @@ function MonthView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "
                     event={e}
                     tz={tz}
                     variant="month"
+                    typeColorMap={typeColorMap}
                     onClick={() => onSelectEvent(e)}
                   />
                 ))}
@@ -499,7 +622,13 @@ function MonthView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "
 // List view
 // ─────────────────────────────────────────────────────────────────────
 
-function ListView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "hostFilter">) {
+function ListView({
+  anchor,
+  tz,
+  events,
+  typeColorMap,
+  onSelectEvent,
+}: Omit<Props, "view" | "hostFilter">) {
   const grouped = useMemo(() => {
     const buckets = new Map<string, { day: Date; events: TeamCalendarEvent[] }>()
     for (const e of events) {
@@ -536,7 +665,14 @@ function ListView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "h
           </h3>
           <div className="space-y-1">
             {dayEvents.map((e) => (
-              <EventChip key={e.id} event={e} tz={tz} variant="list" onClick={() => onSelectEvent(e)} />
+              <EventChip
+                key={e.id}
+                event={e}
+                tz={tz}
+                variant="list"
+                typeColorMap={typeColorMap}
+                onClick={() => onSelectEvent(e)}
+              />
             ))}
           </div>
         </div>
@@ -547,14 +683,23 @@ function ListView({ anchor, tz, events, onSelectEvent }: Omit<Props, "view" | "h
 
 // ─────────────────────────────────────────────────────────────────────
 
-export function CalendarGrid({ view, anchor, tz, events, hostFilter, onSelectEvent }: Props) {
+export function CalendarGrid({
+  view,
+  anchor,
+  tz,
+  events,
+  hostFilter,
+  typeColorMap,
+  onSelectEvent,
+}: Props) {
   const filtered = useMemo(() => {
     if (!hostFilter || hostFilter.size === 0) return events
     return events.filter((e) => e.team_member_id && hostFilter.has(e.team_member_id))
   }, [events, hostFilter])
 
-  if (view === "day") return <DayView anchor={anchor} tz={tz} events={filtered} onSelectEvent={onSelectEvent} />
-  if (view === "week") return <WeekView anchor={anchor} tz={tz} events={filtered} onSelectEvent={onSelectEvent} />
-  if (view === "month") return <MonthView anchor={anchor} tz={tz} events={filtered} onSelectEvent={onSelectEvent} />
-  return <ListView anchor={anchor} tz={tz} events={filtered} onSelectEvent={onSelectEvent} />
+  const sharedProps = { tz, events: filtered, typeColorMap, onSelectEvent }
+  if (view === "day") return <DayView anchor={anchor} {...sharedProps} />
+  if (view === "week") return <WeekView anchor={anchor} {...sharedProps} />
+  if (view === "month") return <MonthView anchor={anchor} {...sharedProps} />
+  return <ListView anchor={anchor} {...sharedProps} />
 }

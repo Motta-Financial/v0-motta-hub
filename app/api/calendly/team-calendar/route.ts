@@ -27,6 +27,12 @@ export async function GET(request: NextRequest) {
     const to = sp.get("to") || new Date(now.getTime() + 60 * 86400000).toISOString()
     const status = sp.get("status") || "all"
 
+    // NOTE: this query reads via createAdminClient(), so it bypasses RLS
+    // and returns events from EVERY calendly_connections row in the
+    // window — that's deliberate. The team calendar is firm-wide by
+    // design: any teammate viewing this page sees every other connected
+    // teammate's meetings. There is no per-user filter, and the host
+    // filter on the client side is purely a UX convenience.
     let q = supabase
       .from("calendly_events")
       .select(
@@ -44,6 +50,8 @@ export async function GET(request: NextRequest) {
           calendly_user_uri,
           calendly_user_name,
           calendly_user_email,
+          event_type_uuid,
+          event_type_name,
           team_members:team_member_id ( id, full_name, email, avatar_url, title ),
           calendly_invitees ( id, name, email, status, timezone, questions_answers, contact_id ),
           calendly_event_clients ( id, contact_id, organization_id, link_source, match_method, contact:contacts ( id, full_name, primary_email ), organization:organizations ( id, name ) ),
