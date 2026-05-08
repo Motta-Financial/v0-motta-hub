@@ -245,29 +245,31 @@ function ChecklistForWorkItem({ item }: { item: KarbonWorkItem }) {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
-          <div className="min-w-0">
-            <CardTitle className="text-lg truncate" title={item.title || item.Title}>
-              {getClientLabel(item)}
-            </CardTitle>
-            <CardDescription className="truncate">{item.title || item.Title}</CardDescription>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="outline" className="bg-blue-50 text-blue-800 border-blue-200">
-              Phase 1: {phase1Done} / 5
-            </Badge>
-            <Badge variant="outline" className="bg-emerald-50 text-emerald-800 border-emerald-200">
-              Phase 2: {phase2Done} / 5
-            </Badge>
-            <Badge variant="outline" className="bg-muted text-foreground">
-              Total: {completedCount} / 10
-            </Badge>
-          </div>
+    <ExpandableCard
+      title={getClientLabel(item)}
+      // ExpandableCard's description sits under the title in the same row
+      // as the chevron + maximize controls, so we keep it terse and use
+      // the work-item title (often noisy) as the description.
+      description={item.title || item.Title}
+      icon={<CheckSquare className="h-5 w-5 text-emerald-600" />}
+      // Right-rail badges show phase totals at a glance, even when the
+      // body is collapsed. ExpandableCard renders these next to the
+      // chevron + maximize controls in the header row.
+      actions={
+        <div className="flex flex-wrap gap-2">
+          <Badge variant="outline" className="bg-blue-50 text-blue-800 border-blue-200">
+            Phase 1: {phase1Done} / 5
+          </Badge>
+          <Badge variant="outline" className="bg-emerald-50 text-emerald-800 border-emerald-200">
+            Phase 2: {phase2Done} / 5
+          </Badge>
+          <Badge variant="outline" className="bg-muted text-foreground">
+            Total: {completedCount} / 10
+          </Badge>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-6">
+      }
+    >
+      <div className="space-y-6">
         <div>
           <Progress value={(completedCount / 10) * 100} className="h-2" />
         </div>
@@ -285,7 +287,8 @@ function ChecklistForWorkItem({ item }: { item: KarbonWorkItem }) {
             />
           </div>
           <div className="text-xs text-muted-foreground">
-            Last updated: {data?.progress?.length ? formatShortDate(latestUpdatedAt(data.progress)) : "—"}
+            Last updated:{" "}
+            {data?.progress?.length ? formatShortDate(latestUpdatedAt(data.progress)) : "—"}
           </div>
         </div>
 
@@ -327,8 +330,8 @@ function ChecklistForWorkItem({ item }: { item: KarbonWorkItem }) {
             />
           </>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </ExpandableCard>
   )
 }
 
