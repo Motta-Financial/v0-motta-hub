@@ -577,24 +577,17 @@ function Sidebar() {
                           aria-hidden="true"
                         />
                         <span className="flex-1">{item.name}</span>
-                        {/* Inline chevron indicator shows at a glance that
-                            this nav item has nested children. The separate
-                            expand/collapse button on the right still handles
-                            toggling, but this visual cue makes discoverability
-                            immediate — especially for "Home". */}
-                        {hasChildren && (
-                          <ChevronDown
-                            className={cn(
-                              "h-4 w-4 shrink-0 transition-transform duration-200",
-                              isCurrent || isParentActive ? "text-white/70" : "text-gray-400 group-hover:text-white/70",
-                              isExpanded ? "rotate-0" : "-rotate-90",
-                            )}
-                            aria-hidden="true"
-                          />
-                        )}
                       </a>
+                      {/* Single chevron toggle, rendered as a sibling of
+                          the <a> (not nested inside it — `<button>` inside
+                          `<a>` is invalid HTML). It both indicates "this
+                          has children" and serves as the expand/collapse
+                          control. The previous duplicate pill (count +
+                          chevron) on the right has been removed per
+                          design feedback — only one chevron per parent. */}
                       {hasChildren && (
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.preventDefault()
                             toggleSection(item.name)
@@ -605,28 +598,20 @@ function Sidebar() {
                               : `Expand ${item.name} (${item.children!.length} subpages)`
                           }
                           aria-expanded={isExpanded}
-                          // Count chip + chevron in one rounded "pill" button:
-                          // the count makes "this has subpages" obvious before
-                          // the user hovers, the rounded hover surface signals
-                          // it's interactive, and the active-row variant uses
-                          // a translucent white hover so it stays legible on
-                          // the sage background.
                           className={cn(
-                            "mr-1 flex items-center gap-1 rounded-full px-1.5 py-1 transition-colors",
+                            "mr-1 flex h-7 w-7 items-center justify-center rounded transition-colors",
                             isCurrent || isParentActive
-                              ? "text-white hover:bg-white/15"
-                              : "text-gray-500 hover:bg-gray-100",
+                              ? "text-white/80 hover:bg-white/15 hover:text-white"
+                              : "text-gray-400 hover:bg-gray-100 hover:text-gray-700",
                           )}
                         >
-                          <span
+                          <ChevronDown
                             className={cn(
-                              "text-[10px] font-semibold tabular-nums leading-none",
-                              isCurrent || isParentActive ? "text-white/80" : "text-gray-400",
+                              "h-4 w-4 transition-transform duration-200",
+                              isExpanded ? "rotate-0" : "-rotate-90",
                             )}
-                          >
-                            {item.children!.length}
-                          </span>
-                          {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                            aria-hidden="true"
+                          />
                         </button>
                       )}
                     </div>
