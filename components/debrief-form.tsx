@@ -31,6 +31,7 @@ import {
   ListTodo,
   Lightbulb,
   Bell,
+  Star,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -50,9 +51,18 @@ interface WorkItem {
   karbon_work_item_key: string
   work_type?: string
   client_name?: string
-  client_key?: string // Added for auto-populating clients
-  organization_key?: string // Added for auto-populating clients
   status?: string
+  // Fields used to derive the debrief's *primary contact* directly from the
+  // Karbon work item. The work_items_enriched view exposes the owning
+  // contact OR organization plus its UUID, type, name, and Karbon key,
+  // which is everything we need to build a Client without a follow-up API
+  // call. `client_type` is the Karbon-side string ("Contact" / "Organization").
+  contact_id?: string | null
+  organization_id?: string | null
+  client_type?: string | null
+  karbon_client_key?: string | null
+  contact_full_name?: string | null
+  org_name?: string | null
 }
 
 interface TeamMember {
@@ -98,6 +108,16 @@ type FormData = {
   team_member_name: string
   work_item_ids: string[]
   related_work_items: WorkItem[]
+  // Canonical "this debrief is FOR this client" tag — auto-populated from the
+  // first selected Karbon work item's owning contact/organization, manually
+  // overridable. Drives every downstream filter: dashboard rows, email
+  // subject, Karbon timeline attachment, and the persisted
+  // debriefs.contact_id / debriefs.organization_id FKs.
+  primary_contact: Client | null
+  // Additional people this debrief should ALSO be tagged to (e.g. a spouse
+  // for a 1040 meeting, or a related entity). Never includes the primary —
+  // we de-dupe by id/karbon_key so the email and Karbon note don't render
+  // the primary twice.
   client_ids: string[]
   related_clients: Client[]
   notes: string
@@ -120,6 +140,7 @@ export function DebriefForm() {
     team_member_name: "",
     work_item_ids: [],
     related_work_items: [],
+    primary_contact: null,
     client_ids: [],
     related_clients: [],
     notes: "",
@@ -156,6 +177,11 @@ export function DebriefForm() {
 
   // Popover states
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false)
+  // Separate popover state for the Primary Contact picker — needed because
+  // the primary picker shares the same `clients` search results array as the
+  // Related Clients picker. If we reused one open flag the two popovers
+  // would fight over the search input.
+  const [primaryPopoverOpen, setPrimaryPopoverOpen] = useState(false)
   const [workItemPopoverOpen, setWorkItemPopoverOpen] = useState(false)
   const [teamMemberPopoverOpen, setTeamMemberPopoverOpen] = useState(false)
   // Service popover open state
@@ -235,9 +261,17 @@ export function DebriefForm() {
           karbon_work_item_key: w.karbon_work_item_key,
           work_type: w.work_type,
           client_name: w.client_name,
-          client_key: w.client_key || w.contact_key, // Include client key
-          organization_key: w.organization_key, // Include org key
           status: w.workflow_status,
+          // The /api/work-items endpoint hits work_items_enriched, which
+          // already exposes the owning client's UUID + name + type + Karbon
+          // key. Forward them so addWorkItem can build the primary contact
+          // directly with no extra round trip.
+          contact_id: w.contact_id ?? null,
+          organization_id: w.organization_id ?? null,
+          client_type: w.client_type ?? null,
+          karbon_client_key: w.karbon_client_key ?? null,
+          contact_full_name: w.contact_full_name ?? null,
+          org_name: w.org_name ?? null,
         })),
       )
     } catch (error) {
@@ -330,8 +364,15 @@ export function DebriefForm() {
     return () => clearTimeout(timer)
   }, [serviceSearch, fetchServices])
 
-  // Add client
+  // Add client (to the "Other Related Clients" list — never to primary).
+  // Silently no-ops when the picked client matches the current primary
+  // contact, so the related list stays a true "additional people" list.
   const addClient = (client: Client) => {
+    if (formData.primary_contact?.id === client.id) {
+      setClientPopoverOpen(false)
+      setClientSearch("")
+      return
+    }
     if (!formData.related_clients.find((c) => c.id === client.id)) {
       setFormData((prev) => ({
         ...prev,
@@ -352,68 +393,96 @@ export function DebriefForm() {
     }))
   }
 
-  const addWorkItem = async (workItem: WorkItem) => {
-    if (!formData.related_work_items.find((w) => w.id === workItem.id)) {
-      setFormData((prev) => ({
-        ...prev,
-        related_work_items: [...prev.related_work_items, workItem],
-        work_item_ids: [...prev.work_item_ids, workItem.id],
-      }))
-
-      // Auto-populate client from work item if available
-      if (workItem.client_name && (workItem.client_key || workItem.organization_key)) {
-        try {
-          // Try to find the client in Supabase
-          let clientData: Client | null = null
-
-          if (workItem.organization_key) {
-            const orgRes = await fetch(`/api/supabase/organizations?karbon_key=${workItem.organization_key}`)
-            const orgData = await orgRes.json()
-            if (orgData.organizations?.length > 0) {
-              const org = orgData.organizations[0]
-              clientData = {
-                id: org.id,
-                name: org.name,
-                full_name: org.name,
-                type: "organization",
-                karbon_key: org.karbon_organization_key,
-                primary_email: org.primary_email,
-              }
-            }
-          }
-
-          if (!clientData && workItem.client_key) {
-            const contactRes = await fetch(`/api/supabase/contacts?karbon_key=${workItem.client_key}`)
-            const contactData = await contactRes.json()
-            if (contactData.contacts?.length > 0) {
-              const contact = contactData.contacts[0]
-              const fullName = contact.full_name || `${contact.first_name || ""} ${contact.last_name || ""}`.trim()
-              clientData = {
-                id: contact.id,
-                name: fullName,
-                full_name: fullName,
-                type: "contact",
-                karbon_key: contact.karbon_contact_key,
-                primary_email: contact.primary_email,
-              }
-            }
-          }
-
-          // Add client if found and not already in list
-          if (clientData && !formData.related_clients.find((c) => c.id === clientData!.id)) {
-            setFormData((prev) => ({
-              ...prev,
-              related_clients: [...prev.related_clients, clientData!],
-              client_ids: [...prev.client_ids, clientData!.id],
-            }))
-          }
-        } catch (error) {
-          console.error("Error auto-populating client:", error)
-        }
+  /**
+   * Build a Client object representing the work item's owning contact or
+   * organization. Returns null when the work item isn't yet linked to a
+   * client in our enriched view (rare — usually means Karbon hadn't synced
+   * the client when the work item was last pulled). The caller decides
+   * what to do with a null result; here we just leave the primary contact
+   * untouched.
+   */
+  const deriveWorkItemPrimaryContact = (workItem: WorkItem): Client | null => {
+    // Karbon's `client_type` is "Organization" or "Contact" (capitalized).
+    // The view also exposes `organization_id` / `contact_id` UUIDs that
+    // come from joining work_items.karbon_client_key against the cached
+    // contacts/organizations tables. Prefer the org branch first because
+    // a work item tied to an organization is the primary tagging case
+    // (S-corp 1120, partnership 1065, etc.).
+    const isOrg =
+      (workItem.client_type || "").toLowerCase().startsWith("org") ||
+      !!workItem.organization_id
+    if (isOrg && workItem.organization_id) {
+      const name = workItem.org_name || workItem.client_name || "Organization"
+      return {
+        id: workItem.organization_id,
+        name,
+        full_name: name,
+        type: "organization",
+        karbon_key: workItem.karbon_client_key || "",
       }
+    }
+    if (workItem.contact_id) {
+      const name =
+        workItem.contact_full_name || workItem.client_name || "Contact"
+      return {
+        id: workItem.contact_id,
+        name,
+        full_name: name,
+        type: "contact",
+        karbon_key: workItem.karbon_client_key || "",
+      }
+    }
+    return null
+  }
+
+  const addWorkItem = (workItem: WorkItem) => {
+    if (!formData.related_work_items.find((w) => w.id === workItem.id)) {
+      setFormData((prev) => {
+        const next: FormData = {
+          ...prev,
+          related_work_items: [...prev.related_work_items, workItem],
+          work_item_ids: [...prev.work_item_ids, workItem.id],
+        }
+        // Auto-set primary contact from the FIRST work item added.
+        // Subsequent work items don't overwrite — the user explicitly
+        // chose the first one's client as the primary, and silently
+        // changing it on a later add would feel buggy. They can still
+        // clear/reassign manually.
+        if (!prev.primary_contact) {
+          const derived = deriveWorkItemPrimaryContact(workItem)
+          if (derived) {
+            next.primary_contact = derived
+            // Also strip this person from related_clients if they were
+            // previously added there (avoid double-tagging).
+            next.related_clients = prev.related_clients.filter(
+              (c) => c.id !== derived.id,
+            )
+            next.client_ids = prev.client_ids.filter((id) => id !== derived.id)
+          }
+        }
+        return next
+      })
     }
     setWorkItemPopoverOpen(false)
     setWorkItemSearch("")
+  }
+
+  // Clear primary contact (used when the partner picks a work item but the
+  // debrief is actually about a different client, e.g. a referral meeting).
+  const clearPrimaryContact = () => {
+    setFormData((prev) => ({ ...prev, primary_contact: null }))
+  }
+
+  // Manual override — used when the work item didn't auto-populate the
+  // right person, or when there's no work item at all.
+  const setPrimaryContact = (client: Client) => {
+    setFormData((prev) => ({
+      ...prev,
+      primary_contact: client,
+      // Keep the related list clean — primary is never also a "related".
+      related_clients: prev.related_clients.filter((c) => c.id !== client.id),
+      client_ids: prev.client_ids.filter((id) => id !== client.id),
+    }))
   }
 
   // Remove work item
@@ -536,6 +605,17 @@ export function DebriefForm() {
           // Changed to use client_ids and work_item_ids
           client_ids: formData.client_ids,
           work_item_ids: formData.work_item_ids,
+          // Primary contact drives debriefs.contact_id / organization_id
+          // server-side. Sent as a flat object so the API can resolve
+          // either kind without inspecting related_clients.
+          primary_contact: formData.primary_contact
+            ? {
+                id: formData.primary_contact.id,
+                type: formData.primary_contact.type,
+                name: formData.primary_contact.name,
+                karbon_key: formData.primary_contact.karbon_key,
+              }
+            : null,
           // karbon_work_url: formData.related_work_items[0]?.karbon_work_item_key // Changed to use related_work_items
           //   ? `https://app.karbonhq.com/work/${formData.related_work_items[0].karbon_work_item_key}`
           //   : null,
@@ -609,6 +689,7 @@ export function DebriefForm() {
         team_member_name: "",
         work_item_ids: [],
         related_work_items: [],
+        primary_contact: null,
         client_ids: [],
         related_clients: [],
         notes: "",
@@ -849,13 +930,133 @@ export function DebriefForm() {
             )}
           </div>
 
+          {/* ─── Primary Contact ─────────────────────────────────────────
+              Auto-filled from the first selected work item's owning
+              contact/organization. Drives debriefs.contact_id /
+              organization_id server-side, so dashboards, the email subject,
+              and the Karbon timeline attachment all key off this single
+              field. Manually overridable for edge cases (referral meetings,
+              prospect intros without a Karbon work item yet, etc.). */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              <Star className="h-4 w-4 fill-amber-400 text-amber-500" />
+              Primary Contact
+            </Label>
+            <p className="text-xs text-muted-foreground mb-2">
+              The primary contact/organization this debrief is tagged to. Auto-populated from the
+              Karbon work item above when available.
+            </p>
+
+            {formData.primary_contact ? (
+              <div className="flex items-center justify-between p-3 bg-amber-50 border border-amber-200 rounded-md">
+                <div className="flex items-center gap-2">
+                  {formData.primary_contact.type === "organization" ? (
+                    <Building2 className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <User className="h-4 w-4 text-blue-600" />
+                  )}
+                  <div>
+                    <p className="text-sm font-medium">{formData.primary_contact.full_name}</p>
+                    {formData.primary_contact.primary_email && (
+                      <p className="text-xs text-muted-foreground">
+                        {formData.primary_contact.primary_email}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearPrimaryContact}
+                  aria-label="Clear primary contact"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ) : (
+              <Popover open={primaryPopoverOpen} onOpenChange={setPrimaryPopoverOpen} modal>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="w-full justify-start bg-transparent">
+                    <Plus className="mr-2 h-4 w-4" />
+                    Select primary contact...
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[400px] p-0" align="start">
+                  <Command shouldFilter={false}>
+                    <CommandInput
+                      placeholder="Search by name or email..."
+                      value={clientSearch}
+                      onValueChange={setClientSearch}
+                    />
+                    <CommandList>
+                      <CommandEmpty>
+                        {loadingClients
+                          ? "Searching..."
+                          : clientSearch.length < 2
+                            ? "Type at least 2 characters to search"
+                            : "No client found."}
+                      </CommandEmpty>
+                      {clients.filter((c) => c.type === "contact").length > 0 && (
+                        <CommandGroup heading="Contacts">
+                          {clients
+                            .filter((c) => c.type === "contact")
+                            .map((client) => (
+                              <CommandItem
+                                key={client.id}
+                                value={`primary-contact-${client.id}`}
+                                onSelect={() => {
+                                  setPrimaryContact(client)
+                                  setPrimaryPopoverOpen(false)
+                                  setClientSearch("")
+                                }}
+                              >
+                                <User className="mr-2 h-4 w-4 text-blue-500" />
+                                <span>{client.full_name || client.name || "Unknown"}</span>
+                                {client.primary_email && (
+                                  <span className="ml-2 text-xs text-muted-foreground">
+                                    {client.primary_email}
+                                  </span>
+                                )}
+                              </CommandItem>
+                            ))}
+                        </CommandGroup>
+                      )}
+                      {clients.filter((c) => c.type === "organization").length > 0 && (
+                        <CommandGroup heading="Organizations">
+                          {clients
+                            .filter((c) => c.type === "organization")
+                            .map((client) => (
+                              <CommandItem
+                                key={client.id}
+                                value={`primary-org-${client.id}`}
+                                onSelect={() => {
+                                  setPrimaryContact(client)
+                                  setPrimaryPopoverOpen(false)
+                                  setClientSearch("")
+                                }}
+                              >
+                                <Building2 className="mr-2 h-4 w-4 text-green-500" />
+                                <span>{client.full_name || client.name || "Unknown"}</span>
+                              </CommandItem>
+                            ))}
+                        </CommandGroup>
+                      )}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            )}
+          </div>
+
           <div className="space-y-2">
             <Label className="flex items-center gap-2">
               <Users className="h-4 w-4" />
               Other Related Clients
             </Label>
             <p className="text-xs text-muted-foreground mb-2">
-              Add clients not auto-populated from the work item above (e.g., spouse, related entities)
+              Additional people this debrief should also be tagged to (e.g., spouse, related
+              entities). These appear alongside the primary contact in the email and on Karbon
+              timelines, but the primary drives all dashboard filtering.
             </p>
             <Popover open={clientPopoverOpen} onOpenChange={setClientPopoverOpen} modal>
               <PopoverTrigger asChild>

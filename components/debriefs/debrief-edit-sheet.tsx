@@ -384,7 +384,11 @@ export function DebriefEditSheet({ debrief, open, onOpenChange, onSaved }: Props
             </div>
 
             <div className="flex flex-col gap-2">
-              <Label>Client</Label>
+              <Label>Primary Contact</Label>
+              <p className="text-xs text-muted-foreground">
+                The contact or organization this debrief is tagged to. Drives dashboards,
+                filters, and the email subject.
+              </p>
               <ClientPicker
                 value={client}
                 onChange={setClient}
