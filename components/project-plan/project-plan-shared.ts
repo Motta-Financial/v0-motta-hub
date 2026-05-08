@@ -3,8 +3,9 @@
 // match the workbook's Dashboard / Team Workload / Kanban tabs so the numbers
 // reconcile back to the source of truth.
 import { useMemo } from "react"
-import { useKarbonWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
-import { isAccountingWorkType } from "@/lib/accounting-work-types"
+import useSWR from "swr"
+import type { KarbonWorkItem } from "@/contexts/karbon-work-items-context"
+import { ACCT_WORK_TYPES, isAccountingWorkType } from "@/lib/accounting-work-types"
 
 // ---- ACCT scope filter
 //
@@ -18,21 +19,123 @@ export function isAccountingWorkItem(item: KarbonWorkItem): boolean {
   return isAccountingWorkType(item.work_type || item.WorkType || null)
 }
 
-// Hook used by every Project Plan tab in place of useKarbonWorkItems.
-// Returns the same shape but with both the active and the all-items lists
-// pre-filtered to Accounting work types. Memoized so adding the filter
-// doesn't re-run downstream useMemo bodies on unrelated re-renders.
+// Fetcher specifically for /api/supabase/work-items — the legacy
+// /api/work-items endpoint is capped at PostgREST's default 1000-row
+// page, which clips the Project Plan to ~11 active ACCT items even
+// though there are >250 in production. /api/supabase/work-items
+// paginates server-side so we get the full population in one call.
+const acctFetcher = async (url: string) => {
+  const res = await fetch(url)
+  if (!res.ok) {
+    let message = res.statusText
+    try {
+      const body = await res.json()
+      message = body.error || message
+    } catch {
+      // Non-JSON error response — keep the original statusText.
+    }
+    throw new Error(message)
+  }
+  return res.json()
+}
+
+// Map a /api/supabase/work-items row into the KarbonWorkItem shape so
+// every Project Plan tab keeps using the same fields it already reads
+// (both the snake_case and legacy PascalCase aliases).
+function mapSupabaseRowToKarbon(item: any): KarbonWorkItem {
+  return {
+    id: item.id,
+    karbon_work_item_key: item.karbon_work_item_key,
+    title: item.title,
+    client_name: item.client_name ?? item.clientName ?? null,
+    work_type: item.work_type,
+    workflow_status: item.workflow_status,
+    status: item.status,
+    primary_status: item.primary_status,
+    secondary_status: item.secondary_status,
+    due_date: item.due_date,
+    start_date: item.start_date,
+    completed_date: item.completed_date,
+    karbon_modified_at: item.karbon_modified_at,
+    assignee_name: item.assignee_name,
+    karbon_client_key: item.karbon_client_key,
+    description: item.description,
+    priority: item.priority,
+    karbon_url: item.karbon_url,
+    client_group_name: item.client_group_name,
+    // Legacy aliases — kept for parity with the global Karbon context.
+    WorkKey: item.karbon_work_item_key || item.id,
+    Key: item.karbon_work_item_key || item.id,
+    Title: item.title || "",
+    ClientName: item.client_name || item.clientName || undefined,
+    WorkType: item.work_type || undefined,
+    WorkStatus: item.workflow_status || item.status || undefined,
+    DueDate: item.due_date || undefined,
+    StartDate: item.start_date || undefined,
+    CompletedDate: item.completed_date || undefined,
+    LastModifiedDateTime: item.karbon_modified_at || undefined,
+    AssigneeName: item.assignee_name || undefined,
+    AssignedTo: item.assignee_name
+      ? [{ FullName: item.assignee_name, Email: undefined, UserKey: undefined }]
+      : undefined,
+    ClientKey: item.karbon_client_key || undefined,
+    Description: item.description || undefined,
+    Priority: item.priority || undefined,
+    PrimaryStatus: item.primary_status || item.status || undefined,
+    SecondaryStatus: item.secondary_status || undefined,
+    ClientGroupName: item.client_group_name || undefined,
+  }
+}
+
+// Hook used by every Project Plan tab. Fetches the full ACCT scope in
+// one call (status=all, includeDeleted=false). The dashboard splits the
+// response into `active` and `all` views client-side so the recurring
+// monthly Bookkeeping tracker rows surface even when their workflow
+// status is "Ready To Start" or similar.
+const ACCT_WORK_TYPES_PARAM = ACCT_WORK_TYPES.join(",")
+const ACCT_FETCH_URL =
+  `/api/supabase/work-items?workTypes=${encodeURIComponent(ACCT_WORK_TYPES_PARAM)}` +
+  // 2000 is comfortably above the ~1,037 ACCT rows we have today
+  // (including completed/cancelled history) and well within the API's
+  // 5000-row cap, so the entire population fits in one fetch.
+  `&limit=2000&status=all`
+
 export function useAccountingWorkItems() {
-  const { activeWorkItems, allWorkItems, isLoading, error, refresh } = useKarbonWorkItems()
-  const acctActive = useMemo(
-    () => activeWorkItems.filter(isAccountingWorkItem),
-    [activeWorkItems],
-  )
-  const acctAll = useMemo(
-    () => allWorkItems.filter(isAccountingWorkItem),
+  const { data, error, isLoading, mutate } = useSWR(ACCT_FETCH_URL, acctFetcher, {
+    revalidateOnFocus: false,
+    revalidateOnReconnect: true,
+    dedupingInterval: 60_000,
+    refreshInterval: 300_000,
+  })
+
+  const allWorkItems = useMemo<KarbonWorkItem[]>(() => {
+    const rows: any[] = data?.workItems || []
+    return rows.map(mapSupabaseRowToKarbon)
+  }, [data])
+
+  const activeWorkItems = useMemo<KarbonWorkItem[]>(
+    () =>
+      allWorkItems.filter((item) => {
+        const s = (item.status || item.primary_status || item.WorkStatus || "")
+          .toString()
+          .toLowerCase()
+        return (
+          !s.includes("completed") &&
+          !s.includes("complete") &&
+          !s.includes("cancelled") &&
+          !s.includes("canceled")
+        )
+      }),
     [allWorkItems],
   )
-  return { activeWorkItems: acctActive, allWorkItems: acctAll, isLoading, error, refresh }
+
+  return {
+    activeWorkItems,
+    allWorkItems,
+    isLoading,
+    error: error?.message || null,
+    refresh: () => mutate(),
+  }
 }
 
 // ---- Status buckets (Excel: Not Started / To Do / In Progress / Waiting / Complete)
