@@ -576,44 +576,56 @@ function Sidebar() {
                           )}
                           aria-hidden="true"
                         />
-                        <span className="flex-1">{item.name}</span>
-                      </a>
-                      {/* Single chevron toggle, rendered as a sibling of
-                          the <a> (not nested inside it — `<button>` inside
-                          `<a>` is invalid HTML). It both indicates "this
-                          has children" and serves as the expand/collapse
-                          control. The previous duplicate pill (count +
-                          chevron) on the right has been removed per
-                          design feedback — only one chevron per parent. */}
-                      {hasChildren && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.preventDefault()
-                            toggleSection(item.name)
-                          }}
-                          aria-label={
-                            isExpanded
-                              ? `Collapse ${item.name} (${item.children!.length} subpages)`
-                              : `Expand ${item.name} (${item.children!.length} subpages)`
-                          }
-                          aria-expanded={isExpanded}
-                          className={cn(
-                            "mr-1 flex h-7 w-7 items-center justify-center rounded transition-colors",
-                            isCurrent || isParentActive
-                              ? "text-white/80 hover:bg-white/15 hover:text-white"
-                              : "text-gray-400 hover:bg-gray-100 hover:text-gray-700",
-                          )}
-                        >
-                          <ChevronDown
+                        <span>{item.name}</span>
+                        {/* Inline chevron sits immediately after the label
+                            so the dropdown affordance is obvious at a
+                            glance. Implemented as a `<span role="button">`
+                            because a real <button> inside an <a> is invalid
+                            HTML — the role + tabIndex + keyboard handler
+                            give it the same accessibility semantics as a
+                            button. stopPropagation prevents the parent
+                            <a>'s click handler from also firing, so this
+                            chevron exclusively toggles open/closed (the
+                            row itself still navigates + auto-expands). */}
+                        {hasChildren && (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              toggleSection(item.name)
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                toggleSection(item.name)
+                              }
+                            }}
+                            aria-label={
+                              isExpanded
+                                ? `Collapse ${item.name} (${item.children!.length} subpages)`
+                                : `Expand ${item.name} (${item.children!.length} subpages)`
+                            }
+                            aria-expanded={isExpanded}
                             className={cn(
-                              "h-4 w-4 transition-transform duration-200",
-                              isExpanded ? "rotate-0" : "-rotate-90",
+                              "ml-1 inline-flex h-5 w-5 items-center justify-center rounded transition-colors cursor-pointer",
+                              isCurrent || isParentActive
+                                ? "text-white/80 hover:bg-white/15 hover:text-white"
+                                : "text-gray-400 hover:bg-gray-100 hover:text-gray-700",
                             )}
-                            aria-hidden="true"
-                          />
-                        </button>
-                      )}
+                          >
+                            <ChevronDown
+                              className={cn(
+                                "h-4 w-4 transition-transform duration-200",
+                                isExpanded ? "rotate-0" : "-rotate-90",
+                              )}
+                              aria-hidden="true"
+                            />
+                          </span>
+                        )}
+                      </a>
                     </div>
 
                     {hasChildren && isExpanded && (
