@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react"
 import useSWR, { mutate } from "swr"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
@@ -10,9 +10,16 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useKarbonWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
-import { BOOKKEEPING_CHECKLIST, formatShortDate, getAssigneeLabel, getClientLabel } from "./project-plan-shared"
-import { CheckCircle2, ChevronRight, Loader2, Search } from "lucide-react"
+import { ExpandableCard } from "@/components/ui/expandable-card"
+import { type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
+import {
+  BOOKKEEPING_CHECKLIST,
+  formatShortDate,
+  getAssigneeLabel,
+  getClientLabel,
+  useAccountingWorkItems,
+} from "./project-plan-shared"
+import { CheckCircle2, CheckSquare, ChevronRight, ListChecks, Loader2, Search } from "lucide-react"
 
 interface ProgressRow {
   step_number: number
@@ -34,13 +41,15 @@ const fetcher = async (url: string) => {
 // Supabase, keyed on (work_item_id, step_number). Toggling a checkbox
 // upserts a row; reloads come from SWR.
 export function ProjectPlanChecklist() {
-  const { activeWorkItems, isLoading: itemsLoading } = useKarbonWorkItems()
+  // ACCT-scoped active items — useAccountingWorkItems already filters to
+  // work_type prefix "ACCT |", so we further narrow to the bookkeeping
+  // sub-type here. The 10-step workflow is bookkeeping-specific and the
+  // source-of-truth tab in the Excel workbook only listed bookkeeping
+  // engagements.
+  const { activeWorkItems, isLoading: itemsLoading } = useAccountingWorkItems()
   const [search, setSearch] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
-  // Restrict to bookkeeping work items — the 10-step workflow is bookkeeping-
-  // specific and the source-of-truth tab in the Excel workbook only listed
-  // bookkeeping engagements.
   const bookkeepingItems = useMemo(() => {
     return activeWorkItems
       .filter((item) => {
@@ -79,16 +88,17 @@ export function ProjectPlanChecklist() {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-4">
-      {/* Left: bookkeeping work item picker */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Bookkeeping Work Items</CardTitle>
-          <CardDescription>
-            {bookkeepingItems.length} active bookkeeping engagement
-            {bookkeepingItems.length === 1 ? "" : "s"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
+      {/* Left: bookkeeping work item picker (collapsible + maximizable so
+          users on tablets can fold the list away once they've selected a
+          work item, freeing up screen real estate for the checklist). */}
+      <ExpandableCard
+        title="Bookkeeping Work Items"
+        description={`${bookkeepingItems.length} active bookkeeping engagement${
+          bookkeepingItems.length === 1 ? "" : "s"
+        }`}
+        icon={<ListChecks className="h-5 w-5 text-blue-600" />}
+      >
+        <div className="space-y-3">
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
@@ -143,8 +153,8 @@ export function ProjectPlanChecklist() {
               })
             )}
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </ExpandableCard>
 
       {/* Right: checklist for the selected work item */}
       <div>
@@ -235,29 +245,31 @@ function ChecklistForWorkItem({ item }: { item: KarbonWorkItem }) {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
-          <div className="min-w-0">
-            <CardTitle className="text-lg truncate" title={item.title || item.Title}>
-              {getClientLabel(item)}
-            </CardTitle>
-            <CardDescription className="truncate">{item.title || item.Title}</CardDescription>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="outline" className="bg-blue-50 text-blue-800 border-blue-200">
-              Phase 1: {phase1Done} / 5
-            </Badge>
-            <Badge variant="outline" className="bg-emerald-50 text-emerald-800 border-emerald-200">
-              Phase 2: {phase2Done} / 5
-            </Badge>
-            <Badge variant="outline" className="bg-muted text-foreground">
-              Total: {completedCount} / 10
-            </Badge>
-          </div>
+    <ExpandableCard
+      title={getClientLabel(item)}
+      // ExpandableCard's description sits under the title in the same row
+      // as the chevron + maximize controls, so we keep it terse and use
+      // the work-item title (often noisy) as the description.
+      description={item.title || item.Title}
+      icon={<CheckSquare className="h-5 w-5 text-emerald-600" />}
+      // Right-rail badges show phase totals at a glance, even when the
+      // body is collapsed. ExpandableCard renders these next to the
+      // chevron + maximize controls in the header row.
+      actions={
+        <div className="flex flex-wrap gap-2">
+          <Badge variant="outline" className="bg-blue-50 text-blue-800 border-blue-200">
+            Phase 1: {phase1Done} / 5
+          </Badge>
+          <Badge variant="outline" className="bg-emerald-50 text-emerald-800 border-emerald-200">
+            Phase 2: {phase2Done} / 5
+          </Badge>
+          <Badge variant="outline" className="bg-muted text-foreground">
+            Total: {completedCount} / 10
+          </Badge>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-6">
+      }
+    >
+      <div className="space-y-6">
         <div>
           <Progress value={(completedCount / 10) * 100} className="h-2" />
         </div>
@@ -275,7 +287,8 @@ function ChecklistForWorkItem({ item }: { item: KarbonWorkItem }) {
             />
           </div>
           <div className="text-xs text-muted-foreground">
-            Last updated: {data?.progress?.length ? formatShortDate(latestUpdatedAt(data.progress)) : "—"}
+            Last updated:{" "}
+            {data?.progress?.length ? formatShortDate(latestUpdatedAt(data.progress)) : "—"}
           </div>
         </div>
 
@@ -317,8 +330,8 @@ function ChecklistForWorkItem({ item }: { item: KarbonWorkItem }) {
             />
           </>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </ExpandableCard>
   )
 }
 
