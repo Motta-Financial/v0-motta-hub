@@ -514,18 +514,48 @@ function Sidebar() {
                             e.preventDefault()
                             toggleSection(item.name)
                           }}
+                          aria-label={
+                            isExpanded
+                              ? `Collapse ${item.name} (${item.children!.length} subpages)`
+                              : `Expand ${item.name} (${item.children!.length} subpages)`
+                          }
+                          aria-expanded={isExpanded}
+                          // Count chip + chevron in one rounded "pill" button:
+                          // the count makes "this has subpages" obvious before
+                          // the user hovers, the rounded hover surface signals
+                          // it's interactive, and the active-row variant uses
+                          // a translucent white hover so it stays legible on
+                          // the sage background.
                           className={cn(
-                            "p-1 rounded hover:bg-gray-100 transition-colors mr-1",
-                            isCurrent || isParentActive ? "text-gray-600" : "text-gray-400",
+                            "mr-1 flex items-center gap-1 rounded-full px-1.5 py-1 transition-colors",
+                            isCurrent || isParentActive
+                              ? "text-white hover:bg-white/15"
+                              : "text-gray-500 hover:bg-gray-100",
                           )}
                         >
+                          <span
+                            className={cn(
+                              "text-[10px] font-semibold tabular-nums leading-none",
+                              isCurrent || isParentActive ? "text-white/80" : "text-gray-400",
+                            )}
+                          >
+                            {item.children!.length}
+                          </span>
                           {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                         </button>
                       )}
                     </div>
 
                     {hasChildren && isExpanded && (
-                      <ul className="mt-1 space-y-1">
+                      // Vertical guide line connects children back to their
+                      // parent visually. The pseudo-element is positioned at
+                      // 18px from the ul's left edge — that lines up with the
+                      // right edge of the parent icon, so the eye traces a
+                      // clean L-path from parent down through its kids
+                      // without shifting any row's actual indent.
+                      <ul
+                        className="relative mt-1 space-y-1 before:absolute before:bottom-1 before:left-[18px] before:top-1 before:w-px before:bg-gray-200 before:content-['']"
+                      >
                         {(item.children as any[])!.map((child: any) => {
                           const isChildCurrent = pathname === child.href || pathname.startsWith(child.href + "/")
                           const hasGrandchildren = child.children && child.children.length > 0
@@ -579,11 +609,29 @@ function Sidebar() {
                                       e.preventDefault()
                                       toggleSection(child.name)
                                     }}
+                                    aria-label={
+                                      isChildExpanded
+                                        ? `Collapse ${child.name} (${child.children!.length} subpages)`
+                                        : `Expand ${child.name} (${child.children!.length} subpages)`
+                                    }
+                                    aria-expanded={isChildExpanded}
                                     className={cn(
-                                      "p-1 rounded hover:bg-gray-100 transition-colors mr-1",
-                                      isChildCurrent || hasActiveGrandchild ? "text-gray-600" : "text-gray-400",
+                                      "mr-1 flex items-center gap-1 rounded-full px-1.5 py-1 transition-colors",
+                                      isChildCurrent || hasActiveGrandchild
+                                        ? "text-white hover:bg-white/15"
+                                        : "text-gray-500 hover:bg-gray-100",
                                     )}
                                   >
+                                    <span
+                                      className={cn(
+                                        "text-[10px] font-semibold tabular-nums leading-none",
+                                        isChildCurrent || hasActiveGrandchild
+                                          ? "text-white/80"
+                                          : "text-gray-400",
+                                      )}
+                                    >
+                                      {child.children!.length}
+                                    </span>
                                     {isChildExpanded ? (
                                       <ChevronDown className="h-4 w-4" />
                                     ) : (
@@ -594,7 +642,12 @@ function Sidebar() {
                               </div>
 
                               {hasGrandchildren && isChildExpanded && (
-                                <ul className="mt-1 space-y-1">
+                                // Same guide-line pattern, but at 40px to
+                                // sit under the child icon (one indent level
+                                // deeper than the parent guide above).
+                                <ul
+                                  className="relative mt-1 space-y-1 before:absolute before:bottom-1 before:left-[40px] before:top-1 before:w-px before:bg-gray-200 before:content-['']"
+                                >
                                   {child.children!.map((grandchild: any) => {
                                     const isGrandchildCurrent =
                                       pathname === grandchild.href || pathname.startsWith(grandchild.href + "/")
