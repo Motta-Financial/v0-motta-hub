@@ -568,6 +568,21 @@ function Sidebar() {
                           aria-hidden="true"
                         />
                         <span className="flex-1">{item.name}</span>
+                        {/* Inline chevron indicator shows at a glance that
+                            this nav item has nested children. The separate
+                            expand/collapse button on the right still handles
+                            toggling, but this visual cue makes discoverability
+                            immediate — especially for "Home". */}
+                        {hasChildren && (
+                          <ChevronDown
+                            className={cn(
+                              "h-4 w-4 shrink-0 transition-transform duration-200",
+                              isCurrent || isParentActive ? "text-white/70" : "text-gray-400 group-hover:text-white/70",
+                              isExpanded ? "rotate-0" : "-rotate-90",
+                            )}
+                            aria-hidden="true"
+                          />
+                        )}
                       </a>
                       {hasChildren && (
                         <button
