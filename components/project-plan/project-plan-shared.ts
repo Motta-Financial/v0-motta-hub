@@ -2,7 +2,38 @@
 // project-plan Excel workbook). Status buckets and service-type buckets here
 // match the workbook's Dashboard / Team Workload / Kanban tabs so the numbers
 // reconcile back to the source of truth.
-import type { KarbonWorkItem } from "@/contexts/karbon-work-items-context"
+import { useMemo } from "react"
+import { useKarbonWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
+
+// ---- ACCT scope filter
+//
+// The Project Plan view is scoped to the Accounting department, so we
+// restrict every tab to Karbon work_types that begin with the canonical
+// "ACCT | " prefix (Bookkeeping, Payroll, 1099s, FP&A, Onboarding, etc.).
+// Centralizing this lets every tab share the same filter without
+// duplicating the rule — change it here and all six tabs follow.
+export function isAccountingWorkItem(item: KarbonWorkItem): boolean {
+  const wt = (item.work_type || item.WorkType || "").trim().toUpperCase()
+  // Trailing space matters: prevents accidental matches like "ACCTPLUS".
+  return wt.startsWith("ACCT |")
+}
+
+// Hook used by every Project Plan tab in place of useKarbonWorkItems.
+// Returns the same shape but with both the active and the all-items lists
+// pre-filtered to Accounting work types. Memoized so adding the filter
+// doesn't re-run downstream useMemo bodies on unrelated re-renders.
+export function useAccountingWorkItems() {
+  const { activeWorkItems, allWorkItems, isLoading, error, refresh } = useKarbonWorkItems()
+  const acctActive = useMemo(
+    () => activeWorkItems.filter(isAccountingWorkItem),
+    [activeWorkItems],
+  )
+  const acctAll = useMemo(
+    () => allWorkItems.filter(isAccountingWorkItem),
+    [allWorkItems],
+  )
+  return { activeWorkItems: acctActive, allWorkItems: acctAll, isLoading, error, refresh }
+}
 
 // ---- Status buckets (Excel: Not Started / To Do / In Progress / Waiting / Complete)
 

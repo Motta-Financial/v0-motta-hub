@@ -1,6 +1,5 @@
 "use client"
 
-import { useState } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ProjectPlanDashboard } from "./project-plan-dashboard"
 import { ProjectPlanTeamWorkload } from "./project-plan-team-workload"
@@ -8,30 +7,41 @@ import { ProjectPlanClientRoster } from "./project-plan-client-roster"
 import { ProjectPlanTimeline } from "./project-plan-timeline"
 import { ProjectPlanKanban } from "./project-plan-kanban"
 import { ProjectPlanChecklist } from "./project-plan-checklist"
+import {
+  ProjectPlanProvider,
+  useProjectPlanContext,
+  type ProjectPlanTab,
+} from "./project-plan-context"
 
-const TABS = [
+const TABS: { value: ProjectPlanTab; label: string }[] = [
   { value: "dashboard", label: "Dashboard" },
   { value: "team", label: "Team Workload" },
   { value: "roster", label: "Client Roster" },
   { value: "timeline", label: "Timeline" },
   { value: "kanban", label: "Kanban" },
   { value: "checklist", label: "Bookkeeping Checklist" },
-] as const
-
-type TabValue = (typeof TABS)[number]["value"]
+]
 
 interface ProjectPlanViewProps {
-  defaultTab?: TabValue
+  defaultTab?: ProjectPlanTab
 }
 
-// Orchestrator for the six-tab view that mirrors the FY2026 Excel
-// project-plan workbook. Lives in its own client component so it can hold
-// the tab state without forcing the route to be client.
+// Orchestrator for the six-tab Project Plan view. The active tab and the
+// shared cross-tab filters live in ProjectPlanContext so that drilling
+// from the Dashboard into the Roster (or Kanban) carries the clicked
+// slice with it instead of forcing the user to re-apply the filter.
 export function ProjectPlanView({ defaultTab = "dashboard" }: ProjectPlanViewProps) {
-  const [tab, setTab] = useState<TabValue>(defaultTab)
-
   return (
-    <Tabs value={tab} onValueChange={(v) => setTab(v as TabValue)} className="w-full">
+    <ProjectPlanProvider defaultTab={defaultTab}>
+      <ProjectPlanTabs />
+    </ProjectPlanProvider>
+  )
+}
+
+function ProjectPlanTabs() {
+  const { tab, setTab } = useProjectPlanContext()
+  return (
+    <Tabs value={tab} onValueChange={(v) => setTab(v as ProjectPlanTab)} className="w-full">
       <TabsList className="grid w-full grid-cols-3 md:grid-cols-6 h-auto">
         {TABS.map((t) => (
           <TabsTrigger key={t.value} value={t.value} className="text-xs md:text-sm">
