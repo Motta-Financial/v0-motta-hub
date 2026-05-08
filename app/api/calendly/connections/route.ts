@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { CALENDLY_REQUESTED_SCOPES } from "@/lib/calendly-api"
 
 /**
@@ -7,11 +7,27 @@ import { CALENDLY_REQUESTED_SCOPES } from "@/lib/calendly-api"
  *
  * GET    → list all calendly_connections with health metadata
  * PATCH  → toggle sync_enabled / is_active
+ *
+ * GET uses the **admin client** on purpose. The Team Calendar is a
+ * firm-wide view by design — every authenticated teammate is supposed
+ * to see who else has connected their Calendly account so the
+ * "Connected teammates" strip lists everyone and not just the current
+ * viewer's own row. Without the admin client, RLS on
+ * `calendly_connections` filters the response down to the caller's own
+ * row, which produced the empty/single-chip strip even though the
+ * calendar grid below was correctly showing every teammate's meetings
+ * (the team-calendar route also uses createAdminClient). Only
+ * non-sensitive identity fields are returned — name, email, avatar,
+ * sync state. Tokens (`access_token` / `refresh_token`) are NOT in the
+ * SELECT, so this stays safe to expose to all signed-in staff.
+ *
+ * PATCH still uses the user-scoped client because mutations should be
+ * subject to whatever RLS policies the team chooses to enforce later.
  */
 
 export async function GET() {
   try {
-    const supabase = await createClient()
+    const supabase = createAdminClient()
 
     const { data: connections, error } = await supabase
       .from("calendly_connections")
