@@ -410,6 +410,13 @@ function HeaderUserMenu() {
   )
 }
 
+// localStorage key for the sidebar's expanded-sections map. The nav rows
+// use plain `<a href>` (not Next.js Link) which means every click is a
+// full reload — without persistence the sidebar would collapse every
+// manually-opened section on each navigation. Bumping this key is the
+// migration path if the shape of the value ever changes.
+const SIDEBAR_EXPANDED_STORAGE_KEY = "motta:sidebar:expanded:v1"
+
 function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
@@ -417,9 +424,46 @@ function Sidebar() {
   // ancestors of the current page are visible immediately (no flash of
   // collapsed sidebar). useState's lazy initializer runs only once, which
   // matches the behavior we want for the *first* paint.
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() =>
-    buildInitialExpandedState(navigation, pathname),
-  )
+  //
+  // We start from the active-route ancestors so the current page is
+  // always visible, then layer the persisted map on top so anything the
+  // user previously opened stays open across full-page navigations.
+  // Reading localStorage inside the initializer is safe because this
+  // component is "use client" — it never runs on the server.
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => {
+    const seed = buildInitialExpandedState(navigation, pathname)
+    if (typeof window === "undefined") return seed
+    try {
+      const raw = window.localStorage.getItem(SIDEBAR_EXPANDED_STORAGE_KEY)
+      if (!raw) return seed
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === "object") {
+        // Merge persisted choices over active-ancestor seed — this way
+        // an explicitly-collapsed section the user closed earlier stays
+        // closed unless it's an ancestor of the current page.
+        return { ...parsed, ...seed }
+      }
+      return seed
+    } catch {
+      return seed
+    }
+  })
+
+  // Mirror every change to localStorage so the next page load restores
+  // the same shape. We persist on every write rather than on unload to
+  // tolerate hard reloads, browser crashes, and tab clones gracefully.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(
+        SIDEBAR_EXPANDED_STORAGE_KEY,
+        JSON.stringify(expandedSections),
+      )
+    } catch {
+      // Storage can throw in private mode or when the quota is full; the
+      // sidebar still works in-session, just without persistence.
+    }
+  }, [expandedSections])
 
   // When the user navigates between pages we want the new active section to
   // auto-open, but we deliberately MERGE rather than replace so that any
