@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ChevronDown, ChevronUp, ExternalLink } from "lucide-react"
+import { ONBOARDING_WORK_TYPES } from "@/lib/accounting-work-types"
 
 interface OnboardingClient {
   id: string
@@ -28,10 +29,14 @@ export function AccountingOnboardingTracker() {
 
   const fetchOnboardingClients = async () => {
     try {
-      // Pull every active onboarding work item — both Bookkeeping (BKPG) and
-      // Payroll (PYRL) onboarding flows live under "ACCT | Onboarding (...)".
+      // Pull every active onboarding work item using the explicit allow-list
+      // from lib/accounting-work-types — today that's BKPG + PYRL. The
+      // earlier `workTypePrefix=ACCT | Onboarding` query technically caught
+      // these but would silently start including any new untriaged
+      // "ACCT | Onboarding (...)" work type Karbon's admins added later.
+      const workTypesParam = ONBOARDING_WORK_TYPES.join(",")
       const response = await fetch(
-        `/api/supabase/work-items?workTypePrefix=${encodeURIComponent("ACCT | Onboarding")}&status=active`,
+        `/api/supabase/work-items?workTypes=${encodeURIComponent(workTypesParam)}&status=active`,
       )
 
       if (!response.ok) {

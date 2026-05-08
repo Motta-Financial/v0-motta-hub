@@ -616,12 +616,16 @@ export function buildTommyReminderHtml(opts: {
 export function buildTommyRecapHtml(opts: {
   weekLabel: string
   aiSummary: string
+  // `rank` is the dense rank computed by the cron — tied finishers share
+  // a rank, and the medal/circle color is keyed off the rank rather than
+  // the array index so two people tied for 1st both display gold.
   topThree: Array<{
     name: string
     totalPoints: number
     first: number
     second: number
     third: number
+    rank: number
   }>
   totalBallots: number
   leaderboardUrl: string
@@ -634,13 +638,17 @@ export function buildTommyRecapHtml(opts: {
   const podiumHtml =
     opts.topThree.length > 0
       ? opts.topThree
-          .map((winner, i) => {
-            const medal = MEDAL_COLORS[i] ?? MEDAL_COLORS[2]
+          .map((winner) => {
+            // Clamp to the bronze color for any rank > 3 (shouldn't
+            // happen because the cron filters to rank ≤ 3, but keeps the
+            // template robust if an out-of-range entry sneaks in).
+            const medalIndex = Math.min(Math.max(winner.rank - 1, 0), MEDAL_COLORS.length - 1)
+            const medal = MEDAL_COLORS[medalIndex]
             return `
               <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="width:100%;margin:0 0 12px;">
                 <tr>
                   <td style="width:48px;vertical-align:middle;padding-right:14px;">
-                    <div style="background:${medal};color:#1a1a1a;font-size:18px;font-weight:700;width:44px;height:44px;border-radius:50%;text-align:center;line-height:44px;">${i + 1}</div>
+                    <div style="background:${medal};color:#1a1a1a;font-size:18px;font-weight:700;width:44px;height:44px;border-radius:50%;text-align:center;line-height:44px;">${winner.rank}</div>
                   </td>
                   <td style="vertical-align:middle;">
                     <div style="font-size:16px;font-weight:600;color:${BRAND.textPrimary};">${winner.name}</div>

@@ -25,6 +25,7 @@ import {
   Calendar,
 } from "lucide-react"
 import { matchesAllTokens } from "@/lib/search-utils"
+import { BOOKKEEPING_WORK_TYPE } from "@/lib/accounting-work-types"
 
 const BOOKKEEPING_TASKS = [
   { id: "A", label: "Review work item", assignee: "P24" },
@@ -137,9 +138,12 @@ export function AccountingBookkeepingTracker() {
 
       // Fetch active ACCT | Bookkeeping work items by work_type (Karbon's
       // canonical category) so we don't miss legacy rows whose titles use
-      // "BKPG | ..." or other variants. Period filter narrows to the selected month.
+      // "BKPG | ..." or other variants. The literal lives in
+      // lib/accounting-work-types so the tracker can never drift from the
+      // canonical Accounting work-types list. Period filter narrows to
+      // the selected month.
       const response = await fetch(
-        `/api/supabase/work-items?workType=${encodeURIComponent("ACCT | Bookkeeping")}&status=active&periodMonth=${monthNum}&periodYear=${yearNum}`,
+        `/api/supabase/work-items?workType=${encodeURIComponent(BOOKKEEPING_WORK_TYPE)}&status=active&periodMonth=${monthNum}&periodYear=${yearNum}`,
       )
 
       if (!response.ok) {

@@ -1,10 +1,38 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { buildTommyRecapHtml, sendCategoryEmail } from "@/lib/email"
+import { assignDenseRanks } from "@/lib/tommy-awards-ranking"
 import { generateText } from "ai"
 
 // AI generation can take 10-30s with a long prompt; bump from the default 10s.
 export const maxDuration = 60
+
+/**
+ * Format a podium rank as "1st" / "2nd" / "3rd". Tied finishers share a
+ * rank so we want the prompt to read "1st. Alex / 1st. Sam" rather than
+ * "1. Alex / 2. Sam", which would mislead ALFRED into ordering them.
+ */
+function ordinal(n: number): string {
+  if (n === 1) return "1st"
+  if (n === 2) return "2nd"
+  if (n === 3) return "3rd"
+  return `${n}th`
+}
+
+/**
+ * True when any two podium finishers share the same rank — used to nudge
+ * ALFRED's prompt with explicit guidance about co-winners so the recap
+ * doesn't accidentally describe one tied colleague as "edging out" the
+ * other.
+ */
+function hasPodiumTies(podium: ReadonlyArray<{ rank: number }>): boolean {
+  const seen = new Set<number>()
+  for (const p of podium) {
+    if (seen.has(p.rank)) return true
+    seen.add(p.rank)
+  }
+  return false
+}
 
 /**
  * Vercel Cron endpoint that sends a weekly Tommy Awards recap email to the
@@ -164,16 +192,24 @@ export async function GET(request: Request) {
       }
     }
 
-    // Exclude hidden members from the final leaderboard.
+    // Exclude hidden members from the final leaderboard, then assign
+    // dense ranks (1, 1, 2, 3) so ties at any podium position share a
+    // rank instead of pushing the next-best finisher off the podium.
+    // Filtering to `rank <= 3` (instead of `slice(0, 3)`) means a
+    // four-way tie at 3rd place includes ALL four members in the
+    // recap — nobody on a podium-tied week silently drops out.
     const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
-    const leaderboard = Object.entries(voteMap)
+    const sortedLeaderboard = Object.entries(voteMap)
       .filter(([name]) => !HIDDEN_MEMBERS.includes(name))
-      .sort(([, a], [, b]) => b.totalPoints - a.totalPoints)
+      .map(([name, stats]) => ({ name, ...stats }))
+      .sort((a, b) => b.totalPoints - a.totalPoints)
 
-    const topThree = leaderboard.slice(0, 3).map(([name, stats]) => ({
-      name,
-      ...stats,
-    }))
+    const rankedLeaderboard = assignDenseRanks(
+      sortedLeaderboard,
+      (a, b) => a.totalPoints === b.totalPoints,
+    )
+
+    const topThree = rankedLeaderboard.filter((entry) => entry.rank <= 3)
 
     // Use AI (via AI SDK 6 + Vercel AI Gateway) to write a witty weekly recap
     // in ALFRED's voice: an old British butler — witty yet professional.
@@ -190,8 +226,9 @@ export async function GET(request: Request) {
 **Week:** ${weekLabel}
 **Total Ballots Submitted:** ${ballots.length}
 
-**Top 3 Finishers:**
-${topThree.map((p, i) => `${i + 1}. ${p.name} — ${p.totalPoints} points (${p.first} first-place, ${p.second} second-place, ${p.third} third-place votes)`).join("\n")}
+**Podium Finishers:**
+${topThree.map((p) => `${ordinal(p.rank)}. ${p.name} — ${p.totalPoints} points (${p.first} first-place, ${p.second} second-place, ${p.third} third-place votes)`).join("\n")}
+${hasPodiumTies(topThree) ? "\nNote: Some finishers are tied. When two or more colleagues share a position (e.g. both 1st), please celebrate them together as co-winners of that position rather than treating one as outranking the other." : ""}
 
 **All Ballot Notes from the Team:**
 ${notesText || "(No notes submitted this week.)"}

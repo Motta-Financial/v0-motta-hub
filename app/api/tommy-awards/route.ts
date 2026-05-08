@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
+import { assignDenseRanks, awardWeeklyPodiumCredit } from "@/lib/tommy-awards-ranking"
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
@@ -174,11 +175,17 @@ export async function GET(request: NextRequest) {
 
       // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
       const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
-      
-      const leaderboard = Object.values(pointsMap)
+
+      // Dense rank so genuinely-tied entries share the same `rank`. The
+      // tie predicate matches the sort: two entries share rank only when
+      // their total_points are identical.
+      const sortedEntries = Object.values(pointsMap)
         .filter((entry) => !HIDDEN_MEMBERS.includes(entry.name))
         .sort((a, b) => b.total_points - a.total_points)
-        .map((entry, index) => ({ ...entry, rank: index + 1 }))
+      const leaderboard = assignDenseRanks(
+        sortedEntries,
+        (a, b) => a.total_points === b.total_points,
+      )
 
       return NextResponse.json({ leaderboard, total_ballots: ballots?.length || 0 })
     }
@@ -309,44 +316,50 @@ export async function GET(request: NextRequest) {
           memberStats[normalizedName]!.weeks_participated++
         })
 
-        // Determine podium finishers for this week (handle ties with shared rank)
+        // Determine podium finishers for this week using **dense ranking**
+        // (1, 1, 2, 3): tied members share a rank, but a tie at the top
+        // does NOT consume later podium spots. Two people tied for 1st
+        // both earn `weeks_in_first`, the next-best person earns
+        // `weeks_in_second`, and the one after them earns
+        // `weeks_in_third`. See lib/tommy-awards-ranking.ts for the
+        // shared rank logic.
         const sorted = Object.entries(weeklyPoints)
           .map(([name, points]) => ({ name, points }))
           .sort((a, b) => b.points - a.points)
 
         if (sorted.length === 0) return
 
-        // Build rank groups: members with the same point total share the same rank
-        let currentRank = 1
-        let lastPoints: number | null = null
-        let positionsFilled = 0
-        for (const entry of sorted) {
-          if (lastPoints === null || entry.points < lastPoints) {
-            currentRank = positionsFilled + 1
-            lastPoints = entry.points
-          }
-          if (currentRank > 3) break
-          if (currentRank === 1) ensureMember(entry.name).weeks_in_first++
-          else if (currentRank === 2) ensureMember(entry.name).weeks_in_second++
-          else if (currentRank === 3) ensureMember(entry.name).weeks_in_third++
-          positionsFilled++
-        }
+        awardWeeklyPodiumCredit(sorted, (name, place) => {
+          const member = ensureMember(name)
+          if (place === 1) member.weeks_in_first++
+          else if (place === 2) member.weeks_in_second++
+          else if (place === 3) member.weeks_in_third++
+        })
       })
 
       const totalWeeks = Object.keys(weekBuckets).length
 
-      const ytdLeaderboard = Object.values(memberStats)
+      // Sort with the cascading tiebreakers we've been using all season:
+      // total_points → weeks_in_first → weeks_in_second → weeks_in_third.
+      // Two members are only ranked equal if they match on ALL of those
+      // — that's almost always rare enough that ties surface naturally,
+      // but when they do happen the shared `rank` correctly signals it.
+      const sortedYtd = Object.values(memberStats)
         .filter((entry) => !HIDDEN_MEMBERS.includes(entry.name))
         .sort((a, b) => {
-          // Primary: total points
           if (b.total_points !== a.total_points) return b.total_points - a.total_points
-          // Tiebreak: weeks in first
           if (b.weeks_in_first !== a.weeks_in_first) return b.weeks_in_first - a.weeks_in_first
-          // Then weeks in second, then third
           if (b.weeks_in_second !== a.weeks_in_second) return b.weeks_in_second - a.weeks_in_second
           return b.weeks_in_third - a.weeks_in_third
         })
-        .map((entry, index) => ({ ...entry, rank: index + 1 }))
+      const ytdLeaderboard = assignDenseRanks(
+        sortedYtd,
+        (a, b) =>
+          a.total_points === b.total_points &&
+          a.weeks_in_first === b.weeks_in_first &&
+          a.weeks_in_second === b.weeks_in_second &&
+          a.weeks_in_third === b.weeks_in_third,
+      )
 
       return NextResponse.json({
         ytd_leaderboard: ytdLeaderboard,

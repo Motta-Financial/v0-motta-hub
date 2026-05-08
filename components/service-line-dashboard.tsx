@@ -53,6 +53,14 @@ interface ServiceLineDashboardProps {
    * to accidentally include something like "ACCTPLUS").
    */
   workTypePrefix?: string
+  /**
+   * Strict allow-list of exact Karbon `work_type` values. Takes priority
+   * over `workTypePrefix` when both are set — preferred when the caller
+   * has a curated list of canonical work_types (e.g. the six
+   * `ACCT | *` values from lib/accounting-work-types) and wants to make
+   * sure no untriaged additions to the source can ever sneak in.
+   */
+  workTypes?: readonly string[]
 }
 
 export function ServiceLineDashboard({
@@ -61,18 +69,22 @@ export function ServiceLineDashboard({
   description,
   serviceLineKeywords,
   workTypePrefix,
+  workTypes,
 }: ServiceLineDashboardProps) {
   const [workItems, setWorkItems] = useState<SupabaseWorkItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Memoize the joined allow-list so the effect's dependency array is a
+  // stable string instead of a fresh array reference on every render.
+  const workTypesKey = useMemo(() => (workTypes ? workTypes.join(",") : ""), [workTypes])
+
   useEffect(() => {
     fetchData()
-    // Re-fetch if the caller swaps the work_type prefix for a different
-    // service line within the same mounted instance (cheap insurance —
-    // most callers pin the prop, so this rarely fires).
+    // Re-fetch if the caller swaps either of the two work_type filters —
+    // most callers pin the prop, so this rarely fires.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workTypePrefix])
+  }, [workTypePrefix, workTypesKey])
 
   const fetchData = async () => {
     setLoading(true)
@@ -80,7 +92,16 @@ export function ServiceLineDashboard({
 
     try {
       let response: Response
-      if (workTypePrefix) {
+      if (workTypesKey) {
+        // Strictest path: caller supplied an explicit allow-list of
+        // exact Karbon work_type values. Filtered at the Postgres layer
+        // via `IN (...)`, then `status=all` so the component can do its
+        // own active/completed split for the KPI tiles.
+        const url = `/api/supabase/work-items?workTypes=${encodeURIComponent(
+          workTypesKey,
+        )}&status=all`
+        response = await fetch(url)
+      } else if (workTypePrefix) {
         // Strict path: filter at the Postgres layer using Karbon's canonical
         // work_type column. We pass `status=all` so we get both active and
         // completed rows — the component already does its own
@@ -129,11 +150,11 @@ export function ServiceLineDashboard({
       ) {
         return false
       }
-      if (workTypePrefix) return true
+      if (workTypesKey || workTypePrefix) return true
       const sl = categorizeServiceLine(item.title || "", item.client_name || "")
       return serviceLineKeywords.includes(sl)
     })
-  }, [workItems, serviceLineKeywords, workTypePrefix])
+  }, [workItems, serviceLineKeywords, workTypePrefix, workTypesKey])
 
   const activeWorkItems = useMemo(() => {
     return filteredWorkItems.filter((item) => {
