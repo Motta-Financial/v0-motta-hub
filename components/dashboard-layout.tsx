@@ -576,17 +576,22 @@ function Sidebar() {
                           )}
                           aria-hidden="true"
                         />
-                        <span>{item.name}</span>
-                        {/* Inline chevron sits immediately after the label
-                            so the dropdown affordance is obvious at a
-                            glance. Implemented as a `<span role="button">`
-                            because a real <button> inside an <a> is invalid
-                            HTML — the role + tabIndex + keyboard handler
-                            give it the same accessibility semantics as a
-                            button. stopPropagation prevents the parent
-                            <a>'s click handler from also firing, so this
-                            chevron exclusively toggles open/closed (the
-                            row itself still navigates + auto-expands). */}
+                        {/* `flex-1` on the label pushes the chevron to a
+                            consistent right-edge position across every
+                            parent row, so all chevrons line up
+                            vertically regardless of label length. */}
+                        <span className="flex-1">{item.name}</span>
+                        {/* Right-aligned chevron — single dropdown
+                            affordance per parent. Implemented as a
+                            `<span role="button">` because a real
+                            <button> inside an <a> is invalid HTML. The
+                            role + tabIndex + keyboard handler give it
+                            the same accessibility semantics as a
+                            button, and stopPropagation prevents the
+                            parent <a>'s click handler from also firing
+                            — clicking the chevron toggles open/closed
+                            only, while clicking the row still navigates
+                            and auto-expands. */}
                         {hasChildren && (
                           <span
                             role="button"
@@ -610,7 +615,7 @@ function Sidebar() {
                             }
                             aria-expanded={isExpanded}
                             className={cn(
-                              "ml-1 inline-flex h-5 w-5 items-center justify-center rounded transition-colors cursor-pointer",
+                              "-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors cursor-pointer",
                               isCurrent || isParentActive
                                 ? "text-white/80 hover:bg-white/15 hover:text-white"
                                 : "text-gray-400 hover:bg-gray-100 hover:text-gray-700",
