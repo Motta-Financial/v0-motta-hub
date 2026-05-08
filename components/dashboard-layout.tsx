@@ -15,7 +15,6 @@ import {
   Calendar,
   Settings,
   Menu,
-  Inbox,
   CheckSquare,
   UserCircle,
   Database,
@@ -49,6 +48,7 @@ import {
   Briefcase,
   Repeat,
   Headphones,
+  Send,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -79,7 +79,10 @@ const navigation = [
     href: "/",
     icon: LayoutDashboard,
     children: [
-      { name: "Triage", href: "/triage", icon: Inbox },
+      // Triage is now the Dashboard tab on the Home page itself — see
+      // components/triage-feed.tsx and components/dashboard-home.tsx.
+      // The legacy /triage route still exists but redirects to /, so we
+      // omit it from the sidebar to avoid a duplicate nav entry.
       { name: "Work Items", href: "/work-items", icon: CheckSquare },
       { name: "Clients", href: "/clients", icon: Users },
       {
@@ -124,7 +127,19 @@ const navigation = [
     name: "Talent",
     href: "/teammates",
     icon: UserCircle,
-    children: [{ name: "Tommy Awards", href: "/tommy-awards", icon: Trophy }],
+    children: [
+      {
+        name: "Tommy Awards",
+        href: "/tommy-awards",
+        icon: Trophy,
+        children: [
+          // Ballot lives on its own page so the main Tommy Awards screen
+          // can stay focused on standings & feedback. Both routes are
+          // discoverable from the sidebar.
+          { name: "Submit Ballot", href: "/tommy-awards/ballot", icon: Send },
+        ],
+      },
+    ],
   },
   // "Departments" is the operational pipeline taxonomy. Onboarding moved
   // under Accounting because it's the kickoff step for every new
@@ -395,6 +410,13 @@ function HeaderUserMenu() {
   )
 }
 
+// localStorage key for the sidebar's expanded-sections map. The nav rows
+// use plain `<a href>` (not Next.js Link) which means every click is a
+// full reload — without persistence the sidebar would collapse every
+// manually-opened section on each navigation. Bumping this key is the
+// migration path if the shape of the value ever changes.
+const SIDEBAR_EXPANDED_STORAGE_KEY = "motta:sidebar:expanded:v1"
+
 function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
@@ -402,9 +424,46 @@ function Sidebar() {
   // ancestors of the current page are visible immediately (no flash of
   // collapsed sidebar). useState's lazy initializer runs only once, which
   // matches the behavior we want for the *first* paint.
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() =>
-    buildInitialExpandedState(navigation, pathname),
-  )
+  //
+  // We start from the active-route ancestors so the current page is
+  // always visible, then layer the persisted map on top so anything the
+  // user previously opened stays open across full-page navigations.
+  // Reading localStorage inside the initializer is safe because this
+  // component is "use client" — it never runs on the server.
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => {
+    const seed = buildInitialExpandedState(navigation, pathname)
+    if (typeof window === "undefined") return seed
+    try {
+      const raw = window.localStorage.getItem(SIDEBAR_EXPANDED_STORAGE_KEY)
+      if (!raw) return seed
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === "object") {
+        // Merge persisted choices over active-ancestor seed — this way
+        // an explicitly-collapsed section the user closed earlier stays
+        // closed unless it's an ancestor of the current page.
+        return { ...parsed, ...seed }
+      }
+      return seed
+    } catch {
+      return seed
+    }
+  })
+
+  // Mirror every change to localStorage so the next page load restores
+  // the same shape. We persist on every write rather than on unload to
+  // tolerate hard reloads, browser crashes, and tab clones gracefully.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(
+        SIDEBAR_EXPANDED_STORAGE_KEY,
+        JSON.stringify(expandedSections),
+      )
+    } catch {
+      // Storage can throw in private mode or when the quota is full; the
+      // sidebar still works in-session, just without persistence.
+    }
+  }, [expandedSections])
 
   // When the user navigates between pages we want the new active section to
   // auto-open, but we deliberately MERGE rather than replace so that any
@@ -432,6 +491,15 @@ function Sidebar() {
       ...prev,
       [name]: !prev[name],
     }))
+  }
+
+  // Used by parent/child *row* clicks (the link, not the chevron). Always
+  // OPENS the section — never collapses — so navigating to a section
+  // never hides its kids. Collapsing stays the chevron's job, which keeps
+  // the link's primary purpose (navigate) and the chip's purpose
+  // (expand/collapse) cleanly separated. No-op when already expanded.
+  const expandSection = (name: string) => {
+    setExpandedSections((prev) => (prev[name] ? prev : { ...prev, [name]: true }))
   }
 
   // Recurses through the entire subtree so a parent like Home stays
@@ -463,6 +531,13 @@ function Sidebar() {
                     <div className="flex items-center">
                       <a
                         href={item.href}
+                        // Clicking the row opens its subpages alongside the
+                        // navigation. Skipped when there are no children so
+                        // we don't pay for unnecessary state writes on leaf
+                        // nav items.
+                        onClick={() => {
+                          if (hasChildren) expandSection(item.name)
+                        }}
                         className={cn(
                           isCurrent || isParentActive
                             ? "text-white border-r-2"
@@ -499,18 +574,48 @@ function Sidebar() {
                             e.preventDefault()
                             toggleSection(item.name)
                           }}
+                          aria-label={
+                            isExpanded
+                              ? `Collapse ${item.name} (${item.children!.length} subpages)`
+                              : `Expand ${item.name} (${item.children!.length} subpages)`
+                          }
+                          aria-expanded={isExpanded}
+                          // Count chip + chevron in one rounded "pill" button:
+                          // the count makes "this has subpages" obvious before
+                          // the user hovers, the rounded hover surface signals
+                          // it's interactive, and the active-row variant uses
+                          // a translucent white hover so it stays legible on
+                          // the sage background.
                           className={cn(
-                            "p-1 rounded hover:bg-gray-100 transition-colors mr-1",
-                            isCurrent || isParentActive ? "text-gray-600" : "text-gray-400",
+                            "mr-1 flex items-center gap-1 rounded-full px-1.5 py-1 transition-colors",
+                            isCurrent || isParentActive
+                              ? "text-white hover:bg-white/15"
+                              : "text-gray-500 hover:bg-gray-100",
                           )}
                         >
+                          <span
+                            className={cn(
+                              "text-[10px] font-semibold tabular-nums leading-none",
+                              isCurrent || isParentActive ? "text-white/80" : "text-gray-400",
+                            )}
+                          >
+                            {item.children!.length}
+                          </span>
                           {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                         </button>
                       )}
                     </div>
 
                     {hasChildren && isExpanded && (
-                      <ul className="mt-1 space-y-1">
+                      // Vertical guide line connects children back to their
+                      // parent visually. The pseudo-element is positioned at
+                      // 18px from the ul's left edge — that lines up with the
+                      // right edge of the parent icon, so the eye traces a
+                      // clean L-path from parent down through its kids
+                      // without shifting any row's actual indent.
+                      <ul
+                        className="relative mt-1 space-y-1 before:absolute before:bottom-1 before:left-[18px] before:top-1 before:w-px before:bg-gray-200 before:content-['']"
+                      >
                         {(item.children as any[])!.map((child: any) => {
                           const isChildCurrent = pathname === child.href || pathname.startsWith(child.href + "/")
                           const hasGrandchildren = child.children && child.children.length > 0
@@ -526,6 +631,13 @@ function Sidebar() {
                               <div className="flex items-center">
                                 <a
                                   href={child.href}
+                                  // Same expand-on-navigate behavior as the
+                                  // parent row, scoped to whichever child
+                                  // has its own grandchildren (e.g. Talent →
+                                  // Tommy Awards → Submit Ballot).
+                                  onClick={() => {
+                                    if (hasGrandchildren) expandSection(child.name)
+                                  }}
                                   className={cn(
                                     isChildCurrent || hasActiveGrandchild
                                       ? "text-white border-r-2"
@@ -564,11 +676,29 @@ function Sidebar() {
                                       e.preventDefault()
                                       toggleSection(child.name)
                                     }}
+                                    aria-label={
+                                      isChildExpanded
+                                        ? `Collapse ${child.name} (${child.children!.length} subpages)`
+                                        : `Expand ${child.name} (${child.children!.length} subpages)`
+                                    }
+                                    aria-expanded={isChildExpanded}
                                     className={cn(
-                                      "p-1 rounded hover:bg-gray-100 transition-colors mr-1",
-                                      isChildCurrent || hasActiveGrandchild ? "text-gray-600" : "text-gray-400",
+                                      "mr-1 flex items-center gap-1 rounded-full px-1.5 py-1 transition-colors",
+                                      isChildCurrent || hasActiveGrandchild
+                                        ? "text-white hover:bg-white/15"
+                                        : "text-gray-500 hover:bg-gray-100",
                                     )}
                                   >
+                                    <span
+                                      className={cn(
+                                        "text-[10px] font-semibold tabular-nums leading-none",
+                                        isChildCurrent || hasActiveGrandchild
+                                          ? "text-white/80"
+                                          : "text-gray-400",
+                                      )}
+                                    >
+                                      {child.children!.length}
+                                    </span>
                                     {isChildExpanded ? (
                                       <ChevronDown className="h-4 w-4" />
                                     ) : (
@@ -579,7 +709,12 @@ function Sidebar() {
                               </div>
 
                               {hasGrandchildren && isChildExpanded && (
-                                <ul className="mt-1 space-y-1">
+                                // Same guide-line pattern, but at 40px to
+                                // sit under the child icon (one indent level
+                                // deeper than the parent guide above).
+                                <ul
+                                  className="relative mt-1 space-y-1 before:absolute before:bottom-1 before:left-[40px] before:top-1 before:w-px before:bg-gray-200 before:content-['']"
+                                >
                                   {child.children!.map((grandchild: any) => {
                                     const isGrandchildCurrent =
                                       pathname === grandchild.href || pathname.startsWith(grandchild.href + "/")

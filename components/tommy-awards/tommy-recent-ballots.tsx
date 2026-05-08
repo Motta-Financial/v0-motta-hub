@@ -138,7 +138,7 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
                         <div className="flex items-center gap-3">
                           <Avatar className="h-10 w-10">
                             <AvatarImage src="/placeholder.svg" alt={ballot.voter_name} />
-                            <AvatarFallback className="bg-gradient-to-br from-[#0a1628] to-[#1a2744] text-white font-semibold text-sm">
+                            <AvatarFallback className="bg-gradient-to-br from-[#6B745D] to-[#5a6450] text-white font-semibold text-sm">
                               {getInitials(ballot.voter_name)}
                             </AvatarFallback>
                           </Avatar>
