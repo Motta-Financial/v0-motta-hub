@@ -421,40 +421,49 @@ const SIDEBAR_EXPANDED_STORAGE_KEY = "motta:sidebar:expanded:v1"
 function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
-  // Seed expanded sections from the active route on first render so the
-  // ancestors of the current page are visible immediately (no flash of
-  // collapsed sidebar). useState's lazy initializer runs only once, which
-  // matches the behavior we want for the *first* paint.
-  //
-  // We start from the active-route ancestors so the current page is
-  // always visible, then layer the persisted map on top so anything the
-  // user previously opened stays open across full-page navigations.
-  // Reading localStorage inside the initializer is safe because this
-  // component is "use client" — it never runs on the server.
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => {
+  // Start with an empty state to avoid hydration mismatch. The server and
+  // client must render identically on first paint — we cannot read
+  // localStorage during SSR, and even `buildInitialExpandedState` can
+
+  // differ if the server/client pathname diverges for a moment. After
+  // hydration completes we populate the real expanded state from
+  // localStorage + pathname in the effect below.
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({})
+  const [hydrated, setHydrated] = useState(false)
+
+  // Once mounted on the client, seed expanded sections from localStorage
+  // and the active route. This runs only once after hydration so the
+  // server/client first-render is identical (empty → avoids mismatch).
+  useEffect(() => {
     const seed = buildInitialExpandedState(navigation, pathname)
-    if (typeof window === "undefined") return seed
+    let initial = seed
     try {
       const raw = window.localStorage.getItem(SIDEBAR_EXPANDED_STORAGE_KEY)
-      if (!raw) return seed
-      const parsed = JSON.parse(raw)
-      if (parsed && typeof parsed === "object") {
-        // Merge persisted choices over active-ancestor seed — this way
-        // an explicitly-collapsed section the user closed earlier stays
-        // closed unless it's an ancestor of the current page.
-        return { ...parsed, ...seed }
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === "object") {
+          // Merge persisted choices over active-ancestor seed — this way
+          // an explicitly-collapsed section the user closed earlier stays
+          // closed unless it's an ancestor of the current page.
+          initial = { ...parsed, ...seed }
+        }
       }
-      return seed
     } catch {
-      return seed
+      // Storage can throw in private mode; continue with seed.
     }
-  })
+    setExpandedSections(initial)
+    setHydrated(true)
+    // Only run on mount — pathname changes are handled by a separate effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Mirror every change to localStorage so the next page load restores
   // the same shape. We persist on every write rather than on unload to
   // tolerate hard reloads, browser crashes, and tab clones gracefully.
+  // Skip until hydrated to avoid overwriting real data with the empty
+  // initial state used during SSR.
   useEffect(() => {
-    if (typeof window === "undefined") return
+    if (!hydrated) return
     try {
       window.localStorage.setItem(
         SIDEBAR_EXPANDED_STORAGE_KEY,
@@ -464,7 +473,7 @@ function Sidebar() {
       // Storage can throw in private mode or when the quota is full; the
       // sidebar still works in-session, just without persistence.
     }
-  }, [expandedSections])
+  }, [expandedSections, hydrated])
 
   // When the user navigates between pages we want the new active section to
   // auto-open, but we deliberately MERGE rather than replace so that any
@@ -567,44 +576,61 @@ function Sidebar() {
                           )}
                           aria-hidden="true"
                         />
+                        {/* `flex-1` on the label pushes the chevron to a
+                            consistent right-edge position across every
+                            parent row, so all chevrons line up
+                            vertically regardless of label length. */}
                         <span className="flex-1">{item.name}</span>
-                      </a>
-                      {hasChildren && (
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault()
-                            toggleSection(item.name)
-                          }}
-                          aria-label={
-                            isExpanded
-                              ? `Collapse ${item.name} (${item.children!.length} subpages)`
-                              : `Expand ${item.name} (${item.children!.length} subpages)`
-                          }
-                          aria-expanded={isExpanded}
-                          // Count chip + chevron in one rounded "pill" button:
-                          // the count makes "this has subpages" obvious before
-                          // the user hovers, the rounded hover surface signals
-                          // it's interactive, and the active-row variant uses
-                          // a translucent white hover so it stays legible on
-                          // the sage background.
-                          className={cn(
-                            "mr-1 flex items-center gap-1 rounded-full px-1.5 py-1 transition-colors",
-                            isCurrent || isParentActive
-                              ? "text-white hover:bg-white/15"
-                              : "text-gray-500 hover:bg-gray-100",
-                          )}
-                        >
+                        {/* Right-aligned chevron — single dropdown
+                            affordance per parent. Implemented as a
+                            `<span role="button">` because a real
+                            <button> inside an <a> is invalid HTML. The
+                            role + tabIndex + keyboard handler give it
+                            the same accessibility semantics as a
+                            button, and stopPropagation prevents the
+                            parent <a>'s click handler from also firing
+                            — clicking the chevron toggles open/closed
+                            only, while clicking the row still navigates
+                            and auto-expands. */}
+                        {hasChildren && (
                           <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              toggleSection(item.name)
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                toggleSection(item.name)
+                              }
+                            }}
+                            aria-label={
+                              isExpanded
+                                ? `Collapse ${item.name} (${item.children!.length} subpages)`
+                                : `Expand ${item.name} (${item.children!.length} subpages)`
+                            }
+                            aria-expanded={isExpanded}
                             className={cn(
-                              "text-[10px] font-semibold tabular-nums leading-none",
-                              isCurrent || isParentActive ? "text-white/80" : "text-gray-400",
+                              "-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors cursor-pointer",
+                              isCurrent || isParentActive
+                                ? "text-white/80 hover:bg-white/15 hover:text-white"
+                                : "text-gray-400 hover:bg-gray-100 hover:text-gray-700",
                             )}
                           >
-                            {item.children!.length}
+                            <ChevronDown
+                              className={cn(
+                                "h-4 w-4 transition-transform duration-200",
+                                isExpanded ? "rotate-0" : "-rotate-90",
+                              )}
+                              aria-hidden="true"
+                            />
                           </span>
-                          {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                        </button>
-                      )}
+                        )}
+                      </a>
                     </div>
 
                     {hasChildren && isExpanded && (
