@@ -1,12 +1,17 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { ServiceLineDashboard } from "@/components/service-line-dashboard"
 import { AccountingBookkeepingTracker } from "@/components/accounting-bookkeeping-tracker"
 import { AccountingOnboardingTracker } from "@/components/accounting-onboarding-tracker"
 import { AccountingDashboardOverview } from "@/components/accounting-dashboard-overview"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { ChevronRight, ClipboardList } from "lucide-react"
 
 export default function AccountingPage() {
   const [activeTab, setActiveTab] = useState("overview")
@@ -20,6 +25,39 @@ export default function AccountingPage() {
             Manage monthly bookkeeping, onboarding clients, and track all accounting operations
           </p>
         </div>
+
+        {/* Cross-link to the firm-wide multi-tab Project Plan view that
+            replaced the FY2026 project-plan Excel workbook. Lives at
+            /accounting/project-plan and is also reachable from the sidebar. */}
+        <Card className="border-blue-200 bg-blue-50/40 hover:shadow-md transition-shadow">
+          <CardHeader>
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-blue-100 rounded-lg">
+                  <ClipboardList className="h-5 w-5 text-blue-700" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <CardTitle className="text-lg">Project Plan</CardTitle>
+                    <Badge variant="outline" className="bg-white text-blue-800 border-blue-200">
+                      Firm-wide
+                    </Badge>
+                  </div>
+                  <CardDescription>
+                    Dashboard, Team Workload, Client Roster, Timeline, Kanban, and the 10-step
+                    Bookkeeping Checklist — live from Karbon &amp; Supabase.
+                  </CardDescription>
+                </div>
+              </div>
+              <Button asChild>
+                <Link href="/accounting/project-plan">
+                  Open Project Plan
+                  <ChevronRight className="h-4 w-4 ml-1" />
+                </Link>
+              </Button>
+            </div>
+          </CardHeader>
+        </Card>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="grid w-full grid-cols-3">

@@ -154,6 +154,7 @@ const navigation = [
         href: "/accounting",
         icon: Calculator,
         children: [
+          { name: "Project Plan", href: "/accounting/project-plan", icon: ClipboardList },
           { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
           { name: "Onboarding", href: "/onboarding", icon: UserPlus },
         ],
