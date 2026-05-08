@@ -15,7 +15,6 @@ import {
   Calendar,
   Settings,
   Menu,
-  Inbox,
   CheckSquare,
   UserCircle,
   Database,
@@ -79,7 +78,10 @@ const navigation = [
     href: "/",
     icon: LayoutDashboard,
     children: [
-      { name: "Triage", href: "/triage", icon: Inbox },
+      // Triage is now the Dashboard tab on the Home page itself — see
+      // components/triage-feed.tsx and components/dashboard-home.tsx.
+      // The legacy /triage route still exists but redirects to /, so we
+      // omit it from the sidebar to avoid a duplicate nav entry.
       { name: "Work Items", href: "/work-items", icon: CheckSquare },
       { name: "Clients", href: "/clients", icon: Users },
       {

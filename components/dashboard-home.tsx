@@ -1,8 +1,7 @@
 "use client"
 
 import { Loader2 } from "lucide-react"
-import { MessageBoard } from "@/components/message-board"
-import { ClientServiceDebriefs } from "@/components/client-service-debriefs"
+import { TriageFeed } from "@/components/triage-feed"
 import { ExpandableCard } from "@/components/ui/expandable-card"
 import { useUser, useDisplayName } from "@/contexts/user-context"
 
@@ -18,6 +17,11 @@ export function DashboardHome() {
     )
   }
 
+  // The Dashboard tab is now a single Triage panel: posting messages, and
+  // surfacing debriefs / new meetings / daily briefings / accepted
+  // proposals all happen in one feed. The standalone /triage child page
+  // (previously its own nav entry) has been folded in here as the user
+  // originally intended.
   return (
     <div className="w-full space-y-6">
       <ExpandableCard
@@ -45,28 +49,7 @@ export function DashboardHome() {
           </div>
         }
       >
-        <div className="space-y-6">
-          <ExpandableCard
-            title="Team Message Board"
-            defaultExpanded={true}
-            collapsible={true}
-            className="bg-gray-50 border-gray-200 shadow-none w-full"
-            contentClassName="pt-0"
-          >
-            <MessageBoard />
-          </ExpandableCard>
-
-          <ExpandableCard
-            title="Client Service Updates"
-            description="Recent debriefs across the firm"
-            defaultExpanded={true}
-            collapsible={true}
-            className="bg-gray-50 border-gray-200 shadow-none w-full"
-            contentClassName="pt-0"
-          >
-            <ClientServiceDebriefs />
-          </ExpandableCard>
-        </div>
+        <TriageFeed />
       </ExpandableCard>
     </div>
   )
