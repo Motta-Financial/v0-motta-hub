@@ -25,7 +25,7 @@ import {
   Calendar,
 } from "lucide-react"
 import { matchesAllTokens } from "@/lib/search-utils"
-import { BOOKKEEPING_WORK_TYPE } from "@/lib/accounting-work-types"
+import { BOOKKEEPING_WORK_TYPES } from "@/lib/accounting-work-types"
 
 const BOOKKEEPING_TASKS = [
   { id: "A", label: "Review work item", assignee: "P24" },
@@ -142,8 +142,14 @@ export function AccountingBookkeepingTracker() {
       // lib/accounting-work-types so the tracker can never drift from the
       // canonical Accounting work-types list. Period filter narrows to
       // the selected month.
+      // Fetches BOTH `ACCT | Bookkeeping` and
+      // `Outsourced (NFP) | Bookkeeping` in a single call by passing the
+      // comma-joined allow-list to the `workTypes` (plural) param. The
+      // API uses `IN (...)` for this case, which is strictly more
+      // accurate than a `LIKE` prefix and keeps the tracker in sync if
+      // the Bookkeeping allow-list grows again.
       const response = await fetch(
-        `/api/supabase/work-items?workType=${encodeURIComponent(BOOKKEEPING_WORK_TYPE)}&status=active&periodMonth=${monthNum}&periodYear=${yearNum}`,
+        `/api/supabase/work-items?workTypes=${encodeURIComponent(BOOKKEEPING_WORK_TYPES.join(","))}&status=active&periodMonth=${monthNum}&periodYear=${yearNum}`,
       )
 
       if (!response.ok) {
