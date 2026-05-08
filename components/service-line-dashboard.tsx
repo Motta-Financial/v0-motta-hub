@@ -39,6 +39,20 @@ interface ServiceLineDashboardProps {
   description: string
   serviceLineKeywords: string[]
   showAddClient?: boolean
+  /**
+   * When supplied, the dashboard switches to a strict Karbon work_type
+   * filter and **skips** the keyword-based categorizer below. Use this for
+   * service lines whose Karbon import populates a canonical work_type
+   * prefix (e.g. "ACCT | " for all Accounting work) — it's far more
+   * accurate than title heuristics, which both let non-ACCT items leak in
+   * (because their titles happen to contain "BK", "PR", etc.) and miss
+   * ACCT items whose titles don't match the keyword list.
+   *
+   * Pass the trailing space if you want to match the full "ACCT | " prefix
+   * rather than every work_type that starts with "ACCT" (e.g. don't want
+   * to accidentally include something like "ACCTPLUS").
+   */
+  workTypePrefix?: string
 }
 
 export function ServiceLineDashboard({
@@ -46,6 +60,7 @@ export function ServiceLineDashboard({
   title,
   description,
   serviceLineKeywords,
+  workTypePrefix,
 }: ServiceLineDashboardProps) {
   const [workItems, setWorkItems] = useState<SupabaseWorkItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -53,22 +68,43 @@ export function ServiceLineDashboard({
 
   useEffect(() => {
     fetchData()
-  }, [])
+    // Re-fetch if the caller swaps the work_type prefix for a different
+    // service line within the same mounted instance (cheap insurance —
+    // most callers pin the prop, so this rarely fires).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workTypePrefix])
 
   const fetchData = async () => {
     setLoading(true)
     setError(null)
 
     try {
-      // Fetch all work items from Supabase (fast, <100ms)
-      const response = await fetch("/api/work-items?limit=5000")
+      let response: Response
+      if (workTypePrefix) {
+        // Strict path: filter at the Postgres layer using Karbon's canonical
+        // work_type column. We pass `status=all` so we get both active and
+        // completed rows — the component already does its own
+        // active/completed split downstream for KPI tiles.
+        const url = `/api/supabase/work-items?workTypePrefix=${encodeURIComponent(
+          workTypePrefix,
+        )}&status=all`
+        response = await fetch(url)
+      } else {
+        // Legacy path used by the Tax dashboard and home-page tabs that
+        // still rely on title-keyword categorization. Pulls a wide slice
+        // and lets the client filter.
+        response = await fetch("/api/work-items?limit=5000")
+      }
 
       if (!response.ok) {
         throw new Error("Failed to fetch work items")
       }
 
       const data = await response.json()
-      setWorkItems(data.work_items || [])
+      // The two endpoints return the items under different keys
+      // (`workItems` for the Supabase route, `work_items` for the legacy
+      // route). Tolerate both so we don't have to fork the render path.
+      setWorkItems(data.workItems || data.work_items || [])
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch data")
     } finally {
@@ -76,17 +112,28 @@ export function ServiceLineDashboard({
     }
   }
 
-  // Filter work items by service line, excluding completed/cancelled
+  // Filter work items by service line, excluding completed/cancelled.
+  //
+  // When `workTypePrefix` is set, the API has already filtered by
+  // work_type for us, so the only client-side work left is dropping
+  // completed/cancelled rows for the "active" KPI tiles. When it isn't,
+  // we fall back to the title-keyword categorizer for legacy callers.
   const filteredWorkItems = useMemo(() => {
     return workItems.filter((item) => {
       const status = (item.status || item.primary_status || "").toLowerCase()
-      if (status.includes("completed") || status.includes("complete") || status.includes("cancelled") || status.includes("canceled")) {
+      if (
+        status.includes("completed") ||
+        status.includes("complete") ||
+        status.includes("cancelled") ||
+        status.includes("canceled")
+      ) {
         return false
       }
+      if (workTypePrefix) return true
       const sl = categorizeServiceLine(item.title || "", item.client_name || "")
       return serviceLineKeywords.includes(sl)
     })
-  }, [workItems, serviceLineKeywords])
+  }, [workItems, serviceLineKeywords, workTypePrefix])
 
   const activeWorkItems = useMemo(() => {
     return filteredWorkItems.filter((item) => {
