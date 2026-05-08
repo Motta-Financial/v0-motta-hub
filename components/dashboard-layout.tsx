@@ -48,6 +48,7 @@ import {
   Briefcase,
   Repeat,
   Headphones,
+  Send,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -126,7 +127,19 @@ const navigation = [
     name: "Talent",
     href: "/teammates",
     icon: UserCircle,
-    children: [{ name: "Tommy Awards", href: "/tommy-awards", icon: Trophy }],
+    children: [
+      {
+        name: "Tommy Awards",
+        href: "/tommy-awards",
+        icon: Trophy,
+        children: [
+          // Ballot lives on its own page so the main Tommy Awards screen
+          // can stay focused on standings & feedback. Both routes are
+          // discoverable from the sidebar.
+          { name: "Submit Ballot", href: "/tommy-awards/ballot", icon: Send },
+        ],
+      },
+    ],
   },
   // "Departments" is the operational pipeline taxonomy. Onboarding moved
   // under Accounting because it's the kickoff step for every new

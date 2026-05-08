@@ -115,10 +115,10 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
       <CardHeader className="pb-4">
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-3 text-foreground">
-            <div className="p-2 bg-amber-100 rounded-lg">
-              <Trophy className="h-5 w-5 text-amber-600" />
+            <div className="p-2 bg-[#8E9B79]/20 rounded-lg">
+              <Trophy className="h-5 w-5 text-[#6B745D]" />
             </div>
-            Leaderboard
+            Weekly Leaderboard
           </CardTitle>
           <div className="text-right">
             <p className="text-sm font-medium text-foreground">{getFilterDescription()}</p>
@@ -142,7 +142,7 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                 <div className="w-10 flex justify-center">{getRankIcon(entry.rank)}</div>
                 <Avatar className="h-12 w-12 border-2 border-white shadow-sm">
                   <AvatarImage src="/placeholder.svg" alt={entry.name} />
-                  <AvatarFallback className="bg-gradient-to-br from-[#c62828] to-[#b71c1c] text-white font-semibold">
+                  <AvatarFallback className="bg-gradient-to-br from-[#6B745D] to-[#5a6450] text-white font-semibold">
                     {getInitials(entry.name)}
                   </AvatarFallback>
                 </Avatar>

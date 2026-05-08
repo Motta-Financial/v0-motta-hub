@@ -1,6 +1,7 @@
 "use client"
 
 import type React from "react"
+import Link from "next/link"
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -8,10 +9,9 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Trophy, Flame, Target, Users, Zap, Calendar, Filter, X } from "lucide-react"
+import { Trophy, Flame, Target, Users, Zap, Calendar, Filter, X, Send } from "lucide-react"
 import { TommyLeaderboard } from "./tommy-leaderboard"
 import { TommyYTDLeaderboard } from "./tommy-ytd-leaderboard"
-import { TommyVotingForm } from "./tommy-voting-form"
 import { TommyRecentBallots } from "./tommy-recent-ballots"
 
 interface Week {
@@ -198,38 +198,56 @@ export function TommyAwardsPage() {
 
   return (
     <div className="space-y-8">
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#0a1628] via-[#1a2744] to-[#0d1e36] text-white">
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(198,40,40,0.3),transparent_50%)]" />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_80%,rgba(0,59,111,0.4),transparent_50%)]" />
-          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#c62828] via-[#d32f2f] to-[#c62828]" />
+      {/* Brand-themed hero. The previous design used a Patriots-style
+          navy + red palette which clashed with the rest of the app. We
+          now use Motta's sage/cream brand colors so the page belongs to
+          the same visual system as the sidebar and dashboard chrome. */}
+      <div className="relative overflow-hidden rounded-2xl border border-[#8E9B79]/40 bg-gradient-to-br from-[#6B745D] via-[#7c876c] to-[#5a6450] text-white">
+        <div className="absolute inset-0 opacity-20 pointer-events-none">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(234,230,225,0.45),transparent_55%)]" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_80%,rgba(142,155,121,0.55),transparent_55%)]" />
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#8E9B79] via-[#EAE6E1] to-[#8E9B79]" />
         </div>
 
         <div className="relative z-10 p-8 lg:p-10">
           <div className="flex flex-col lg:flex-row items-start gap-8">
             {/* Trophy Icon */}
             <div className="relative flex-shrink-0">
-              <div className="w-24 h-24 lg:w-28 lg:h-28 rounded-2xl bg-gradient-to-br from-[#c62828] to-[#8b1c1c] flex items-center justify-center shadow-2xl shadow-red-900/30 border border-white/10">
+              <div className="w-24 h-24 lg:w-28 lg:h-28 rounded-2xl bg-white/15 backdrop-blur-sm flex items-center justify-center shadow-2xl shadow-black/20 border border-white/25">
                 <Trophy className="h-12 w-12 lg:h-14 lg:w-14 text-white" />
               </div>
             </div>
 
             {/* Header Content */}
             <div className="flex-1">
-              <div className="flex items-center gap-3 mb-3">
-                <Badge className="bg-[#c62828] hover:bg-[#b71c1c] text-white border-0 text-xs uppercase tracking-wider">
+              <div className="flex items-center gap-3 mb-3 flex-wrap">
+                <Badge className="bg-white/20 hover:bg-white/30 text-white border border-white/30 text-[11px] uppercase tracking-wider">
                   Weekly Peer Recognition
                 </Badge>
-                <Badge variant="outline" className="border-slate-500 text-slate-300 text-xs uppercase tracking-wider">
+                <Badge variant="outline" className="border-white/40 text-white/90 text-[11px] uppercase tracking-wider bg-transparent">
                   Motta Financial
                 </Badge>
               </div>
               <h1 className="text-4xl lg:text-5xl font-bold tracking-tight mb-3 text-balance">Tommy Awards</h1>
-              <p className="text-slate-200 text-base lg:text-lg leading-relaxed max-w-3xl text-pretty">
+              <p className="text-white/85 text-base lg:text-lg leading-relaxed max-w-3xl text-pretty">
                 A weekly vote among all team members of the firm to vote for who they thought represents Tom Brady the
                 best — whether with their contributions from a work standpoint, going the extra mile, client wins, and
                 most importantly being a good teammate and representing firm culture.
               </p>
+
+              {/* Primary CTA — submit ballot now lives on its own page */}
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Button
+                  asChild
+                  size="lg"
+                  className="bg-white text-[#6B745D] hover:bg-[#EAE6E1] font-semibold shadow-lg"
+                >
+                  <Link href="/tommy-awards/ballot" className="inline-flex items-center gap-2">
+                    <Send className="h-4 w-4" />
+                    Submit This Week&apos;s Ballot
+                  </Link>
+                </Button>
+              </div>
             </div>
           </div>
 
@@ -259,12 +277,12 @@ export function TommyAwardsPage() {
         </div>
       </div>
 
-      <Card className="border-border bg-card">
+      <Card className="border-[#8E9B79]/30 bg-card">
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <Filter className="h-5 w-5 text-blue-600" />
+              <div className="p-2 bg-[#8E9B79]/20 rounded-lg">
+                <Filter className="h-5 w-5 text-[#6B745D]" />
               </div>
               <div>
                 <CardTitle className="text-lg">Filter Results</CardTitle>
@@ -347,13 +365,13 @@ export function TommyAwardsPage() {
                           key={week.id}
                           onClick={() => toggleWeek(week.id)}
                           className={`flex items-center gap-3 w-full px-3 py-2 rounded-lg text-left text-sm transition-colors ${
-                            isSelected ? "bg-accent" : "hover:bg-muted"
+                            isSelected ? "bg-[#8E9B79]/15" : "hover:bg-muted"
                           }`}
                         >
                           <Checkbox checked={isSelected} className="pointer-events-none" />
                           <span className="flex-1 truncate">{week.week_name}</span>
                           {isCurrentWeek && (
-                            <Badge variant="outline" className="text-xs flex-shrink-0 border-green-300 text-green-700 bg-green-50">
+                            <Badge variant="outline" className="text-xs flex-shrink-0 border-[#8E9B79] text-[#6B745D] bg-[#8E9B79]/10">
                               Current
                             </Badge>
                           )}
@@ -409,22 +427,19 @@ export function TommyAwardsPage() {
         </CardContent>
       </Card>
 
+      {/* Weekly leaderboard sits ABOVE the year-to-date standings — the
+          weekly result is what the team is most curious about right after
+          the recap goes out. The widget reads from the same `filters`
+          object, so when the user applies a multi-week or year filter
+          this section reflects those choices. */}
+      <TommyLeaderboard filters={filters} />
+
       {/* Year-to-Date Standings (with embedded Scoring System) */}
       <TommyYTDLeaderboard year={filters.year} />
 
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Left Column - Voting Form */}
-        <div>
-          <TommyVotingForm />
-        </div>
-
-        {/* Right Column - Filtered Leaderboard & Recent */}
-        <div className="space-y-8">
-          <TommyLeaderboard filters={filters} />
-          <TommyRecentBallots filters={filters} />
-        </div>
-      </div>
+      {/* Recent ballots — full-width below the leaderboards now that the
+          voting form has its own dedicated /tommy-awards/ballot page. */}
+      <TommyRecentBallots filters={filters} />
     </div>
   )
 }
@@ -435,13 +450,13 @@ function CharacteristicBadge({
   description,
 }: { icon: React.ReactNode; label: string; description?: string }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/5 backdrop-blur-sm border border-white/10 hover:bg-white/10 transition-colors">
-      <div className="p-2 rounded-lg bg-[#c62828]/20">
-        <span className="text-[#c62828]">{icon}</span>
+    <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/10 backdrop-blur-sm border border-white/20 hover:bg-white/15 transition-colors">
+      <div className="p-2 rounded-lg bg-white/15">
+        <span className="text-white">{icon}</span>
       </div>
       <div>
         <span className="text-sm font-semibold text-white block">{label}</span>
-        {description && <span className="text-xs text-slate-400">{description}</span>}
+        {description && <span className="text-xs text-white/70">{description}</span>}
       </div>
     </div>
   )

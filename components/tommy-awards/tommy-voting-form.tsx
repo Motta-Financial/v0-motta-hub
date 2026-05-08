@@ -604,23 +604,23 @@ export function TommyVotingForm() {
 
   if (submitted) {
     return (
-      <Card className="border-border bg-gradient-to-br from-[#0a1628] to-[#1a2744] text-white">
+      <Card className="border-[#8E9B79]/40 bg-gradient-to-br from-[#6B745D] to-[#5a6450] text-white">
         <CardContent className="flex flex-col items-center justify-center py-16">
-          <div className="w-20 h-20 rounded-full bg-[#c62828]/20 flex items-center justify-center mb-6 border-2 border-[#c62828]">
-            {isAmendment ? <Edit3 className="h-10 w-10 text-[#c62828]" /> : <Trophy className="h-10 w-10 text-[#c62828]" />}
+          <div className="w-20 h-20 rounded-full bg-white/15 flex items-center justify-center mb-6 border-2 border-white/30">
+            {isAmendment ? <Edit3 className="h-10 w-10 text-white" /> : <Trophy className="h-10 w-10 text-white" />}
           </div>
           <h3 className="text-2xl font-bold mb-2">
-            {isAmendment ? "Ballot Updated!" : "Championship Ballot Submitted!"}
+            {isAmendment ? "Ballot Updated!" : "Ballot Submitted!"}
           </h3>
-          <p className="text-slate-300 text-center max-w-md">
-            {isAmendment 
+          <p className="text-white/85 text-center max-w-md">
+            {isAmendment
               ? "Your ballot has been successfully amended. The leaderboard will reflect your updated votes."
-              : "Thank you for recognizing your teammates' championship-level performance. Your votes have been recorded for this week's Tommy Awards."
+              : "Thank you for recognizing your teammates' contributions. Your votes have been recorded for this week's Tommy Awards."
             }
           </p>
           <Button
             variant="outline"
-            className="mt-6 bg-transparent border-slate-600 text-white hover:bg-white/10"
+            className="mt-6 bg-transparent border-white/40 text-white hover:bg-white/10"
             onClick={() => window.location.reload()}
           >
             Submit Another Ballot
@@ -631,11 +631,11 @@ export function TommyVotingForm() {
   }
 
   return (
-    <Card className="border-border bg-card">
+    <Card className="border-[#8E9B79]/30 bg-card">
       <CardHeader className="pb-4">
         <CardTitle className="flex items-center gap-3 text-foreground">
-          <div className="p-2 bg-[#c62828]/10 rounded-lg">
-            <Send className="h-5 w-5 text-[#c62828]" />
+          <div className="p-2 bg-[#8E9B79]/20 rounded-lg">
+            <Send className="h-5 w-5 text-[#6B745D]" />
           </div>
           Submit Your Tommy Award Ballot
         </CardTitle>
@@ -872,7 +872,7 @@ export function TommyVotingForm() {
         <Button
           onClick={handleSubmit}
           disabled={submitting || !currentVoter || !firstPlace.memberId || !selectedWeekId}
-          className="w-full h-12 text-lg font-semibold bg-[#c62828] hover:bg-[#b71c1c] text-white"
+          className="w-full h-12 text-lg font-semibold bg-[#6B745D] hover:bg-[#5a6450] text-white"
         >
           {submitting ? (
             <span className="flex items-center gap-2">
@@ -882,7 +882,7 @@ export function TommyVotingForm() {
           ) : (
             <span className="flex items-center gap-2">
               {isAmendment ? <Edit3 className="h-5 w-5" /> : <Trophy className="h-5 w-5" />}
-              {isAmendment ? "Update Ballot" : "Submit Championship Ballot"}
+              {isAmendment ? "Update Ballot" : "Submit Ballot"}
             </span>
           )}
         </Button>

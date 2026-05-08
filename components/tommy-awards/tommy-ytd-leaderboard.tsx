@@ -176,7 +176,7 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
                 <div className="w-7 flex justify-center flex-shrink-0">{getRankIcon(entry.rank)}</div>
 
                 <Avatar className="h-9 w-9 border-2 border-white shadow-sm flex-shrink-0">
-                  <AvatarFallback className="bg-gradient-to-br from-[#c62828] to-[#b71c1c] text-white font-semibold text-xs">
+                  <AvatarFallback className="bg-gradient-to-br from-[#6B745D] to-[#5a6450] text-white font-semibold text-xs">
                     {getInitials(entry.name)}
                   </AvatarFallback>
                 </Avatar>
