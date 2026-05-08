@@ -398,7 +398,34 @@ function HeaderUserMenu() {
 function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({})
+  // Seed expanded sections from the active route on first render so the
+  // ancestors of the current page are visible immediately (no flash of
+  // collapsed sidebar). useState's lazy initializer runs only once, which
+  // matches the behavior we want for the *first* paint.
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() =>
+    buildInitialExpandedState(navigation, pathname),
+  )
+
+  // When the user navigates between pages we want the new active section to
+  // auto-open, but we deliberately MERGE rather than replace so that any
+  // sibling sections the user manually opened stay open. The only thing we
+  // ever flip here is `true` for ancestors of the new pathname — never
+  // `false`, so the sidebar never yanks something closed underneath them.
+  useEffect(() => {
+    const activeAncestors = buildInitialExpandedState(navigation, pathname)
+    if (Object.keys(activeAncestors).length === 0) return
+    setExpandedSections((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const key of Object.keys(activeAncestors)) {
+        if (!next[key]) {
+          next[key] = true
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [pathname])
 
   const toggleSection = (name: string) => {
     setExpandedSections((prev) => ({
