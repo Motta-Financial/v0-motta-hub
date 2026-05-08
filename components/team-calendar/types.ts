@@ -67,6 +67,14 @@ export interface TeamCalendarEvent {
   calendly_user_uri: string | null
   calendly_user_name: string | null
   calendly_user_email: string | null
+  /**
+   * Calendly's event_type identifiers. The UUID is per-user (each host
+   * has their own copy of the same template) but the NAME is the natural
+   * grouping key — "Discovery Meeting" looks the same regardless of
+   * which teammate is hosting. Color coding keys off the name.
+   */
+  event_type_uuid: string | null
+  event_type_name: string | null
   team_members: TeamCalendarHost | null
   calendly_invitees: TeamCalendarInvitee[]
   calendly_event_clients: TeamCalendarClientTag[]
@@ -74,4 +82,18 @@ export interface TeamCalendarEvent {
   calendly_event_services: TeamCalendarServiceTag[]
   /** Pre-computed by the API — count of comments for the event. */
   commentCount: number
+}
+
+/**
+ * One row in the firm-wide event-type color map. Keyed by the human-
+ * readable event_type_name. `color` is whatever the chip should render
+ * (override if set, else Calendly's own default); `default` lets the
+ * settings UI offer a "reset to default" affordance.
+ */
+export interface EventTypeColorEntry {
+  event_type_name: string
+  color: string
+  default: string | null
+  isOverride: boolean
+  count: number
 }

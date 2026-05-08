@@ -28,9 +28,11 @@ import {
   Globe,
   Users,
   RefreshCw,
+  Palette,
 } from "lucide-react"
 import { CalendarGrid } from "./calendar-grid"
 import { EventDetailDialog } from "./event-detail-dialog"
+import { EventTypeColorSettings } from "./event-type-color-settings"
 import { useUser } from "@/contexts/user-context"
 import {
   COMMON_TIMEZONES,
@@ -38,7 +40,11 @@ import {
   partsInTz,
   startOfDayInTz,
 } from "@/lib/calendar-tz"
-import type { CalendarView, TeamCalendarEvent } from "./types"
+import type {
+  CalendarView,
+  EventTypeColorEntry,
+  TeamCalendarEvent,
+} from "./types"
 
 const swrFetcher = (url: string) => fetch(url, { cache: "no-store" }).then((r) => r.json())
 
@@ -128,6 +134,7 @@ export function TeamCalendarView({ initialTz }: Props) {
   const [search, setSearch] = useState("")
   const [hostFilter, setHostFilter] = useState<Set<string>>(new Set())
   const [selectedEvent, setSelectedEvent] = useState<TeamCalendarEvent | null>(null)
+  const [colorSettingsOpen, setColorSettingsOpen] = useState(false)
 
   const { from, to } = useMemo(() => rangeFor(view, anchor), [view, anchor])
   const url = `/api/calendly/team-calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
@@ -136,6 +143,26 @@ export function TeamCalendarView({ initialTz }: Props) {
     keepPreviousData: true,
     revalidateOnFocus: false,
   })
+
+  // Firm-wide event-type color map. Refetched after the user saves edits
+  // in the settings dialog so the calendar updates without a hard reload.
+  // We keep this separate from the events fetch on purpose — the color
+  // map changes orders of magnitude less often than meeting data does,
+  // and SWR's stale-while-revalidate makes the merge invisible.
+  const { data: colorData, mutate: mutateColors } = useSWR<{ entries: EventTypeColorEntry[] }>(
+    "/api/calendly/event-type-colors",
+    swrFetcher,
+    { revalidateOnFocus: false },
+  )
+  const colorEntries = colorData?.entries ?? []
+  // Pre-resolved name→color lookup the grid uses for every chip render.
+  // Built here (not in the grid) so multiple grid instances or future
+  // event drawers see the same source of truth.
+  const typeColorMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const e of colorEntries) m.set(e.event_type_name, e.color)
+    return m
+  }, [colorEntries])
 
   // Build the host-filter list from whatever events we've loaded.
   // Done at this level (rather than a separate /team-members fetch) so
@@ -276,6 +303,20 @@ export function TeamCalendarView({ initialTz }: Props) {
             </SelectContent>
           </Select>
 
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setColorSettingsOpen(true)}
+          >
+            <Palette className="mr-2 h-4 w-4" />
+            Colors
+            {colorEntries.some((e) => e.isOverride) ? (
+              <Badge variant="secondary" className="ml-2">
+                {colorEntries.filter((e) => e.isOverride).length}
+              </Badge>
+            ) : null}
+          </Button>
+
           <Popover>
             <PopoverTrigger asChild>
               <Button variant="outline" size="sm">
@@ -341,6 +382,23 @@ export function TeamCalendarView({ initialTz }: Props) {
         </div>
       </Card>
 
+      {/* Visibility reassurance: makes it explicit that the calendar is
+          firm-wide. Active hosts come from the loaded events themselves
+          (so the count is honest about what's actually on screen for the
+          window) — the strip above the calendar listing connected
+          accounts is the higher-level audit trail. */}
+      <p className="px-1 text-xs text-muted-foreground">
+        Showing meetings from{" "}
+        <span className="font-medium text-foreground">
+          {hostsInWindow.length} teammate{hostsInWindow.length === 1 ? "" : "s"}
+        </span>{" "}
+        in this window
+        {hostFilter.size > 0
+          ? ` (filtered to ${hostFilter.size} of ${hostsInWindow.length})`
+          : ""}
+        . All synced Calendly accounts are visible to the entire team.
+      </p>
+
       {isLoading && !data ? (
         <Skeleton className="h-[680px] w-full rounded-lg" />
       ) : (
@@ -350,9 +408,17 @@ export function TeamCalendarView({ initialTz }: Props) {
           tz={tz}
           events={filtered}
           hostFilter={hostFilter.size > 0 ? hostFilter : null}
+          typeColorMap={typeColorMap}
           onSelectEvent={setSelectedEvent}
         />
       )}
+
+      <EventTypeColorSettings
+        open={colorSettingsOpen}
+        onOpenChange={setColorSettingsOpen}
+        entries={colorEntries}
+        onSaved={() => mutateColors()}
+      />
 
       <EventDetailDialog
         event={selectedEvent}
