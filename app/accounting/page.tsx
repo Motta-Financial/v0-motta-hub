@@ -12,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ChevronRight, ClipboardList } from "lucide-react"
+import { ACCT_WORK_TYPES } from "@/lib/accounting-work-types"
 
 export default function AccountingPage() {
   const [activeTab, setActiveTab] = useState("overview")
@@ -74,16 +75,18 @@ export default function AccountingPage() {
             <ServiceLineDashboard
               serviceLine="ACCOUNTING"
               title="Accounting Stats"
-              description="Overview of all clients and work items where work_type starts with 'ACCT | '"
-              // Strict filter on Karbon's canonical work_type column instead
-              // of the older title-keyword heuristic. This keeps the widget
-              // perfectly consistent with the Overview / Bookkeeping /
-              // Onboarding sections above (which all already query
-              // /api/supabase/work-items?workTypePrefix=ACCT | ).
-              workTypePrefix="ACCT | "
-              // serviceLineKeywords is now a no-op when workTypePrefix is
-              // set; we keep it filled in so the prop contract holds and so
-              // it stays meaningful if a caller drops the prefix.
+              description="Overview of all clients and work items in the canonical Accounting work types"
+              // Strict allow-list match on Karbon's canonical work_type
+              // column — every other Accounting surface (Overview cards,
+              // Bookkeeping tracker, Onboarding tracker, Project Plan)
+              // imports the same constant, so they all reconcile to an
+              // identical universe of work items. Updating the canonical
+              // list happens in one place: lib/accounting-work-types.ts.
+              workTypes={ACCT_WORK_TYPES}
+              // serviceLineKeywords is a no-op when workTypes is set; we
+              // keep it populated so the prop contract holds and so the
+              // legacy title-keyword fallback still works if a caller
+              // ever drops the strict filter.
               serviceLineKeywords={["ACCOUNTING", "ACCT", "BOOKKEEPING", "BK", "PAYROLL", "PR"]}
             />
           </TabsContent>

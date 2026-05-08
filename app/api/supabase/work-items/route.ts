@@ -14,6 +14,12 @@ export async function GET(request: Request) {
     // vary across years/clients (e.g. "BKPG | Bookkeeping | Acme | Jan 2025").
     const workType = searchParams.get("workType") // exact match, e.g. "ACCT | Bookkeeping"
     const workTypePrefix = searchParams.get("workTypePrefix") // starts-with, e.g. "ACCT | "
+    // Comma-separated allow-list of exact work_type values, e.g.
+    // "ACCT | Onboarding (BKPG),ACCT | Onboarding (PYRL)". Use this when
+    // a tracker needs to surface a curated subset of work_types — it's
+    // strictly more accurate than `workTypePrefix` because it can't pick
+    // up new untriaged Karbon work types that happen to match the prefix.
+    const workTypesParam = searchParams.get("workTypes")
     const status = searchParams.get("status")
     const periodMonth = searchParams.get("periodMonth") // Format: "2024-01" for January 2024
     const periodYear = searchParams.get("periodYear")
@@ -79,6 +85,17 @@ export async function GET(request: Request) {
       // Accounting / Tax / Payroll dashboards because it's the canonical
       // categorization Karbon ships with each work item.
       query = query.ilike("work_type", workType)
+    } else if (workTypesParam) {
+      // Allow-list filter. Splits and trims the comma-separated input,
+      // drops any empty values (which would otherwise become `IN ('')`
+      // and silently exclude every row), and uses Postgres `IN (...)`.
+      const list = workTypesParam
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+      if (list.length > 0) {
+        query = query.in("work_type", list)
+      }
     } else if (workTypePrefix) {
       // Starts-with match for grouping multiple work types under one umbrella
       // (e.g. all "ACCT | *" rows for the Accounting overview).

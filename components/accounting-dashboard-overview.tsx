@@ -20,6 +20,7 @@ import {
   TrendingUp,
   type LucideIcon,
 } from "lucide-react"
+import { ACCT_WORK_TYPES as ACCT_WORK_TYPE_LIST, type AcctWorkType } from "@/lib/accounting-work-types"
 
 interface DashboardOverviewProps {
   onNavigateToBookkeeping: () => void
@@ -36,67 +37,93 @@ interface SupabaseWorkItem {
   period_start: string | null
 }
 
-// Karbon ships every accounting work item under one of these six work_type
-// values. We render a breakdown card for each so the Overview tab covers the
-// full "ACCT | %" universe — not just the Bookkeeping subset. Order matters:
-// it controls the display order of the per-type breakdown.
-const ACCT_WORK_TYPES: Array<{
-  workType: string
-  label: string
-  icon: LucideIcon
-  color: string
-  bg: string
-  border: string
-}> = [
-  {
-    workType: "ACCT | Bookkeeping",
+// Display metadata (label/icon/colors) for each canonical ACCT work_type.
+// The list of work_types themselves comes from lib/accounting-work-types
+// — that's the single source of truth that the trackers, Project Plan,
+// and API routes all import from. This map only adds presentation. Order
+// of the entries below controls the display order of the breakdown
+// cards.
+const ACCT_WORK_TYPE_META: Record<
+  AcctWorkType,
+  { label: string; icon: LucideIcon; color: string; bg: string; border: string }
+> = {
+  "ACCT | Bookkeeping": {
     label: "Bookkeeping",
     icon: FileText,
     color: "text-blue-600",
     bg: "bg-blue-50",
     border: "border-blue-200",
   },
-  {
-    workType: "ACCT | Payroll",
+  "ACCT | Payroll": {
     label: "Payroll",
     icon: Receipt,
     color: "text-green-600",
     bg: "bg-green-50",
     border: "border-green-200",
   },
-  {
-    workType: "ACCT | 1099s",
+  "ACCT | 1099s": {
     label: "1099s",
     icon: FileText,
     color: "text-amber-600",
     bg: "bg-amber-50",
     border: "border-amber-200",
   },
-  {
-    workType: "ACCT | FP&A",
+  "ACCT | FP&A": {
     label: "FP&A",
     icon: TrendingUp,
     color: "text-indigo-600",
     bg: "bg-indigo-50",
     border: "border-indigo-200",
   },
-  {
-    workType: "ACCT | Onboarding (BKPG)",
+  "ACCT | Onboarding (BKPG)": {
     label: "Onboarding (BKPG)",
     icon: Users,
     color: "text-purple-600",
     bg: "bg-purple-50",
     border: "border-purple-200",
   },
-  {
-    workType: "ACCT | Onboarding (PYRL)",
+  "ACCT | Onboarding (PYRL)": {
     label: "Onboarding (PYRL)",
     icon: Briefcase,
     color: "text-pink-600",
     bg: "bg-pink-50",
     border: "border-pink-200",
   },
-]
+}
+
+// Display order for the breakdown cards — group operational types first,
+// then onboarding types. Easier to scan visually than alphabetical.
+const ACCT_WORK_TYPES: Array<{
+  workType: AcctWorkType
+  label: string
+  icon: LucideIcon
+  color: string
+  bg: string
+  border: string
+}> = (
+  [
+    "ACCT | Bookkeeping",
+    "ACCT | Payroll",
+    "ACCT | 1099s",
+    "ACCT | FP&A",
+    "ACCT | Onboarding (BKPG)",
+    "ACCT | Onboarding (PYRL)",
+  ] satisfies AcctWorkType[]
+).map((workType) => ({ workType, ...ACCT_WORK_TYPE_META[workType] }))
+
+// Sanity-check at module load: if the curated display order ever drifts
+// from the canonical constant we want to fail loudly (in dev) rather
+// than silently render fewer cards than there are real work_types.
+if (process.env.NODE_ENV !== "production") {
+  const displayed = new Set(ACCT_WORK_TYPES.map((t) => t.workType))
+  const missing = ACCT_WORK_TYPE_LIST.filter((wt) => !displayed.has(wt))
+  if (missing.length > 0) {
+    console.warn(
+      "[v0] AccountingDashboardOverview is missing display metadata for ACCT work_types:",
+      missing,
+    )
+  }
+}
 
 interface WorkTypeStats {
   workType: string

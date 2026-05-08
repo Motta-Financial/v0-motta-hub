@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { createClient } from "@/lib/supabase/server"
+import { ONBOARDING_WORK_TYPES } from "@/lib/accounting-work-types"
 
 /**
  * GET /api/departments/accounting/onboarding
@@ -38,11 +39,13 @@ import { createClient } from "@/lib/supabase/server"
  * (statuses / phases / assignees that *actually appear* in the data).
  */
 
-// Karbon stores onboarding work types with the variant in parentheses
-// (e.g. "ACCT | Onboarding (BKPG)"). We use a `LIKE 'ACCT | Onboarding%'`
-// match rather than enumerating known values so a future variant (e.g.
-// "ACCT | Onboarding (Tax)") will be picked up automatically.
-const ONBOARDING_WORK_TYPE_PREFIX = "ACCT | Onboarding"
+// Onboarding flows live under two distinct Karbon work_types:
+// "ACCT | Onboarding (BKPG)" and "ACCT | Onboarding (PYRL)". The list
+// is sourced from lib/accounting-work-types — the canonical Accounting
+// allow-list shared with every other Accounting surface in the app.
+// If the firm later approves a new onboarding flow (e.g.
+// "ACCT | Onboarding (Tax)"), add it to the constant and every
+// surface picks it up at once.
 
 type OnboardingPhase = "BKPG" | "PYRL" | "QBO" | "OTHER"
 
@@ -137,7 +140,10 @@ export async function GET(request: Request) {
       .select(
         "id, karbon_work_item_key, title, description, work_type, status, workflow_status, primary_status, secondary_status, priority, start_date, due_date, completed_date, period_start, period_end, tax_year, client_type, client_name, contact_full_name, org_name, client_group_name, assignee_name, manager_full_name, owner_full_name, client_manager_name, client_partner_name, todo_count, completed_todo_count, has_blocking_todos, fee_type, fixed_fee_amount, estimated_fee, actual_fee, budget_hours, actual_hours, karbon_url, karbon_modified_at, karbon_created_at, deleted_in_karbon_at",
       )
-      .ilike("work_type", `${ONBOARDING_WORK_TYPE_PREFIX}%`)
+      // Strict allow-list match (rather than a `LIKE 'ACCT | Onboarding%'`
+      // prefix) so an untriaged Karbon variant can't silently appear in
+      // the dashboard without explicit review.
+      .in("work_type", [...ONBOARDING_WORK_TYPES])
       .is("deleted_in_karbon_at", null)
       .order("due_date", { ascending: true, nullsFirst: false })
       .limit(500)

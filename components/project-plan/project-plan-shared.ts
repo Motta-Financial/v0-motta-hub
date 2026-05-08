@@ -4,18 +4,18 @@
 // reconcile back to the source of truth.
 import { useMemo } from "react"
 import { useKarbonWorkItems, type KarbonWorkItem } from "@/contexts/karbon-work-items-context"
+import { isAccountingWorkType } from "@/lib/accounting-work-types"
 
 // ---- ACCT scope filter
 //
 // The Project Plan view is scoped to the Accounting department, so we
-// restrict every tab to Karbon work_types that begin with the canonical
-// "ACCT | " prefix (Bookkeeping, Payroll, 1099s, FP&A, Onboarding, etc.).
-// Centralizing this lets every tab share the same filter without
-// duplicating the rule — change it here and all six tabs follow.
+// restrict every tab to the explicit list of canonical Karbon work_types
+// (Bookkeeping, Payroll, 1099s, FP&A, Onboarding (BKPG), Onboarding (PYRL))
+// defined in lib/accounting-work-types.ts. Membership is checked against
+// that allow-list rather than a "ACCT |" prefix so a new untriaged Karbon
+// work type can't sneak into the dashboards without explicit review.
 export function isAccountingWorkItem(item: KarbonWorkItem): boolean {
-  const wt = (item.work_type || item.WorkType || "").trim().toUpperCase()
-  // Trailing space matters: prevents accidental matches like "ACCTPLUS".
-  return wt.startsWith("ACCT |")
+  return isAccountingWorkType(item.work_type || item.WorkType || null)
 }
 
 // Hook used by every Project Plan tab in place of useKarbonWorkItems.
