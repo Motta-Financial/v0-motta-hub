@@ -58,6 +58,11 @@ type DebriefBodyForKarbon = {
   action_items?: ActionItemPayload[] | null
   related_clients?: RelatedClient[] | null
   related_work_items?: RelatedWorkItem[] | null
+  // Primary contact — the canonical client tag. Rendered prominently in
+  // the note body and explicitly added to the Timelines array so the
+  // note always lands on the primary client's profile timeline even when
+  // no work item is attached.
+  primary_contact?: RelatedClient | null
 }
 
 export interface KarbonDebriefNoteResult {
@@ -121,9 +126,36 @@ function buildNoteBody(
     lines.push(`<li><strong>Date of Meeting:</strong> ${escape(debriefDate)}</li>`)
   }
 
-  // Related Clients
-  const relatedClients = (body.related_clients || []).filter((c) => c.name)
+  // Primary Contact — the canonical client tag, rendered as its own line
+  // above "Related Clients" so the timeline reader sees who the debrief is
+  // FOR before scanning the supporting cast.
+  const primary = body.primary_contact
+  if (primary?.name) {
+    const typeLabel = primary.type === "organization" ? " (Org)" : ""
+    const url = buildKarbonUrl(
+      primary.type === "organization" ? "organization" : "contact",
+      primary.karbon_key,
+    )
+    const link = url
+      ? `<a href="${escape(url)}">${escape(primary.name)}</a>`
+      : escape(primary.name)
+    lines.push(`<li><strong>Primary Contact:</strong> ${link}${typeLabel}</li>`)
+  }
+
+  // Related Clients — de-duped against the primary so we don't render the
+  // same person twice. Match on Karbon key when both sides have it (most
+  // reliable across casing differences) and fall back to name otherwise.
+  const relatedClients = (body.related_clients || [])
+    .filter((c) => c.name)
+    .filter((c) => {
+      if (!primary) return true
+      if (primary.karbon_key && c.karbon_key) {
+        return c.karbon_key !== primary.karbon_key
+      }
+      return c.name !== primary.name
+    })
   if (relatedClients.length > 0) {
+    const label = primary?.name ? "Other Related Clients" : "Related Clients"
     const clientNames = relatedClients
       .map((c) => {
         const typeLabel = c.type === "organization" ? " (Org)" : c.type === "contact" ? "" : ""
@@ -136,7 +168,7 @@ function buildNoteBody(
           : `${escape(c.name)}${typeLabel}`
       })
       .join(", ")
-    lines.push(`<li><strong>Related Clients:</strong> ${clientNames}</li>`)
+    lines.push(`<li><strong>${label}:</strong> ${clientNames}</li>`)
   }
 
   // Service Lines
@@ -311,7 +343,16 @@ async function buildTimelines(
     out.push({ EntityType: entityType, EntityKey: key })
   }
 
-  // Explicit selections from the debrief form
+  // Explicit selections from the debrief form. Primary contact goes first
+  // so the resulting Timelines array is in semantic priority order (the
+  // Karbon API treats them as a set, but ordering helps when debugging).
+  if (body.primary_contact?.karbon_key) {
+    if (body.primary_contact.type === "organization") {
+      add("Organization", body.primary_contact.karbon_key)
+    } else if (body.primary_contact.type === "contact") {
+      add("Contact", body.primary_contact.karbon_key)
+    }
+  }
   for (const wi of body.related_work_items || []) {
     add("WorkItem", wi.karbon_key)
   }
@@ -389,14 +430,17 @@ export async function postDebriefNoteToKarbon(
   const hubUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
   // Subject line uses the work item name as the primary identifier, matching
-  // how the firm organizes work in Karbon. Falls back to client + date if no
-  // work item is present.
+  // how the firm organizes work in Karbon. Falls back to the primary
+  // contact name (canonical tag) before any related-client name, since the
+  // primary is the explicit "this debrief is FOR" choice.
   const primaryWorkItem = (body.related_work_items || []).find((w) => w.title)?.title
-  const primaryClient = (body.related_clients || []).find((c) => c.name)?.name
+  const primaryName =
+    body.primary_contact?.name ||
+    (body.related_clients || []).find((c) => c.name)?.name
   const subject = primaryWorkItem
     ? primaryWorkItem // Use work item name directly as subject
-    : primaryClient
-      ? `Debrief — ${primaryClient}`
+    : primaryName
+      ? `Debrief — ${primaryName}`
       : "Client Debrief"
 
   const noteBody = buildNoteBody(debrief, body, hubUrl)

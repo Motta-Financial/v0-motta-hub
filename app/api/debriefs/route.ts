@@ -66,20 +66,37 @@ export async function POST(request: NextRequest) {
     // Extract the first related client and work item for the main FK columns
     const relatedClients = body.related_clients || []
     const relatedWorkItems = body.related_work_items || []
+    // The form now sends an explicit `primary_contact` — the contact or
+    // organization the debrief is tagged TO (auto-populated from the work
+    // item's owning client in Karbon). This is the source of truth for
+    // debriefs.contact_id / debriefs.organization_id, which power every
+    // dashboard filter and email subject downstream.
+    const primaryContact = body.primary_contact || null
 
-    // Determine contact_id and organization_id from the first related client
+    // Determine contact_id and organization_id, preferring the explicit
+    // primary contact and falling back to the first related client for
+    // back-compat with any older form payloads still in flight.
     let contactId: string | null = null
     let organizationId: string | null = null
     let organizationName: string | null = null
     let karbonClientKey: string | null = null
 
-    for (const client of relatedClients) {
-      if (client.type === "contact" && !contactId) {
-        contactId = client.id
-        karbonClientKey = client.karbon_key || null
-      } else if (client.type === "organization" && !organizationId) {
-        organizationId = client.id
-        karbonClientKey = karbonClientKey || client.karbon_key || null
+    if (primaryContact?.id) {
+      if (primaryContact.type === "organization") {
+        organizationId = primaryContact.id
+      } else if (primaryContact.type === "contact") {
+        contactId = primaryContact.id
+      }
+      karbonClientKey = primaryContact.karbon_key || null
+    } else {
+      for (const client of relatedClients) {
+        if (client.type === "contact" && !contactId) {
+          contactId = client.id
+          karbonClientKey = client.karbon_key || null
+        } else if (client.type === "organization" && !organizationId) {
+          organizationId = client.id
+          karbonClientKey = karbonClientKey || client.karbon_key || null
+        }
       }
     }
 
@@ -131,6 +148,10 @@ export async function POST(request: NextRequest) {
     // Store all extra data in the action_items JSONB column
     debriefData.action_items = {
       items: body.action_items || [],
+      // Persist primary_contact alongside related_clients so it survives
+      // round-trips (edit sheet, email re-render, Karbon retry). The
+      // canonical FKs above are still the source of truth for filtering.
+      primary_contact: primaryContact,
       related_clients: relatedClients,
       related_work_items: relatedWorkItems,
       service_lines: body.services || [],
@@ -193,9 +214,15 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
     const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://mottahub-motta.vercel.app"
     const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
-    // Resolve client name for messages/subject
-    let clientName = debrief.organization_name || "a client"
-    if (debrief.contact_id) {
+    // Resolve client name for messages/subject. Order of preference:
+    //   1. The explicit primary_contact name (best — always the right tag)
+    //   2. The org name we already denormalized onto the debrief row
+    //   3. A live lookup of the joined contact
+    //   4. The concatenated related-client names (legacy fallback)
+    const primaryContact = body?.primary_contact || null
+    let clientName: string =
+      primaryContact?.name || debrief.organization_name || "a client"
+    if (!primaryContact?.name && debrief.contact_id) {
       const { data: contact } = await supabase
         .from("contacts")
         .select("full_name")
@@ -203,9 +230,16 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         .single()
       if (contact) clientName = contact.full_name
     }
-    const relatedClientNames = (body?.related_clients || []).map((c: any) => c.name).filter(Boolean)
-    if (relatedClientNames.length > 0) {
-      clientName = relatedClientNames.join(", ")
+    if (!primaryContact?.name) {
+      // Legacy fallback only — when no primary was sent, fold every related
+      // client into the displayed name (preserves old behavior for older
+      // clients still using the previous form payload shape).
+      const relatedClientNames = (body?.related_clients || [])
+        .map((c: any) => c.name)
+        .filter(Boolean)
+      if (relatedClientNames.length > 0) {
+        clientName = relatedClientNames.join(", ")
+      }
     }
 
     // ============================================
@@ -273,8 +307,28 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
         // in with the form payload. The URLs use the tenant-scoped Karbon UI
         // pattern that matches what we already store on the contacts /
         // organizations / work_items tables.
+        const primaryContactForEmail = primaryContact?.name
+          ? {
+              name: primaryContact.name,
+              type: primaryContact.type,
+              karbonUrl: buildKarbonUrl(
+                primaryContact.type === "organization" ? "organization" : "contact",
+                primaryContact.karbon_key,
+              ),
+            }
+          : null
+        // De-dupe primary out of "related" — the email renders them in
+        // separate rows, and showing the same person in both feels buggy.
+        // We match on Karbon key first (stable) then fall back to name.
         const relatedClientsForEmail = (body?.related_clients || [])
-          .filter((c: any) => c?.name)
+          .filter((c: any) => {
+            if (!c?.name) return false
+            if (!primaryContact) return true
+            if (primaryContact.karbon_key && c.karbon_key) {
+              return c.karbon_key !== primaryContact.karbon_key
+            }
+            return c.name !== primaryContact.name
+          })
           .map((c: any) => ({
             name: c.name,
             type: c.type,
@@ -319,6 +373,7 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
           feeAdjustment: body?.fee_adjustment || undefined,
           feeAdjustmentReason: body?.fee_adjustment_reason || undefined,
           followUpDate: followUpDateLabel,
+          primaryContact: primaryContactForEmail,
           relatedClients: relatedClientsForEmail,
           relatedWorkItems: relatedWorkItemsForEmail,
           debriefUrl,

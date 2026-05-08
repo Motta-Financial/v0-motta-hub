@@ -114,6 +114,7 @@ export function buildDebriefEmailHtml({
   feeAdjustment,
   feeAdjustmentReason,
   followUpDate,
+  primaryContact,
   relatedClients,
   relatedWorkItems,
   debriefUrl,
@@ -135,6 +136,14 @@ export function buildDebriefEmailHtml({
   feeAdjustment?: string
   feeAdjustmentReason?: string
   followUpDate?: string
+  // The contact/organization the debrief is canonically tagged to. Rendered
+  // as its own labeled row above "Related Clients" so partners can see at a
+  // glance who the debrief is FOR vs. who else it touches.
+  primaryContact?: {
+    name: string
+    type?: "contact" | "organization" | string
+    karbonUrl?: string | null
+  } | null
   relatedClients?: Array<{
     name: string
     type?: "contact" | "organization" | string
@@ -196,8 +205,30 @@ export function buildDebriefEmailHtml({
     `)
   }
 
-  // Related Clients (hyperlinked to Client Profile in Karbon)
+  // Primary Contact — the debrief is tagged TO this person/org. Rendered
+  // as its own row so it stands apart from the "also-mentioned" related
+  // clients below. Caller is expected to have already de-duped the primary
+  // out of `relatedClients`.
+  if (primaryContact?.name) {
+    const typeLabel =
+      primaryContact.type === "organization"
+        ? " (Organization)"
+        : primaryContact.type === "contact"
+          ? " (Contact)"
+          : ""
+    projectDetailsRows.push(`
+      <tr>
+        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Primary Contact</td>
+        <td style="padding: 8px 12px; font-size: 14px; font-weight: 600;">${renderKarbonLink(primaryContact.name, primaryContact.karbonUrl)}${typeLabel ? `<span style="color: #999; font-size: 12px; font-weight: 400;">${typeLabel}</span>` : ""}</td>
+      </tr>
+    `)
+  }
+
+  // Related Clients (hyperlinked to Client Profile in Karbon).
+  // Header label is "Other Related Clients" only when a primary is present,
+  // to make the relationship between the two rows obvious.
   if (clientLinks.length > 0) {
+    const relatedLabel = primaryContact?.name ? "Other Related Clients" : "Related Clients"
     const clientsHtml = clientLinks
       .map((c) => {
         const typeLabel = c.type === "organization" ? " (Organization)" : c.type === "contact" ? " (Contact)" : ""
@@ -206,7 +237,7 @@ export function buildDebriefEmailHtml({
       .join("<br />")
     projectDetailsRows.push(`
       <tr>
-        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">Related Clients</td>
+        <td style="padding: 8px 12px; font-size: 13px; color: #666; vertical-align: top;">${relatedLabel}</td>
         <td style="padding: 8px 12px; font-size: 14px;">${clientsHtml}</td>
       </tr>
     `)
