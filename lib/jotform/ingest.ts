@@ -6,6 +6,7 @@
  */
 import { createClient } from "@supabase/supabase-js"
 import { buildIntakeRow } from "./parse"
+import { buildFeedbackRow } from "./parse-feedback"
 import type { JotformSubmission } from "./client"
 
 function getServiceClient() {
@@ -48,6 +49,58 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
     throw new Error(`Failed to upsert intake submission ${submission.id}: ${error.message}`)
   }
   return { id: submission.id }
+}
+
+/**
+ * Idempotent upsert into `jotform_feedback_submissions`. Mirrors
+ * `upsertIntakeSubmission` so the webhook receiver can dispatch by
+ * form `kind` without caring which target table the row lands in.
+ */
+export async function upsertFeedbackSubmission(submission: JotformSubmission) {
+  const supabase = getServiceClient()
+  const formUuid = await getFormUuidByJotformId(submission.form_id)
+  const row = buildFeedbackRow(submission, formUuid)
+
+  const { error } = await supabase
+    .from("jotform_feedback_submissions")
+    .upsert(row, { onConflict: "jotform_submission_id" })
+
+  if (error) {
+    throw new Error(`Failed to upsert feedback submission ${submission.id}: ${error.message}`)
+  }
+  return { id: submission.id }
+}
+
+/**
+ * Look up a form's `kind` (intake / feedback / debrief / other) and
+ * Hub UUID by the per-form webhook secret token. Used by the webhook
+ * receiver to dispatch to the right ingest function in O(1) without
+ * baking form IDs into application code.
+ */
+export async function getFormByWebhookToken(token: string): Promise<{
+  id: string
+  jotform_form_id: string
+  kind: "intake" | "feedback" | "debrief" | "other"
+  webhook_secret: string
+} | null> {
+  const supabase = getServiceClient()
+  const { data, error } = await supabase
+    .from("jotform_forms")
+    .select("id, jotform_form_id, kind, webhook_secret")
+    .eq("webhook_secret", token)
+    .maybeSingle()
+  if (error) {
+    console.log("[v0] getFormByWebhookToken error:", error.message)
+    return null
+  }
+  if (!data) return null
+  // Defensive: an old row written before migration 046 might have a
+  // null kind even though the column has a default — coerce to
+  // 'intake' so the dispatcher still routes correctly.
+  return {
+    ...data,
+    kind: (data.kind as "intake" | "feedback" | "debrief" | "other") ?? "intake",
+  }
 }
 
 export async function recordWebhookEvent(args: {

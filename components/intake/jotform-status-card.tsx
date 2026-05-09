@@ -29,6 +29,7 @@ type Status = {
   form: {
     id: string
     title: string
+    kind?: string
     status: string | null
     live_submission_count: number | null
     stored_submission_count: number
@@ -67,8 +68,21 @@ function relativeTime(iso: string | null): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
 }
 
-export function JotformStatusCard() {
-  const { data, error, isLoading } = useSWR<Status>("/api/jotform/intake/webhook-status", fetcher, {
+/**
+ * Props:
+ *   - `formId` — Jotform form ID. Defaults to the legacy intake form
+ *      so existing call sites don't need to change. The /feedback
+ *      page passes the feedback form's ID and gets the same UI
+ *      pointed at its own status endpoint + webhook URL.
+ */
+export function JotformStatusCard({ formId }: { formId?: string } = {}) {
+  // Backward compatibility: if no formId is passed, hit the original
+  // intake-specific endpoint. Once a formId is provided we route to
+  // the generic per-form endpoint.
+  const endpoint = formId
+    ? `/api/jotform/forms/${formId}/webhook-status`
+    : "/api/jotform/intake/webhook-status"
+  const { data, error, isLoading } = useSWR<Status>(endpoint, fetcher, {
     revalidateOnFocus: true,
     refreshInterval: 60_000,
   })

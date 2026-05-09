@@ -19,26 +19,19 @@
  * re-registering the webhook URL.
  */
 import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
 import { getSubmission } from "@/lib/jotform/client"
 import { submissionFromWebhookPayload } from "@/lib/jotform/parse"
 import {
   recordWebhookEvent,
   upsertIntakeSubmission,
+  upsertFeedbackSubmission,
+  getFormByWebhookToken,
   markWebhookProcessed,
   markWebhookFailed,
 } from "@/lib/jotform/ingest"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
-
-function getServiceClient() {
-  return createClient(
-    process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY!,
-    { auth: { persistSession: false, autoRefreshToken: false } },
-  )
-}
 
 async function readPayload(req: Request): Promise<{
   formID: string | null
@@ -88,15 +81,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Missing token" }, { status: 401 })
   }
 
-  const supabase = getServiceClient()
-  const { data: formRow, error: formErr } = await supabase
-    .from("jotform_forms")
-    .select("id, jotform_form_id, webhook_secret")
-    .eq("webhook_secret", token)
-    .maybeSingle()
-
-  if (formErr || !formRow) {
-    console.log("[v0] jotform webhook bad token", { error: formErr?.message })
+  // Single point of authentication + form-kind lookup. The token is
+  // unique per form, so this is also how we route between the intake
+  // and feedback target tables without baking IDs into route paths.
+  const formRow = await getFormByWebhookToken(token)
+  if (!formRow) {
+    console.log("[v0] jotform webhook bad token")
     return NextResponse.json({ ok: false, error: "Invalid token" }, { status: 401 })
   }
 
@@ -180,9 +170,25 @@ export async function POST(req: Request) {
       submission = await getSubmission(payload.submissionID)
     }
 
-    await upsertIntakeSubmission(submission)
+    // Dispatch by form `kind`. Each kind has a denormalized target
+    // table shaped to that form's actual fields; an unknown kind
+    // still gets the raw payload preserved on `jotform_webhook_events`
+    // (recorded above) but we don't pretend to denormalize it.
+    switch (formRow.kind) {
+      case "intake":
+        await upsertIntakeSubmission(submission)
+        break
+      case "feedback":
+        await upsertFeedbackSubmission(submission)
+        break
+      default:
+        // Audit-only — log so we notice any 'debrief' / 'other'
+        // forms that get registered without a corresponding
+        // ingest path implemented.
+        console.log("[v0] jotform webhook: kind without ingest path:", formRow.kind, "form:", formRow.jotform_form_id)
+    }
     if (eventId) await markWebhookProcessed(eventId)
-    return NextResponse.json({ ok: true, submission_id: submission.id })
+    return NextResponse.json({ ok: true, submission_id: submission.id, kind: formRow.kind })
   } catch (err) {
     const msg = (err as Error).message
     console.log("[v0] jotform webhook ingest error:", msg)
