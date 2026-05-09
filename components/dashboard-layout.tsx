@@ -23,6 +23,7 @@ import {
   ChevronDown,
   ChevronRight,
   MessageSquare,
+  MessageSquareHeart,
   ListChecks,
   ShieldCheck,
   CreditCard,
@@ -101,6 +102,12 @@ const navigation = [
         icon: MessageSquare,
         children: [{ name: "New Debrief", href: "/debriefs/new", icon: NotebookPen }],
       },
+      // Client feedback flows in via the Jotform "Feedback & Referral
+      // Form". Filed under Home (alongside Debriefs) rather than under
+      // Sales because it's a relationship/health signal, not a
+      // pipeline stage. Detractors, referral leads, and testimonial-
+      // quality comments all surface here.
+      { name: "Client Feedback", href: "/feedback", icon: MessageSquareHeart },
     ],
   },
   // Sales is the proposal-to-payment lifecycle hub. Payments and the
