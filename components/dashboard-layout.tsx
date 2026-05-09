@@ -48,6 +48,7 @@ import {
   Briefcase,
   Repeat,
   Headphones,
+  Inbox,
   Send,
 } from "lucide-react"
 import {
@@ -111,6 +112,12 @@ const navigation = [
     icon: BarChart3,
     children: [
       { name: "Sales Dashboard", href: "/sales/dashboard", icon: TrendingUp },
+      // Inbound prospects from the embedded Jotform on
+      // mottafinancial.com/intake-form. Lives at the top of Sales
+      // because it's the entry point of the proposal-to-payment funnel
+      // — every intake submission either becomes a Karbon contact +
+      // Ignition proposal, or gets declined and audited later.
+      { name: "Intake Submissions", href: "/intake", icon: Inbox },
       { name: "Proposals", href: "/sales/proposals", icon: FileText },
       { name: "Invoices", href: "/sales/invoices", icon: Receipt },
       { name: "Services", href: "/sales/services", icon: Briefcase },

@@ -12,6 +12,79 @@ import type { JotformAnswer, JotformSubmission } from "./client"
 
 type AnswerMap = Record<string, JotformAnswer>
 
+/**
+ * Convert Jotform's webhook `rawRequest` payload into the same
+ * `{ qid: { name, answer, ... } }` shape returned by the API.
+ *
+ * `rawRequest` is a flat dict whose keys look like `q5_whatBest` or
+ * `q19_personalEmail` — `<qid>_<name>`. The values are the answers
+ * directly (string for simple inputs, object for fullname/phone/address,
+ * array for multi-select). This lets us ingest a webhook delivery
+ * without burning an extra API call to refetch the same data Jotform
+ * already handed us.
+ *
+ * Anything that can't be parsed as `q<digits>_<name>` is preserved
+ * under a synthetic qid so we never silently drop information; the
+ * audit log row in `jotform_webhook_events` still has the untouched
+ * payload as a final backstop.
+ */
+export function rawRequestToAnswerMap(raw: unknown): AnswerMap {
+  if (!raw || typeof raw !== "object") return {}
+  const out: AnswerMap = {}
+  let synthetic = 9000
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const m = /^q(\d+)_(.+)$/.exec(key)
+    if (m) {
+      const [, qid, name] = m
+      out[qid] = { name, answer: value as JotformAnswer["answer"] }
+    } else {
+      // Top-level meta keys (formID, submissionID, slug, etc.) live
+      // here. Skip the well-known meta keys so we don't pollute the
+      // answers map with non-question data.
+      const meta = new Set([
+        "formID",
+        "submissionID",
+        "ip",
+        "username",
+        "slug",
+        "type",
+        "webhookURL",
+        "event_id",
+        "type",
+      ])
+      if (meta.has(key)) continue
+      out[String(synthetic++)] = { name: key, answer: value as JotformAnswer["answer"] }
+    }
+  }
+  return out
+}
+
+/**
+ * Build a `JotformSubmission` (the shape `upsertIntakeSubmission`
+ * consumes) from the multipart payload Jotform delivers to webhooks.
+ * Keeps the live ingest path independent of Jotform's API for real
+ * deliveries while still letting the API path stay as a fallback.
+ */
+export function submissionFromWebhookPayload(args: {
+  formId: string
+  submissionId: string
+  rawRequest: unknown
+  ip?: string | null
+  createdAt?: string | null
+}): JotformSubmission {
+  return {
+    id: args.submissionId,
+    form_id: args.formId,
+    ip: args.ip ?? "",
+    created_at: args.createdAt ?? new Date().toISOString().slice(0, 19).replace("T", " "),
+    updated_at: null,
+    status: "ACTIVE",
+    new: "1",
+    flag: "0",
+    answers: rawRequestToAnswerMap(args.rawRequest),
+  }
+}
+
 function findByName(answers: AnswerMap, name: string): JotformAnswer | undefined {
   for (const a of Object.values(answers)) {
     if (a?.name === name) return a

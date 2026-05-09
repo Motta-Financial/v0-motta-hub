@@ -21,6 +21,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { getSubmission } from "@/lib/jotform/client"
+import { submissionFromWebhookPayload } from "@/lib/jotform/parse"
 import {
   recordWebhookEvent,
   upsertIntakeSubmission,
@@ -129,16 +130,56 @@ export async function POST(req: Request) {
     console.log("[v0] jotform webhook recordEvent error:", (err as Error).message)
   }
 
-  // Re-fetch the canonical submission via the API to get the structured
-  // `answers` map (rawRequest is a flat string-keyed dict that's awkward
-  // to parse). Shares the parser path with the backfill.
   if (!payload.submissionID) {
     if (eventId) await markWebhookFailed(eventId, "Missing submissionID in payload")
     return NextResponse.json({ ok: false, error: "Missing submissionID" }, { status: 400 })
   }
 
+  // Primary ingest path — trust the multipart `rawRequest` Jotform
+  // already handed us. This makes the webhook independent of Jotform's
+  // API uptime: if the API goes down, we still capture every
+  // submission. We only fall back to fetching from the API when
+  // `rawRequest` is missing or unparseable (e.g. malformed payload, or
+  // a webhook resend after we've changed the form schema).
   try {
-    const submission = await getSubmission(payload.submissionID)
+    let rawRequest: unknown = null
+    const r = payload.raw.rawRequest
+    if (typeof r === "string") {
+      try {
+        rawRequest = JSON.parse(r)
+      } catch {
+        rawRequest = null
+      }
+    } else if (r && typeof r === "object") {
+      rawRequest = r
+    }
+
+    let submission
+    if (rawRequest && typeof rawRequest === "object" && Object.keys(rawRequest as object).length > 0) {
+      submission = submissionFromWebhookPayload({
+        formId: payload.formID ?? formRow.jotform_form_id,
+        submissionId: payload.submissionID,
+        rawRequest,
+        ip: typeof payload.raw.ip === "string" ? (payload.raw.ip as string) : sourceIp,
+      })
+      // Drop test/synthetic submissions when the ID isn't numeric so
+      // they don't pollute production data alongside real entries.
+      // Real Jotform submission IDs are 19-digit strings.
+      if (!/^\d{10,}$/.test(payload.submissionID)) {
+        if (eventId) await markWebhookProcessed(eventId)
+        return NextResponse.json({
+          ok: true,
+          test: true,
+          message: "Synthetic submission accepted but not persisted (non-numeric ID)",
+        })
+      }
+    } else {
+      // Fallback — pull canonical answers from the Jotform API. Costs
+      // one API call but shouldn't happen for normal deliveries.
+      console.log("[v0] jotform webhook missing rawRequest, falling back to API fetch")
+      submission = await getSubmission(payload.submissionID)
+    }
+
     await upsertIntakeSubmission(submission)
     if (eventId) await markWebhookProcessed(eventId)
     return NextResponse.json({ ok: true, submission_id: submission.id })
