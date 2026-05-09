@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import {
+  extractMentionedTeamMemberIds,
+  notifyMentions,
+} from "@/lib/mentions-server"
 
 export async function GET() {
   try {
@@ -105,6 +109,28 @@ export async function POST(request: Request) {
       .single()
 
     if (error) throw error
+
+    // Fire-and-forget mention fan-out. Failures are logged inside
+    // `notifyMentions` so they can never break the POST response —
+    // the message is already saved by the time we get here.
+    if (content) {
+      const mentionedIds = await extractMentionedTeamMemberIds(supabase, content, {
+        excludeId: teamMemberId || null,
+      })
+      if (mentionedIds.length > 0) {
+        const preview = (content as string).length > 220
+          ? (content as string).slice(0, 220) + "…"
+          : (content as string)
+        notifyMentions(supabase, {
+          recipientIds: mentionedIds,
+          title: `${author} mentioned you on the Team Message Board`,
+          message: preview,
+          actionUrl: `/?tab=messages&messageId=${newMessage.id}`,
+          entityType: "message",
+          entityId: newMessage.id,
+        }).catch((err) => console.error("[messages] mention notify error:", err))
+      }
+    }
 
     return NextResponse.json(
       {

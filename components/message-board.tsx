@@ -31,6 +31,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-context"
+import { MentionTextarea } from "@/components/mentions/mention-textarea"
+import { MentionText } from "@/components/mentions/mention-text"
 
 interface Comment {
   id: string
@@ -184,6 +186,11 @@ export function MessageBoard() {
         body: JSON.stringify({
           action: "comment",
           comment: { author: displayName, content: commentText.trim() },
+          // Forward the team-member id so the server can (a) persist
+          // it on `message_comments.author_id` for future filtering and
+          // (b) exclude the commenter from their own @-mention
+          // notifications.
+          teamMemberId: teamMember?.id ?? null,
         }),
       })
 
@@ -316,11 +323,11 @@ export function MessageBoard() {
       <CardContent className="space-y-4">
         {/* Post new message */}
         <div className="space-y-2">
-          <Textarea
+          <MentionTextarea
             ref={textareaRef}
-            placeholder="Share an update with your team..."
+            placeholder="Share an update with your team... Type @ to mention a teammate."
             value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
+            onChange={setNewMessage}
             onKeyDown={handleKeyPress}
             className="min-h-[80px] resize-none"
           />
@@ -498,7 +505,9 @@ export function MessageBoard() {
                     ) : (
                       <>
                         {message.content && (
-                          <p className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">{message.content}</p>
+                          <p className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">
+                            <MentionText text={message.content} />
+                          </p>
                         )}
 
                         {message.gifUrl && (
@@ -570,7 +579,9 @@ export function MessageBoard() {
                             <span className="text-gray-500 text-xs ml-2">
                               {formatDistanceToNow(new Date(comment.timestamp), { addSuffix: true })}
                             </span>
-                            <p className="text-gray-700 mt-1">{comment.content}</p>
+                            <p className="text-gray-700 mt-1">
+                              <MentionText text={comment.content} />
+                            </p>
                           </div>
                         ))}
                       </div>
@@ -578,17 +589,26 @@ export function MessageBoard() {
 
                     {commentingOnMessage === message.id && (
                       <div className="mt-3 flex gap-2">
-                        <input
-                          type="text"
-                          placeholder="Write a comment..."
+                        {/*
+                         * Switched from <input> to <MentionTextarea> so
+                         * comments get the same @-picker as top-level
+                         * posts. We constrain it to a single visible
+                         * row + auto-grow on overflow so it still feels
+                         * like an inline reply field, not a giant
+                         * compose box.
+                         */}
+                        <MentionTextarea
+                          rows={1}
+                          placeholder="Write a comment... Type @ to mention a teammate."
                           value={commentText}
-                          onChange={(e) => setCommentText(e.target.value)}
+                          onChange={setCommentText}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault()
                               handleAddComment(message.id)
                             }
                           }}
-                          className="flex-1 px-3 py-2 border rounded-md text-sm"
+                          className="flex-1 min-h-[40px] resize-none text-sm"
                         />
                         <Button size="sm" onClick={() => handleAddComment(message.id)} disabled={!commentText.trim()}>
                           Post

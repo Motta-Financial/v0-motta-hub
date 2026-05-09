@@ -34,6 +34,7 @@ import {
   Star,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { MentionTextarea } from "@/components/mentions/mention-textarea"
 
 // Types
 interface Client {
@@ -1139,10 +1140,19 @@ export function DebriefForm() {
           {/* Meeting Notes */}
           <div className="space-y-2">
             <Label>Meeting Notes</Label>
-            <Textarea
-              placeholder="Enter detailed notes from the meeting..."
+            {/*
+             * Meeting Notes get the @-mention picker so partners can
+             * tag a teammate inline ("@Dat please confirm the AGI") and
+             * the rendered debrief detail view will highlight the chip.
+             * The other freeform fields below (fee adjustment / research
+             * topics) intentionally use plain Textareas because they
+             * don't render in surfaces where mention notifications make
+             * sense.
+             */}
+            <MentionTextarea
+              placeholder="Enter detailed notes from the meeting... Type @ to mention a teammate."
               value={formData.notes}
-              onChange={(e) => setFormData((prev) => ({ ...prev, notes: e.target.value }))}
+              onChange={(value) => setFormData((prev) => ({ ...prev, notes: value }))}
               className="min-h-[150px]"
             />
           </div>

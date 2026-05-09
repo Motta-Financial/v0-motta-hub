@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import {
+  extractMentionedTeamMemberIds,
+  notifyMentions,
+} from "@/lib/mentions-server"
 
 // Add reaction to message
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -46,11 +50,37 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             .join("")
             .toUpperCase(),
           content: comment.content,
+          author_id: teamMemberId || null,
         })
         .select()
         .single()
 
       if (error) throw error
+
+      // Fire-and-forget mention fan-out for the new comment. Resolves
+      // every "@FirstName" in the comment text against the active
+      // team-members directory and creates an in-app notification for
+      // each — minus the comment author themselves.
+      if (comment.content) {
+        extractMentionedTeamMemberIds(supabase, comment.content, {
+          excludeId: teamMemberId || null,
+        })
+          .then((mentionedIds) => {
+            if (mentionedIds.length === 0) return
+            const preview = (comment.content as string).length > 220
+              ? (comment.content as string).slice(0, 220) + "…"
+              : (comment.content as string)
+            return notifyMentions(supabase, {
+              recipientIds: mentionedIds,
+              title: `${comment.author} mentioned you in a Message Board comment`,
+              message: preview,
+              actionUrl: `/?tab=messages&messageId=${id}`,
+              entityType: "message_comment",
+              entityId: newComment.id,
+            })
+          })
+          .catch((err) => console.error("[message-comments] mention notify error:", err))
+      }
 
       return NextResponse.json({
         id: newComment.id,
