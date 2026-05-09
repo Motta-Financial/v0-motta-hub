@@ -27,6 +27,7 @@ import {
   FileText,
   Flame,
   Globe,
+  Inbox,
   Mail,
   MapPin,
   MessageSquare,
@@ -326,6 +327,34 @@ interface ClientBundle {
     team_member_full_name: string | null
     created_at: string | null
   }>
+  /**
+   * Jotform intake submissions linked to this client by the
+   * auto-matcher in lib/jotform/match-client.ts (or pinned manually
+   * via the intake admin queue). Renders in the Intakes tab as a
+   * collapsible list mirroring the Debriefs section, since both are
+   * "client said something to us in their own words" artifacts.
+   */
+  intakeSubmissions: Array<{
+    id: string
+    jotform_submission_id: string
+    jotform_created_at: string | null
+    submitter_full_name: string | null
+    submitter_email: string | null
+    submitter_phone: string | null
+    service_focus: string | null
+    services_requested: string[] | null
+    business_name: string | null
+    business_state: string | null
+    filing_status: string | null
+    dependents_count: number | null
+    primary_residence_state: string | null
+    hear_about_us: string | null
+    questions_or_concerns: string | null
+    lead_status: string | null
+    link_method: "auto_email" | "auto_business_name" | "auto_name" | "manual" | null
+    linked_at: string | null
+    raw_answers: Record<string, unknown> | null
+  }>
   clientGroups: Array<{
     id: string
     name: string | null
@@ -363,6 +392,7 @@ interface ClientBundle {
     totalDocuments: number
     totalMeetings: number
     totalDebriefs: number
+    totalIntakeSubmissions: number
     totalInvoices: number
     totalInvoicedAmount: number
     totalUnpaidAmount: number
@@ -451,6 +481,10 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
   const [collapsedDebriefGroups, setCollapsedDebriefGroups] = useState<Set<string>>(
     () => new Set(),
   )
+  // Each intake submission is collapsible — default-collapsed so a
+  // long history of submissions doesn't dominate the tab. The Set
+  // shape mirrors expandedDebriefIds for symmetry / muscle-memory.
+  const [expandedIntakeIds, setExpandedIntakeIds] = useState<Set<string>>(() => new Set())
   const [expandedDebriefIds, setExpandedDebriefIds] = useState<Set<string>>(
     () => new Set(),
   )
@@ -676,6 +710,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     documents = [],
     karbonTimesheets = [],
     debriefs = [],
+    intakeSubmissions = [],
     karbonNotes = [],
     manualNotes = [],
     serviceLinesUsed = [],
@@ -880,6 +915,19 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </Badge>
             ) : null}
           </TabsTrigger>
+          {/* Intake submissions live next to Debriefs because both
+              are "client speaks to us in their own words" artifacts.
+              Hidden when the client has zero linked submissions to
+              avoid the empty-tab clutter on long-time clients who
+              joined before the Jotform existed. */}
+          {stats.totalIntakeSubmissions > 0 ? (
+            <TabsTrigger value="intakes">
+              Intakes
+              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
+                {stats.totalIntakeSubmissions}
+              </Badge>
+            </TabsTrigger>
+          ) : null}
           <TabsTrigger value="proposals">
             Proposals
             {stats.totalProposals > 0 ? (
@@ -1646,6 +1694,221 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                               )
                             })}
                           </ul>
+                        ) : null}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── Intake Submissions (Jotform) ──────────────────────────────── */}
+        {/* Mirrors the Debriefs tab visually: each submission is a
+            collapsible row keyed by its submitted-at date. Click a
+            row to reveal the full Q/A breakdown captured at the time
+            of intake — useful for understanding what the client
+            originally asked for vs. what they ended up engaging on.
+            Submissions reach this tab via lib/jotform/match-client.ts
+            (auto-link on email or business name) and via the manual
+            "Link to client" button on /sales/intake. */}
+        <TabsContent value="intakes" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center justify-between">
+                <span>Intake Submissions ({intakeSubmissions.length})</span>
+                <Link
+                  href="/sales/intake"
+                  className="text-xs font-normal text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                >
+                  Open Intake Queue
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {intakeSubmissions.length === 0 ? (
+                <EmptyState message="No intake submissions linked to this client yet." />
+              ) : (
+                <ul className="divide-y">
+                  {intakeSubmissions.map((sub) => {
+                    const isOpen = expandedIntakeIds.has(sub.id)
+                    const submittedAt = sub.jotform_created_at
+                    // Surface a brief one-line preview when the row is
+                    // collapsed. Prefer the free-text "questions or
+                    // concerns" field because it's where prospects say
+                    // the actual interesting thing; fall back to the
+                    // service focus if that's blank.
+                    const preview =
+                      (sub.questions_or_concerns?.replace(/\s+/g, " ").trim() ||
+                        sub.service_focus ||
+                        "")
+                    return (
+                      <li key={sub.id} className="bg-background">
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/40 transition-colors"
+                          onClick={() =>
+                            setExpandedIntakeIds((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(sub.id)) next.delete(sub.id)
+                              else next.add(sub.id)
+                              return next
+                            })
+                          }
+                        >
+                          {isOpen ? (
+                            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          ) : (
+                            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          )}
+                          <Inbox className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <span className="text-sm font-medium whitespace-nowrap">
+                            {submittedAt ? formatDate(submittedAt) : "—"}
+                          </span>
+                          {sub.service_focus ? (
+                            <Badge variant="outline" className="h-5 px-1.5 text-xs whitespace-nowrap">
+                              {sub.service_focus}
+                            </Badge>
+                          ) : null}
+                          {sub.lead_status ? (
+                            <Badge variant="secondary" className="h-5 px-1.5 text-xs whitespace-nowrap">
+                              {sub.lead_status}
+                            </Badge>
+                          ) : null}
+                          {/* Show whether this link came from the
+                              auto-matcher or a human pin so a CSM can
+                              decide how much to trust it at a glance. */}
+                          {sub.link_method && sub.link_method !== "manual" ? (
+                            <Badge
+                              variant="outline"
+                              className="h-5 px-1.5 text-xs whitespace-nowrap text-muted-foreground"
+                              title={`Linked automatically via ${sub.link_method.replace("auto_", "").replace("_", " ")}`}
+                            >
+                              auto
+                            </Badge>
+                          ) : null}
+                          {!isOpen && preview ? (
+                            <span className="text-xs text-muted-foreground truncate hidden md:inline flex-1">
+                              {preview.slice(0, 140)}
+                            </span>
+                          ) : null}
+                        </button>
+                        {isOpen ? (
+                          <div className="px-6 pb-4 pt-1 space-y-3 text-sm">
+                            {/* Submitter identity — included on every
+                                row even though it's redundant for the
+                                client we're already on the page for,
+                                because intake forms can be filled out
+                                by spouses, accountants, or assistants
+                                on the client's behalf. */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                              {sub.submitter_full_name ? (
+                                <div>
+                                  <span className="text-muted-foreground">Submitter: </span>
+                                  <span className="font-medium">{sub.submitter_full_name}</span>
+                                </div>
+                              ) : null}
+                              {sub.submitter_email ? (
+                                <div>
+                                  <span className="text-muted-foreground">Email: </span>
+                                  <a href={`mailto:${sub.submitter_email}`} className="font-medium hover:underline">
+                                    {sub.submitter_email}
+                                  </a>
+                                </div>
+                              ) : null}
+                              {sub.submitter_phone ? (
+                                <div>
+                                  <span className="text-muted-foreground">Phone: </span>
+                                  <a href={`tel:${sub.submitter_phone}`} className="font-medium hover:underline">
+                                    {sub.submitter_phone}
+                                  </a>
+                                </div>
+                              ) : null}
+                              {sub.business_name ? (
+                                <div>
+                                  <span className="text-muted-foreground">Business: </span>
+                                  <span className="font-medium">{sub.business_name}</span>
+                                  {sub.business_state ? (
+                                    <span className="text-muted-foreground"> ({sub.business_state})</span>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                              {sub.filing_status ? (
+                                <div>
+                                  <span className="text-muted-foreground">Filing status: </span>
+                                  <span className="font-medium">{sub.filing_status}</span>
+                                </div>
+                              ) : null}
+                              {sub.dependents_count != null ? (
+                                <div>
+                                  <span className="text-muted-foreground">Dependents: </span>
+                                  <span className="font-medium">{sub.dependents_count}</span>
+                                </div>
+                              ) : null}
+                              {sub.primary_residence_state ? (
+                                <div>
+                                  <span className="text-muted-foreground">Residence state: </span>
+                                  <span className="font-medium">{sub.primary_residence_state}</span>
+                                </div>
+                              ) : null}
+                              {sub.hear_about_us ? (
+                                <div>
+                                  <span className="text-muted-foreground">Heard about us: </span>
+                                  <span className="font-medium">{sub.hear_about_us}</span>
+                                </div>
+                              ) : null}
+                            </div>
+
+                            {sub.services_requested && sub.services_requested.length > 0 ? (
+                              <div>
+                                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                                  Services Requested
+                                </h4>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {sub.services_requested.map((s, i) => (
+                                    <Badge key={i} variant="secondary" className="text-xs">
+                                      {s}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {sub.questions_or_concerns ? (
+                              <div>
+                                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                                  Questions / Concerns
+                                </h4>
+                                <p className="whitespace-pre-wrap text-foreground/90 leading-relaxed">
+                                  {sub.questions_or_concerns}
+                                </p>
+                              </div>
+                            ) : null}
+
+                            <div className="flex items-center gap-3 pt-1 text-xs text-muted-foreground">
+                              <Link
+                                href={`/sales/intake?id=${sub.id}`}
+                                className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                                Open full intake
+                              </Link>
+                              <span>·</span>
+                              <span>
+                                Submission {sub.jotform_submission_id}
+                              </span>
+                              {sub.linked_at ? (
+                                <>
+                                  <span>·</span>
+                                  <span title={sub.linked_at}>
+                                    Linked {formatDistanceToNow(parseISO(sub.linked_at), { addSuffix: true })}
+                                  </span>
+                                </>
+                              ) : null}
+                            </div>
+                          </div>
                         ) : null}
                       </li>
                     )

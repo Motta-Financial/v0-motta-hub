@@ -127,6 +127,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       groupMembersRes,
       contactOrgsRes,
       ignitionClientsRes,
+      intakeSubmissionsRes,
     ] = await Promise.all([
       // Work items: filter by karbon_client_key (always populated) — covers both
       // contact and organization clients in one query.
@@ -326,6 +327,26 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         .or(`${idCol}.eq.${entityId}`)
         .order("ignition_updated_at", { ascending: false, nullsFirst: false })
         .limit(20),
+
+      // Jotform intake submissions — every form filled by this client
+      // (or filled on this org's behalf), pre-linked by the auto-matcher
+      // in lib/jotform/match-client.ts. Surfaced on the profile so a
+      // CSM can see the original "what does the prospect want" answers
+      // alongside the Karbon work items those answers ultimately drove.
+      supabase
+        .from("jotform_intake_submissions")
+        .select(
+          `id, jotform_submission_id, jotform_created_at,
+           submitter_full_name, submitter_email, submitter_phone,
+           service_focus, services_requested, business_name, business_state,
+           filing_status, dependents_count, primary_residence_state,
+           hear_about_us, questions_or_concerns,
+           lead_status, link_method, linked_at,
+           raw_answers`,
+        )
+        .or(`${idCol}.eq.${entityId}`)
+        .order("jotform_created_at", { ascending: false, nullsFirst: false })
+        .limit(20),
     ])
 
     const workItems = workItemsRes.data || []
@@ -414,6 +435,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const debriefs = debriefsRes.data || []
     const groupMembers = (groupMembersRes.data || []) as any[]
     const contactOrgs = (contactOrgsRes.data || []) as any[]
+    const intakeSubmissions = intakeSubmissionsRes.data || []
 
     // ── Derived data ───────────────────────────────────────────────────────
 
@@ -467,6 +489,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       totalDocuments: documents.length,
       totalMeetings: meetings.length,
       totalDebriefs: debriefs.length,
+      totalIntakeSubmissions: intakeSubmissions.length,
       // Unified invoice stats span Karbon + Ignition + legacy HubSpot.
       totalInvoices: unifiedInvoices.length,
       totalInvoicedAmount: unifiedInvoices.reduce(
@@ -715,6 +738,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       documents,
       meetings,
       debriefs,
+      intakeSubmissions,
       teamMembers,
       serviceLinesUsed,
       clientGroups,

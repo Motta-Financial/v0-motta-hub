@@ -7,6 +7,7 @@
 import { createClient } from "@supabase/supabase-js"
 import { buildIntakeRow } from "./parse"
 import { buildFeedbackRow } from "./parse-feedback"
+import { autoLinkIntakeSubmission } from "./match-client"
 import type { JotformSubmission } from "./client"
 
 function getServiceClient() {
@@ -48,6 +49,30 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
   if (error) {
     throw new Error(`Failed to upsert intake submission ${submission.id}: ${error.message}`)
   }
+
+  // Auto-match the freshly-upserted row to a contact / organization.
+  // This is best-effort: a match failure shouldn't fail the webhook,
+  // because the row is already safely persisted and the bulk
+  // matcher (scripts/jotform-intake-link-clients.mjs) can sweep up
+  // any misses later. Logged but not thrown.
+  try {
+    // Re-read so we have the row's UUID + current link state. We
+    // upserted by `jotform_submission_id` so that's our key here.
+    const { data: persisted } = await supabase
+      .from("jotform_intake_submissions")
+      .select("id, submitter_email, submitter_full_name, business_name, contact_id, organization_id, link_method")
+      .eq("jotform_submission_id", submission.id)
+      .maybeSingle()
+    if (persisted) {
+      const result = await autoLinkIntakeSubmission(supabase, persisted.id, persisted)
+      if (result?.link_method) {
+        console.log(`[v0] auto-linked intake ${submission.id} via ${result.link_method}: ${result.reason}`)
+      }
+    }
+  } catch (err) {
+    console.log("[v0] intake auto-link skipped:", (err as Error).message)
+  }
+
   return { id: submission.id }
 }
 
