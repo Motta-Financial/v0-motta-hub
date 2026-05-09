@@ -16,6 +16,7 @@
 
 import { useMemo, useState } from "react"
 import useSWR from "swr"
+import { JotformStatusCard } from "./jotform-status-card"
 import {
   Building2,
   CalendarDays,
@@ -214,6 +215,16 @@ export function IntakeList() {
           Refresh
         </Button>
       </header>
+
+      {/*
+       * Jotform Integration status — sits between the page header
+       * and the KPIs so an admin opening this page can confirm in
+       * one glance that the webhook is registered, deliveries are
+       * landing, and there are no rogue endpoints attached to the
+       * form (the n8n one was deleted, but if anyone re-adds a test
+       * webhook later this card will flag it in amber).
+       */}
+      <JotformStatusCard />
 
       {/* ───────────────────────── KPIs ───────────────────────── */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
