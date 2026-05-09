@@ -49,6 +49,7 @@ import {
   ClientPicker,
   type ClientPickerValue,
 } from "@/components/clients/client-picker"
+import { MentionTextarea } from "@/components/mentions/mention-textarea"
 
 interface ActionItem {
   description: string
@@ -468,12 +469,17 @@ export function DebriefEditSheet({ debrief, open, onOpenChange, onSaved }: Props
           {/* ─── Notes ────────────────────────────────────────────────── */}
           <section className="flex flex-col gap-2">
             <Label htmlFor="debrief-notes">Notes</Label>
-            <Textarea
+            {/*
+             * @-aware textarea — same picker UX as the post / comment
+             * surfaces. Type "@" to mention a teammate; mentions render
+             * as highlighted chips wherever the notes are displayed.
+             */}
+            <MentionTextarea
               id="debrief-notes"
               value={notes}
-              onChange={(e) => setNotes(e.target.value)}
+              onChange={setNotes}
               rows={6}
-              placeholder="Meeting notes, takeaways, decisions..."
+              placeholder="Meeting notes, takeaways, decisions... Type @ to mention a teammate."
             />
           </section>
 

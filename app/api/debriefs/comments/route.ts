@@ -5,6 +5,7 @@ import {
   resolveRecipientsForCategory,
   sendEmail,
 } from "@/lib/email"
+import { extractMentionedTeamMemberIds } from "@/lib/mentions-server"
 
 function isTableNotFoundError(error: any): boolean {
   if (!error) return false
@@ -155,12 +156,29 @@ async function notifyDebriefParticipants(
     .eq("debrief_id", debriefId)
 
   // Build a deduped recipient set: original author + everyone who previously
-  // commented, MINUS the person who just commented.
+  // commented + anyone explicitly @-mentioned in the new comment, MINUS
+  // the person who just commented.
   const recipientIds = new Set<string>()
   if (debrief.created_by_id) recipientIds.add(debrief.created_by_id)
   for (const c of priorComments || []) {
     if (c.author_id) recipientIds.add(c.author_id)
   }
+
+  // Pull explicit @-mentions out of the comment body. We notify
+  // mentioned users even if they weren't previously subscribed to
+  // this debrief — the whole point of a mention is "I am pulling you
+  // in specifically." `extractMentionedTeamMemberIds` already excludes
+  // the comment author so they don't ping themselves.
+  let mentionedIds: string[] = []
+  try {
+    mentionedIds = await extractMentionedTeamMemberIds(supabase, content, {
+      excludeId: authorId,
+    })
+    for (const id of mentionedIds) recipientIds.add(id)
+  } catch (err) {
+    console.error("[debrief-comments] mention extraction failed:", err)
+  }
+
   recipientIds.delete(authorId)
   if (recipientIds.size === 0) return
 
@@ -180,17 +198,27 @@ async function notifyDebriefParticipants(
   const debriefUrl = `${siteUrl}/debriefs?id=${debriefId}`
   const preview = content.length > 220 ? content.slice(0, 220) + "…" : content
 
-  // 1. In-app notifications (always created, regardless of email opt-out)
-  const inAppRows = idsArr.map((teamMemberId) => ({
-    team_member_id: teamMemberId,
-    notification_type: "debrief",
-    entity_type: "debrief",
-    entity_id: debriefId,
-    title: `New comment on debrief — ${clientName}`,
-    message: `${authorName} commented: "${preview}"`,
-    action_url: `/?tab=debriefs&id=${debriefId}`,
-    is_read: false,
-  }))
+  // 1. In-app notifications (always created, regardless of email opt-out).
+  // Mentioned users get a more specific title so the bell-icon list
+  // visually distinguishes "you were tagged" from "a thread you're in
+  // got a new reply" — both are signals worth keeping but the former
+  // is higher priority.
+  const mentionedSet = new Set(mentionedIds)
+  const inAppRows = idsArr.map((teamMemberId) => {
+    const wasMentioned = mentionedSet.has(teamMemberId)
+    return {
+      team_member_id: teamMemberId,
+      notification_type: wasMentioned ? "mention" : "debrief",
+      entity_type: "debrief",
+      entity_id: debriefId,
+      title: wasMentioned
+        ? `${authorName} mentioned you in a debrief — ${clientName}`
+        : `New comment on debrief — ${clientName}`,
+      message: `${authorName} commented: "${preview}"`,
+      action_url: `/?tab=debriefs&id=${debriefId}`,
+      is_read: false,
+    }
+  })
   await supabase.from("notifications").insert(inAppRows)
 
   // 2. Email — preference-aware

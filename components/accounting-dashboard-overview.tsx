@@ -89,6 +89,24 @@ const ACCT_WORK_TYPE_META: Record<
     bg: "bg-pink-50",
     border: "border-pink-200",
   },
+  // NFP outsourced engagements roll into the same Accounting dashboards
+  // as the ACCT|… types — split out as their own meta so they read as
+  // distinct cards (slate accent) instead of being collapsed into the
+  // Bookkeeping / Onboarding tiles above.
+  "Outsourced (NFP) | Bookkeeping": {
+    label: "NFP Bookkeeping",
+    icon: FileText,
+    color: "text-slate-600",
+    bg: "bg-slate-50",
+    border: "border-slate-200",
+  },
+  "Outsourced (NFP) | Onboarding": {
+    label: "NFP Onboarding",
+    icon: Users,
+    color: "text-slate-600",
+    bg: "bg-slate-50",
+    border: "border-slate-200",
+  },
 }
 
 // Display order for the breakdown cards — group operational types first,
@@ -108,6 +126,8 @@ const ACCT_WORK_TYPES: Array<{
     "ACCT | FP&A",
     "ACCT | Onboarding (BKPG)",
     "ACCT | Onboarding (PYRL)",
+    "Outsourced (NFP) | Bookkeeping",
+    "Outsourced (NFP) | Onboarding",
   ] satisfies AcctWorkType[]
 ).map((workType) => ({ workType, ...ACCT_WORK_TYPE_META[workType] }))
 
@@ -162,12 +182,15 @@ export function AccountingDashboardOverview({
   const fetchStats = async () => {
     setRefreshing(true)
     try {
-      // Pull ALL active ACCT | * work items in one request. The new
-      // `workTypePrefix` filter on /api/supabase/work-items matches by
-      // work_type column (Karbon's canonical categorization) — much more
-      // accurate than the prior title-matching which missed Payroll, 1099s,
-      // FP&A, and both onboarding subtypes.
-      const response = await fetch(`/api/supabase/work-items?workTypePrefix=ACCT | &status=active`)
+      // Pull every active Accounting work item in a single request.
+      // We pass the canonical allow-list (ACCT | * + the two
+      // Outsourced (NFP) | * types) via the plural `workTypes` filter
+      // — strictly more accurate than the previous `workTypePrefix`
+      // which would silently drop the NFP rows because they don't
+      // start with "ACCT | ".
+      const response = await fetch(
+        `/api/supabase/work-items?workTypes=${encodeURIComponent(ACCT_WORK_TYPE_LIST.join(","))}&status=active`,
+      )
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }

@@ -5,7 +5,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import {
   Dialog,
@@ -36,6 +35,8 @@ import {
 import { useUser } from "@/contexts/user-context"
 import { formatDistanceToNow } from "date-fns"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { MentionTextarea } from "@/components/mentions/mention-textarea"
+import { MentionText } from "@/components/mentions/mention-text"
 
 interface ActionItem {
   id: string
@@ -610,7 +611,9 @@ export function ClientServiceDebriefs() {
                                     {formatDistanceToNow(new Date(comment.created_at), { addSuffix: true })}
                                   </span>
                                 </div>
-                                <p className="text-sm text-gray-700 mt-1">{comment.content}</p>
+                                <p className="text-sm text-gray-700 mt-1">
+                                  <MentionText text={comment.content} />
+                                </p>
                               </div>
                             </div>
                           ))}
@@ -629,10 +632,12 @@ export function ClientServiceDebriefs() {
                           </AvatarFallback>
                         </Avatar>
                         <div className="flex-1 flex gap-2">
-                          <Textarea
-                            placeholder="Add a comment..."
+                          <MentionTextarea
+                            placeholder="Add a comment... Type @ to mention a teammate."
                             value={commentText[debrief.id] || ""}
-                            onChange={(e) => setCommentText((prev) => ({ ...prev, [debrief.id]: e.target.value }))}
+                            onChange={(value) =>
+                              setCommentText((prev) => ({ ...prev, [debrief.id]: value }))
+                            }
                             className="min-h-[60px] text-sm"
                           />
                           <Button
