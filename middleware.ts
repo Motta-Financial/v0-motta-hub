@@ -57,7 +57,14 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/api/karbon/webhooks") ||
     // Calendly POSTs webhook events here; signature is verified inside
     // the route handler via the per-subscription signing key.
-    pathname === "/api/calendly/webhook"
+    pathname === "/api/calendly/webhook" ||
+    // Jotform POSTs new intake-form submissions here. Free-tier Jotform
+    // doesn't sign payloads, so the route handler instead requires a
+    // per-form `?token=` query param that matches the row's
+    // `webhook_secret` in `jotform_forms`. Without this allow-list entry
+    // the auth middleware would 401 every Jotform delivery and the
+    // intake pipeline would silently fail.
+    pathname === "/api/jotform/webhook"
   const isCron = pathname.startsWith("/api/cron")
   // Calendly's OAuth provider sends the user back to /api/calendly/oauth/callback
   // before our app session cookie has been issued — exempt only the callback,

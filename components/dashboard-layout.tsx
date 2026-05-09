@@ -23,6 +23,7 @@ import {
   ChevronDown,
   ChevronRight,
   MessageSquare,
+  MessageSquareHeart,
   ListChecks,
   ShieldCheck,
   CreditCard,
@@ -48,6 +49,7 @@ import {
   Briefcase,
   Repeat,
   Headphones,
+  Inbox,
   Send,
 } from "lucide-react"
 import {
@@ -111,6 +113,16 @@ const navigation = [
     icon: BarChart3,
     children: [
       { name: "Sales Dashboard", href: "/sales/dashboard", icon: TrendingUp },
+      // Inbound prospects from the embedded Jotform on
+      // mottafinancial.com/intake-form. Sits right after the dashboard
+      // because it's the entry point of the proposal-to-payment funnel
+      // — every intake submission either becomes a Karbon contact +
+      // Ignition proposal, or gets declined and audited later.
+      { name: "Intake", href: "/sales/intake", icon: Inbox },
+      // Client feedback drives referrals (new pipeline) and detractor
+      // recovery (retention) — both sales motions, so this lives next
+      // to Intake under Sales rather than under Home.
+      { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
       { name: "Proposals", href: "/sales/proposals", icon: FileText },
       { name: "Invoices", href: "/sales/invoices", icon: Receipt },
       { name: "Services", href: "/sales/services", icon: Briefcase },
