@@ -102,12 +102,6 @@ const navigation = [
         icon: MessageSquare,
         children: [{ name: "New Debrief", href: "/debriefs/new", icon: NotebookPen }],
       },
-      // Client feedback flows in via the Jotform "Feedback & Referral
-      // Form". Filed under Home (alongside Debriefs) rather than under
-      // Sales because it's a relationship/health signal, not a
-      // pipeline stage. Detractors, referral leads, and testimonial-
-      // quality comments all surface here.
-      { name: "Client Feedback", href: "/feedback", icon: MessageSquareHeart },
     ],
   },
   // Sales is the proposal-to-payment lifecycle hub. Payments and the
@@ -120,11 +114,15 @@ const navigation = [
     children: [
       { name: "Sales Dashboard", href: "/sales/dashboard", icon: TrendingUp },
       // Inbound prospects from the embedded Jotform on
-      // mottafinancial.com/intake-form. Lives at the top of Sales
+      // mottafinancial.com/intake-form. Sits right after the dashboard
       // because it's the entry point of the proposal-to-payment funnel
       // — every intake submission either becomes a Karbon contact +
       // Ignition proposal, or gets declined and audited later.
-      { name: "Intake Submissions", href: "/intake", icon: Inbox },
+      { name: "Intake", href: "/sales/intake", icon: Inbox },
+      // Client feedback drives referrals (new pipeline) and detractor
+      // recovery (retention) — both sales motions, so this lives next
+      // to Intake under Sales rather than under Home.
+      { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
       { name: "Proposals", href: "/sales/proposals", icon: FileText },
       { name: "Invoices", href: "/sales/invoices", icon: Receipt },
       { name: "Services", href: "/sales/services", icon: Briefcase },

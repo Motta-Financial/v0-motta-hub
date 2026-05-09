@@ -1,26 +1,13 @@
-import { DashboardLayout } from "@/components/dashboard-layout"
-import { FeedbackList } from "@/components/feedback/feedback-list"
+import { redirect } from "next/navigation"
 
 /**
- * /feedback — admin queue for the Jotform Feedback & Referral form.
- * Lives next to /intake conceptually (both are Jotform-driven client
- * touchpoints), but is filed under Home → Debriefs in the sidebar
- * because it's a client-feedback channel rather than a sales-pipeline
- * stage.
+ * /feedback — legacy URL kept alive only as a permanent redirect.
  *
- * No server data fetched here — FeedbackList drives everything via
- * SWR against `/api/jotform/feedback*` so triage edits revalidate the
- * list in place without a route refresh.
+ * The page itself now lives at /sales/feedback (filed under Sales
+ * because client feedback drives referrals and detractor recovery —
+ * both sales motions). This stub keeps any old bookmarks or links
+ * working with a clean 308 redirect.
  */
-export const metadata = {
-  title: "Client Feedback | Motta Hub",
-  description: "Triage client feedback submissions from the Jotform Feedback & Referral form.",
-}
-
-export default function FeedbackPage() {
-  return (
-    <DashboardLayout>
-      <FeedbackList />
-    </DashboardLayout>
-  )
+export default function FeedbackLegacyRedirect() {
+  redirect("/sales/feedback")
 }

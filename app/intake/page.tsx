@@ -1,21 +1,15 @@
-import { DashboardLayout } from "@/components/dashboard-layout"
-import { IntakeList } from "@/components/intake/intake-list"
+import { redirect } from "next/navigation"
 
 /**
- * /intake — admin queue for the embedded Jotform intake form on
- * mottafinancial.com. Lists every submission, supports filter +
- * search, and opens a side sheet with the full Q/A breakdown plus
- * triage controls (status, owner, notes).
+ * /intake — legacy URL kept alive only as a permanent redirect.
+ *
+ * The page itself now lives at /sales/intake (filed under the Sales
+ * section in the sidebar, alongside /sales/feedback, /sales/proposals,
+ * etc.). Anyone with a bookmarked link, an external email reference,
+ * or a stale browser tab on /intake gets a clean 308 redirect instead
+ * of a 404. Safe to delete this stub once we're confident no consumers
+ * still point at the old path.
  */
-export const metadata = {
-  title: "Intake Submissions | Motta Hub",
-  description: "Triage prospects who submitted the embedded intake form.",
-}
-
-export default function IntakePage() {
-  return (
-    <DashboardLayout>
-      <IntakeList />
-    </DashboardLayout>
-  )
+export default function IntakeLegacyRedirect() {
+  redirect("/sales/intake")
 }
