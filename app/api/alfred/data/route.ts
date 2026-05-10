@@ -5,8 +5,12 @@ import {
   TABLE_SCHEMAS,
   type AllowedTable,
 } from "@/lib/alfred/allowed-tables"
+import { requireAlfredAuth } from "@/lib/alfred/auth-guard"
 
 export async function GET(request: NextRequest) {
+  const authError = await requireAlfredAuth(request)
+  if (authError) return authError
+
   const searchParams = request.nextUrl.searchParams
   const table = searchParams.get("table") as AllowedTable | null
   const query = searchParams.get("query") // For search queries
@@ -146,6 +150,9 @@ function getSearchColumns(table: AllowedTable): string[] {
 
 // POST endpoint for complex queries
 export async function POST(request: NextRequest) {
+  const authError = await requireAlfredAuth(request)
+  if (authError) return authError
+
   try {
     const body = await request.json()
     const {

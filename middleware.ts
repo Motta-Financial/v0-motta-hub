@@ -59,7 +59,15 @@ export async function middleware(request: NextRequest) {
   // Public auth API: /api/auth/forgot-password is the entrypoint for the
   // self-service password reset flow and must be reachable without a session.
   const isPublicAuthApi = pathname.startsWith("/api/auth/forgot-password")
-  const isPublicApi = pathname.startsWith("/api/alfred") || isPublicAuthApi
+  // ALFRED public-API surface. Previously the entire `/api/alfred/*`
+  // subtree was exempt, which exposed 46+ Supabase tables to anyone with
+  // the URL. Only `/api/alfred/chat` remains exempt here -- the chat
+  // route handles its own session-based auth. The data REST endpoints
+  // (`/data`, `/schema`, `/search`, `/stats`) now go through the normal
+  // middleware path AND are guarded inside their own handlers via
+  // `requireAlfredAuth()` (lib/alfred/auth-guard.ts), which accepts
+  // either a Supabase session OR an `x-alfred-secret` header.
+  const isPublicApi = pathname.startsWith("/api/alfred/chat") || isPublicAuthApi
   const isWebhook =
     pathname.startsWith("/api/webhooks") ||
     pathname.startsWith("/api/karbon/webhooks") ||
@@ -119,6 +127,21 @@ export async function middleware(request: NextRequest) {
     process.env.CRON_SECRET &&
     request.headers.get("x-internal-secret") === process.env.CRON_SECRET
 
+  // Allow ALFRED server-to-server data calls. The route handler
+  // (requireAlfredAuth) re-checks the secret in constant logic, but
+  // middleware has to let the request through first or it would 401
+  // before our handler ever runs. We deliberately do NOT compare to env
+  // here -- handing that off to the route handler means a single source
+  // of truth for the secret check, and ensures a misconfigured server
+  // returns a clear 503 (from the handler) instead of the generic 401
+  // the middleware emits.
+  const isAlfredDataCall =
+    (pathname === "/api/alfred/data" ||
+      pathname === "/api/alfred/schema" ||
+      pathname === "/api/alfred/search" ||
+      pathname === "/api/alfred/stats") &&
+    request.headers.get("x-alfred-secret") !== null
+
   // Allow auth callback, public API, webhooks, cron, OAuth callbacks, and
   // internal calls without auth checks
   if (
@@ -128,6 +151,7 @@ export async function middleware(request: NextRequest) {
     isCron ||
     isCalendlyOAuthCallback ||
     isInternalCall ||
+    isAlfredDataCall ||
     isZoomEmbed ||
     isLegalPage ||
     isDocsPage
