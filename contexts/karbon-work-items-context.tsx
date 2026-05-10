@@ -21,6 +21,12 @@ export interface KarbonWorkItem {
   start_date?: string | null
   completed_date?: string | null
   karbon_modified_at?: string | null
+  // Period_start / period_end are populated for recurring engagements
+  // (bookkeeping, payroll, etc.) — e.g. period_start = 2026-01-01 for a
+  // "Bookkeeping — Jan 2026" item. Carried through here so dashboards can
+  // group/filter by service period without a separate fetch.
+  period_start?: string | null
+  period_end?: string | null
   assignee_name?: string | null
   karbon_client_key?: string | null
   description?: string | null
@@ -94,6 +100,8 @@ function mapSupabaseToKarbon(item: any): KarbonWorkItem {
     start_date: item.start_date,
     completed_date: item.completed_date,
     karbon_modified_at: item.karbon_modified_at,
+    period_start: item.period_start,
+    period_end: item.period_end,
     assignee_name: item.assignee_name,
     karbon_client_key: item.karbon_client_key,
     description: item.description,

@@ -57,6 +57,13 @@ function mapSupabaseRowToKarbon(item: any): KarbonWorkItem {
     start_date: item.start_date,
     completed_date: item.completed_date,
     karbon_modified_at: item.karbon_modified_at,
+    // Period_start is what bookkeeping engagements key their month off
+    // of in Karbon (e.g. a "Bookkeeping - Jan 2026" item has
+    // period_start = 2026-01-01). We carry it on the mapped item as
+    // an extra property so the Monthly Bookkeeping tab can filter by
+    // month without a second fetch.
+    period_start: item.period_start,
+    period_end: item.period_end,
     assignee_name: item.assignee_name,
     karbon_client_key: item.karbon_client_key,
     description: item.description,
