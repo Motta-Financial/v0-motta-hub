@@ -45,22 +45,55 @@ export async function GET(request: Request) {
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
     const hubUrl = appUrl.startsWith("http") ? appUrl : `https://${appUrl}`
 
-    /* ──────────────────────────────────────────────────────────────────
-     * Time windows
+/* ──────────────────────────────────────────────────────────────────
+     * Time windows. Everything is in US/Eastern since that's what the
+     * firm and most clients operate in.
      *
-     * "Yesterday" is the previous Eastern-Time calendar day so the
-     * morning email mirrors how the team actually thinks about it. The
-     * upcoming-meeting window is rolling 7 days from now to match the
-     * meeting digest we already send weekly.
+     * We fetch data "since last briefing" rather than just "yesterday"
+     * so weekends and holidays don't miss any activity. If no previous
+     * briefing exists, we fall back to 24 hours ago.
+     * 
+     * The upcoming-meeting window is rolling 7 days from now to match
+     * the meeting digest we already send weekly.
      * ────────────────────────────────────────────────────────────────── */
     const now = new Date()
     const easternTodayKey = ymdInTz(now, "America/New_York")
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
-    const easternYesterdayKey = ymdInTz(yesterday, "America/New_York")
 
-    // Debrief range: yesterday 00:00 → today 00:00 in Eastern (converted to UTC).
-    const yesterdayStart = new Date(`${easternYesterdayKey}T00:00:00-05:00`)
-    const yesterdayEnd = new Date(`${easternTodayKey}T00:00:00-05:00`)
+    // Create a new briefing run record (will be updated at the end)
+    let briefingRunId: string | null = null
+    const { data: runData } = await supabase
+      .from("briefing_runs")
+      .insert({ started_at: now.toISOString(), status: "running" })
+      .select("id")
+      .maybeSingle()
+    briefingRunId = runData?.id ?? null
+
+    // Find the last successful briefing run
+    const { data: lastBriefing } = await supabase
+      .from("briefing_runs")
+      .select("completed_at")
+      .eq("status", "completed")
+      .order("completed_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    // Default to 24 hours ago if no previous briefing or table doesn't exist
+    const defaultSinceTime = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+    const sinceTime = lastBriefing?.completed_at 
+      ? new Date(lastBriefing.completed_at)
+      : defaultSinceTime
+
+    // Data range: since last briefing → now
+    const dataWindowStart = sinceTime
+    const dataWindowEnd = now
+
+    // For display purposes, show how far back we're looking
+    const hoursSinceLastBriefing = Math.round(
+      (now.getTime() - sinceTime.getTime()) / (1000 * 60 * 60)
+    )
+    const sinceLabel = lastBriefing?.completed_at
+      ? `since last briefing (${hoursSinceLastBriefing}h ago)`
+      : "from the past 24 hours"
 
     // Upcoming meetings: now → +7 days.
     const upcomingEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
@@ -97,15 +130,14 @@ export async function GET(request: Request) {
       intakeFormsResult,
       feedbackResult,
       acceptedProposalsResult,
-      zoomRecordingsResult,
     ] = await Promise.allSettled([
       supabase
         .from("debriefs")
         .select(
           "id, debrief_date, organization_name, contact_id, work_item_id, created_by_id, created_at, action_items, karbon_client_key",
         )
-        .gte("created_at", yesterdayStart.toISOString())
-        .lt("created_at", yesterdayEnd.toISOString())
+        .gte("created_at", dataWindowStart.toISOString())
+        .lt("created_at", dataWindowEnd.toISOString())
         .order("created_at", { ascending: true }),
       supabase
         .from("calendly_events")
@@ -127,46 +159,29 @@ export async function GET(request: Request) {
       fetchNewsCategory("market", 4),
       fetchNewsCategory("tax", 4),
       fetchNewsCategory("tech", 4),
-      fetchHubUpdates(yesterdayStart, yesterdayEnd),
-      // New intake form submissions from yesterday
+      fetchHubUpdates(dataWindowStart, dataWindowEnd),
+      // New intake form submissions since last briefing
       supabase
         .from("jotform_intake_submissions")
         .select("id, submitter_full_name, business_name, services_requested, created_at")
-        .gte("created_at", yesterdayStart.toISOString())
-        .lt("created_at", yesterdayEnd.toISOString())
+        .gte("created_at", dataWindowStart.toISOString())
+        .lt("created_at", dataWindowEnd.toISOString())
         .order("created_at", { ascending: true }),
-      // New feedback submissions from yesterday
+      // New feedback submissions since last briefing
       supabase
         .from("jotform_feedback_submissions")
         .select("id, submitter_full_name, rating_overall, rating_service_quality, feedback_comments, created_at")
-        .gte("created_at", yesterdayStart.toISOString())
-        .lt("created_at", yesterdayEnd.toISOString())
+        .gte("created_at", dataWindowStart.toISOString())
+        .lt("created_at", dataWindowEnd.toISOString())
         .order("created_at", { ascending: true }),
-      // Proposals accepted yesterday
+      // Proposals accepted since last briefing
       supabase
         .from("ignition_proposals")
         .select("proposal_id, title, client_name, total_value, accepted_at")
-        .gte("accepted_at", yesterdayStart.toISOString())
-        .lt("accepted_at", yesterdayEnd.toISOString())
+        .gte("accepted_at", dataWindowStart.toISOString())
+        .lt("accepted_at", dataWindowEnd.toISOString())
         .eq("status", "accepted")
         .order("accepted_at", { ascending: true }),
-      // Zoom recordings from yesterday (with team member info for host name)
-      supabase
-        .from("zoom_recordings")
-        .select(`
-          id,
-          topic,
-          start_time,
-          duration,
-          share_url,
-          recording_count,
-          total_size,
-          team_member_id,
-          zoom_uuid
-        `)
-        .gte("start_time", yesterdayStart.toISOString())
-        .lt("start_time", yesterdayEnd.toISOString())
-        .order("start_time", { ascending: true }),
     ])
 
     const debriefs = unwrapData(debriefsResult, "debriefs") as DebriefRow[]
@@ -182,7 +197,6 @@ export async function GET(request: Request) {
     const intakeForms = unwrapData(intakeFormsResult, "jotform_intake_submissions") as IntakeFormRow[]
     const feedbackSubmissions = unwrapData(feedbackResult, "jotform_feedback_submissions") as FeedbackRow[]
     const acceptedProposals = unwrapData(acceptedProposalsResult, "ignition_proposals") as AcceptedProposalRow[]
-    const zoomRecordings = unwrapData(zoomRecordingsResult, "zoom_recordings") as ZoomRecordingRow[]
 
     /* ──────────────────────────────────────────────────────────────────
      * Resolve human-readable names. Debriefs only carry IDs, so we
@@ -224,7 +238,7 @@ export async function GET(request: Request) {
     /* ──────────────────────────────────────────────────────────────────
      * Shape the data into what the email builder expects.
      * ────────────────────────────────────────────────────────────────── */
-    const yesterdayDebriefs = debriefs.map((d) => {
+    const recentDebriefs = debriefs.map((d) => {
       const clientName =
         d.organization_name ||
         (d.contact_id ? contactName.get(d.contact_id) : null) ||
@@ -272,7 +286,7 @@ export async function GET(request: Request) {
      * ────────────────────────────────────────────────────────────────── */
     const executiveSummary = await composeButlerSummary({
       dateLabel,
-      debriefCount: yesterdayDebriefs.length,
+      debriefCount: recentDebriefs.length,
       meetingCount: upcomingMeetings.length,
       reminderCount: teamReminders.length,
       topReminder: teamReminders[0]?.label,
@@ -335,42 +349,12 @@ export async function GET(request: Request) {
       value: p.total_value,
       url: `${hubUrl}/sales/proposals?id=${p.proposal_id}`,
     }))
-const proposalsTotalValue = acceptedProposals.reduce(
-  (sum, p) => sum + (p.total_value || 0),
-  0,
-  )
+    const proposalsTotalValue = acceptedProposals.reduce(
+      (sum, p) => sum + (p.total_value || 0),
+      0,
+    )
 
-    // Build a lookup for team member names for Zoom recordings
-    const memberLookup = new Map<string, string>()
-    for (const m of allMembers || []) {
-      memberLookup.set(m.id, m.full_name || "Unknown")
-    }
-
-    // Format duration helper (minutes to "Xh Ym" or "Xm")
-    const formatDuration = (mins: number | null) => {
-      if (!mins) return ""
-      const h = Math.floor(mins / 60)
-      const m = mins % 60
-      return h > 0 ? `${h}h ${m}m` : `${m}m`
-    }
-
-    // Shape Zoom recordings for the appendix
-    const newZoomRecordings = zoomRecordings.map((r) => ({
-      topic: r.topic || "Untitled Meeting",
-      hostName: r.team_member_id ? memberLookup.get(r.team_member_id) || "Team Member" : "Unknown",
-      date: new Date(r.start_time).toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-        timeZone: "America/New_York",
-      }),
-      duration: formatDuration(r.duration),
-      recordingCount: r.recording_count || 0,
-      shareUrl: r.share_url || `${hubUrl}/calendar`,
-    }))
-  
-  let totalSent = 0
+    let totalSent = 0
     let totalSkipped = 0
     await Promise.all(
       eligible.map(async (m) => {
@@ -379,7 +363,7 @@ const proposalsTotalValue = acceptedProposals.reduce(
   dateLabel,
   weekRangeLabel,
   executiveSummary,
-  yesterdayDebriefs,
+  recentDebriefs,
   upcomingMeetings,
   teamReminders,
   marketNews,
@@ -390,7 +374,6 @@ const proposalsTotalValue = acceptedProposals.reduce(
   newFeedback,
   newProposalsAccepted,
   proposalsTotalValue,
-  newZoomRecordings,
   signOff,
   hubUrl,
   })
@@ -400,18 +383,32 @@ const proposalsTotalValue = acceptedProposals.reduce(
           subject: `Your Daily Briefing - ${dateLabel}`,
           html,
         })
-        totalSent += r.sent
-        totalSkipped += r.skipped
-      }),
-    )
+totalSent += r.sent
+  totalSkipped += r.skipped
+  }),
+  )
 
-    return NextResponse.json({
+    // Mark briefing run as completed
+    if (briefingRunId) {
+      await supabase
+        .from("briefing_runs")
+        .update({
+          completed_at: new Date().toISOString(),
+          status: "completed",
+          recipients_count: eligible.length,
+          emails_sent: totalSent,
+          emails_failed: totalSkipped,
+        })
+        .eq("id", briefingRunId)
+    }
+  
+  return NextResponse.json({
       success: true,
       date: dateLabel,
       sent: totalSent,
       skipped_due_to_preferences: totalSkipped,
 counts: {
-  yesterday_debriefs: yesterdayDebriefs.length,
+  yesterday_debriefs: recentDebriefs.length,
   upcoming_meetings: upcomingMeetings.length,
   team_reminders: teamReminders.length,
   market_news: marketNews.length,
@@ -422,7 +419,6 @@ counts: {
   new_feedback: feedbackSubmissions.length,
   new_proposals_accepted: acceptedProposals.length,
   proposals_total_value: proposalsTotalValue,
-  new_zoom_recordings: zoomRecordings.length,
   },
     })
   } catch (error) {
@@ -493,23 +489,11 @@ interface AcceptedProposalRow {
   client_name: string | null
   total_value: number | null
   accepted_at: string
-  }
-
-interface ZoomRecordingRow {
-  id: string
-  topic: string | null
-  start_time: string
-  duration: number | null
-  share_url: string | null
-  recording_count: number | null
-  total_size: number | null
-  team_member_id: string | null
-  zoom_uuid: string | null
 }
-  
-  /* ─────────────────────────────────────────────────────────────────────────
-  * Helpers
-  * ─────────────────────────────────────────────────────────────────────── */
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Helpers
+ * ─────────────────────────────────────────────────────────────────────── */
 
 function unwrapData<T>(
   result: PromiseSettledResult<{ data: T[] | null; error: { message: string } | null }>,
