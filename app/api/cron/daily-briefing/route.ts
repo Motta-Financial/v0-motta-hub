@@ -295,23 +295,28 @@ export async function GET(request: Request) {
      * Respects each user's `daily_briefing` opt-out via sendCategoryEmail.
      * ────────────────────────────────────────────────────────────────── */
     // Shape business metrics for the appendix (same for all recipients)
+    // Note: These pages use client-side search/filters, not URL-based deep links.
+    // We link to the list page with a search param to help users find the item.
     const newIntakeForms = intakeForms.map((i) => ({
       name: i.submitter_full_name || "Unknown",
       businessName: i.business_name,
       services: i.services_requested || [],
-      url: `${hubUrl}/intake?id=${i.id}`,
+      // Link to /sales/intake (the canonical path) with the submitter name as search
+      url: `${hubUrl}/sales/intake?search=${encodeURIComponent(i.submitter_full_name || i.business_name || "")}`,
     }))
     const newFeedback = feedbackSubmissions.map((f) => ({
       name: f.submitter_full_name || "A client",
       rating: f.rating_overall || f.rating_service_quality,
       comment: f.feedback_comments,
-      url: `${hubUrl}/feedback?id=${f.id}`,
+      // Link to /sales/feedback with the submitter name as search
+      url: `${hubUrl}/sales/feedback?search=${encodeURIComponent(f.submitter_full_name || "")}`,
     }))
     const newProposalsAccepted = acceptedProposals.map((p) => ({
       clientName: p.client_name || "Client",
       title: p.title,
       value: p.total_value,
-      url: `${hubUrl}/sales/proposals?id=${p.proposal_id}`,
+      // Link to /sales/proposals with the client name as search filter
+      url: `${hubUrl}/sales/proposals?search=${encodeURIComponent(p.client_name || "")}`,
     }))
     const proposalsTotalValue = acceptedProposals.reduce(
       (sum, p) => sum + (p.total_value || 0),

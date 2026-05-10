@@ -18,7 +18,8 @@
  * Detractor = 1-3. Anything below a 5 gets triaged.
  */
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useEffect } from "react"
+import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import {
   CalendarDays,
@@ -183,11 +184,12 @@ function StarRating({ value, size = 14 }: { value: number | null; size?: number 
 
 // ─────────────────────────────────────────────────────────────────────
 // Component
-// ─────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────��──────────────────────
 
 const FEEDBACK_FORM_ID = "240915444941155"
 
 export function FeedbackList() {
+  const searchParams = useSearchParams()
   const [statusTab, setStatusTab] = useState<"all" | StatusValue>("all")
   const [segment, setSegment] = useState<string>("all")
   const [withReferrals, setWithReferrals] = useState<boolean>(false)
@@ -196,8 +198,17 @@ export function FeedbackList() {
   // (e.g. they used a personal email Karbon doesn't have on file)
   // and a human needs to pin the right contact.
   const [linked, setLinked] = useState<"all" | "yes" | "no">("all")
-  const [search, setSearch] = useState("")
+  // Initialize search from URL param (supports deep-linking from Daily Briefing)
+  const [search, setSearch] = useState(searchParams.get("search") || "")
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Sync search state if URL param changes (e.g., navigating back)
+  useEffect(() => {
+    const urlSearch = searchParams.get("search") || ""
+    if (urlSearch && urlSearch !== search) {
+      setSearch(urlSearch)
+    }
+  }, [searchParams])
 
   const qs = new URLSearchParams()
   if (statusTab !== "all") qs.set("status", statusTab)
