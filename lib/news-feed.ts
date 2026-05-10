@@ -19,7 +19,7 @@ export interface NewsItem {
   category: NewsCategory
 }
 
-export type NewsCategory = "market" | "tax"
+export type NewsCategory = "market" | "tax" | "tech"
 
 const FEEDS: Record<NewsCategory, string> = {
   // `when:1d` constrains Google News to the past day so we don't recycle
@@ -28,6 +28,10 @@ const FEEDS: Record<NewsCategory, string> = {
     "https://news.google.com/rss/search?q=%22stock+market%22+OR+%22S%26P+500%22+OR+%22Federal+Reserve%22+when:1d&hl=en-US&gl=US&ceid=US:en",
   tax:
     "https://news.google.com/rss/search?q=%22IRS%22+OR+%22tax+law%22+OR+%22tax+deadline%22+when:1d&hl=en-US&gl=US&ceid=US:en",
+  // Tech/AI news covering our stack (OpenAI, Anthropic/Claude, AI SDK) and
+  // broader AI industry updates relevant to a tech-forward accounting firm.
+  tech:
+    "https://news.google.com/rss/search?q=%22OpenAI%22+OR+%22Claude%22+OR+%22Anthropic%22+OR+%22GPT%22+OR+%22AI+integration%22+OR+%22AI+partnership%22+OR+%22generative+AI%22+when:1d&hl=en-US&gl=US&ceid=US:en",
 }
 
 /**

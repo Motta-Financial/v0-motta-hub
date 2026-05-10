@@ -92,6 +92,7 @@ export async function GET(request: Request) {
       zoomResult,
       marketNewsResult,
       taxNewsResult,
+      techNewsResult,
       hubUpdatesResult,
       intakeFormsResult,
       feedbackResult,
@@ -124,6 +125,7 @@ export async function GET(request: Request) {
         .limit(40),
       fetchNewsCategory("market", 4),
       fetchNewsCategory("tax", 4),
+      fetchNewsCategory("tech", 4),
       fetchHubUpdates(yesterdayStart, yesterdayEnd),
       // New intake form submissions from yesterday
       supabase
@@ -157,6 +159,7 @@ export async function GET(request: Request) {
     const zoomMeetings = unwrapData(zoomResult, "zoom_meetings") as ZoomMeetingRow[]
     const marketNews = unwrapNews(marketNewsResult)
     const taxNews = unwrapNews(taxNewsResult)
+    const techNews = unwrapNews(techNewsResult)
     const hubUpdates = unwrapHubUpdates(hubUpdatesResult)
     const intakeForms = unwrapData(intakeFormsResult, "jotform_intake_submissions") as IntakeFormRow[]
     const feedbackSubmissions = unwrapData(feedbackResult, "jotform_feedback_submissions") as FeedbackRow[]
@@ -295,28 +298,23 @@ export async function GET(request: Request) {
      * Respects each user's `daily_briefing` opt-out via sendCategoryEmail.
      * ────────────────────────────────────────────────────────────────── */
     // Shape business metrics for the appendix (same for all recipients)
-    // Note: These pages use client-side search/filters, not URL-based deep links.
-    // We link to the list page with a search param to help users find the item.
     const newIntakeForms = intakeForms.map((i) => ({
       name: i.submitter_full_name || "Unknown",
       businessName: i.business_name,
       services: i.services_requested || [],
-      // Link to /sales/intake (the canonical path) with the submitter name as search
-      url: `${hubUrl}/sales/intake?search=${encodeURIComponent(i.submitter_full_name || i.business_name || "")}`,
+      url: `${hubUrl}/intake?id=${i.id}`,
     }))
     const newFeedback = feedbackSubmissions.map((f) => ({
       name: f.submitter_full_name || "A client",
       rating: f.rating_overall || f.rating_service_quality,
       comment: f.feedback_comments,
-      // Link to /sales/feedback with the submitter name as search
-      url: `${hubUrl}/sales/feedback?search=${encodeURIComponent(f.submitter_full_name || "")}`,
+      url: `${hubUrl}/feedback?id=${f.id}`,
     }))
     const newProposalsAccepted = acceptedProposals.map((p) => ({
       clientName: p.client_name || "Client",
       title: p.title,
       value: p.total_value,
-      // Link to /sales/proposals with the client name as search filter
-      url: `${hubUrl}/sales/proposals?search=${encodeURIComponent(p.client_name || "")}`,
+      url: `${hubUrl}/sales/proposals?id=${p.proposal_id}`,
     }))
     const proposalsTotalValue = acceptedProposals.reduce(
       (sum, p) => sum + (p.total_value || 0),
@@ -337,6 +335,7 @@ export async function GET(request: Request) {
   teamReminders,
   marketNews,
   taxNews,
+  techNews,
   hubUpdates,
   newIntakeForms,
   newFeedback,
@@ -367,6 +366,7 @@ counts: {
   team_reminders: teamReminders.length,
   market_news: marketNews.length,
   tax_news: taxNews.length,
+  tech_news: techNews.length,
   hub_updates: hubUpdates.length,
   new_intake_forms: intakeForms.length,
   new_feedback: feedbackSubmissions.length,
