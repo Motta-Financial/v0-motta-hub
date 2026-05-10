@@ -1,0 +1,24 @@
+{
+  "name": "Motta Hub",
+  "short_name": "Motta Hub",
+  "description": "Internal dashboard for Motta Financial professionals",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#7A8B69",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192x192.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512x512.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
