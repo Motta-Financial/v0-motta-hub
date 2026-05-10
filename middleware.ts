@@ -70,7 +70,16 @@ export async function middleware(request: NextRequest) {
     // handshake also hits this endpoint, so it must be reachable
     // without a Hub session. The route handler verifies the
     // x-zm-signature HMAC against ZOOM_WEBHOOK_SECRET_TOKEN.
-    pathname === "/api/zoom/webhook"
+    pathname === "/api/zoom/webhook" ||
+    // Zoom OAuth callback (and authorize). When a user installs the
+    // Hub from Zoom's Marketplace "Add to Zoom" button, the redirect
+    // back to /api/zoom/oauth/callback may not carry a Hub session
+    // cookie. Auth0/Supabase auth checks would 500 the response
+    // before our handler runs. Allow the whole oauth subtree;
+    // /authorize is harmless without a session (it just redirects
+    // to Zoom) and /callback resolves the Hub user via cookie OR
+    // state OR returns a friendly error.
+    pathname.startsWith("/api/zoom/oauth/")
 
   // The Zoom App "Surface" (Marketplace > Features > Surface) iframes
   // /zoom/embed inside the Zoom desktop / web client. The Hub user is
