@@ -97,6 +97,7 @@ export async function GET(request: Request) {
       intakeFormsResult,
       feedbackResult,
       acceptedProposalsResult,
+      zoomRecordingsResult,
     ] = await Promise.allSettled([
       supabase
         .from("debriefs")
@@ -149,6 +150,23 @@ export async function GET(request: Request) {
         .lt("accepted_at", yesterdayEnd.toISOString())
         .eq("status", "accepted")
         .order("accepted_at", { ascending: true }),
+      // Zoom recordings from yesterday (with team member info for host name)
+      supabase
+        .from("zoom_recordings")
+        .select(`
+          id,
+          topic,
+          start_time,
+          duration,
+          share_url,
+          recording_count,
+          total_size,
+          team_member_id,
+          zoom_uuid
+        `)
+        .gte("start_time", yesterdayStart.toISOString())
+        .lt("start_time", yesterdayEnd.toISOString())
+        .order("start_time", { ascending: true }),
     ])
 
     const debriefs = unwrapData(debriefsResult, "debriefs") as DebriefRow[]
@@ -164,6 +182,7 @@ export async function GET(request: Request) {
     const intakeForms = unwrapData(intakeFormsResult, "jotform_intake_submissions") as IntakeFormRow[]
     const feedbackSubmissions = unwrapData(feedbackResult, "jotform_feedback_submissions") as FeedbackRow[]
     const acceptedProposals = unwrapData(acceptedProposalsResult, "ignition_proposals") as AcceptedProposalRow[]
+    const zoomRecordings = unwrapData(zoomRecordingsResult, "zoom_recordings") as ZoomRecordingRow[]
 
     /* ──────────────────────────────────────────────────────────────────
      * Resolve human-readable names. Debriefs only carry IDs, so we
@@ -316,12 +335,42 @@ export async function GET(request: Request) {
       value: p.total_value,
       url: `${hubUrl}/sales/proposals?id=${p.proposal_id}`,
     }))
-    const proposalsTotalValue = acceptedProposals.reduce(
-      (sum, p) => sum + (p.total_value || 0),
-      0,
-    )
+const proposalsTotalValue = acceptedProposals.reduce(
+  (sum, p) => sum + (p.total_value || 0),
+  0,
+  )
 
-    let totalSent = 0
+    // Build a lookup for team member names for Zoom recordings
+    const memberLookup = new Map<string, string>()
+    for (const m of allMembers || []) {
+      memberLookup.set(m.id, m.full_name || "Unknown")
+    }
+
+    // Format duration helper (minutes to "Xh Ym" or "Xm")
+    const formatDuration = (mins: number | null) => {
+      if (!mins) return ""
+      const h = Math.floor(mins / 60)
+      const m = mins % 60
+      return h > 0 ? `${h}h ${m}m` : `${m}m`
+    }
+
+    // Shape Zoom recordings for the appendix
+    const newZoomRecordings = zoomRecordings.map((r) => ({
+      topic: r.topic || "Untitled Meeting",
+      hostName: r.team_member_id ? memberLookup.get(r.team_member_id) || "Team Member" : "Unknown",
+      date: new Date(r.start_time).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone: "America/New_York",
+      }),
+      duration: formatDuration(r.duration),
+      recordingCount: r.recording_count || 0,
+      shareUrl: r.share_url || `${hubUrl}/calendar`,
+    }))
+  
+  let totalSent = 0
     let totalSkipped = 0
     await Promise.all(
       eligible.map(async (m) => {
@@ -341,6 +390,7 @@ export async function GET(request: Request) {
   newFeedback,
   newProposalsAccepted,
   proposalsTotalValue,
+  newZoomRecordings,
   signOff,
   hubUrl,
   })
@@ -372,6 +422,7 @@ counts: {
   new_feedback: feedbackSubmissions.length,
   new_proposals_accepted: acceptedProposals.length,
   proposals_total_value: proposalsTotalValue,
+  new_zoom_recordings: zoomRecordings.length,
   },
     })
   } catch (error) {
@@ -442,11 +493,23 @@ interface AcceptedProposalRow {
   client_name: string | null
   total_value: number | null
   accepted_at: string
-}
+  }
 
-/* ─────────────────────────────────────────────────────────────────────────
- * Helpers
- * ─────────────────────────────────────────────────────────────────────── */
+interface ZoomRecordingRow {
+  id: string
+  topic: string | null
+  start_time: string
+  duration: number | null
+  share_url: string | null
+  recording_count: number | null
+  total_size: number | null
+  team_member_id: string | null
+  zoom_uuid: string | null
+}
+  
+  /* ─────────────────────────────────────────────────────────────────────────
+  * Helpers
+  * ─────────────────────────────────────────────────────────────────────── */
 
 function unwrapData<T>(
   result: PromiseSettledResult<{ data: T[] | null; error: { message: string } | null }>,

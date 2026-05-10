@@ -815,6 +815,15 @@ export function buildDailyBriefingHtml(opts: {
   }>
   /** Total value of proposals accepted yesterday. */
   proposalsTotalValue?: number
+  /** Zoom recordings from yesterday. */
+  newZoomRecordings?: Array<{
+    topic: string
+    hostName: string
+    date: string
+    duration: string
+    recordingCount: number
+    shareUrl: string
+  }>
   /** Witty butler closing line. */
   signOff: string
   hubUrl: string
@@ -833,10 +842,11 @@ export function buildDailyBriefingHtml(opts: {
     hubUpdates,
     newIntakeForms,
     newFeedback,
-    newProposalsAccepted,
-    proposalsTotalValue,
-    signOff,
-    hubUrl,
+newProposalsAccepted,
+  proposalsTotalValue,
+  newZoomRecordings,
+  signOff,
+  hubUrl,
   } = opts
 
   // ── Section: Executive summary (AI-written) ────────────────────────────
@@ -998,6 +1008,8 @@ const newsHtml = `
     (newIntakeForms && newIntakeForms.length > 0) ||
     (newFeedback && newFeedback.length > 0) ||
     (newProposalsAccepted && newProposalsAccepted.length > 0)
+  
+  const hasZoomRecordings = newZoomRecordings && newZoomRecordings.length > 0
 
   const formatCurrency = (val: number | null | undefined) =>
     val != null
@@ -1054,7 +1066,24 @@ const newsHtml = `
       </div>`
     : ""
 
-  // ── Compose ────────────────────────────────────────────────────────────
+  // ── Section: Zoom Recordings (Appendix) ──────────────────────────────────
+  const zoomRecordingsHtml = hasZoomRecordings
+    ? `<div style="background:${BRAND.background};border-radius:8px;padding:16px 20px;">
+        <ul style="margin:0;padding:0;list-style:none;">
+          ${newZoomRecordings!.map((r) => `<li style="margin:0 0 12px;padding-bottom:12px;border-bottom:1px solid ${BRAND.border};">
+            <a href="${r.shareUrl}" style="color:${BRAND.primary};text-decoration:none;font-weight:600;font-size:14px;">${escapeHtml(r.topic)}</a>
+            <div style="margin-top:4px;color:${BRAND.textMuted};font-size:12px;">
+              <span style="margin-right:12px;">Host: ${escapeHtml(r.hostName)}</span>
+              <span style="margin-right:12px;">${escapeHtml(r.date)}</span>
+              ${r.duration ? `<span style="margin-right:12px;">${escapeHtml(r.duration)}</span>` : ""}
+              <span>${r.recordingCount} recording${r.recordingCount !== 1 ? "s" : ""}</span>
+            </div>
+          </li>`).join("")}
+        </ul>
+      </div>`
+    : ""
+
+  // ── Compose ────────────────────────────────────────────────────────────────
   const sectionHeader = (title: string, subtitle?: string) => `
     <div style="margin:32px 0 12px;">
       <h3 style="font-size:16px;color:${BRAND.textPrimary};margin:0;font-weight:700;letter-spacing:-0.01em;">${escapeHtml(title)}</h3>
@@ -1079,18 +1108,22 @@ const newsHtml = `
     ${sectionHeader("In the News")}
     ${newsHtml}
 
-    ${(hubUpdates && hubUpdates.length > 0) || hasBusinessMetrics ? `
-    <div style="margin:48px 0 0;padding-top:24px;border-top:2px solid ${BRAND.border};">
-      <p style="margin:0 0 4px;color:${BRAND.textMuted};font-size:10px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;">Appendix</p>
-      ${hasBusinessMetrics ? `
-        ${sectionHeader("Yesterday's Wins", "New leads, feedback, and closed deals")}
-        ${businessMetricsHtml}
-      ` : ""}
-      ${hubUpdates && hubUpdates.length > 0 ? `
-        ${sectionHeader("What's New in the Hub", "Your platform is always improving")}
-        ${hubUpdatesHtml}
-      ` : ""}
-    </div>` : ""}
+${(hubUpdates && hubUpdates.length > 0) || hasBusinessMetrics || hasZoomRecordings ? `
+  <div style="margin:48px 0 0;padding-top:24px;border-top:2px solid ${BRAND.border};">
+  <p style="margin:0 0 4px;color:${BRAND.textMuted};font-size:10px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;">Appendix</p>
+  ${hasBusinessMetrics ? `
+  ${sectionHeader("Yesterday's Wins", "New leads, feedback, and closed deals")}
+  ${businessMetricsHtml}
+  ` : ""}
+  ${hasZoomRecordings ? `
+  ${sectionHeader("Zoom Recordings", "Meeting recordings and transcripts from yesterday")}
+  ${zoomRecordingsHtml}
+  ` : ""}
+  ${hubUpdates && hubUpdates.length > 0 ? `
+  ${sectionHeader("What's New in the Hub", "Your platform is always improving")}
+  ${hubUpdatesHtml}
+  ` : ""}
+  </div>` : ""}
 
     <div style="margin:32px 0 8px;text-align:center;">
       <a href="${hubUrl}"
