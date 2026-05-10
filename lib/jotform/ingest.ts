@@ -9,6 +9,10 @@ import { buildIntakeRow } from "./parse"
 import { buildFeedbackRow } from "./parse-feedback"
 import { autoLinkIntakeSubmission, autoLinkFeedbackSubmission } from "./match-client"
 import { findOrCreateClient } from "@/lib/karbon/client-sync"
+import { resolvePreferredTeamMember } from "./assign"
+import { enrichIntakeSubmission } from "./enrich"
+import { researchProspectQuestions } from "./research-questions"
+import { notifyTeamOfNewIntake } from "./notify"
 import type { JotformSubmission } from "./client"
 
 function getServiceClient() {
@@ -103,7 +107,244 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
     console.log("[Jotform] intake auto-link error:", (err as Error).message)
   }
 
+  // ── Post-link pipeline ───────────────────────────────────────────
+  // Runs after the row is safely persisted AND linked to a client (if
+  // we found one). Three independent best-effort steps:
+  //   1. Auto-assign to the team member the prospect asked for
+  //   2. Enrich with web research (company + answer-to-questions)
+  //   3. Email the team (once, idempotent via `notified_at`)
+  // Each step is wrapped so a downstream failure (AI rate limit, email
+  // provider down) never poisons the upstream upsert.
+  try {
+    await runIntakePostProcessing(supabase, submission.id)
+  } catch (err) {
+    console.log("[Jotform] intake post-processing error:", (err as Error).message)
+  }
+
   return { id: submission.id }
+}
+
+/**
+ * Auto-assign + enrich + notify pipeline for a freshly upserted intake
+ * submission. Idempotent: re-running it on the same submission only
+ * fills in fields that are still null, and the team-wide email only
+ * fires when `notified_at IS NULL`.
+ *
+ * Exported as its own function so a future admin "re-run ALFRED on this
+ * intake" button (or a backfill script) can call it without going
+ * through the full upsert path.
+ */
+export async function runIntakePostProcessing(
+  supabase: ReturnType<typeof getServiceClient>,
+  jotformSubmissionId: string,
+): Promise<void> {
+  // Pull the canonical row state we need for every downstream step.
+  // Field list is intentionally explicit so we don't accidentally
+  // depend on transient columns later.
+  const { data: row, error } = await supabase
+    .from("jotform_intake_submissions")
+    .select(
+      [
+        "id",
+        "jotform_submission_id",
+        "jotform_created_at",
+        "submitter_full_name",
+        "submitter_email",
+        "submitter_phone",
+        "submitter_city",
+        "submitter_state",
+        "business_name",
+        "business_state",
+        "business_summary",
+        "business_revenue_range",
+        "business_situation",
+        "service_focus",
+        "services_requested",
+        "entity_types",
+        "questions_or_concerns",
+        "additional_notes",
+        "preferred_team_member",
+        "assigned_to_id",
+        "contact_id",
+        "organization_id",
+        "enrichment",
+        "question_research",
+        "notified_at",
+      ].join(","),
+    )
+    .eq("jotform_submission_id", jotformSubmissionId)
+    .maybeSingle()
+
+  if (error) {
+    console.log("[Jotform] post-processing fetch error:", error.message)
+    return
+  }
+  if (!row) return
+
+  const submissionRow = row as unknown as {
+    id: string
+    jotform_submission_id: string
+    jotform_created_at: string | null
+    submitter_full_name: string | null
+    submitter_email: string | null
+    submitter_phone: string | null
+    submitter_city: string | null
+    submitter_state: string | null
+    business_name: string | null
+    business_state: string | null
+    business_summary: string | null
+    business_revenue_range: string | null
+    business_situation: string | null
+    service_focus: string | null
+    services_requested: string[] | null
+    entity_types: string[] | null
+    questions_or_concerns: string | null
+    additional_notes: string | null
+    preferred_team_member: string | null
+    assigned_to_id: string | null
+    contact_id: string | null
+    organization_id: string | null
+    enrichment: Record<string, unknown> | null
+    question_research: Record<string, unknown> | null
+    notified_at: string | null
+  }
+
+  // ── 1. Auto-assign ─────────────────────────────────────────────
+  // Only attempts a match when the row has a preferred name AND no
+  // human has already assigned the submission. This preserves a manual
+  // re-assignment if the webhook re-fires for the same submission.
+  let resolvedAssignee: { id: string; name: string | null } | null = null
+  if (submissionRow.preferred_team_member && !submissionRow.assigned_to_id) {
+    try {
+      const resolved = await resolvePreferredTeamMember(supabase, submissionRow.preferred_team_member)
+      if (resolved.team_member_id) {
+        const { error: assignErr } = await supabase
+          .from("jotform_intake_submissions")
+          .update({ assigned_to_id: resolved.team_member_id })
+          .eq("id", submissionRow.id)
+        if (assignErr) {
+          console.log("[Jotform] auto-assign update error:", assignErr.message)
+        } else {
+          submissionRow.assigned_to_id = resolved.team_member_id
+          resolvedAssignee = { id: resolved.team_member_id, name: resolved.team_member_name }
+          console.log(
+            `[Jotform] auto-assigned intake ${jotformSubmissionId} to ${resolved.team_member_name ?? resolved.team_member_id} via ${resolved.method}`,
+          )
+        }
+      } else {
+        console.log(
+          `[Jotform] preferred team member "${submissionRow.preferred_team_member}" did not match any active teammate — leaving unassigned`,
+        )
+      }
+    } catch (err) {
+      console.log("[Jotform] auto-assign error:", (err as Error).message)
+    }
+  }
+
+  // ── 2. Enrichment + question research (in parallel) ────────────
+  // These are independent web/AI calls — running them concurrently
+  // shaves ~10s off the worst-case total. Each individually returns
+  // null on failure rather than throwing, so `Promise.allSettled` is
+  // belt-and-suspenders.
+  const needsEnrichment = !submissionRow.enrichment
+  const needsResearch = !submissionRow.question_research && !!submissionRow.questions_or_concerns
+
+  const [enrichmentResult, researchResult] = await Promise.allSettled([
+    needsEnrichment
+      ? enrichIntakeSubmission(supabase, {
+          id: submissionRow.id,
+          submitter_full_name: submissionRow.submitter_full_name,
+          business_name: submissionRow.business_name,
+          business_state: submissionRow.business_state,
+          business_summary: submissionRow.business_summary,
+          questions_or_concerns: submissionRow.questions_or_concerns,
+          additional_notes: submissionRow.additional_notes,
+          service_focus: submissionRow.service_focus,
+          organization_id: submissionRow.organization_id,
+          contact_id: submissionRow.contact_id,
+        })
+      : Promise.resolve(null),
+    needsResearch
+      ? researchProspectQuestions({
+          questions_or_concerns: submissionRow.questions_or_concerns,
+          business_name: submissionRow.business_name,
+          business_state: submissionRow.business_state,
+          service_focus: submissionRow.service_focus,
+        })
+      : Promise.resolve(null),
+  ])
+
+  const enrichment =
+    enrichmentResult.status === "fulfilled" ? enrichmentResult.value : null
+  const questionResearch =
+    researchResult.status === "fulfilled" ? researchResult.value : null
+
+  // Persist whatever we got. If both failed we still write the email
+  // out with what we have, but skip the wasted UPDATE.
+  if (enrichment || questionResearch) {
+    const updates: Record<string, unknown> = {}
+    if (enrichment) updates.enrichment = enrichment
+    if (questionResearch) updates.question_research = questionResearch
+    const { error: updErr } = await supabase
+      .from("jotform_intake_submissions")
+      .update(updates)
+      .eq("id", submissionRow.id)
+    if (updErr) {
+      console.log("[Jotform] enrichment persist error:", updErr.message)
+    }
+  }
+
+  // ── 3. Firm-wide email ─────────────────────────────────────────
+  // Single-flight: only sends when `notified_at` is null. Setting
+  // `notified_at` BEFORE the send would close the window earlier but
+  // would also swallow legitimate retries; setting AFTER means a
+  // crash mid-send can re-trigger, which is the correct tradeoff
+  // (better duplicate than missed prospect intro).
+  if (!submissionRow.notified_at) {
+    try {
+      const { sent, attempted } = await notifyTeamOfNewIntake(supabase, {
+        id: submissionRow.id,
+        jotform_submission_id: submissionRow.jotform_submission_id,
+        submitter_full_name: submissionRow.submitter_full_name,
+        submitter_email: submissionRow.submitter_email,
+        submitter_phone: submissionRow.submitter_phone,
+        submitter_city: submissionRow.submitter_city,
+        submitter_state: submissionRow.submitter_state,
+        business_name: submissionRow.business_name,
+        business_state: submissionRow.business_state,
+        service_focus: submissionRow.service_focus,
+        services_requested: submissionRow.services_requested,
+        entity_types: submissionRow.entity_types,
+        business_situation: submissionRow.business_situation,
+        business_summary: submissionRow.business_summary,
+        business_revenue_range: submissionRow.business_revenue_range,
+        questions_or_concerns: submissionRow.questions_or_concerns,
+        additional_notes: submissionRow.additional_notes,
+        preferred_team_member: submissionRow.preferred_team_member,
+        assigned_to_id: submissionRow.assigned_to_id,
+        enrichment: enrichment
+          ? { summary: enrichment.summary, websites: enrichment.websites }
+          : null,
+        question_research: questionResearch ? { summary: questionResearch.summary } : null,
+        jotform_created_at: submissionRow.jotform_created_at,
+      })
+      const { error: notifyErr } = await supabase
+        .from("jotform_intake_submissions")
+        .update({ notified_at: new Date().toISOString() })
+        .eq("id", submissionRow.id)
+      if (notifyErr) console.log("[Jotform] notified_at update error:", notifyErr.message)
+      console.log(`[Jotform] intake ${jotformSubmissionId} notified ${sent}/${attempted} teammates`)
+    } catch (err) {
+      console.log("[Jotform] notify error:", (err as Error).message)
+    }
+  } else {
+    console.log(`[Jotform] intake ${jotformSubmissionId} already notified at ${submissionRow.notified_at} — skipping email`)
+  }
+
+  // Silence the "unused" warning for the assignee handle while leaving
+  // the structured value available for future hooks (e.g. push a
+  // direct DM to the assigned partner).
+  void resolvedAssignee
 }
 
 /**

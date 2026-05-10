@@ -15,6 +15,11 @@ export const EMAIL_CATEGORIES = {
   tommy_recap: { label: "Tommy Awards Weekly Recap", description: "Weekly Monday recap of Tommy Awards results, written by ALFRED Ai" },
   meeting_summary: { label: "Meeting Summary", description: "Daily / weekly digest of upcoming and recent Calendly & Zoom meetings" },
   daily_briefing: { label: "Daily Briefing", description: "Weekday morning briefing from ALFRED Ai — debriefs, meetings, reminders, and news" },
+  // ALFRED-authored alert when a new Jotform intake hits the Hub.
+  // Defaults to ON like other operational categories so partners
+  // don't miss prospect intros, but appears under the same email
+  // preferences UI so anyone can opt out.
+  intake: { label: "New Intake Submissions", description: "ALFRED Ai alert when a prospect submits an intake form" },
   broadcast: { label: "Firm Announcements", description: "Custom announcement emails sent by partners or admins" },
   general: { label: "General Notifications", description: "Other in-app notifications not in a more specific category" },
 } as const
@@ -35,6 +40,7 @@ export function mapNotificationTypeToCategory(notificationType?: string | null):
   if (t.includes("daily_brief") || t.includes("daily-brief") || t.includes("morning_brief")) return "daily_briefing"
   if (t.includes("meeting") || t.includes("calendly") || t.includes("zoom")) return "meeting_summary"
   if (t.includes("broadcast") || t.includes("announcement")) return "broadcast"
+  if (t.includes("intake") || t.includes("jotform_intake") || t.includes("prospect")) return "intake"
   return "general"
 }
 
@@ -1054,7 +1060,7 @@ const newsHtml = `
       </div>`
     : ""
 
-  // ── Compose ────────────────���───────────────────────────────────────────
+  // ── Compose ────────────────���───────��───────────────────────────────────
   const sectionHeader = (title: string, subtitle?: string) => `
     <div style="margin:32px 0 12px;">
       <h3 style="font-size:16px;color:${BRAND.textPrimary};margin:0;font-weight:700;letter-spacing:-0.01em;">${escapeHtml(title)}</h3>

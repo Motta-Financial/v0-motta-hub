@@ -25,10 +25,12 @@ import {
   Building2,
   CheckCircle2,
   ExternalLink,
+  Globe,
   Loader2,
   Mail,
   MapPin,
   Phone,
+  Sparkles,
   User,
 } from "lucide-react"
 
@@ -107,6 +109,44 @@ interface SubmissionDetail {
   triage_notes: string | null
   assigned_to_id: string | null
   assignedTo: { id: string; name: string; avatarUrl: string | null } | null
+
+  // ── ALFRED post-processing surface ────────────────────────────
+  // These three columns are populated asynchronously after the
+  // webhook persists the row (see `runIntakePostProcessing` in
+  // lib/jotform/ingest.ts). They may all be null on a freshly
+  // received submission — the UI degrades gracefully in that case.
+  preferred_team_member: string | null
+  enrichment: IntakeEnrichment | null
+  question_research: IntakeQuestionResearch | null
+  notified_at: string | null
+}
+
+/**
+ * Persisted shape of `lib/jotform/enrich.ts` `EnrichmentBlob`. Kept
+ * loose (every nested field optional/nullable) so a partial payload
+ * — for example if the model returned text but no sources — never
+ * blows up rendering. The sheet renders each piece defensively.
+ */
+interface IntakeEnrichment {
+  summary?: string | null
+  websites?: Array<{ url: string; title?: string | null; note?: string | null }> | null
+  sources?: Array<{ url: string; title?: string | null; snippet?: string | null }> | null
+  generated_at?: string | null
+  model?: string | null
+}
+
+/**
+ * Persisted shape of `lib/jotform/research-questions.ts`
+ * `QuestionResearchBlob`. Same defensive-nullable treatment.
+ */
+interface IntakeQuestionResearch {
+  questions?: string | null
+  summary?: string | null
+  key_points?: string[] | null
+  references?: Array<{ url: string; title?: string | null }> | null
+  disclaimer?: string | null
+  generated_at?: string | null
+  model?: string | null
 }
 
 interface TeamMember {
@@ -307,6 +347,22 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                     })}
                   </SelectContent>
                 </Select>
+                {/* Prospect-requested teammate name. ALFRED auto-assigns
+                    when this matches an active team_members row (see
+                    lib/jotform/assign.ts); if it doesn't match we still
+                    show the raw text here so the triager knows who the
+                    prospect actually asked for. */}
+                {submission.preferred_team_member && (
+                  <p className="text-xs text-muted-foreground">
+                    Prospect asked for{" "}
+                    <span className="font-medium text-foreground">
+                      {submission.preferred_team_member}
+                    </span>
+                    {submission.assigned_to_id ? null : (
+                      <span className="text-amber-700"> — no auto-match</span>
+                    )}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-1.5">
@@ -411,6 +467,154 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                 </Section>
               )}
 
+              {/* ALFRED prospect research. Rendered only when the
+                  post-processing pipeline has actually populated the
+                  `enrichment` column — a freshly received submission
+                  shows nothing here until the async job completes. */}
+              {submission.enrichment &&
+                (submission.enrichment.summary ||
+                  (submission.enrichment.websites?.length ?? 0) > 0 ||
+                  (submission.enrichment.sources?.length ?? 0) > 0) && (
+                  <AlfredSection
+                    title="ALFRED prospect research"
+                    generatedAt={submission.enrichment.generated_at ?? null}
+                    model={submission.enrichment.model ?? null}
+                  >
+                    {submission.enrichment.summary && (
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                        {submission.enrichment.summary}
+                      </p>
+                    )}
+                    {submission.enrichment.websites &&
+                      submission.enrichment.websites.length > 0 && (
+                        <div className="mt-4 space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">
+                            Researched sites
+                          </Label>
+                          <ul className="space-y-1.5">
+                            {submission.enrichment.websites.map((w) => (
+                              <li key={w.url} className="flex items-start gap-2 text-sm">
+                                <Globe className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                <div className="min-w-0 flex-1">
+                                  <a
+                                    href={w.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="truncate font-medium text-foreground hover:underline"
+                                  >
+                                    {w.title || w.url}
+                                  </a>
+                                  {w.note && (
+                                    <span className="ml-1.5 text-xs text-muted-foreground">
+                                      ({w.note})
+                                    </span>
+                                  )}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    {submission.enrichment.sources &&
+                      submission.enrichment.sources.length > 0 && (
+                        <details className="mt-3 group">
+                          <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                            Show {submission.enrichment.sources.length} source snippet
+                            {submission.enrichment.sources.length === 1 ? "" : "s"}
+                          </summary>
+                          <ul className="mt-2 space-y-2 border-l pl-3">
+                            {submission.enrichment.sources.map((s) => (
+                              <li key={s.url} className="text-xs text-muted-foreground">
+                                <a
+                                  href={s.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="font-medium text-foreground hover:underline"
+                                >
+                                  {s.title || s.url}
+                                </a>
+                                {s.snippet && (
+                                  <p className="mt-0.5 line-clamp-2">{s.snippet}</p>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                  </AlfredSection>
+                )}
+
+              {/* ALFRED-drafted response to the prospect's questions.
+                  Rendered separately from the enrichment because the
+                  inputs and audiences differ — enrichment briefs the
+                  triager, this drafts an actual reply. */}
+              {submission.question_research &&
+                (submission.question_research.summary ||
+                  (submission.question_research.key_points?.length ?? 0) > 0) && (
+                  <AlfredSection
+                    title="ALFRED suggested response"
+                    generatedAt={submission.question_research.generated_at ?? null}
+                    model={submission.question_research.model ?? null}
+                  >
+                    {submission.question_research.questions && (
+                      <div className="mb-3 rounded-md border bg-muted/30 p-2.5">
+                        <Label className="text-xs text-muted-foreground">
+                          Prospect asked
+                        </Label>
+                        <p className="mt-0.5 whitespace-pre-wrap text-xs text-foreground">
+                          {submission.question_research.questions}
+                        </p>
+                      </div>
+                    )}
+                    {submission.question_research.summary && (
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                        {submission.question_research.summary}
+                      </p>
+                    )}
+                    {submission.question_research.key_points &&
+                      submission.question_research.key_points.length > 0 && (
+                        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-foreground">
+                          {submission.question_research.key_points.map((p, i) => (
+                            <li key={i} className="leading-relaxed">
+                              {p}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    {submission.question_research.references &&
+                      submission.question_research.references.length > 0 && (
+                        <div className="mt-3 space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            References
+                          </Label>
+                          <ul className="space-y-0.5">
+                            {submission.question_research.references.map((r) => (
+                              <li
+                                key={r.url}
+                                className="flex items-start gap-1.5 text-xs"
+                              >
+                                <ExternalLink className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+                                <a
+                                  href={r.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-muted-foreground hover:text-foreground hover:underline"
+                                >
+                                  {r.title || r.url}
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    {submission.question_research.disclaimer && (
+                      <p className="mt-3 text-xs italic text-muted-foreground">
+                        {submission.question_research.disclaimer}
+                      </p>
+                    )}
+                  </AlfredSection>
+                )}
+
               {submission.raw_answers && (
                 <Section title="All answers">
                   <RawAnswers answers={submission.raw_answers} />
@@ -437,6 +641,66 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       {children}
     </div>
   )
+}
+
+/**
+ * Branded variant of `Section` for content authored by ALFRED Ai. The
+ * olive accent + Sparkles icon and the "Generated …" footer make it
+ * unambiguous to the triager that the prose came from an AI, not a
+ * teammate. Matches the olive-green ALFRED brand established on the
+ * chat launcher (see components/alfred-chat-trigger.tsx).
+ */
+function AlfredSection({
+  title,
+  generatedAt,
+  model,
+  children,
+}: {
+  title: string
+  generatedAt: string | null
+  model: string | null
+  children: React.ReactNode
+}) {
+  return (
+    <div className="rounded-lg border border-[#C4CB8B] bg-[#FBFCF5] p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Sparkles className="h-3.5 w-3.5 text-[#7E8845]" aria-hidden />
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-[#5C6432]">
+          {title}
+        </h3>
+      </div>
+      {children}
+      {(generatedAt || model) && (
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Generated by ALFRED Ai
+          {model ? ` (${model})` : ""}
+          {generatedAt ? ` · ${formatRelativeTimestamp(generatedAt)}` : ""}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Short, human-readable timestamp suffix for the AlfredSection footer
+ * — "just now", "5m ago", "2h ago", or a calendar date for anything
+ * older than a day. Failures fall back to the raw string so the
+ * footer never crashes on a malformed value.
+ */
+function formatRelativeTimestamp(iso: string): string {
+  try {
+    const d = new Date(iso)
+    const diff = Date.now() - d.getTime()
+    if (diff < 0 || Number.isNaN(diff)) return iso
+    const m = Math.floor(diff / 60_000)
+    if (m < 1) return "just now"
+    if (m < 60) return `${m}m ago`
+    const h = Math.floor(m / 60)
+    if (h < 24) return `${h}h ago`
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+  } catch {
+    return iso
+  }
 }
 
 function Field({ label, value }: { label: string; value: string | null | undefined }) {
