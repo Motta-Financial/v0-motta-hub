@@ -57,9 +57,11 @@ export function verifyZoomSignature(
   const ts = Number(timestampHeader)
   if (!Number.isFinite(ts)) return { valid: false, reason: "invalid_timestamp_header" }
 
-  // Replay protection.
-  const nowSec = Math.floor(Date.now() / 1000)
-  if (Math.abs(nowSec - ts) > TIMESTAMP_TOLERANCE_SECONDS) {
+  // Replay protection. Zoom sends the timestamp in MILLISECONDS
+  // (Unix epoch * 1000), so we compare against Date.now() directly
+  // and convert the tolerance window to ms.
+  const nowMs = Date.now()
+  if (Math.abs(nowMs - ts) > TIMESTAMP_TOLERANCE_SECONDS * 1000) {
     return { valid: false, reason: "timestamp_outside_tolerance" }
   }
 
