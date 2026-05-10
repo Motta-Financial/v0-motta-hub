@@ -90,6 +90,9 @@ export async function middleware(request: NextRequest) {
   // session check on this path lets Zoom render the page; the page
   // itself reads zoomSdk.getAppContext() to identify the user.
   const isZoomEmbed = pathname.startsWith("/zoom/embed")
+  // Legal pages (Terms of Service, etc.) must be publicly accessible so
+  // Zoom's Marketplace review bot can fetch them without authentication.
+  const isLegalPage = pathname.startsWith("/legal")
   const isCron = pathname.startsWith("/api/cron")
   // Calendly's OAuth provider sends the user back to /api/calendly/oauth/callback
   // before our app session cookie has been issued — exempt only the callback,
@@ -113,7 +116,8 @@ export async function middleware(request: NextRequest) {
     isCron ||
     isCalendlyOAuthCallback ||
     isInternalCall ||
-    isZoomEmbed
+    isZoomEmbed ||
+    isLegalPage
   ) {
     return supabaseResponse
   }
