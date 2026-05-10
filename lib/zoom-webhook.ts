@@ -57,11 +57,13 @@ export function verifyZoomSignature(
   const ts = Number(timestampHeader)
   if (!Number.isFinite(ts)) return { valid: false, reason: "invalid_timestamp_header" }
 
-  // Replay protection. Zoom sends the timestamp in MILLISECONDS
-  // (Unix epoch * 1000), so we compare against Date.now() directly
-  // and convert the tolerance window to ms.
+  // Replay protection. Zoom sends the timestamp in SECONDS (10-digit
+  // Unix epoch). Some development tools and older docs claim ms, so
+  // we accept either format defensively: any value above ~year 2286
+  // in seconds (10**10) is treated as already-in-ms.
+  const tsMs = ts > 1e10 ? ts : ts * 1000
   const nowMs = Date.now()
-  if (Math.abs(nowMs - ts) > TIMESTAMP_TOLERANCE_SECONDS * 1000) {
+  if (Math.abs(nowMs - tsMs) > TIMESTAMP_TOLERANCE_SECONDS * 1000) {
     return { valid: false, reason: "timestamp_outside_tolerance" }
   }
 
