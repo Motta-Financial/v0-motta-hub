@@ -943,21 +943,36 @@ export function buildDailyBriefingHtml(opts: {
     </div>`
 
   // ── Section: Hub Updates (Appendix) ────────────────────────────────────
+  // Convert commit messages to friendly bullet points
+  const formatUpdateBullet = (message: string): string => {
+    // Extract the first line and clean it up for readability
+    const firstLine = message.split("\n")[0].trim()
+    // Remove common prefixes like "fix:", "feat:", "chore:", etc.
+    const cleaned = firstLine
+      .replace(/^(fix|feat|chore|refactor|docs|style|test|perf|ci|build)(\(.+?\))?:\s*/i, "")
+      .replace(/^(Add|Added|Update|Updated|Fix|Fixed|Remove|Removed|Implement|Implemented)\s+/i, (m) => m)
+    // Capitalize first letter
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+  }
+
   const hubUpdatesHtml = hubUpdates && hubUpdates.length > 0
-    ? `<table style="width:100%;border-collapse:collapse;">
-        ${hubUpdates
-          .map(
-            (u) => `
-              <tr style="border-bottom:1px solid ${BRAND.border};">
-                <td style="padding:10px 12px;font-size:13px;color:${BRAND.textMuted};white-space:nowrap;vertical-align:top;width:100px;">${escapeHtml(u.date)}</td>
-                <td style="padding:10px 12px;font-size:14px;vertical-align:top;">
-                  <a href="${u.url}" style="color:${BRAND.textPrimary};font-weight:600;text-decoration:none;">${escapeHtml(u.message.split("\n")[0])}</a>
-                  <div style="color:${BRAND.textMuted};font-size:12px;margin-top:2px;">by ${escapeHtml(u.author)}</div>
-                </td>
-              </tr>`,
-          )
-          .join("")}
-      </table>`
+    ? `<div style="background:${BRAND.background};border-radius:8px;padding:16px 20px;">
+        <p style="margin:0 0 12px;color:${BRAND.textMuted};font-size:13px;line-height:1.5;">
+          Your platform received ${hubUpdates.length} update${hubUpdates.length === 1 ? "" : "s"} yesterday. Here&apos;s what changed:
+        </p>
+        <ul style="margin:0;padding:0 0 0 20px;color:${BRAND.textPrimary};font-size:14px;line-height:1.7;">
+          ${hubUpdates
+            .map(
+              (u) => `<li style="margin:6px 0;">
+                <span>${escapeHtml(formatUpdateBullet(u.message))}</span>
+              </li>`,
+            )
+            .join("")}
+        </ul>
+        <p style="margin:12px 0 0;font-size:12px;color:${BRAND.textMuted};">
+          <a href="https://github.com/Motta-Financial/v0-motta-hub/commits/main" style="color:${BRAND.primary};text-decoration:none;">View full changelog &rarr;</a>
+        </p>
+      </div>`
     : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No updates were shipped yesterday — the Hub rests quietly.</p>`
 
   // ── Compose ────────────────────────────────────────────────────────────
@@ -988,7 +1003,7 @@ export function buildDailyBriefingHtml(opts: {
     ${hubUpdates && hubUpdates.length > 0 ? `
     <div style="margin:48px 0 0;padding-top:24px;border-top:2px solid ${BRAND.border};">
       <p style="margin:0 0 4px;color:${BRAND.textMuted};font-size:10px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;">Appendix</p>
-      ${sectionHeader("Motta Hub Updates", "Recent improvements and fixes shipped to the platform")}
+      ${sectionHeader("What's New in the Hub", "Your platform is always improving")}
       ${hubUpdatesHtml}
     </div>` : ""}
 
