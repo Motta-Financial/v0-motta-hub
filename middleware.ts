@@ -93,6 +93,10 @@ export async function middleware(request: NextRequest) {
   // Legal pages (Terms of Service, etc.) must be publicly accessible so
   // Zoom's Marketplace review bot can fetch them without authentication.
   const isLegalPage = pathname.startsWith("/legal")
+  // Documentation pages (e.g. /docs/zoom-integration) are linked from the
+  // Zoom App Marketplace listing as the "Documentation URL" and must be
+  // reachable by Zoom's review team without a Hub login.
+  const isDocsPage = pathname.startsWith("/docs")
   const isCron = pathname.startsWith("/api/cron")
   // Calendly's OAuth provider sends the user back to /api/calendly/oauth/callback
   // before our app session cookie has been issued — exempt only the callback,
@@ -117,7 +121,8 @@ export async function middleware(request: NextRequest) {
     isCalendlyOAuthCallback ||
     isInternalCall ||
     isZoomEmbed ||
-    isLegalPage
+    isLegalPage ||
+    isDocsPage
   ) {
     return supabaseResponse
   }
