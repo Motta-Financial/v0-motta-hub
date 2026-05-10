@@ -92,6 +92,7 @@ export async function GET(request: Request) {
       zoomResult,
       marketNewsResult,
       taxNewsResult,
+      hubUpdatesResult,
     ] = await Promise.allSettled([
       supabase
         .from("debriefs")
@@ -120,6 +121,7 @@ export async function GET(request: Request) {
         .limit(40),
       fetchNewsCategory("market", 4),
       fetchNewsCategory("tax", 4),
+      fetchHubUpdates(yesterdayStart, yesterdayEnd),
     ])
 
     const debriefs = unwrapData(debriefsResult, "debriefs") as DebriefRow[]
@@ -130,6 +132,7 @@ export async function GET(request: Request) {
     const zoomMeetings = unwrapData(zoomResult, "zoom_meetings") as ZoomMeetingRow[]
     const marketNews = unwrapNews(marketNewsResult)
     const taxNews = unwrapNews(taxNewsResult)
+    const hubUpdates = unwrapHubUpdates(hubUpdatesResult)
 
     /* ──────────────────────────────────────────────────────────────────
      * Resolve human-readable names. Debriefs only carry IDs, so we
@@ -267,19 +270,20 @@ export async function GET(request: Request) {
     let totalSkipped = 0
     await Promise.all(
       eligible.map(async (m) => {
-        const html = buildDailyBriefingHtml({
-          recipientName: m.full_name?.split(" ")[0] || "there",
-          dateLabel,
-          weekRangeLabel,
-          executiveSummary,
-          yesterdayDebriefs,
-          upcomingMeetings,
-          teamReminders,
-          marketNews,
-          taxNews,
-          signOff,
-          hubUrl,
-        })
+const html = buildDailyBriefingHtml({
+  recipientName: m.full_name?.split(" ")[0] || "there",
+  dateLabel,
+  weekRangeLabel,
+  executiveSummary,
+  yesterdayDebriefs,
+  upcomingMeetings,
+  teamReminders,
+  marketNews,
+  taxNews,
+  hubUpdates,
+  signOff,
+  hubUrl,
+  })
         const r = await sendCategoryEmail({
           category: "daily_briefing",
           teamMemberIds: [m.id],
@@ -296,13 +300,14 @@ export async function GET(request: Request) {
       date: dateLabel,
       sent: totalSent,
       skipped_due_to_preferences: totalSkipped,
-      counts: {
-        yesterday_debriefs: yesterdayDebriefs.length,
-        upcoming_meetings: upcomingMeetings.length,
-        team_reminders: teamReminders.length,
-        market_news: marketNews.length,
-        tax_news: taxNews.length,
-      },
+counts: {
+  yesterday_debriefs: yesterdayDebriefs.length,
+  upcoming_meetings: upcomingMeetings.length,
+  team_reminders: teamReminders.length,
+  market_news: marketNews.length,
+  tax_news: taxNews.length,
+  hub_updates: hubUpdates.length,
+  },
     })
   } catch (error) {
     console.error("[cron/daily-briefing] Error:", error)
@@ -370,13 +375,81 @@ function unwrapData<T>(
 
 function unwrapNews(result: PromiseSettledResult<NewsItem[]>): NewsItem[] {
   if (result.status === "rejected") {
-    console.warn("[cron/daily-briefing] news fetch rejected:", result.reason)
+  console.warn("[cron/daily-briefing] news fetch rejected:", result.reason)
+  return []
+  }
+  return result.value
+  }
+
+interface HubUpdate {
+  message: string
+  author: string
+  date: string
+  url: string
+}
+
+function unwrapHubUpdates(result: PromiseSettledResult<HubUpdate[]>): HubUpdate[] {
+  if (result.status === "rejected") {
+    console.warn("[cron/daily-briefing] hub updates fetch rejected:", result.reason)
     return []
   }
   return result.value
 }
 
-function ymdInTz(d: Date, timeZone: string): string {
+/**
+ * Fetches recent commits to the Motta Hub repository from GitHub.
+ * Uses the GitHub REST API to get commits from the past day.
+ */
+async function fetchHubUpdates(since: Date, until: Date): Promise<HubUpdate[]> {
+  const owner = "Motta-Financial"
+  const repo = "v0-motta-hub"
+  
+  try {
+    const url = `https://api.github.com/repos/${owner}/${repo}/commits?since=${since.toISOString()}&until=${until.toISOString()}&per_page=20`
+    const res = await fetch(url, {
+      headers: {
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "MottaHub-DailyBriefing",
+      },
+      next: { revalidate: 0 },
+    })
+
+    if (!res.ok) {
+      console.warn(`[cron/daily-briefing] GitHub API error: ${res.status} ${res.statusText}`)
+      return []
+    }
+
+    const commits = await res.json() as Array<{
+      sha: string
+      commit: {
+        message: string
+        author: {
+          name: string
+          date: string
+        }
+      }
+      html_url: string
+    }>
+
+    return commits.map((c) => ({
+      message: c.commit.message,
+      author: c.commit.author.name,
+      date: new Date(c.commit.author.date).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone: "America/New_York",
+      }),
+      url: c.html_url,
+    }))
+  } catch (err) {
+    console.warn("[cron/daily-briefing] Failed to fetch hub updates:", err)
+    return []
+  }
+}
+  
+  function ymdInTz(d: Date, timeZone: string): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone,
     year: "numeric",

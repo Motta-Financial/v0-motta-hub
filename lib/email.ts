@@ -784,6 +784,13 @@ export function buildDailyBriefingHtml(opts: {
   }>
   marketNews: Array<{ title: string; url: string; source: string }>
   taxNews: Array<{ title: string; url: string; source: string }>
+  /** Recent updates/commits to Motta Hub for the appendix. */
+  hubUpdates?: Array<{
+    message: string
+    author: string
+    date: string
+    url: string
+  }>
   /** Witty butler closing line. */
   signOff: string
   hubUrl: string
@@ -798,6 +805,7 @@ export function buildDailyBriefingHtml(opts: {
     teamReminders,
     marketNews,
     taxNews,
+    hubUpdates,
     signOff,
     hubUrl,
   } = opts
@@ -934,6 +942,24 @@ export function buildDailyBriefingHtml(opts: {
       </div>
     </div>`
 
+  // ── Section: Hub Updates (Appendix) ────────────────────────────────────
+  const hubUpdatesHtml = hubUpdates && hubUpdates.length > 0
+    ? `<table style="width:100%;border-collapse:collapse;">
+        ${hubUpdates
+          .map(
+            (u) => `
+              <tr style="border-bottom:1px solid ${BRAND.border};">
+                <td style="padding:10px 12px;font-size:13px;color:${BRAND.textMuted};white-space:nowrap;vertical-align:top;width:100px;">${escapeHtml(u.date)}</td>
+                <td style="padding:10px 12px;font-size:14px;vertical-align:top;">
+                  <a href="${u.url}" style="color:${BRAND.textPrimary};font-weight:600;text-decoration:none;">${escapeHtml(u.message.split("\n")[0])}</a>
+                  <div style="color:${BRAND.textMuted};font-size:12px;margin-top:2px;">by ${escapeHtml(u.author)}</div>
+                </td>
+              </tr>`,
+          )
+          .join("")}
+      </table>`
+    : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No updates were shipped yesterday — the Hub rests quietly.</p>`
+
   // ── Compose ────────────────────────────────────────────────────────────
   const sectionHeader = (title: string, subtitle?: string) => `
     <div style="margin:32px 0 12px;">
@@ -958,6 +984,13 @@ export function buildDailyBriefingHtml(opts: {
 
     ${sectionHeader("In the News")}
     ${newsHtml}
+
+    ${hubUpdates && hubUpdates.length > 0 ? `
+    <div style="margin:48px 0 0;padding-top:24px;border-top:2px solid ${BRAND.border};">
+      <p style="margin:0 0 4px;color:${BRAND.textMuted};font-size:10px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;">Appendix</p>
+      ${sectionHeader("Motta Hub Updates", "Recent improvements and fixes shipped to the platform")}
+      ${hubUpdatesHtml}
+    </div>` : ""}
 
     <div style="margin:32px 0 8px;text-align:center;">
       <a href="${hubUrl}"
