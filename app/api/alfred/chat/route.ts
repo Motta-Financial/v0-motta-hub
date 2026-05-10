@@ -2,6 +2,11 @@ import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage }
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/server"
 import { browsePageTool, webSearchTool } from "@/lib/alfred/tools"
+import {
+  ALLOWED_TABLES,
+  buildTableCatalog,
+  isAllowedTable,
+} from "@/lib/alfred/allowed-tables"
 
 // Shape of the requesting user, sent from the client transport body.
 // See components/alfred-chat.tsx for the producer side.
@@ -20,23 +25,13 @@ export const maxDuration = 60
 const alfredTools = {
   // Query any Supabase table
   queryDatabase: tool({
-    description: `Query any table in the Motta Hub database. Available tables include:
-    - team_members: Staff information (id, full_name, email, role, department, is_active)
-    - clients/contacts: Client contact information
-    - organizations: Business/organization records
-    - work_items: Karbon work items (title, status, due_date, assignee_name, client_group_name, tax_year)
-    - debriefs: Meeting debriefs and notes
-    - tasks: Team tasks and assignments
-    - invoices: Client invoices
-    - time_entries: Time tracking records
-  - meetings: Scheduled meetings
-  - notifications: User notifications
-    - services: Available services with pricing
-    - tax_returns: Tax return records
-    - karbon_notes, karbon_tasks, karbon_timesheets: Karbon synced data
-    - tommy_award_ballots, tommy_award_points: Tommy Awards data
-    - work_status: Work item statuses
-    Use this to answer questions about clients, work items, team members, finances, etc.`,
+    // Catalog is built from the shared ALLOWED_TABLES list so this stays
+    // automatically in sync with /api/alfred/data. Adding a new table to
+    // lib/alfred/allowed-tables.ts surfaces it here on the next deploy.
+    description: `Query any table in the Motta Hub database. Available tables:
+${buildTableCatalog()}
+
+Use this to answer questions about clients, work items, team members, finances, etc. Pass exactly one of the table names above as \`table\`. Unknown table names will be rejected.`,
     inputSchema: z.object({
       table: z.string().describe("The table name to query"),
       select: z.string().optional().describe("Columns to select, defaults to *"),
@@ -60,6 +55,19 @@ const alfredTools = {
       limit: z.number().optional().describe("Maximum number of rows to return"),
     }),
     execute: async ({ table, select = "*", filters = [], orderBy, limit = 50 }) => {
+      // Runtime allow-list enforcement. The model has occasionally
+      // hallucinated table names (e.g. "clients", "users") that don't
+      // exist in the schema; rejecting here gives it a clear corrective
+      // signal instead of a generic Postgres "relation does not exist".
+      if (!isAllowedTable(table)) {
+        return {
+          success: false,
+          error:
+            `Table "${table}" is not in the ALFRED allow-list. ` +
+            `Choose one of: ${ALLOWED_TABLES.join(", ")}.`,
+        }
+      }
+
       try {
         const supabase = createAdminClient()
         let query = supabase.from(table).select(select)
