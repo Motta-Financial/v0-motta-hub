@@ -52,6 +52,15 @@ const nextConfig = {
           },
         ],
       },
+      {
+        source: "/api/alfred/:path*",
+        headers: [
+          { key: "Access-Control-Allow-Origin", value: "https://alfred.motta.cpa" },
+          { key: "Access-Control-Allow-Methods", value: "GET, POST, OPTIONS" },
+          { key: "Access-Control-Allow-Headers", value: "Authorization, Content-Type" },
+          { key: "Access-Control-Allow-Credentials", value: "true" },
+        ],
+      },
     ]
   },
 }
