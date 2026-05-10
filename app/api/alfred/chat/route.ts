@@ -16,6 +16,8 @@ import {
   isAllowedTable,
 } from "@/lib/alfred/allowed-tables"
 import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
+import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
+import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 
 // Shape of the requesting user, sent from the client transport body.
 // See components/alfred-chat.tsx for the producer side.
@@ -576,15 +578,42 @@ function uiMessageText(message: UIMessage | undefined | null): string {
     .trim()
 }
 
+// OPTIONS preflight handler. Browsers from alfred.motta.cpa send this
+// before every credentialed POST -- without an explicit response carrying
+// CORS headers the actual chat request never goes out. We don't need
+// auth here; the headers are the entire point.
+export async function OPTIONS(req: Request) {
+  return preflightResponse(req)
+}
+
 export async function POST(req: Request) {
+  // Identity is resolved from a verified signature (Bearer token OR
+  // Supabase session cookie), NOT from the body. The body's currentUser
+  // field is intentionally ignored to prevent a client from spoofing
+  // its team_member_id and reading another user's "my work items".
+  const currentUser: ResolvedAlfredUser | null = await resolveAlfredUser(req)
+  if (!currentUser) {
+    return applyAlfredCors(
+      Response.json(
+        {
+          error: "Unauthorized",
+          detail:
+            "ALFRED chat requires either a Supabase session cookie or an Authorization: Bearer token.",
+        },
+        { status: 401 },
+      ),
+      req,
+    )
+  }
+
   const {
     messages,
-    currentUser = null,
     conversationId: incomingConversationId = null,
     audience = "staff",
   }: {
     messages: UIMessage[]
-    currentUser?: CurrentUser | null
+    // currentUser is intentionally NOT typed/read here -- it is an
+    // untrusted hint only and is silently discarded.
     conversationId?: string | null
     audience?: "staff" | "client"
   } = await req.json()
@@ -884,5 +913,9 @@ export async function POST(req: Request) {
     },
   })
 
-  return createUIMessageStreamResponse({ stream })
+  // CORS headers must be on the streamed Response itself, not just on
+  // the OPTIONS preflight -- the browser drops the streaming body
+  // otherwise. applyAlfredCors mutates and returns the Response, which
+  // is safe to do before the body has started flowing.
+  return applyAlfredCors(createUIMessageStreamResponse({ stream }), req)
 }

@@ -61,13 +61,20 @@ export async function middleware(request: NextRequest) {
   const isPublicAuthApi = pathname.startsWith("/api/auth/forgot-password")
   // ALFRED public-API surface. Previously the entire `/api/alfred/*`
   // subtree was exempt, which exposed 46+ Supabase tables to anyone with
-  // the URL. Only `/api/alfred/chat` remains exempt here -- the chat
-  // route handles its own session-based auth. The data REST endpoints
-  // (`/data`, `/schema`, `/search`, `/stats`) now go through the normal
-  // middleware path AND are guarded inside their own handlers via
-  // `requireAlfredAuth()` (lib/alfred/auth-guard.ts), which accepts
-  // either a Supabase session OR an `x-alfred-secret` header.
-  const isPublicApi = pathname.startsWith("/api/alfred/chat") || isPublicAuthApi
+  // the URL. The data REST endpoints (`/data`, `/schema`, `/search`,
+  // `/stats`) go through the normal middleware path AND are guarded
+  // inside their own handlers via `requireAlfredAuth()`
+  // (lib/alfred/auth-guard.ts), which accepts either a Supabase session
+  // OR an `x-alfred-secret` header.
+  //
+  // The cross-origin surface used by alfred.motta.cpa
+  // (`/api/alfred/chat`, `/api/alfred/conversations`,
+  // `/api/alfred/conversations/[id]`) is handled separately below by
+  // `isAlfredAuthedSurface` -- the route handlers enforce identity via
+  // cookie OR `Authorization: Bearer`, but middleware still has to let
+  // the request reach the handler in the Bearer case (no cookie =>
+  // `user` is null, which would otherwise 401 below).
+  const isPublicApi = isPublicAuthApi
   const isWebhook =
     pathname.startsWith("/api/webhooks") ||
     pathname.startsWith("/api/karbon/webhooks") ||
@@ -142,6 +149,29 @@ export async function middleware(request: NextRequest) {
       pathname === "/api/alfred/stats") &&
     request.headers.get("x-alfred-secret") !== null
 
+  // Cross-origin ALFRED surface (chat + conversations). These endpoints
+  // serve requests from alfred.motta.cpa as well as the in-Hub UI. The
+  // route handlers enforce identity themselves via cookie OR
+  // Authorization: Bearer (lib/alfred/resolve-user.ts), so middleware's
+  // job is simply to not block the Bearer case (no cookie => no `user`
+  // => the API 401 below would fire) and to let CORS preflights pass.
+  const isAlfredAuthedSurface =
+    pathname === "/api/alfred/chat" ||
+    pathname === "/api/alfred/conversations" ||
+    pathname.startsWith("/api/alfred/conversations/")
+  // Preflight: browsers strip credentials from OPTIONS, so we cannot
+  // require auth here. Always let it through to the handler's
+  // dedicated OPTIONS export, which returns the proper CORS headers.
+  const isAlfredCorsPreflight =
+    isAlfredAuthedSurface && request.method === "OPTIONS"
+  // Bearer case: route validates the token itself. Cookie case is
+  // handled by the normal `user`-based flow further down.
+  const isAlfredBearerCall =
+    isAlfredAuthedSurface &&
+    (request.headers.get("authorization") ?? request.headers.get("Authorization") ?? "")
+      .toLowerCase()
+      .startsWith("bearer ")
+
   // Allow auth callback, public API, webhooks, cron, OAuth callbacks, and
   // internal calls without auth checks
   if (
@@ -152,6 +182,8 @@ export async function middleware(request: NextRequest) {
     isCalendlyOAuthCallback ||
     isInternalCall ||
     isAlfredDataCall ||
+    isAlfredCorsPreflight ||
+    isAlfredBearerCall ||
     isZoomEmbed ||
     isLegalPage ||
     isDocsPage
