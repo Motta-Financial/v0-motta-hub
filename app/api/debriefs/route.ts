@@ -32,9 +32,24 @@ export async function GET(request: NextRequest) {
   const clientKey = searchParams.get("clientKey")
   const contactId = searchParams.get("contactId")
   const organizationId = searchParams.get("organizationId")
+  const hasActionItems = searchParams.get("has_action_items") === "true"
   const limit = Number.parseInt(searchParams.get("limit") || "50")
 
-  let query = supabase.from("debriefs").select("*").order("debrief_date", { ascending: false }).limit(limit)
+  // Use the enriched view when we need joined data (for to-do list)
+  // Otherwise use the base table for faster queries
+  const selectFields = hasActionItems
+    ? `*,
+       organizations:organization_id (name),
+       contacts:contact_id (full_name),
+       created_by:created_by_id (full_name),
+       team_member:team_member_id (full_name)`
+    : "*"
+
+  let query = supabase
+    .from("debriefs")
+    .select(selectFields)
+    .order("debrief_date", { ascending: false })
+    .limit(limit)
 
   // Filter by contact or organization UUID
   if (contactId) {
@@ -45,23 +60,40 @@ export async function GET(request: NextRequest) {
     query = query.or(`karbon_client_key.eq.${clientKey},organization_name.ilike.%${clientKey}%`)
   }
 
+  // Filter to only debriefs that have action items
+  if (hasActionItems) {
+    query = query.not("action_items", "is", null)
+  }
+
   const { data, error } = await query
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  return NextResponse.json({ debriefs: data })
+  // Transform joined data for cleaner response
+  const debriefs = hasActionItems
+    ? (data || []).map((d: any) => ({
+        ...d,
+        organization_display_name: d.organizations?.name || d.organization_name,
+        contact_full_name: d.contacts?.full_name || null,
+        created_by_full_name: d.created_by?.full_name || null,
+        team_member_full_name: d.team_member?.full_name || null,
+        // Clean up joined relations from response
+        organizations: undefined,
+        contacts: undefined,
+        created_by: undefined,
+        team_member: undefined,
+      }))
+    : data
+
+  return NextResponse.json({ debriefs })
 }
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = createAdminClient()
     const body = await request.json()
-    console.log("[v0] POST /api/debriefs received body keys:", Object.keys(body))
-    console.log("[v0] related_clients:", JSON.stringify(body.related_clients))
-    console.log("[v0] related_work_items:", JSON.stringify(body.related_work_items))
-    console.log("[v0] created_by_id:", body.created_by_id)
 
     // Extract the first related client and work item for the main FK columns
     const relatedClients = body.related_clients || []
@@ -161,20 +193,16 @@ export async function POST(request: NextRequest) {
       notify_team: body.notify_team || false,
       notification_recipients: body.notification_recipients || [],
       team_member_name: body.team_member || null,
-    }
-
-    console.log("[v0] Debrief insert payload:", JSON.stringify(debriefData, null, 2))
-
-    const { data, error } = await supabase.from("debriefs").insert(debriefData).select()
+}
+  
+  const { data, error } = await supabase.from("debriefs").insert(debriefData).select()
 
     if (error) {
       console.error("[v0] Supabase insert error:", error.message, error.details, error.hint, error.code)
       return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-    
-    console.log("[v0] Debrief created successfully:", data?.[0]?.id)
-
-    const createdDebrief = data[0]
+}
+  
+  const createdDebrief = data[0]
 
     await createDebriefNotifications(createdDebrief, body.team_member, body)
 

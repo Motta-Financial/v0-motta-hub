@@ -51,6 +51,7 @@ import {
   Headphones,
   Inbox,
   Send,
+  Link2,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -206,6 +207,7 @@ const navigation = [
         icon: ShieldCheck,
         children: [
           { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
+          { name: "Unlinked Records", href: "/admin/unlinked-records", icon: Link2 },
           { name: "Broadcast", href: "/admin/broadcast", icon: Radio },
           { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
           { name: "Work Statuses", href: "/admin/work-statuses", icon: ListChecks },
