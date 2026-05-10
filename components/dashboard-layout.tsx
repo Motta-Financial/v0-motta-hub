@@ -52,6 +52,8 @@ import {
   Inbox,
   Send,
   Link2,
+  ExternalLink,
+  FilePlus2,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -124,7 +126,10 @@ const navigation = [
         href: "/accounting",
         icon: Calculator,
         children: [
-          { name: "Project Plan", href: "/accounting/project-plan", icon: ClipboardList },
+          // "Project Plan" used to live here as a separate child route, but
+          // its contents are now the Accounting Dashboard itself
+          // (rendered by app/accounting/page.tsx via <ProjectPlanView />),
+          // so the duplicate sidebar entry was removed.
           { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
           { name: "Onboarding", href: "/onboarding", icon: UserPlus },
         ],
@@ -303,6 +308,7 @@ function HubHeader({
           </a>
         </div>
         <div className="flex items-center gap-2">
+          <FormsMenu />
           <Button
             variant="ghost"
             size="icon"
@@ -359,6 +365,93 @@ function buildInitialExpandedState(
   }
   walk(items as any[])
   return expanded
+}
+
+// Quick-access dropdown in the global header for "form-style" tasks that
+// a teammate kicks off mid-workflow without losing their current page.
+// Each entry opens in a NEW tab (window.open with noopener,noreferrer)
+// so the Hub stays put behind it -- this is the whole point of the
+// dropdown vs. just routing in-place.
+//
+// URLs live up here as plain constants so swapping an internal route for
+// an external Jotform later is a one-line change. Keep the list short --
+// this is for daily-driver forms only; everything else still lives in
+// the sidebar.
+const HEADER_FORMS: ReadonlyArray<{
+  name: string
+  href: string
+  description: string
+  icon: typeof NotebookPen
+}> = [
+  {
+    name: "Debrief Form",
+    href: "/debriefs/new",
+    description: "Log a client meeting or internal touchpoint",
+    icon: NotebookPen,
+  },
+  {
+    name: "Tommy Award Ballot",
+    href: "/tommy-awards/ballot",
+    description: "Nominate a teammate for this week's award",
+    icon: Trophy,
+  },
+]
+
+function FormsMenu() {
+  const openInNewTab = (href: string) => {
+    // noopener,noreferrer to prevent the opened tab from gaining
+    // back-reference access to window.opener. Belt-and-suspenders --
+    // most modern browsers already imply noopener for _blank, but we
+    // set it explicitly so the contract is obvious in code.
+    window.open(href, "_blank", "noopener,noreferrer")
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-9 gap-1.5 px-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-900"
+          aria-label="Forms"
+        >
+          <FilePlus2 className="h-4 w-4" />
+          <span className="hidden sm:inline">Forms</span>
+          <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-72">
+        <DropdownMenuLabel className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+          Quick Forms
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {HEADER_FORMS.map((form) => {
+          const Icon = form.icon
+          return (
+            <DropdownMenuItem
+              key={form.href}
+              onClick={() => openInNewTab(form.href)}
+              className="cursor-pointer items-start gap-3 py-2.5"
+            >
+              <span
+                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+                style={{ backgroundColor: "#EAE6E1" }}
+              >
+                <Icon className="h-4 w-4" style={{ color: "#6B745D" }} />
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                <span className="flex items-center gap-1.5 text-sm font-medium text-gray-900">
+                  {form.name}
+                  <ExternalLink className="h-3 w-3 text-gray-400" />
+                </span>
+                <span className="text-xs text-gray-500">{form.description}</span>
+              </span>
+            </DropdownMenuItem>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
 }
 
 function HeaderUserMenu() {
