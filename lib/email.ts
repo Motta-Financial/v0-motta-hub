@@ -784,6 +784,7 @@ export function buildDailyBriefingHtml(opts: {
   }>
   marketNews: Array<{ title: string; url: string; source: string }>
   taxNews: Array<{ title: string; url: string; source: string }>
+  techNews: Array<{ title: string; url: string; source: string }>
   /** Recent updates/commits to Motta Hub for the appendix. */
   hubUpdates?: Array<{
     message: string
@@ -828,6 +829,7 @@ export function buildDailyBriefingHtml(opts: {
     teamReminders,
     marketNews,
     taxNews,
+    techNews,
     hubUpdates,
     newIntakeForms,
     newFeedback,
@@ -957,17 +959,21 @@ export function buildDailyBriefingHtml(opts: {
         </ul>`
       : `<p style="color:${BRAND.textMuted};font-size:13px;margin:0;">No notable headlines surfaced this morning.</p>`
 
-  const newsHtml = `
-    <div style="display:block;margin-top:8px;">
-      <div style="margin:0 0 16px;">
-        <h4 style="font-size:13px;color:${BRAND.textMuted};text-transform:uppercase;letter-spacing:0.08em;margin:0 0 8px;font-weight:700;">Markets</h4>
-        ${renderNewsList(marketNews)}
-      </div>
-      <div>
-        <h4 style="font-size:13px;color:${BRAND.textMuted};text-transform:uppercase;letter-spacing:0.08em;margin:16px 0 8px;font-weight:700;">Tax &amp; IRS</h4>
-        ${renderNewsList(taxNews)}
-      </div>
-    </div>`
+const newsHtml = `
+  <div style="display:block;margin-top:8px;">
+  <div style="margin:0 0 16px;">
+  <h4 style="font-size:13px;color:${BRAND.textMuted};text-transform:uppercase;letter-spacing:0.08em;margin:0 0 8px;font-weight:700;">Markets</h4>
+  ${renderNewsList(marketNews)}
+  </div>
+  <div style="margin:0 0 16px;">
+  <h4 style="font-size:13px;color:${BRAND.textMuted};text-transform:uppercase;letter-spacing:0.08em;margin:16px 0 8px;font-weight:700;">Tax &amp; IRS</h4>
+  ${renderNewsList(taxNews)}
+  </div>
+  <div>
+  <h4 style="font-size:13px;color:${BRAND.textMuted};text-transform:uppercase;letter-spacing:0.08em;margin:16px 0 8px;font-weight:700;">Tech &amp; AI</h4>
+  ${renderNewsList(techNews)}
+  </div>
+  </div>`
 
   // ── Section: Hub Updates (Appendix) ────────────────────────────────────
   const hubUpdatesHtml = hubUpdates && hubUpdates.length > 0
