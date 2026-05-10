@@ -126,7 +126,10 @@ const navigation = [
         href: "/accounting",
         icon: Calculator,
         children: [
-          { name: "Project Plan", href: "/accounting/project-plan", icon: ClipboardList },
+          // "Project Plan" used to live here as a separate child route, but
+          // its contents are now the Accounting Dashboard itself
+          // (rendered by app/accounting/page.tsx via <ProjectPlanView />),
+          // so the duplicate sidebar entry was removed.
           { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
           { name: "Onboarding", href: "/onboarding", icon: UserPlus },
         ],
