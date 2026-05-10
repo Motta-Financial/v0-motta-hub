@@ -22,6 +22,8 @@
 import { useEffect, useState } from "react"
 import useSWR from "swr"
 import {
+  AlertTriangle,
+  Briefcase,
   Building2,
   CheckCircle2,
   ExternalLink,
@@ -119,6 +121,23 @@ interface SubmissionDetail {
   enrichment: IntakeEnrichment | null
   question_research: IntakeQuestionResearch | null
   notified_at: string | null
+
+  // ── Linked client ─────────────────────────────────────────────
+  // Populated when the intake has been matched (or auto-created)
+  // against a Karbon contact. Used by the Karbon work-item action
+  // to decide whether the button is enabled.
+  contact_id: string | null
+  organization_id: string | null
+
+  // ── Karbon work-item action result ────────────────────────────
+  // Populated when a teammate has already clicked "Create Karbon
+  // Work Item" on this intake. All four are null until the action
+  // has succeeded once; after that the section renders as a
+  // success card instead of the button.
+  karbon_work_item_key: string | null
+  karbon_work_item_title: string | null
+  karbon_work_item_url: string | null
+  karbon_work_item_created_at: string | null
 }
 
 /**
@@ -187,13 +206,74 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
   const [notesDraft, setNotesDraft] = useState("")
   const [notesDirty, setNotesDirty] = useState(false)
 
+  // ── Karbon work-item action ──────────────────────────────────────
+  // The action is gated on (a) a linked Karbon contact and (b) an
+  // assigned teammate; the server enforces the same prereqs. The
+  // fiscal-year field defaults to the current calendar year — matching
+  // the firm convention demonstrated by the example "Le, Dat | 2026".
+  const [fiscalYearDraft, setFiscalYearDraft] = useState(
+    () => String(new Date().getUTCFullYear()),
+  )
+  const [creatingWorkItem, setCreatingWorkItem] = useState(false)
+  const [workItemError, setWorkItemError] = useState<string | null>(null)
+
   // Keep the notes draft in sync whenever a new submission is loaded.
+  // Also reset the work-item action's transient UI state so opening
+  // a different row doesn't carry an error or in-flight spinner over.
   useEffect(() => {
     if (submission) {
       setNotesDraft(submission.triage_notes ?? "")
       setNotesDirty(false)
+      setWorkItemError(null)
+      setCreatingWorkItem(false)
+      // Default fiscal year on a per-row basis so opening a different
+      // intake reflects "the current year" rather than whatever the
+      // previous row's teammate typed in.
+      setFiscalYearDraft(String(new Date().getUTCFullYear()))
     }
   }, [submission?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * POST to the work-item route. On success the SWR cache is
+   * revalidated so the section flips from the button to the success
+   * card; on failure we surface the server-provided error message
+   * inline (the API route returns user-friendly strings for the
+   * 422 prereq errors).
+   */
+  async function createWorkItem() {
+    if (!submissionId) return
+    setWorkItemError(null)
+    setCreatingWorkItem(true)
+    try {
+      const res = await fetch(
+        `/api/jotform/intake/${submissionId}/karbon-work-item`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fiscalYear: fiscalYearDraft.trim() }),
+        },
+      )
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string
+        workItem?: {
+          key: string
+          title: string | null
+          url: string | null
+          createdAt: string | null
+        }
+      }
+      if (!res.ok) {
+        throw new Error(json?.error || `Karbon work item failed (${res.status})`)
+      }
+      await mutate()
+      onChanged?.()
+    } catch (err: any) {
+      console.error("[v0] create karbon work item error:", err)
+      setWorkItemError(err?.message ?? "Failed to create Karbon work item")
+    } finally {
+      setCreatingWorkItem(false)
+    }
+  }
 
   async function patch(body: Record<string, unknown>, field: typeof savingField) {
     if (!submissionId) return
@@ -387,6 +467,161 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                   </Button>
                 </div>
               </div>
+            </section>
+
+            {/* ───── Karbon work-item action ─────
+             *
+             * Renders one of three states:
+             *   1. Success card — work item already exists for this
+             *      intake; show the title + a deep-link into Karbon.
+             *   2. Prereq error — no linked contact OR no assignee;
+             *      explain what's missing instead of a dead button.
+             *   3. Action — the canonical "Create Karbon Work Item"
+             *      button with the fiscal-year input + a live preview
+             *      of the title that will be posted.
+             *
+             * The fiscal-year preview matches the title formula in
+             * `lib/karbon/create-intake-work-item.ts` so what the
+             * teammate sees here is exactly what Karbon receives.
+             */}
+            <section className="space-y-3 rounded-lg border bg-card p-4">
+              <div className="flex items-center gap-2">
+                <Briefcase className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Karbon
+                </h3>
+              </div>
+
+              {submission.karbon_work_item_key ? (
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm">
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                    <div className="flex-1 space-y-1">
+                      <div className="font-medium text-emerald-900">
+                        Karbon Work Item created
+                      </div>
+                      <div className="break-all font-mono text-xs text-emerald-900/80">
+                        {submission.karbon_work_item_title ??
+                          "TAX | Individual (1040)"}
+                      </div>
+                      {submission.karbon_work_item_created_at && (
+                        <div className="text-xs text-emerald-900/70">
+                          {new Date(
+                            submission.karbon_work_item_created_at,
+                          ).toLocaleString()}
+                        </div>
+                      )}
+                      {submission.karbon_work_item_url && (
+                        <a
+                          href={submission.karbon_work_item_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 underline-offset-2 hover:underline"
+                        >
+                          View in Karbon
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Prereqs — surface as a callout, not as a disabled
+                      button with no explanation. The "Convert to client"
+                      / "Assign owner" affordances live in the Triage
+                      section right above so the teammate doesn't have
+                      to hunt. */}
+                  {!submission.contact_id && (
+                    <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      <span>
+                        This intake isn't linked to a Karbon contact yet. The
+                        ingest pipeline normally auto-creates one — if it
+                        didn't, link or create the contact before creating
+                        a work item.
+                      </span>
+                    </div>
+                  )}
+                  {!submission.assigned_to_id && (
+                    <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      <span>
+                        Assign an owner above — Karbon needs an assignee to
+                        attach the work item to.
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <Label
+                      htmlFor="karbon-fiscal-year"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Fiscal year / period
+                    </Label>
+                    <input
+                      id="karbon-fiscal-year"
+                      type="text"
+                      value={fiscalYearDraft}
+                      onChange={(e) => setFiscalYearDraft(e.target.value)}
+                      placeholder="2026"
+                      className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Used as the final segment of the title. Use{" "}
+                      <code className="rounded bg-muted px-1 font-mono text-[11px]">
+                        LEAD
+                      </code>{" "}
+                      for prospects without a confirmed return year.
+                    </p>
+                  </div>
+
+                  {/* Live preview matches the server-side title formula. */}
+                  <div className="rounded-md border border-dashed bg-muted/40 p-2.5">
+                    <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Preview
+                    </div>
+                    <div className="mt-1 break-all font-mono text-xs text-foreground">
+                      TAX | Individual (1040) |{" "}
+                      {(submission.submitter_last_name ?? "Last")},{" "}
+                      {(submission.submitter_first_name ?? "First")} |{" "}
+                      {fiscalYearDraft.trim() || "—"}
+                    </div>
+                  </div>
+
+                  {workItemError && (
+                    <div className="rounded-md border border-red-200 bg-red-50 p-2.5 text-xs text-red-800">
+                      {workItemError}
+                    </div>
+                  )}
+
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="w-full"
+                    disabled={
+                      creatingWorkItem ||
+                      !submission.contact_id ||
+                      !submission.assigned_to_id ||
+                      !fiscalYearDraft.trim()
+                    }
+                    onClick={createWorkItem}
+                  >
+                    {creatingWorkItem ? (
+                      <>
+                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                        Creating in Karbon…
+                      </>
+                    ) : (
+                      <>
+                        <Briefcase className="mr-2 h-3.5 w-3.5" />
+                        Create Karbon Work Item
+                      </>
+                    )}
+                  </Button>
+                </>
+              )}
             </section>
 
             {/* ───── Summary sections ───── */}

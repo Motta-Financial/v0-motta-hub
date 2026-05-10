@@ -9,6 +9,7 @@ import { buildIntakeRow } from "./parse"
 import { buildFeedbackRow } from "./parse-feedback"
 import { autoLinkIntakeSubmission, autoLinkFeedbackSubmission } from "./match-client"
 import { findOrCreateClient } from "@/lib/karbon/client-sync"
+import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
 import { resolvePreferredTeamMember } from "./assign"
 import { enrichIntakeSubmission } from "./enrich"
 import { researchProspectQuestions } from "./research-questions"
@@ -55,6 +56,15 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
     throw new Error(`Failed to upsert intake submission ${submission.id}: ${error.message}`)
   }
 
+  // Captured by the karbon-created branch below; consumed AFTER the
+  // post-processing pipeline runs so the timeline note we push to
+  // Karbon already includes ALFRED's enrichment + question research.
+  let newKarbonEntity: { entityType: "Contact" | "Organization"; entityKey: string } | null = null
+  // The Supabase row UUID is captured so the timeline note step at
+  // the end of this function can re-fetch the fully enriched row
+  // without having to re-resolve `jotform_submission_id`.
+  let persistedRowId: string | null = null
+
   // Auto-match the freshly-upserted row to a contact / organization.
   // This is best-effort: a match failure shouldn't fail the webhook,
   // because the row is already safely persisted and the bulk
@@ -68,10 +78,11 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
       .select("id, submitter_email, submitter_full_name, business_name, phone_number, contact_id, organization_id, link_method")
       .eq("jotform_submission_id", submission.id)
       .maybeSingle()
-    if (persisted) {
+      if (persisted) {
+      persistedRowId = persisted.id
       // First try the standard auto-link (Supabase-only)
       let result = await autoLinkIntakeSubmission(supabase, persisted.id, persisted)
-      
+
       // If no match found, use the enhanced Karbon search + create flow
       if (!result?.link_method) {
         const karbonResult = await findOrCreateClient(
@@ -83,7 +94,7 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
           },
           { autoCreate: true, source: "Jotform Intake" }
         )
-        
+
         if (karbonResult.contact_id || karbonResult.organization_id) {
           // Update the submission with the new link
           const linkMethod = karbonResult.method === "karbon_created" ? "auto_karbon_created" : "auto_karbon_match"
@@ -96,7 +107,18 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
               linked_at: new Date().toISOString(),
             })
             .eq("id", persisted.id)
-          
+
+          // Remember whether we minted a brand-new Karbon entity so the
+          // post-processing block can post the legacy "new intake"
+          // timeline note onto the freshly-created contact (Zapier did
+          // this before Motta Hub took over).
+          if (karbonResult.method === "karbon_created" && karbonResult.karbon_key) {
+            newKarbonEntity = {
+              entityType: karbonResult.contact_id ? "Contact" : "Organization",
+              entityKey: karbonResult.karbon_key,
+            }
+          }
+
           console.log(`[Jotform] Karbon ${karbonResult.method}: ${karbonResult.reason}`)
         }
       } else {
@@ -119,6 +141,44 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
     await runIntakePostProcessing(supabase, submission.id)
   } catch (err) {
     console.log("[Jotform] intake post-processing error:", (err as Error).message)
+  }
+
+  // ── Legacy "new intake" timeline note on Karbon ──────────────────
+  // Before Motta Hub, Zapier would post a Karbon Note onto the new
+  // contact's timeline whenever the intake created a brand-new
+  // contact. We restore that here — runs AFTER post-processing so
+  // the enrichment summary + question research are persisted and
+  // therefore included in the note body.
+  //
+  // Fire-and-forget by design: Karbon being down should not prevent
+  // the intake from being marked as processed.
+  if (newKarbonEntity && persistedRowId) {
+    try {
+      const { data: enrichedRow } = await supabase
+        .from("jotform_intake_submissions")
+        .select("*")
+        .eq("id", persistedRowId)
+        .maybeSingle()
+      if (enrichedRow) {
+        const noteResult = await postIntakeNoteToKarbon(
+          newKarbonEntity,
+          enrichedRow as any,
+        )
+        if (noteResult.ok) {
+          console.log(
+            `[Jotform] Posted intake timeline note to Karbon ${newKarbonEntity.entityType} ${newKarbonEntity.entityKey} (note ${noteResult.noteKey})`,
+          )
+        } else if (noteResult.skipped) {
+          console.log(
+            `[Jotform] Skipped intake timeline note: ${noteResult.skipped}`,
+          )
+        } else {
+          console.log(`[Jotform] Intake timeline note failed: ${noteResult.error}`)
+        }
+      }
+    } catch (err) {
+      console.log("[Jotform] intake timeline note error:", (err as Error).message)
+    }
   }
 
   return { id: submission.id }
