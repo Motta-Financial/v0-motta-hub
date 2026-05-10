@@ -23,6 +23,7 @@ import useSWR from "swr"
 import {
   CalendarDays,
   Inbox,
+  Link2,
   MessageSquareHeart,
   RefreshCw,
   Search,
@@ -77,7 +78,12 @@ export interface FeedbackRow {
   karbon_work_item_title: string | null
   contact_id: string | null
   organization_id: string | null
+  link_method: "auto_email" | "auto_name" | "manual" | null
+  linked_at: string | null
   reviewedBy: { id: string; name: string; avatarUrl: string | null } | null
+  // Resolved by /api/jotform/feedback — feedback submitters who
+  // also exist as a contact/org in Karbon are deep-linked here.
+  linkedClient: { type: "contact" | "organization"; id: string; name: string } | null
 }
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
@@ -185,6 +191,11 @@ export function FeedbackList() {
   const [statusTab, setStatusTab] = useState<"all" | StatusValue>("all")
   const [segment, setSegment] = useState<string>("all")
   const [withReferrals, setWithReferrals] = useState<boolean>(false)
+  // Linked-client filter — same shape as the intake list. "no" is
+  // the typical workflow when the auto-matcher misses a submitter
+  // (e.g. they used a personal email Karbon doesn't have on file)
+  // and a human needs to pin the right contact.
+  const [linked, setLinked] = useState<"all" | "yes" | "no">("all")
   const [search, setSearch] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
@@ -192,6 +203,7 @@ export function FeedbackList() {
   if (statusTab !== "all") qs.set("status", statusTab)
   if (segment !== "all") qs.set("segment", segment)
   if (withReferrals) qs.set("with_referrals", "1")
+  if (linked !== "all") qs.set("linked", linked)
   if (search.trim()) qs.set("search", search.trim())
 
   const swrKey = `/api/jotform/feedback?${qs.toString()}`
@@ -296,7 +308,7 @@ export function FeedbackList() {
 
           <div className="flex flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-end">
             <Select value={segment} onValueChange={setSegment}>
-              <SelectTrigger className="w-full md:w-[200px]">
+              <SelectTrigger className="w-full md:w-[180px]">
                 <SelectValue placeholder="Segment" />
               </SelectTrigger>
               <SelectContent>
@@ -304,6 +316,17 @@ export function FeedbackList() {
                 <SelectItem value="promoter">Promoters (5★)</SelectItem>
                 <SelectItem value="passive">Passives (4★)</SelectItem>
                 <SelectItem value="detractor">Detractors (≤3★)</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Select value={linked} onValueChange={(v) => setLinked(v as typeof linked)}>
+              <SelectTrigger className="w-full md:w-[170px]">
+                <SelectValue placeholder="Client link" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All submissions</SelectItem>
+                <SelectItem value="yes">Linked to client</SelectItem>
+                <SelectItem value="no">Unlinked</SelectItem>
               </SelectContent>
             </Select>
 
@@ -336,7 +359,8 @@ export function FeedbackList() {
           <table className="w-full text-sm">
             <thead className="border-b bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
-                <th className="px-4 py-3 font-medium">Client</th>
+                <th className="px-4 py-3 font-medium">Submitter</th>
+                <th className="px-4 py-3 font-medium">Linked client</th>
                 <th className="px-4 py-3 font-medium">Overall</th>
                 <th className="px-4 py-3 font-medium">Comment</th>
                 <th className="px-4 py-3 font-medium">Referrals</th>
@@ -348,14 +372,14 @@ export function FeedbackList() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
                     Loading feedback…
                   </td>
                 </tr>
               )}
               {!isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
                     No feedback matches the current filters.
                   </td>
                 </tr>
@@ -385,6 +409,28 @@ export function FeedbackList() {
                         </div>
                       </div>
                     </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {row.linkedClient ? (
+                      <a
+                        href={
+                          row.linkedClient.type === "contact"
+                            ? `/contacts/${row.linkedClient.id}`
+                            : `/organizations/${row.linkedClient.id}`
+                        }
+                        // Stop the row click handler so clicking the
+                        // chip jumps to the client profile instead of
+                        // opening the side sheet.
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex max-w-[180px] items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                        title={`Linked via ${row.link_method ?? "manual"}`}
+                      >
+                        <Link2 className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{row.linkedClient.name}</span>
+                      </a>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Unlinked</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <StarRating value={row.rating_overall} />

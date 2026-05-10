@@ -21,6 +21,7 @@ import {
   Building2,
   CalendarDays,
   Inbox,
+  Link2,
   Mail,
   MapPin,
   Phone,
@@ -72,8 +73,14 @@ export interface IntakeRow {
   assigned_to_id: string | null
   contact_id: string | null
   organization_id: string | null
+  link_method: "auto_email" | "auto_business_name" | "auto_name" | "manual" | null
+  linked_at: string | null
   lead_id: string | null
   assignedTo: { id: string; name: string; avatarUrl: string | null } | null
+  // Resolved by /api/jotform/intake — surfaces the matched
+  // contact/organization name so the row can deep-link to the client
+  // profile without a second round-trip.
+  linkedClient: { type: "contact" | "organization"; id: string; name: string } | null
 }
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
@@ -159,12 +166,18 @@ function isThisMonth(iso: string | null): boolean {
 export function IntakeList() {
   const [statusTab, setStatusTab] = useState<"all" | StatusValue>("all")
   const [focus, setFocus] = useState<string>("all")
+  // Filter for the linked-client column. "all" hides the filter,
+  // "yes" shows only rows already auto-matched or manually pinned,
+  // "no" surfaces the unlinked queue for triage. Server-side filter
+  // keeps the row count honest.
+  const [linked, setLinked] = useState<"all" | "yes" | "no">("all")
   const [search, setSearch] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const qs = new URLSearchParams()
   if (statusTab !== "all") qs.set("status", statusTab)
   if (focus !== "all") qs.set("focus", focus)
+  if (linked !== "all") qs.set("linked", linked)
   if (search.trim()) qs.set("search", search.trim())
 
   const swrKey = `/api/jotform/intake?${qs.toString()}`
@@ -250,7 +263,7 @@ export function IntakeList() {
 
           <div className="flex flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-end">
             <Select value={focus} onValueChange={setFocus}>
-              <SelectTrigger className="w-full md:w-[220px]">
+              <SelectTrigger className="w-full md:w-[200px]">
                 <SelectValue placeholder="Service focus" />
               </SelectTrigger>
               <SelectContent>
@@ -261,7 +274,22 @@ export function IntakeList() {
               </SelectContent>
             </Select>
 
-            <div className="relative w-full md:w-[280px]">
+            {/* Linked-client filter. Defaults to "all" so the queue
+                shows everything; switching to "no" is the typical CSM
+                workflow ("show me submissions that still need a
+                client manually pinned"). */}
+            <Select value={linked} onValueChange={(v) => setLinked(v as typeof linked)}>
+              <SelectTrigger className="w-full md:w-[170px]">
+                <SelectValue placeholder="Client link" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All submissions</SelectItem>
+                <SelectItem value="yes">Linked to client</SelectItem>
+                <SelectItem value="no">Unlinked</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <div className="relative w-full md:w-[260px]">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
@@ -281,6 +309,7 @@ export function IntakeList() {
             <thead className="border-b bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 font-medium">Submitter</th>
+                <th className="px-4 py-3 font-medium">Client</th>
                 <th className="px-4 py-3 font-medium">Focus</th>
                 <th className="px-4 py-3 font-medium">Services</th>
                 <th className="px-4 py-3 font-medium">Business</th>
@@ -292,14 +321,14 @@ export function IntakeList() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
                     Loading submissions…
                   </td>
                 </tr>
               )}
               {!isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
                     No submissions match the current filters.
                   </td>
                 </tr>
@@ -327,6 +356,28 @@ export function IntakeList() {
                         </div>
                       </div>
                     </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {row.linkedClient ? (
+                      <a
+                        href={
+                          row.linkedClient.type === "contact"
+                            ? `/contacts/${row.linkedClient.id}`
+                            : `/organizations/${row.linkedClient.id}`
+                        }
+                        // Stop the row click handler so clicking the
+                        // chip jumps to the client profile instead of
+                        // opening the side sheet.
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex max-w-[180px] items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                        title={`Linked via ${row.link_method ?? "manual"}`}
+                      >
+                        <Link2 className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{row.linkedClient.name}</span>
+                      </a>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Unlinked</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{row.service_focus ?? "—"}</td>
                   <td className="px-4 py-3">

@@ -13,12 +13,16 @@ import { createAdminClient } from "@/lib/supabase/server"
  * Supported filters (query params):
  *   ?status=new|contacted|qualified|converted|declined
  *   ?focus=Personal Only|Business Only|Both Personal & Business
+ *   ?linked=yes|no             — filter by whether the row is linked
+ *                                to a contact or organization
  *   ?search=<free text> — matches name, email, business_name (ILIKE)
  *   ?limit=<n> (default 200, max 1000)
  *
  * Returned shape mirrors the table columns the list view renders, plus
  * a small `assignedTo` projection so the table doesn't need a second
- * round-trip to resolve team-member names/avatars.
+ * round-trip to resolve team-member names/avatars and a `linkedClient`
+ * projection that resolves contact_id/organization_id to a display
+ * name + entity type + clickable id.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -27,6 +31,7 @@ export async function GET(req: NextRequest) {
 
     const status = searchParams.get("status")
     const focus = searchParams.get("focus")
+    const linked = searchParams.get("linked") // "yes" | "no" | null
     const search = searchParams.get("search")?.trim()
     const limit = Math.min(Number(searchParams.get("limit") ?? 200), 1000)
 
@@ -54,6 +59,8 @@ export async function GET(req: NextRequest) {
         assigned_to_id,
         contact_id,
         organization_id,
+        link_method,
+        linked_at,
         lead_id
         `,
       )
@@ -62,6 +69,16 @@ export async function GET(req: NextRequest) {
 
     if (status) query = query.eq("lead_status", status)
     if (focus) query = query.eq("service_focus", focus)
+
+    // "linked=yes" → must have at least one of contact_id / org_id.
+    // "linked=no"  → both must be null. Done at the SQL layer so
+    // the row count returned to the client is honest.
+    if (linked === "yes") {
+      query = query.or("contact_id.not.is.null,organization_id.not.is.null")
+    } else if (linked === "no") {
+      query = query.is("contact_id", null).is("organization_id", null)
+    }
+
     if (search) {
       // PostgREST `or` filter with three ILIKE branches. We escape `%` and
       // commas in the search term to keep this safe; PostgREST treats `,`
@@ -98,10 +115,57 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const rows = (data ?? []).map((r) => ({
-      ...r,
-      assignedTo: r.assigned_to_id ? assignedById.get(r.assigned_to_id) ?? null : null,
-    }))
+    // Resolve linked client display info. Two parallel lookups (one
+    // per table) keyed by the FK columns. The list view shows the
+    // matched client as a chip, so we just need name + id.
+    const contactIds = Array.from(
+      new Set((data ?? []).map((r) => r.contact_id).filter(Boolean) as string[]),
+    )
+    const orgIds = Array.from(
+      new Set((data ?? []).map((r) => r.organization_id).filter(Boolean) as string[]),
+    )
+    const contactById = new Map<string, { id: string; name: string }>()
+    const orgById = new Map<string, { id: string; name: string }>()
+    if (contactIds.length > 0) {
+      const { data: contacts } = await supabase
+        .from("contacts")
+        .select("id, full_name, first_name, last_name")
+        .in("id", contactIds)
+      for (const c of contacts ?? []) {
+        contactById.set(c.id, {
+          id: c.id,
+          name: c.full_name || `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unnamed contact",
+        })
+      }
+    }
+    if (orgIds.length > 0) {
+      const { data: orgs } = await supabase
+        .from("organizations")
+        .select("id, name, full_name")
+        .in("id", orgIds)
+      for (const o of orgs ?? []) {
+        orgById.set(o.id, { id: o.id, name: o.name || o.full_name || "Unnamed organization" })
+      }
+    }
+
+    const rows = (data ?? []).map((r) => {
+      // Surface the most-specific link first: a contact wins over an
+      // organization on the (rare) row where both happen to be set,
+      // because contact-level matches are higher confidence.
+      let linkedClient: { type: "contact" | "organization"; id: string; name: string } | null = null
+      if (r.contact_id) {
+        const c = contactById.get(r.contact_id)
+        if (c) linkedClient = { type: "contact", id: c.id, name: c.name }
+      } else if (r.organization_id) {
+        const o = orgById.get(r.organization_id)
+        if (o) linkedClient = { type: "organization", id: o.id, name: o.name }
+      }
+      return {
+        ...r,
+        assignedTo: r.assigned_to_id ? assignedById.get(r.assigned_to_id) ?? null : null,
+        linkedClient,
+      }
+    })
 
     return NextResponse.json({ rows, count: rows.length })
   } catch (err: any) {

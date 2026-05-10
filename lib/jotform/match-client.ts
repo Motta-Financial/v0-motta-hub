@@ -234,3 +234,141 @@ export async function autoLinkIntakeSubmission(
 
   return result
 }
+
+/**
+ * Match a Jotform feedback submission to a contact / organization.
+ *
+ * Differs from intake in two ways:
+ *   1. Feedback has no `business_name` field — clients enter their
+ *      personal name + email, not a company. So we drop the
+ *      business-name heuristic entirely.
+ *   2. We add a conservative full-name fallback. Existing clients
+ *      filling a feedback form usually identify themselves with
+ *      their real name (it's the same person Karbon already knows),
+ *      so an exact `lower(trim(full_name))` match is high-signal
+ *      when the email doesn't match (e.g. they used a personal
+ *      email instead of the work one Karbon has on file).
+ */
+export async function matchFeedbackToClient(
+  supabase: SupabaseClient,
+  submission: {
+    submitter_email: string | null
+    submitter_full_name: string | null
+  },
+): Promise<MatchResult> {
+  const empty: MatchResult = { contact_id: null, organization_id: null, link_method: null, reason: null }
+  const email = normalizeEmail(submission.submitter_email)
+  const fullName = (submission.submitter_full_name ?? "").trim().toLowerCase()
+
+  // ── Strategy 1: Email match against contacts ───────────────────
+  if (email) {
+    const { data: c1 } = await supabase
+      .from("contacts")
+      .select("id")
+      .ilike("primary_email", email)
+      .limit(2)
+    if (c1 && c1.length === 1) {
+      return {
+        contact_id: c1[0].id,
+        organization_id: null,
+        link_method: "auto_email",
+        reason: `Matched contact.primary_email = ${email}`,
+      }
+    }
+    if (c1 && c1.length > 1) {
+      return { ...empty, reason: `Ambiguous: ${c1.length} contacts share email ${email}` }
+    }
+
+    const { data: c2 } = await supabase
+      .from("contacts")
+      .select("id")
+      .ilike("secondary_email", email)
+      .limit(2)
+    if (c2 && c2.length === 1) {
+      return {
+        contact_id: c2[0].id,
+        organization_id: null,
+        link_method: "auto_email",
+        reason: `Matched contact.secondary_email = ${email}`,
+      }
+    }
+
+    const { data: o1 } = await supabase
+      .from("organizations")
+      .select("id")
+      .ilike("primary_email", email)
+      .limit(2)
+    if (o1 && o1.length === 1) {
+      return {
+        contact_id: null,
+        organization_id: o1[0].id,
+        link_method: "auto_email",
+        reason: `Matched organization.primary_email = ${email}`,
+      }
+    }
+  }
+
+  // ── Strategy 2: Full-name match against contacts ───────────────
+  // Only safe when there's exactly ONE contact with this name (so
+  // common names like "John Smith" stay unlinked rather than
+  // misattributing). Requires ≥5 chars to skip false positives on
+  // very short names.
+  if (fullName && fullName.length >= 5) {
+    const { data: nameMatches } = await supabase
+      .from("contacts")
+      .select("id, full_name")
+      .ilike("full_name", fullName)
+      .limit(2)
+    if (nameMatches && nameMatches.length === 1) {
+      return {
+        contact_id: nameMatches[0].id,
+        organization_id: null,
+        link_method: "auto_name",
+        reason: `Matched contact.full_name = "${fullName}"`,
+      }
+    }
+    if (nameMatches && nameMatches.length > 1) {
+      return { ...empty, reason: `Ambiguous: ${nameMatches.length} contacts share name "${fullName}"` }
+    }
+  }
+
+  return empty
+}
+
+/**
+ * Same shape as autoLinkIntakeSubmission, but writes to the
+ * jotform_feedback_submissions table and uses the feedback-shaped
+ * matcher (no business_name path).
+ */
+export async function autoLinkFeedbackSubmission(
+  supabase: SupabaseClient,
+  submissionId: string,
+  submission: {
+    submitter_email: string | null
+    submitter_full_name: string | null
+    contact_id: string | null
+    organization_id: string | null
+    link_method: LinkMethod | null
+  },
+): Promise<MatchResult | null> {
+  if (submission.link_method === "manual") return null
+
+  const result = await matchFeedbackToClient(supabase, submission)
+
+  if (!result.link_method && !submission.contact_id && !submission.organization_id) {
+    return result
+  }
+
+  await supabase
+    .from("jotform_feedback_submissions")
+    .update({
+      contact_id: result.contact_id,
+      organization_id: result.organization_id,
+      link_method: result.link_method,
+      linked_at: result.link_method ? new Date().toISOString() : null,
+    })
+    .eq("id", submissionId)
+    .or("link_method.is.null,link_method.like.auto_%")
+
+  return result
+}
