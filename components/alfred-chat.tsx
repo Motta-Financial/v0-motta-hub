@@ -3,6 +3,7 @@
 import type React from "react"
 
 import { useState, useRef, useEffect, useCallback } from "react"
+import Image from "next/image"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport, type UIMessage } from "ai"
 import { Button } from "@/components/ui/button"
@@ -11,7 +12,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
 import {
-  Sparkles,
   Send,
   X,
   Minimize2,
@@ -252,9 +252,18 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
       <div className={cn("fixed bottom-4 right-4 z-50", className)}>
         <Button
           onClick={onMinimize}
-          className="h-14 w-14 rounded-full bg-gradient-to-br from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 shadow-lg"
+          aria-label="Restore ALFRED"
+          // Mirrors the launcher styling so the FAB looks consistent
+          // whether the chat has never been opened or is just minimized.
+          className="h-14 w-14 rounded-full bg-white hover:bg-amber-50 ring-1 ring-amber-200 shadow-lg p-0 overflow-hidden"
         >
-          <Sparkles className="h-6 w-6 text-white" />
+          <Image
+            src="/images/alfred-logo.png"
+            alt=""
+            width={48}
+            height={48}
+            className="object-contain"
+          />
         </Button>
         {messages.length > 0 && (
           <Badge className="absolute -top-1 -right-1 bg-red-500 text-white text-xs">
@@ -275,8 +284,16 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
       {/* Header */}
       <CardHeader className="flex flex-row items-center justify-between py-3 px-4 bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded-t-lg">
         <div className="flex items-center gap-2">
-          <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center">
-            <Sparkles className="h-4 w-4" />
+          {/* Solid white avatar so the dark "ai" mark in the new logo
+              has enough contrast against the amber/orange header. */}
+          <div className="h-8 w-8 rounded-full bg-white flex items-center justify-center overflow-hidden p-1">
+            <Image
+              src="/images/alfred-logo.png"
+              alt=""
+              width={24}
+              height={24}
+              className="object-contain"
+            />
           </div>
           <div>
             <CardTitle className="text-base font-semibold">ALFRED AI</CardTitle>
@@ -310,8 +327,17 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
           {messages.length === 0 ? (
             <div className="space-y-4">
               <div className="text-center py-6">
-                <div className="h-16 w-16 mx-auto rounded-full bg-gradient-to-br from-amber-100 to-orange-100 flex items-center justify-center mb-4">
-                  <Sparkles className="h-8 w-8 text-amber-600" />
+                {/* Logo stands on its own here -- the brand mark already
+                    has its own visual weight (black "ai" + green sphere)
+                    so a colored ring would compete with it. */}
+                <div className="relative h-20 w-20 mx-auto mb-4">
+                  <Image
+                    src="/images/alfred-logo.png"
+                    alt="ALFRED"
+                    fill
+                    sizes="5rem"
+                    className="object-contain"
+                  />
                 </div>
                 <h3 className="font-semibold text-gray-900">Hello! I&apos;m ALFRED</h3>
                 <p className="text-sm text-gray-500 mt-1">Your AI assistant with access to all Motta Hub data</p>
