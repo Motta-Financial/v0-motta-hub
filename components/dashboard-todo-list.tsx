@@ -50,6 +50,8 @@ import {
 import { useUser } from "@/contexts/user-context"
 import { cn } from "@/lib/utils"
 import { TaskCreateDialog } from "@/components/tasks/task-create-dialog"
+import { MottaSetupTab } from "@/components/dashboard-motta-setup"
+import { Settings2 } from "lucide-react"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -547,35 +549,58 @@ export function DashboardTodoList() {
         </Card>
       </div>
 
-      {/* Tabs for My Tasks vs Debrief Action Items */}
+      {/* Tabs for My Tasks vs Debrief Action Items vs Motta Setup */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <TabsList>
-            <TabsTrigger value="my-tasks" className="gap-2">
-              <CheckCircle2 className="h-4 w-4" />
-              My Tasks
-              {stats.userTasks > 0 && (
-                <Badge variant="secondary" className="ml-1">{stats.userTasks}</Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="debrief-items" className="gap-2">
-              <FileText className="h-4 w-4" />
-              From Debriefs
-              {stats.actionItems > 0 && (
-                <Badge variant="secondary" className="ml-1">{stats.actionItems}</Badge>
-              )}
-            </TabsTrigger>
-          </TabsList>
-          
+          <div className="flex flex-col gap-2">
+            {/* Section labels above the tabs so it's clear which tabs belong
+                to day-to-day work and which are firm-level administrative
+                setup items. */}
+            <TabsList className="h-auto p-1">
+              <div className="flex flex-col gap-1 px-2 pt-1 pb-0.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Work
+                </span>
+              </div>
+              <TabsTrigger value="my-tasks" className="gap-2">
+                <CheckCircle2 className="h-4 w-4" />
+                My Tasks
+                {stats.userTasks > 0 && (
+                  <Badge variant="secondary" className="ml-1">{stats.userTasks}</Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="debrief-items" className="gap-2">
+                <FileText className="h-4 w-4" />
+                From Debriefs
+                {stats.actionItems > 0 && (
+                  <Badge variant="secondary" className="ml-1">{stats.actionItems}</Badge>
+                )}
+              </TabsTrigger>
+              <div className="mx-1 h-6 w-px shrink-0 self-center bg-border" />
+              <div className="flex flex-col gap-1 px-2 pt-1 pb-0.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Motta
+                </span>
+              </div>
+              <TabsTrigger value="motta-setup" className="gap-2">
+                <Settings2 className="h-4 w-4" />
+                Setup
+              </TabsTrigger>
+            </TabsList>
+          </div>
+
           {activeTab === "my-tasks" && (
-            <TaskCreateDialog 
+            <TaskCreateDialog
               onTaskCreated={handleTaskCreated}
               defaultAssigneeId={teamMember?.id}
             />
           )}
         </div>
 
-        {/* Filters */}
+        {/* Filters — only meaningful for the work-related tabs.
+            The Motta Setup tab has its own status badges and doesn't need
+            text search or the assignee filter. */}
+        {activeTab !== "motta-setup" && (
         <Card className="p-4 mt-4">
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-[200px] max-w-sm">
@@ -608,6 +633,7 @@ export function DashboardTodoList() {
             </label>
           </div>
         </Card>
+        )}
 
         {/* My Tasks Tab */}
         <TabsContent value="my-tasks" className="mt-4 space-y-2">
@@ -740,6 +766,14 @@ export function DashboardTodoList() {
               </Card>
             ))
           )}
+        </TabsContent>
+
+        {/* Motta Setup Tab — administrative items the current team member
+            needs to complete for the Hub to work end-to-end (Zoom OAuth,
+            Calendly OAuth, etc.). Lives in its own visual section under the
+            "Motta" label in the TabsList above. */}
+        <TabsContent value="motta-setup" className="mt-4">
+          <MottaSetupTab teamMemberId={teamMember?.id} />
         </TabsContent>
       </Tabs>
     </div>
