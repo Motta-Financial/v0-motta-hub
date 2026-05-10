@@ -21,9 +21,32 @@ const sourceCodePro = Source_Code_Pro({
 })
 
 export const metadata: Metadata = {
-  title: "Motta Financial Dashboard",
+  title: "Motta Hub",
   description: "Internal dashboard for Motta Financial professionals",
+  applicationName: "Motta Hub",
+  authors: [{ name: "Motta Financial" }],
   generator: "v0.app",
+  manifest: "/manifest.json",
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+    ],
+    apple: [
+      { url: "/apple-touch-icon.jpg", sizes: "180x180", type: "image/jpeg" },
+    ],
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Motta Hub",
+  },
+}
+
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  themeColor: "#7A8B69",
 }
 
 // NOTE: The root layout sits at the top of every route's chunk graph, so
