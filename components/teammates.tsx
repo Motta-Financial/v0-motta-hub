@@ -27,6 +27,8 @@ import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { OrgChart } from "@/components/org-chart"
+import { Bot, Lock } from "lucide-react"
+import { isAlfredServiceAccount } from "@/lib/alfred/service-account"
 
 interface TeamMember {
   id: string
@@ -44,6 +46,10 @@ interface TeamMember {
   start_date?: string
   manager_id?: string
   is_active: boolean
+  // Set TRUE on the single ALFRED row (lib/alfred/service-account.ts).
+  // Database trigger trg_team_members_protect_service_account guarantees
+  // this row cannot be deactivated or deleted.
+  is_service_account?: boolean
   karbon_user_key?: string
   created_at?: string
   updated_at?: string
@@ -290,18 +296,49 @@ export function Teammates() {
 
               {/* User Cards */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredUsers.map((user) => (
-                  <Card key={user.id} className="hover:shadow-md transition-shadow">
+                {filteredUsers.map((user) => {
+                  // Per-row guard. The database trigger is the source of
+                  // truth, but we surface it in the UI so admins immediately
+                  // see why deactivate-style controls (when they exist) are
+                  // disabled on this row.
+                  const isAlfred = isAlfredServiceAccount(user)
+                  return (
+                  <Card
+                    key={user.id}
+                    className={`hover:shadow-md transition-shadow ${
+                      isAlfred ? "border-primary/40 bg-primary/[0.03]" : ""
+                    }`}
+                  >
                     <CardContent className="p-6">
                       <div className="flex items-start gap-4">
                         <Avatar className="h-14 w-14">
                           <AvatarImage src={user.avatar_url || "/placeholder.svg"} alt={user.full_name} />
-                          <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white text-lg">
-                            {getInitials(user.full_name)}
+                          <AvatarFallback className={`text-lg ${
+                            isAlfred
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-gradient-to-br from-blue-500 to-purple-600 text-white"
+                          }`}>
+                            {isAlfred ? <Bot className="h-6 w-6" /> : getInitials(user.full_name)}
                           </AvatarFallback>
                         </Avatar>
                         <div className="flex-1 min-w-0">
-                          <h3 className="font-semibold text-gray-900 truncate">{user.full_name}</h3>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-semibold text-gray-900 truncate">{user.full_name}</h3>
+                            {isAlfred && (
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px] uppercase tracking-wide gap-1"
+                                title={
+                                  "ALFRED is the AI assistant service account. " +
+                                  "It cannot be deactivated, renamed, or deleted. " +
+                                  "Enforced by trg_team_members_protect_service_account."
+                                }
+                              >
+                                <Lock className="h-3 w-3" />
+                                Service Account
+                              </Badge>
+                            )}
+                          </div>
                           {user.title && <p className="text-sm text-gray-600 truncate mt-1">{user.title}</p>}
                           {user.department && (
                             <p className="text-xs text-gray-500 truncate mt-1 flex items-center gap-1">
@@ -351,7 +388,8 @@ export function Teammates() {
                       </div>
                     </CardContent>
                   </Card>
-                ))}
+                  )
+                })}
               </div>
 
               {filteredUsers.length === 0 && (

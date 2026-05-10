@@ -27,6 +27,14 @@ export async function middleware(request: NextRequest) {
   // happens we sign them out immediately, even if their session cookie is
   // still otherwise valid. We also ban the auth account separately so they
   // can't refresh, but this catches stale sessions on the next request.
+  //
+  // ALFRED note: The ALFRED service-account team_member row
+  // (lib/alfred/service-account.ts) is intentionally NOT special-cased here.
+  // It is treated like any other authenticated user: subject to the same
+  // is_active check, the same allowlist, and the same redirect rules. We
+  // deliberately do NOT auto-elevate ALFRED's session -- any privileged
+  // automation that runs as ALFRED must do so via service-role calls in a
+  // server action / API route, not via this middleware.
   if (user) {
     const { data: tm } = await supabase
       .from("team_members")
