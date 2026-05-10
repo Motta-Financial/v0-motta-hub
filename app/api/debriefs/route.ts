@@ -32,9 +32,24 @@ export async function GET(request: NextRequest) {
   const clientKey = searchParams.get("clientKey")
   const contactId = searchParams.get("contactId")
   const organizationId = searchParams.get("organizationId")
+  const hasActionItems = searchParams.get("has_action_items") === "true"
   const limit = Number.parseInt(searchParams.get("limit") || "50")
 
-  let query = supabase.from("debriefs").select("*").order("debrief_date", { ascending: false }).limit(limit)
+  // Use the enriched view when we need joined data (for to-do list)
+  // Otherwise use the base table for faster queries
+  const selectFields = hasActionItems
+    ? `*,
+       organizations:organization_id (name),
+       contacts:contact_id (full_name),
+       created_by:created_by_id (full_name),
+       team_member:team_member_id (full_name)`
+    : "*"
+
+  let query = supabase
+    .from("debriefs")
+    .select(selectFields)
+    .order("debrief_date", { ascending: false })
+    .limit(limit)
 
   // Filter by contact or organization UUID
   if (contactId) {
@@ -45,13 +60,34 @@ export async function GET(request: NextRequest) {
     query = query.or(`karbon_client_key.eq.${clientKey},organization_name.ilike.%${clientKey}%`)
   }
 
+  // Filter to only debriefs that have action items
+  if (hasActionItems) {
+    query = query.not("action_items", "is", null)
+  }
+
   const { data, error } = await query
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  return NextResponse.json({ debriefs: data })
+  // Transform joined data for cleaner response
+  const debriefs = hasActionItems
+    ? (data || []).map((d: any) => ({
+        ...d,
+        organization_display_name: d.organizations?.name || d.organization_name,
+        contact_full_name: d.contacts?.full_name || null,
+        created_by_full_name: d.created_by?.full_name || null,
+        team_member_full_name: d.team_member?.full_name || null,
+        // Clean up joined relations from response
+        organizations: undefined,
+        contacts: undefined,
+        created_by: undefined,
+        team_member: undefined,
+      }))
+    : data
+
+  return NextResponse.json({ debriefs })
 }
 
 export async function POST(request: NextRequest) {
