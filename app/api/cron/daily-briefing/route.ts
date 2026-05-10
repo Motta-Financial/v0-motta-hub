@@ -93,6 +93,9 @@ export async function GET(request: Request) {
       marketNewsResult,
       taxNewsResult,
       hubUpdatesResult,
+      intakeFormsResult,
+      feedbackResult,
+      acceptedProposalsResult,
     ] = await Promise.allSettled([
       supabase
         .from("debriefs")
@@ -122,6 +125,28 @@ export async function GET(request: Request) {
       fetchNewsCategory("market", 4),
       fetchNewsCategory("tax", 4),
       fetchHubUpdates(yesterdayStart, yesterdayEnd),
+      // New intake form submissions from yesterday
+      supabase
+        .from("jotform_intake_submissions")
+        .select("id, submitter_full_name, business_name, services_requested, created_at")
+        .gte("created_at", yesterdayStart.toISOString())
+        .lt("created_at", yesterdayEnd.toISOString())
+        .order("created_at", { ascending: true }),
+      // New feedback submissions from yesterday
+      supabase
+        .from("jotform_feedback_submissions")
+        .select("id, submitter_full_name, rating_overall, rating_service_quality, feedback_comments, created_at")
+        .gte("created_at", yesterdayStart.toISOString())
+        .lt("created_at", yesterdayEnd.toISOString())
+        .order("created_at", { ascending: true }),
+      // Proposals accepted yesterday
+      supabase
+        .from("ignition_proposals")
+        .select("proposal_id, title, client_name, total_value, accepted_at")
+        .gte("accepted_at", yesterdayStart.toISOString())
+        .lt("accepted_at", yesterdayEnd.toISOString())
+        .eq("status", "accepted")
+        .order("accepted_at", { ascending: true }),
     ])
 
     const debriefs = unwrapData(debriefsResult, "debriefs") as DebriefRow[]
@@ -133,6 +158,9 @@ export async function GET(request: Request) {
     const marketNews = unwrapNews(marketNewsResult)
     const taxNews = unwrapNews(taxNewsResult)
     const hubUpdates = unwrapHubUpdates(hubUpdatesResult)
+    const intakeForms = unwrapData(intakeFormsResult, "jotform_intake_submissions") as IntakeFormRow[]
+    const feedbackSubmissions = unwrapData(feedbackResult, "jotform_feedback_submissions") as FeedbackRow[]
+    const acceptedProposals = unwrapData(acceptedProposalsResult, "ignition_proposals") as AcceptedProposalRow[]
 
     /* ──────────────────────────────────────────────────────────────────
      * Resolve human-readable names. Debriefs only carry IDs, so we
@@ -266,11 +294,35 @@ export async function GET(request: Request) {
      * Send one personalized email per recipient (for the greeting).
      * Respects each user's `daily_briefing` opt-out via sendCategoryEmail.
      * ────────────────────────────────────────────────────────────────── */
+    // Shape business metrics for the appendix (same for all recipients)
+    const newIntakeForms = intakeForms.map((i) => ({
+      name: i.submitter_full_name || "Unknown",
+      businessName: i.business_name,
+      services: i.services_requested || [],
+      url: `${hubUrl}/intake?id=${i.id}`,
+    }))
+    const newFeedback = feedbackSubmissions.map((f) => ({
+      name: f.submitter_full_name || "A client",
+      rating: f.rating_overall || f.rating_service_quality,
+      comment: f.feedback_comments,
+      url: `${hubUrl}/feedback?id=${f.id}`,
+    }))
+    const newProposalsAccepted = acceptedProposals.map((p) => ({
+      clientName: p.client_name || "Client",
+      title: p.title,
+      value: p.total_value,
+      url: `${hubUrl}/sales/proposals?id=${p.proposal_id}`,
+    }))
+    const proposalsTotalValue = acceptedProposals.reduce(
+      (sum, p) => sum + (p.total_value || 0),
+      0,
+    )
+
     let totalSent = 0
     let totalSkipped = 0
     await Promise.all(
       eligible.map(async (m) => {
-const html = buildDailyBriefingHtml({
+        const html = buildDailyBriefingHtml({
   recipientName: m.full_name?.split(" ")[0] || "there",
   dateLabel,
   weekRangeLabel,
@@ -281,6 +333,10 @@ const html = buildDailyBriefingHtml({
   marketNews,
   taxNews,
   hubUpdates,
+  newIntakeForms,
+  newFeedback,
+  newProposalsAccepted,
+  proposalsTotalValue,
   signOff,
   hubUrl,
   })
@@ -307,6 +363,10 @@ counts: {
   market_news: marketNews.length,
   tax_news: taxNews.length,
   hub_updates: hubUpdates.length,
+  new_intake_forms: intakeForms.length,
+  new_feedback: feedbackSubmissions.length,
+  new_proposals_accepted: acceptedProposals.length,
+  proposals_total_value: proposalsTotalValue,
   },
     })
   } catch (error) {
@@ -352,6 +412,31 @@ interface ZoomMeetingRow {
   start_time: string
   join_url: string | null
   status: string | null
+}
+
+interface IntakeFormRow {
+  id: string
+  submitter_full_name: string | null
+  business_name: string | null
+  services_requested: string[] | null
+  created_at: string
+}
+
+interface FeedbackRow {
+  id: string
+  submitter_full_name: string | null
+  rating_overall: number | null
+  rating_service_quality: number | null
+  feedback_comments: string | null
+  created_at: string
+}
+
+interface AcceptedProposalRow {
+  proposal_id: string
+  title: string | null
+  client_name: string | null
+  total_value: number | null
+  accepted_at: string
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
