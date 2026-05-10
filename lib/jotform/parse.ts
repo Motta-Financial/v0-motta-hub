@@ -196,6 +196,14 @@ export type ParsedIntakeFields = {
 
   questions_or_concerns: string | null
   additional_notes: string | null
+
+  // Free-text name the prospect chose for the "Is there a specific team
+  // member you would prefer to meet with?" question (raw answer
+  // `lastlyTo53`). We keep this even when we can't match it to a
+  // current team_members row so the triager always sees who the
+  // prospect actually asked for. The team_members lookup happens
+  // downstream in `resolvePreferredTeamMember`.
+  preferred_team_member: string | null
 }
 
 export function parseIntakeAnswers(answers: AnswerMap): ParsedIntakeFields {
@@ -259,6 +267,11 @@ export function parseIntakeAnswers(answers: AnswerMap): ParsedIntakeFields {
 
     questions_or_concerns: strAnswer(findByName(answers, "doYou")),
     additional_notes: existingExtra,
+
+    // Form field name confirmed against real submissions in production:
+    // `lastlyTo53` (control_radio) — values look like "Mark Dwyer" or
+    // "Dat Le". Null when the prospect skipped the question.
+    preferred_team_member: strAnswer(findByName(answers, "lastlyTo53")),
   }
 }
 
