@@ -64,7 +64,32 @@ export async function middleware(request: NextRequest) {
     // `webhook_secret` in `jotform_forms`. Without this allow-list entry
     // the auth middleware would 401 every Jotform delivery and the
     // intake pipeline would silently fail.
-    pathname === "/api/jotform/webhook"
+    pathname === "/api/jotform/webhook" ||
+    // Zoom POSTs Marketplace event subscriptions here (recording.completed,
+    // meeting.ended, app.deauthorized, etc.). Zoom's URL-validation
+    // handshake also hits this endpoint, so it must be reachable
+    // without a Hub session. The route handler verifies the
+    // x-zm-signature HMAC against ZOOM_WEBHOOK_SECRET_TOKEN.
+    pathname === "/api/zoom/webhook" ||
+    // Zoom OAuth callback (and authorize). When a user installs the
+    // Hub from Zoom's Marketplace "Add to Zoom" button, the redirect
+    // back to /api/zoom/oauth/callback may not carry a Hub session
+    // cookie. Auth0/Supabase auth checks would 500 the response
+    // before our handler runs. Allow the whole oauth subtree;
+    // /authorize is harmless without a session (it just redirects
+    // to Zoom) and /callback resolves the Hub user via cookie OR
+    // state OR returns a friendly error.
+    pathname.startsWith("/api/zoom/oauth/")
+
+  // The Zoom App "Surface" (Marketplace > Features > Surface) iframes
+  // /zoom/embed inside the Zoom desktop / web client. The Hub user is
+  // not necessarily logged in to motta.cpa at that moment — the page
+  // authenticates via the Zoom Apps SDK's own session context once
+  // it loads. Forcing the Auth0 redirect here would break the iframe
+  // because Auth0 sets X-Frame-Options: DENY on /login. Skipping the
+  // session check on this path lets Zoom render the page; the page
+  // itself reads zoomSdk.getAppContext() to identify the user.
+  const isZoomEmbed = pathname.startsWith("/zoom/embed")
   const isCron = pathname.startsWith("/api/cron")
   // Calendly's OAuth provider sends the user back to /api/calendly/oauth/callback
   // before our app session cookie has been issued — exempt only the callback,
@@ -87,7 +112,8 @@ export async function middleware(request: NextRequest) {
     isWebhook ||
     isCron ||
     isCalendlyOAuthCallback ||
-    isInternalCall
+    isInternalCall ||
+    isZoomEmbed
   ) {
     return supabaseResponse
   }

@@ -14,6 +14,7 @@ import { createAdminClient } from "@/lib/supabase/server"
  *   ?status=new|reviewed|responded|closed     (triage_status)
  *   ?segment=promoter|passive|detractor       (rating_overall buckets)
  *   ?with_referrals=1                         (referral_count > 0)
+ *   ?linked=yes|no                            (filter by client link)
  *   ?search=<text> matches name, email, comments (ILIKE)
  *   ?limit=<n> default 200, max 1000
  *
@@ -34,6 +35,7 @@ export async function GET(req: NextRequest) {
     const status = searchParams.get("status")
     const segment = searchParams.get("segment")
     const withReferrals = searchParams.get("with_referrals")
+    const linked = searchParams.get("linked") // "yes" | "no" | null
     const search = searchParams.get("search")?.trim()
     const limit = Math.min(Number(searchParams.get("limit") ?? 200), 1000)
 
@@ -64,7 +66,9 @@ export async function GET(req: NextRequest) {
         karbon_work_item_id,
         karbon_work_item_title,
         contact_id,
-        organization_id
+        organization_id,
+        link_method,
+        linked_at
         `,
       )
       .order("jotform_created_at", { ascending: false, nullsFirst: false })
@@ -72,6 +76,14 @@ export async function GET(req: NextRequest) {
 
     if (status) query = query.eq("triage_status", status)
     if (withReferrals === "1") query = query.gt("referral_count", 0)
+
+    // Linked-client filter mirrors /api/jotform/intake: applied
+    // server-side so the count and list stay consistent.
+    if (linked === "yes") {
+      query = query.or("contact_id.not.is.null,organization_id.not.is.null")
+    } else if (linked === "no") {
+      query = query.is("contact_id", null).is("organization_id", null)
+    }
 
     if (segment === "promoter") {
       query = query.eq("rating_overall", 5)
@@ -112,10 +124,52 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const rows = (data ?? []).map((r) => ({
-      ...r,
-      reviewedBy: r.reviewed_by_id ? reviewerById.get(r.reviewed_by_id) ?? null : null,
-    }))
+    // Resolve linked-client display info — same shape as intake.
+    const contactIds = Array.from(
+      new Set((data ?? []).map((r) => r.contact_id).filter(Boolean) as string[]),
+    )
+    const orgIds = Array.from(
+      new Set((data ?? []).map((r) => r.organization_id).filter(Boolean) as string[]),
+    )
+    const contactById = new Map<string, { id: string; name: string }>()
+    const orgById = new Map<string, { id: string; name: string }>()
+    if (contactIds.length > 0) {
+      const { data: contacts } = await supabase
+        .from("contacts")
+        .select("id, full_name, first_name, last_name")
+        .in("id", contactIds)
+      for (const c of contacts ?? []) {
+        contactById.set(c.id, {
+          id: c.id,
+          name: c.full_name || `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unnamed contact",
+        })
+      }
+    }
+    if (orgIds.length > 0) {
+      const { data: orgs } = await supabase
+        .from("organizations")
+        .select("id, name, full_name")
+        .in("id", orgIds)
+      for (const o of orgs ?? []) {
+        orgById.set(o.id, { id: o.id, name: o.name || o.full_name || "Unnamed organization" })
+      }
+    }
+
+    const rows = (data ?? []).map((r) => {
+      let linkedClient: { type: "contact" | "organization"; id: string; name: string } | null = null
+      if (r.contact_id) {
+        const c = contactById.get(r.contact_id)
+        if (c) linkedClient = { type: "contact", id: c.id, name: c.name }
+      } else if (r.organization_id) {
+        const o = orgById.get(r.organization_id)
+        if (o) linkedClient = { type: "organization", id: o.id, name: o.name }
+      }
+      return {
+        ...r,
+        reviewedBy: r.reviewed_by_id ? reviewerById.get(r.reviewed_by_id) ?? null : null,
+        linkedClient,
+      }
+    })
 
     return NextResponse.json({ rows, count: rows.length })
   } catch (err: any) {

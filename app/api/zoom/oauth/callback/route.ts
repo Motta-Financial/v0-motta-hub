@@ -1,39 +1,126 @@
 import { NextResponse } from "next/server"
-import { createAdminClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
 
+/**
+ * Zoom OAuth callback.
+ *
+ * Two install paths land here:
+ *
+ *  1. **In-Hub "Connect Zoom" button** -> /api/zoom/oauth/authorize
+ *     builds a base64'd `state` JSON containing { team_member_id }
+ *     and redirects to Zoom. Zoom redirects back to this route with
+ *     `code` + `state`. We exchange the code, look up the user via
+ *     /v2/users/me, and upsert into `zoom_connections` keyed on
+ *     team_member_id.
+ *
+ *  2. **Zoom Marketplace "Add to Zoom" button** (the Local Test page,
+ *     or the published listing) -> Zoom builds the authorize URL
+ *     itself, with NO state parameter, and redirects back here with
+ *     just `?code=...`. We can't recover the team_member_id from the
+ *     state, so we fall back to looking up the currently-logged-in
+ *     Hub user via the Supabase auth cookie -> their `team_members`
+ *     row.
+ *
+ * Every error path redirects to /zoom?error=<code> instead of
+ * throwing, so the user always lands on a friendly page. The whole
+ * handler is wrapped in a top-level try/catch so even surprises
+ * (e.g. a thrown env-var-missing error) get redirected, not 500'd.
+ */
 export async function GET(request: Request) {
-  const supabaseAdmin = createAdminClient()
-  const { searchParams } = new URL(request.url)
+  const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get("code")
   const state = searchParams.get("state")
-  const error = searchParams.get("error")
+  const oauthError = searchParams.get("error")
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+  // Resolve the redirect base URL with two safeguards:
+  //   1. NEXT_PUBLIC_APP_URL in this project is set to "motta.cpa"
+  //      WITHOUT a scheme, which makes NextResponse.redirect() throw
+  //      `ERR_INVALID_URL` because it requires absolute URLs. Prepend
+  //      https:// when the env var is missing one.
+  //   2. Strip any trailing slash so the `${baseUrl}/zoom` template
+  //      can't produce `https://motta.cpa//zoom`.
+  const rawBase = process.env.NEXT_PUBLIC_APP_URL?.trim() || origin
+  const withScheme = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`
+  const baseUrl = withScheme.replace(/\/+$/, "")
 
-  if (error) {
-    console.error("[Zoom OAuth] Error:", error)
-    return NextResponse.redirect(`${baseUrl}/zoom?error=${encodeURIComponent(error)}`)
+  const fail = (reason: string, log?: unknown) => {
+    // Always log the failure (even without extra context) so we can see
+    // every branch in the server log when the user reports "it didn't
+    // work." Tagged with [v0] so it stands out in the debug stream.
+    console.error(`[v0] [Zoom OAuth] FAIL: ${reason}`, log ?? "")
+    return NextResponse.redirect(`${baseUrl}/zoom?error=${encodeURIComponent(reason)}`)
   }
 
-  if (!code || !state) {
-    return NextResponse.redirect(`${baseUrl}/zoom?error=missing_code_or_state`)
-  }
+  console.log(
+    `[v0] [Zoom OAuth] callback hit: code=${code ? "present" : "missing"}, state=${state ? "present" : "missing"}, error=${oauthError ?? "none"}`,
+  )
 
   try {
-    // Decode state to get team_member_id
-    const stateData = JSON.parse(Buffer.from(state, "base64").toString())
-    const teamMemberId = stateData.team_member_id
+    if (oauthError) return fail(oauthError)
+    if (!code) return fail("missing_code")
 
-    if (!teamMemberId) {
-      return NextResponse.redirect(`${baseUrl}/zoom?error=invalid_state`)
+    // ── Resolve team_member_id ──────────────────────────────────────
+    // Path 1: state was supplied by our /authorize endpoint.
+    // Path 2: state is absent (Marketplace install) -> fall back to
+    //         the logged-in Hub user.
+    let teamMemberId: string | null = null
+
+    if (state) {
+      try {
+        const decoded = JSON.parse(Buffer.from(state, "base64").toString("utf8"))
+        teamMemberId = decoded?.team_member_id ?? null
+      } catch (err) {
+        console.error("[Zoom OAuth] Failed to decode state:", err)
+        // Fall through to session lookup -- a malformed state should
+        // not be fatal if we can identify the user another way.
+      }
     }
 
-    // Exchange code for tokens
-    const clientId = process.env.ZOOM_CLIENT_ID!
-    const clientSecret = process.env.ZOOM_CLIENT_SECRET!
-    const redirectUri = process.env.ZOOM_REDIRECT_URI || "https://motta.cpa/api/zoom/oauth/callback"
+    if (!teamMemberId) {
+      // Marketplace install -> read the current Hub user from cookies.
+      try {
+        const supabase = await createClient()
+        const {
+          data: { user },
+        } = await supabase.auth.getUser()
+        console.log(`[v0] [Zoom OAuth] session lookup: user=${user?.email ?? "anonymous"}`)
+        if (user?.email) {
+          const admin = createAdminClient()
+          // Email comparison is case-insensitive because Zoom and
+          // Karbon often store the same address with different casing
+          // (e.g. "Dat.Le@..." vs "dat.le@..."). The `team_members`
+          // table mixes both styles, so an exact match misses real
+          // users who do have rows.
+          const { data: tm } = await admin
+            .from("team_members")
+            .select("id, email")
+            .ilike("email", user.email)
+            .maybeSingle()
+          teamMemberId = tm?.id ?? null
+          console.log(
+            `[v0] [Zoom OAuth] team_member match: ${tm ? `${tm.id} (${tm.email})` : "NO MATCH"}`,
+          )
+        }
+      } catch (err) {
+        console.error("[v0] [Zoom OAuth] Session lookup failed:", err)
+      }
+    }
 
-    const tokenResponse = await fetch("https://zoom.us/oauth/token", {
+    if (!teamMemberId) {
+      return fail("no_team_member_resolved")
+    }
+    console.log(`[v0] [Zoom OAuth] resolved team_member_id=${teamMemberId}`)
+
+    // ── Exchange code for tokens ────────────────────────────────────
+    const clientId = process.env.ZOOM_CLIENT_ID
+    const clientSecret = process.env.ZOOM_CLIENT_SECRET
+    const redirectUri = process.env.ZOOM_REDIRECT_URI || `${baseUrl}/api/zoom/oauth/callback`
+
+    if (!clientId || !clientSecret) {
+      return fail("server_misconfigured", "Missing ZOOM_CLIENT_ID or ZOOM_CLIENT_SECRET")
+    }
+
+    const tokenRes = await fetch("https://zoom.us/oauth/token", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -46,67 +133,81 @@ export async function GET(request: Request) {
       }),
     })
 
-    if (!tokenResponse.ok) {
-      const errorData = await tokenResponse.text()
-      console.error("[Zoom OAuth] Token exchange failed:", errorData)
-      return NextResponse.redirect(`${baseUrl}/zoom?error=token_exchange_failed`)
+    if (!tokenRes.ok) {
+      const body = await tokenRes.text()
+      return fail("token_exchange_failed", `${tokenRes.status} ${body}`)
+    }
+    const tokens = (await tokenRes.json()) as {
+      access_token: string
+      refresh_token: string
+      token_type: string
+      expires_in: number
+      scope: string
     }
 
-    const tokens = await tokenResponse.json()
-
-    // Get user info from Zoom
-    const userResponse = await fetch("https://api.zoom.us/v2/users/me", {
-      headers: {
-        Authorization: `Bearer ${tokens.access_token}`,
-      },
+    // ── Fetch the Zoom user profile ─────────────────────────────────
+    const userRes = await fetch("https://api.zoom.us/v2/users/me", {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
     })
-
-    if (!userResponse.ok) {
-      console.error("[Zoom OAuth] Failed to get user info")
-      return NextResponse.redirect(`${baseUrl}/zoom?error=user_info_failed`)
+    if (!userRes.ok) {
+      const body = await userRes.text()
+      return fail("user_info_failed", `${userRes.status} ${body}`)
+    }
+    const zoomUser = (await userRes.json()) as {
+      id: string
+      account_id?: string
+      email?: string
+      first_name?: string
+      last_name?: string
+      display_name?: string
+      pic_url?: string
+      timezone?: string
+      type?: number
+      pmi?: number
+      personal_meeting_url?: string
     }
 
-    const zoomUser = await userResponse.json()
-
-    // Calculate token expiration
+    // ── Persist the connection ──────────────────────────────────────
+    const admin = createAdminClient()
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
 
-    // Upsert connection in Supabase
-    const { error: upsertError } = await supabaseAdmin.from("zoom_connections").upsert(
+    const { error: upsertError } = await admin.from("zoom_connections").upsert(
       {
         team_member_id: teamMemberId,
         zoom_user_id: zoomUser.id,
-        zoom_account_id: zoomUser.account_id,
-        zoom_email: zoomUser.email,
-        zoom_first_name: zoomUser.first_name,
-        zoom_last_name: zoomUser.last_name,
-        zoom_display_name: zoomUser.display_name || `${zoomUser.first_name} ${zoomUser.last_name}`,
-        zoom_pic_url: zoomUser.pic_url,
-        zoom_timezone: zoomUser.timezone,
-        zoom_user_type: zoomUser.type,
-        zoom_pmi: zoomUser.pmi?.toString(),
-        zoom_personal_meeting_url: zoomUser.personal_meeting_url,
+        zoom_account_id: zoomUser.account_id ?? null,
+        zoom_email: zoomUser.email ?? null,
+        zoom_first_name: zoomUser.first_name ?? null,
+        zoom_last_name: zoomUser.last_name ?? null,
+        zoom_display_name:
+          zoomUser.display_name ||
+          `${zoomUser.first_name ?? ""} ${zoomUser.last_name ?? ""}`.trim() ||
+          zoomUser.email ||
+          null,
+        zoom_pic_url: zoomUser.pic_url ?? null,
+        zoom_timezone: zoomUser.timezone ?? null,
+        zoom_user_type: zoomUser.type ?? null,
+        zoom_pmi: zoomUser.pmi?.toString() ?? null,
+        zoom_personal_meeting_url: zoomUser.personal_meeting_url ?? null,
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         token_type: tokens.token_type,
         expires_at: expiresAt,
         scope: tokens.scope,
         is_active: true,
+        revoked_at: null,
         updated_at: new Date().toISOString(),
       },
-      {
-        onConflict: "team_member_id",
-      },
+      { onConflict: "team_member_id" },
     )
 
-    if (upsertError) {
-      console.error("[Zoom OAuth] Failed to save connection:", upsertError)
-      return NextResponse.redirect(`${baseUrl}/zoom?error=save_failed`)
-    }
+    if (upsertError) return fail("save_failed", upsertError)
 
+    console.log(
+      `[v0] [Zoom OAuth] SUCCESS: connected ${zoomUser.email} (zoom_user_id=${zoomUser.id}) to team_member ${teamMemberId}`,
+    )
     return NextResponse.redirect(`${baseUrl}/zoom?success=true`)
-  } catch (error) {
-    console.error("[Zoom OAuth] Callback error:", error)
-    return NextResponse.redirect(`${baseUrl}/zoom?error=callback_failed`)
+  } catch (err) {
+    return fail("callback_failed", err)
   }
 }
