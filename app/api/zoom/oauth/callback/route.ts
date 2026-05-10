@@ -44,9 +44,16 @@ export async function GET(request: Request) {
   const baseUrl = withScheme.replace(/\/+$/, "")
 
   const fail = (reason: string, log?: unknown) => {
-    if (log !== undefined) console.error(`[Zoom OAuth] ${reason}:`, log)
+    // Always log the failure (even without extra context) so we can see
+    // every branch in the server log when the user reports "it didn't
+    // work." Tagged with [v0] so it stands out in the debug stream.
+    console.error(`[v0] [Zoom OAuth] FAIL: ${reason}`, log ?? "")
     return NextResponse.redirect(`${baseUrl}/zoom?error=${encodeURIComponent(reason)}`)
   }
+
+  console.log(
+    `[v0] [Zoom OAuth] callback hit: code=${code ? "present" : "missing"}, state=${state ? "present" : "missing"}, error=${oauthError ?? "none"}`,
+  )
 
   try {
     if (oauthError) return fail(oauthError)
@@ -76,23 +83,33 @@ export async function GET(request: Request) {
         const {
           data: { user },
         } = await supabase.auth.getUser()
+        console.log(`[v0] [Zoom OAuth] session lookup: user=${user?.email ?? "anonymous"}`)
         if (user?.email) {
           const admin = createAdminClient()
+          // Email comparison is case-insensitive because Zoom and
+          // Karbon often store the same address with different casing
+          // (e.g. "Dat.Le@..." vs "dat.le@..."). The `team_members`
+          // table mixes both styles, so an exact match misses real
+          // users who do have rows.
           const { data: tm } = await admin
             .from("team_members")
-            .select("id")
-            .eq("email", user.email)
+            .select("id, email")
+            .ilike("email", user.email)
             .maybeSingle()
           teamMemberId = tm?.id ?? null
+          console.log(
+            `[v0] [Zoom OAuth] team_member match: ${tm ? `${tm.id} (${tm.email})` : "NO MATCH"}`,
+          )
         }
       } catch (err) {
-        console.error("[Zoom OAuth] Session lookup failed:", err)
+        console.error("[v0] [Zoom OAuth] Session lookup failed:", err)
       }
     }
 
     if (!teamMemberId) {
       return fail("no_team_member_resolved")
     }
+    console.log(`[v0] [Zoom OAuth] resolved team_member_id=${teamMemberId}`)
 
     // ── Exchange code for tokens ────────────────────────────────────
     const clientId = process.env.ZOOM_CLIENT_ID
@@ -186,6 +203,9 @@ export async function GET(request: Request) {
 
     if (upsertError) return fail("save_failed", upsertError)
 
+    console.log(
+      `[v0] [Zoom OAuth] SUCCESS: connected ${zoomUser.email} (zoom_user_id=${zoomUser.id}) to team_member ${teamMemberId}`,
+    )
     return NextResponse.redirect(`${baseUrl}/zoom?success=true`)
   } catch (err) {
     return fail("callback_failed", err)
