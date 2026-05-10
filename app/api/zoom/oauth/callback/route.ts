@@ -195,7 +195,6 @@ export async function GET(request: Request) {
         expires_at: expiresAt,
         scope: tokens.scope,
         is_active: true,
-        revoked_at: null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "team_member_id" },
