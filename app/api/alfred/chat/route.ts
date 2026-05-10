@@ -1,4 +1,12 @@
-import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from "ai"
+import {
+  convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  stepCountIs,
+  streamText,
+  tool,
+  type UIMessage,
+} from "ai"
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/server"
 import { browsePageTool, webSearchTool } from "@/lib/alfred/tools"
@@ -7,6 +15,7 @@ import {
   buildTableCatalog,
   isAllowedTable,
 } from "@/lib/alfred/allowed-tables"
+import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
 
 // Shape of the requesting user, sent from the client transport body.
 // See components/alfred-chat.tsx for the producer side.
@@ -553,14 +562,92 @@ When answering questions:
 
 You work for Motta Financial, a San Francisco-based CPA firm specializing in tax, accounting, and advisory services.`
 
+// Best-effort text extractor for a UIMessage. Used for title derivation
+// only -- we still persist the full `parts` array as `content` so reloads
+// restore tool calls, data parts, etc. exactly as they streamed.
+function uiMessageText(message: UIMessage | undefined | null): string {
+  if (!message) return ""
+  const parts = (message as any).parts as Array<{ type: string; text?: string }> | undefined
+  if (!Array.isArray(parts)) return ""
+  return parts
+    .filter((p) => p && p.type === "text" && typeof p.text === "string")
+    .map((p) => p.text)
+    .join("\n")
+    .trim()
+}
+
 export async function POST(req: Request) {
   const {
     messages,
     currentUser = null,
-  }: { messages: UIMessage[]; currentUser?: CurrentUser | null } = await req.json()
+    conversationId: incomingConversationId = null,
+    audience = "staff",
+  }: {
+    messages: UIMessage[]
+    currentUser?: CurrentUser | null
+    conversationId?: string | null
+    audience?: "staff" | "client"
+  } = await req.json()
 
   // AI SDK 6: convertToModelMessages returns Promise<ModelMessage[]>
   const modelMessages = await convertToModelMessages(messages)
+
+  // ── Conversation row lifecycle ──────────────────────────────────────
+  // We always use the service-role client for persistence: the chat route
+  // is the trusted writer, and we don't want to depend on a user session
+  // being present (this endpoint is also wired to alfred.motta.cpa in a
+  // later step). RLS still protects reads from the browser via
+  // /api/alfred/conversations* which use the SSR client.
+  const supabase = createAdminClient()
+  const adminAuthLookup = supabase // alias for clarity below
+
+  let conversationId: string | null = incomingConversationId
+  let conversationTitleAlreadySet = false
+
+  if (currentUser) {
+    if (conversationId) {
+      // Verify the supplied conversation belongs to the requesting user.
+      // If not, fall through and create a fresh one rather than 500ing.
+      const { data: existing } = await adminAuthLookup
+        .from("alfred_conversations")
+        .select("id, title, end_user_team_member_id")
+        .eq("id", conversationId)
+        .maybeSingle()
+      if (!existing || existing.end_user_team_member_id !== currentUser.teamMemberId) {
+        conversationId = null
+      } else {
+        conversationTitleAlreadySet = !!existing.title
+      }
+    }
+
+    if (!conversationId) {
+      try {
+        const alfred = await getAlfredServiceAccount(supabase)
+        const { data: created, error: createErr } = await supabase
+          .from("alfred_conversations")
+          .insert({
+            end_user_team_member_id: currentUser.teamMemberId,
+            service_account_team_member_id: alfred.id,
+            audience,
+            title: null,
+          })
+          .select("id")
+          .single()
+        if (!createErr && created) {
+          conversationId = created.id
+          conversationTitleAlreadySet = false
+        }
+      } catch (e) {
+        // Persistence is best-effort. If the ALFRED service account row is
+        // missing (migration not yet run) we still want the chat to work.
+        console.error("[v0] alfred_conversations insert failed:", e)
+      }
+    }
+  }
+
+  // Capture the user's most recent message NOW (before streaming starts).
+  // We persist exactly this row in onFinish, not the historical replay.
+  const lastUserMessage = [...messages].reverse().find((m) => m.role === "user") ?? null
 
   // Two convenience tools that pre-scope by the requesting user. Defined
   // inside POST so they close over `currentUser`. Both fail clearly when
@@ -699,16 +786,103 @@ export async function POST(req: Request) {
     }),
   }
 
-  const result = streamText({
-    model: "openai/gpt-4o",
-    system: `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}`,
-    messages: modelMessages,
-    tools: { ...alfredTools, ...userScopedTools },
-    // 12 steps lets ALFRED chain webSearch → pick a result → browsePage →
-    // reply, with a couple DB lookups in the same turn if needed.
-    stopWhen: stepCountIs(12),
-    abortSignal: req.signal,
+  // We wrap streamText in createUIMessageStream so we can:
+  //   1. Emit a `data-conversation` part as the first chunk -- the client
+  //      uses this to learn the conversation id for newly-created threads
+  //      and to keep storing it across the turn.
+  //   2. Hook onFinish to persist the user message + final assistant
+  //      message in a single round-trip, AFTER the stream is fully drained
+  //      (otherwise we'd race the response).
+  const stream = createUIMessageStream<UIMessage>({
+    execute: ({ writer }) => {
+      if (conversationId) {
+        writer.write({
+          type: "data-conversation",
+          data: { id: conversationId },
+        })
+      }
+
+      const result = streamText({
+        model: "openai/gpt-4o",
+        system: `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}`,
+        messages: modelMessages,
+        tools: { ...alfredTools, ...userScopedTools },
+        // 12 steps lets ALFRED chain webSearch → pick a result → browsePage →
+        // reply, with a couple DB lookups in the same turn if needed.
+        stopWhen: stepCountIs(12),
+        abortSignal: req.signal,
+      })
+
+      writer.merge(result.toUIMessageStream())
+    },
+    onFinish: async ({ messages: finalMessages, responseMessage }) => {
+      if (!conversationId || !currentUser) return
+
+      try {
+        // Persist the new user turn (if there was one this request) and the
+        // final assistant message. We use `parts` as the canonical content
+        // payload so reload can rebuild UIMessage.parts verbatim.
+        const rows: Array<{
+          conversation_id: string
+          role: "user" | "assistant" | "tool" | "system"
+          content: unknown
+          tool_calls: unknown | null
+        }> = []
+
+        if (lastUserMessage) {
+          rows.push({
+            conversation_id: conversationId,
+            role: "user",
+            content: { parts: (lastUserMessage as any).parts ?? [] },
+            tool_calls: null,
+          })
+        }
+
+        if (responseMessage) {
+          // Extract tool_calls from the assistant parts for indexed lookup.
+          // We still keep the full parts inside `content` for reload.
+          const parts = (responseMessage as any).parts as Array<any> | undefined
+          const toolParts =
+            parts?.filter(
+              (p) => typeof p?.type === "string" && p.type.startsWith("tool-"),
+            ) ?? []
+          rows.push({
+            conversation_id: conversationId,
+            role: responseMessage.role as "assistant",
+            content: { parts: parts ?? [] },
+            tool_calls: toolParts.length > 0 ? toolParts : null,
+          })
+        }
+
+        if (rows.length > 0) {
+          const { error: insertErr } = await supabase.from("alfred_messages").insert(rows)
+          if (insertErr) console.error("[v0] alfred_messages insert failed:", insertErr)
+        }
+
+        // Title derivation. Done once -- if the row already has a title
+        // (resumed thread) we skip and just bump updated_at.
+        const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+        if (!conversationTitleAlreadySet) {
+          const sourceText =
+            uiMessageText(lastUserMessage) ||
+            uiMessageText(finalMessages.find((m) => m.role === "user")) ||
+            ""
+          const trimmed = sourceText.trim().replace(/\s+/g, " ")
+          if (trimmed) {
+            updates.title = trimmed.length > 60 ? trimmed.slice(0, 60).trimEnd() + "…" : trimmed
+          }
+        }
+
+        const { error: updateErr } = await supabase
+          .from("alfred_conversations")
+          .update(updates)
+          .eq("id", conversationId)
+        if (updateErr) console.error("[v0] alfred_conversations update failed:", updateErr)
+      } catch (e) {
+        console.error("[v0] alfred persistence onFinish error:", e)
+      }
+    },
   })
 
-  return result.toUIMessageStreamResponse()
+  return createUIMessageStreamResponse({ stream })
 }
