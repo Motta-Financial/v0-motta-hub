@@ -33,6 +33,12 @@ import {
 } from "lucide-react"
 import { useUser } from "@/hooks/use-user"
 import type { ZoomMeeting, ZoomCallHistory } from "@/lib/zoom-types"
+import { ZoomConnectPrompt } from "@/components/zoom-connect-prompt"
+import {
+  ZoomMeetingTagDialog,
+  type ZoomMeetingForTagging,
+} from "@/components/zoom/zoom-meeting-tag-dialog"
+import { Tag, TagIcon, AlertTriangle } from "lucide-react"
 
 interface ZoomConnection {
   id: string
@@ -72,6 +78,13 @@ export function ZoomDashboard() {
   const [showSettings, setShowSettings] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Tag state — keyed on Zoom's bigint meeting id (as string). The
+  // dashboard fetches counts in bulk so 50 cards = 1 round trip.
+  const [tagCounts, setTagCounts] = useState<
+    Record<string, { clients: number; workItems: number }>
+  >({})
+  const [tagDialogMeeting, setTagDialogMeeting] = useState<ZoomMeetingForTagging | null>(null)
+
   useEffect(() => {
     fetchData()
   }, [teamMember])
@@ -83,13 +96,28 @@ export function ZoomDashboard() {
     try {
       // Fetch master calendar meetings (all users in the organization)
       const meetingsRes = await fetch("/api/zoom/master-meetings?type=upcoming")
+      let meetingList: MasterMeeting[] = []
       if (meetingsRes.ok) {
         const meetingsData = await meetingsRes.json()
-        setMeetings(meetingsData.meetings || [])
+        meetingList = meetingsData.meetings || []
+        setMeetings(meetingList)
         setZoomUsers(meetingsData.users || [])
       } else {
         const errorData = await meetingsRes.json()
         setError(errorData.error || "Failed to fetch meetings")
+      }
+
+      // Bulk-load tag counts for all visible meetings in one round trip.
+      // Cards render an "Untagged" warning until this resolves so users
+      // know which meetings still need clients/work items linked.
+      if (meetingList.length > 0) {
+        const ids = meetingList.map((m) => String(m.id)).filter(Boolean)
+        if (ids.length > 0) {
+          fetch(`/api/zoom/meetings/tag-counts?ids=${ids.join(",")}`)
+            .then((r) => (r.ok ? r.json() : { counts: {} }))
+            .then((j) => setTagCounts(j.counts || {}))
+            .catch(() => setTagCounts({}))
+        }
       }
 
       // Fetch recordings
@@ -225,6 +253,45 @@ export function ZoomDashboard() {
     const startTime = new Date(m.start_time)
     return startTime >= today && startTime < nextWeek
   })
+
+  // Helpers for the "tagging required" UX. We treat a meeting as
+  // untagged when it has zero clients AND zero work items linked. We
+  // track the count specifically of past meetings (the canonical case
+  // where missing tags hurts client billing/reporting) so we can surface
+  // a top-of-page warning.
+  const isMeetingTagged = (meetingId: number | string) => {
+    const c = tagCounts[String(meetingId)]
+    if (!c) return false
+    return c.clients > 0 || c.workItems > 0
+  }
+  const isMeetingPast = (m: MasterMeeting) => {
+    if (!m.start_time) return false
+    const start = new Date(m.start_time).getTime()
+    const end = start + ((m.duration ?? 60) + 30) * 60_000
+    return end < Date.now()
+  }
+  const untaggedPastMeetings = filteredMeetings.filter(
+    (m) => isMeetingPast(m) && !isMeetingTagged(m.id),
+  )
+  const untaggedTotal = filteredMeetings.filter((m) => !isMeetingTagged(m.id)).length
+
+  // Open the tag dialog for a given meeting. We only feed in the fields
+  // the dialog (and the lazy-upsert in the API route) need, NOT the
+  // entire raw Zoom payload, so the dialog props stay stable.
+  const openTagDialog = (m: MasterMeeting) => {
+    setTagDialogMeeting({
+      id: m.id,
+      topic: m.topic,
+      start_time: m.start_time,
+      duration: m.duration,
+      timezone: (m as any).timezone,
+      agenda: m.agenda,
+      join_url: m.join_url,
+      host_email: m.host_email,
+      host_id: (m as any).host_id,
+      status: m.status,
+    })
+  }
 
   const formatDuration = (minutes: number) => {
     const hours = Math.floor(minutes / 60)
@@ -363,8 +430,38 @@ export function ZoomDashboard() {
         </Alert>
       )}
 
+      {/* Connect Zoom prompt -- shown only when the signed-in team member
+          has not yet authorized the Hub against their personal Zoom account. */}
+      {!myConnection && (
+        <ZoomConnectPrompt teamMemberId={teamMember?.id} />
+      )}
+
+      {/* Untagged-meetings warning. Only render when there's actual work
+          to do, so the banner doesn't become wallpaper. We focus on PAST
+          meetings since those are the canonical case where missing tags
+          break client billing/reporting; future meetings are encouraged
+          but not nagged about. */}
+      {untaggedPastMeetings.length > 0 && (
+        <Alert variant="default" className="border-amber-500/40">
+          <AlertTriangle className="h-4 w-4 text-amber-600" />
+          <AlertTitle className="text-amber-800 dark:text-amber-300">
+            {untaggedPastMeetings.length} past meeting
+            {untaggedPastMeetings.length === 1 ? "" : "s"} need tagging
+          </AlertTitle>
+          <AlertDescription className="text-amber-800/80 dark:text-amber-300/80">
+            Every Zoom meeting must be linked to a Karbon work item and all
+            applicable clients so it shows up in the right client view. Tap{" "}
+            <span className="inline-flex items-center gap-1 px-1 rounded border align-middle">
+              <Tag className="h-3 w-3" />
+              Tag
+            </span>{" "}
+            on each card below to fix.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <Card className="p-4">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
@@ -372,7 +469,7 @@ export function ZoomDashboard() {
             </div>
             <div>
               <p className="text-2xl font-bold">{todayMeetings.length}</p>
-              <p className="text-sm text-muted-foreground">Today's Meetings</p>
+              <p className="text-sm text-muted-foreground">Today&apos;s Meetings</p>
             </div>
           </div>
         </Card>
@@ -406,6 +503,31 @@ export function ZoomDashboard() {
             <div>
               <p className="text-2xl font-bold">{recordings.length}</p>
               <p className="text-sm text-muted-foreground">Recordings</p>
+            </div>
+          </div>
+        </Card>
+        {/* Tagging coverage tile -- the headline number is "Untagged" so
+            users can see at-a-glance how much work is left to tag. */}
+        <Card className="p-4">
+          <div className="flex items-center gap-3">
+            <div
+              className={`p-2 rounded-lg ${
+                untaggedTotal > 0
+                  ? "bg-amber-100 dark:bg-amber-900"
+                  : "bg-emerald-100 dark:bg-emerald-900"
+              }`}
+            >
+              <Tag
+                className={`h-5 w-5 ${
+                  untaggedTotal > 0
+                    ? "text-amber-700 dark:text-amber-400"
+                    : "text-emerald-700 dark:text-emerald-400"
+                }`}
+              />
+            </div>
+            <div>
+              <p className="text-2xl font-bold">{untaggedTotal}</p>
+              <p className="text-sm text-muted-foreground">Untagged</p>
             </div>
           </div>
         </Card>
@@ -468,54 +590,121 @@ export function ZoomDashboard() {
             </Card>
           ) : viewMode === "schedule" ? (
             <div className="grid gap-4">
-              {filteredMeetings.map((meeting) => (
-                <Card key={meeting.id} className="p-4">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-4">
-                      <Avatar className="h-10 w-10">
-                        <AvatarImage src={meeting.host_pic_url || "/placeholder.svg"} />
-                        <AvatarFallback>
-                          {meeting.host_name
-                            ?.split(" ")
-                            .map((n) => n[0])
-                            .join("")}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="flex-1">
-                        <h3 className="font-semibold mb-1">{meeting.topic}</h3>
-                        <div className="space-y-1 text-sm text-muted-foreground">
-                          <div className="flex items-center gap-2">
-                            <Calendar className="h-4 w-4" />
-                            {formatDateTime(meeting.start_time)}
+              {filteredMeetings.map((meeting) => {
+                // Per-meeting derived state for the tagging UX. We intentionally
+                // compute these inline (cheap O(1) lookups) so the parent
+                // doesn't need a separate memoized map.
+                const tc = tagCounts[String(meeting.id)]
+                const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0)
+                const past = isMeetingPast(meeting)
+                return (
+                  <Card key={meeting.id} className="p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-start gap-4 min-w-0 flex-1">
+                        <Avatar className="h-10 w-10">
+                          <AvatarImage src={meeting.host_pic_url || "/placeholder.svg"} />
+                          <AvatarFallback>
+                            {meeting.host_name
+                              ?.split(" ")
+                              .map((n) => n[0])
+                              .join("")}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-semibold mb-1 truncate">{meeting.topic}</h3>
+                          <div className="space-y-1 text-sm text-muted-foreground">
+                            <div className="flex items-center gap-2">
+                              <Calendar className="h-4 w-4 shrink-0" />
+                              {formatDateTime(meeting.start_time)}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Clock className="h-4 w-4 shrink-0" />
+                              {formatDuration(meeting.duration)}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Users className="h-4 w-4 shrink-0" />
+                              Host: {meeting.host_name || meeting.host_email}
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Clock className="h-4 w-4" />
-                            {formatDuration(meeting.duration)}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Users className="h-4 w-4" />
-                            Host: {meeting.host_name || meeting.host_email}
+                          {meeting.agenda && (
+                            <p className="text-sm text-muted-foreground mt-2 line-clamp-2">
+                              {meeting.agenda}
+                            </p>
+                          )}
+                          {/* Tag pills + status row. Always rendered so the
+                              card height is stable as tag counts load. */}
+                          <div className="flex flex-wrap items-center gap-1.5 mt-3">
+                            {tagged ? (
+                              <>
+                                {tc!.clients > 0 && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="font-normal flex items-center gap-1"
+                                  >
+                                    <Users className="h-3 w-3" />
+                                    {tc!.clients} client{tc!.clients === 1 ? "" : "s"}
+                                  </Badge>
+                                )}
+                                {tc!.workItems > 0 && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="font-normal flex items-center gap-1"
+                                  >
+                                    <TagIcon className="h-3 w-3" />
+                                    {tc!.workItems} work item
+                                    {tc!.workItems === 1 ? "" : "s"}
+                                  </Badge>
+                                )}
+                              </>
+                            ) : past ? (
+                              <Badge
+                                variant="outline"
+                                className="font-normal flex items-center gap-1 border-amber-500/40 text-amber-700 dark:text-amber-400"
+                              >
+                                <AlertTriangle className="h-3 w-3" />
+                                Untagged · action required
+                              </Badge>
+                            ) : (
+                              <Badge
+                                variant="outline"
+                                className="font-normal flex items-center gap-1 text-muted-foreground"
+                              >
+                                <Tag className="h-3 w-3" />
+                                Not tagged yet
+                              </Badge>
+                            )}
                           </div>
                         </div>
-                        {meeting.agenda && (
-                          <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{meeting.agenda}</p>
+                      </div>
+                      <div className="flex flex-col gap-2 items-end shrink-0">
+                        <Badge variant={meeting.status === "waiting" ? "secondary" : "default"}>
+                          {meeting.status || "scheduled"}
+                        </Badge>
+                        {meeting.join_url && (
+                          <Button size="sm" asChild>
+                            <a
+                              href={meeting.join_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <ExternalLink className="h-4 w-4 mr-2" />
+                              Join
+                            </a>
+                          </Button>
                         )}
+                        <Button
+                          size="sm"
+                          variant={tagged ? "outline" : past ? "default" : "outline"}
+                          onClick={() => openTagDialog(meeting)}
+                        >
+                          <Tag className="h-4 w-4 mr-2" />
+                          {tagged ? "Edit tags" : "Tag"}
+                        </Button>
                       </div>
                     </div>
-                    <div className="flex flex-col gap-2 items-end">
-                      <Badge variant={meeting.status === "waiting" ? "secondary" : "default"}>
-                        {meeting.status || "scheduled"}
-                      </Badge>
-                      <Button size="sm" asChild>
-                        <a href={meeting.join_url} target="_blank" rel="noopener noreferrer">
-                          <ExternalLink className="h-4 w-4 mr-2" />
-                          Join
-                        </a>
-                      </Button>
-                    </div>
-                  </div>
-                </Card>
-              ))}
+                  </Card>
+                )
+              })}
             </div>
           ) : (
             <div className="space-y-6">
@@ -539,23 +728,60 @@ export function ZoomDashboard() {
                     </div>
                   </div>
                   <div className="grid gap-2 pl-11">
-                    {hostData.meetings.map((meeting) => (
-                      <Card key={meeting.id} className="p-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex-1">
-                            <p className="font-medium">{meeting.topic}</p>
-                            <p className="text-sm text-muted-foreground">
-                              {formatDateTime(meeting.start_time)} · {formatDuration(meeting.duration)}
-                            </p>
+                    {hostData.meetings.map((meeting) => {
+                      const tc = tagCounts[String(meeting.id)]
+                      const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0)
+                      const past = isMeetingPast(meeting)
+                      return (
+                        <Card key={meeting.id} className="p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="font-medium truncate">{meeting.topic}</p>
+                                {!tagged && past && (
+                                  <Badge
+                                    variant="outline"
+                                    className="font-normal flex items-center gap-1 border-amber-500/40 text-amber-700 dark:text-amber-400 shrink-0"
+                                  >
+                                    <AlertTriangle className="h-3 w-3" />
+                                    Untagged
+                                  </Badge>
+                                )}
+                                {tagged && (
+                                  <Badge variant="secondary" className="font-normal shrink-0">
+                                    {(tc!.clients) + (tc!.workItems)} tag
+                                    {(tc!.clients) + (tc!.workItems) === 1 ? "" : "s"}
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="text-sm text-muted-foreground">
+                                {formatDateTime(meeting.start_time)} · {formatDuration(meeting.duration)}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Button
+                                size="sm"
+                                variant={!tagged && past ? "default" : "ghost"}
+                                onClick={() => openTagDialog(meeting)}
+                              >
+                                <Tag className="h-4 w-4" />
+                              </Button>
+                              {meeting.join_url && (
+                                <Button size="sm" variant="outline" asChild>
+                                  <a
+                                    href={meeting.join_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                  >
+                                    <ExternalLink className="h-4 w-4" />
+                                  </a>
+                                </Button>
+                              )}
+                            </div>
                           </div>
-                          <Button size="sm" variant="outline" asChild>
-                            <a href={meeting.join_url} target="_blank" rel="noopener noreferrer">
-                              <ExternalLink className="h-4 w-4" />
-                            </a>
-                          </Button>
-                        </div>
-                      </Card>
-                    ))}
+                        </Card>
+                      )
+                    })}
                   </div>
                 </div>
               ))}
@@ -651,6 +877,29 @@ export function ZoomDashboard() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Tag dialog -- mounted once at the page level so opening/closing
+          doesn't unmount the meeting list underneath. We pass tagCounts
+          updates back through onTagsChanged so the badge on the card
+          refreshes the moment a tag is added/removed. */}
+      {tagDialogMeeting && (
+        <ZoomMeetingTagDialog
+          meeting={tagDialogMeeting}
+          open={!!tagDialogMeeting}
+          onOpenChange={(open) => {
+            if (!open) setTagDialogMeeting(null)
+          }}
+          onTagsChanged={(next) => {
+            setTagCounts((prev) => ({
+              ...prev,
+              [String(tagDialogMeeting.id)]: {
+                clients: next.clients.length,
+                workItems: next.workItems.length,
+              },
+            }))
+          }}
+        />
+      )}
     </div>
   )
 }

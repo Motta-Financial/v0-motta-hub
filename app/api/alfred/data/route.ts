@@ -1,144 +1,16 @@
 import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
-
-// All available tables ALFRED can query
-const ALLOWED_TABLES = [
-  "activity_log",
-  "client_group_members",
-  "client_groups",
-  "contact_organizations",
-  "contacts",
-  "dashboard_widgets",
-  "dashboards",
-  "debriefs",
-  "documents",
-  "emails",
-  "ignition_proposals",
-  "invoice_line_items",
-  "invoices",
-  "karbon_notes",
-  "karbon_tasks",
-  "karbon_timesheets",
-  "leads",
-  "meeting_attendees",
-  "meetings",
-  "message_comments",
-  "message_reactions",
-  "messages",
-  "notes",
-  "notifications",
-  "organizations",
-  "payments",
-  "pipeline_stages",
-  "pipelines",
-  "recurring_revenue",
-  "saved_views",
-  "service_agreements",
-  "service_lines",
-  "services",
-  "sync_log",
-  "tags",
-  "tasks",
-  "tax_returns",
-  "team_members",
-  "time_entries",
-  "tommy_award_ballots",
-  "tommy_award_points",
-  "tommy_award_weeks",
-  "tommy_award_yearly_totals",
-  "work_item_assignees",
-  "work_items",
-  "work_status",
-  "work_types",
-] as const
-
-type AllowedTable = (typeof ALLOWED_TABLES)[number]
-
-// Table schemas for ALFRED to understand the data structure
-const TABLE_SCHEMAS: Record<string, { description: string; key_columns: string[] }> = {
-  activity_log: {
-    description: "Tracks all user activities and changes in the system",
-    key_columns: ["id", "entity_type", "action", "team_member_id", "created_at"],
-  },
-  client_groups: {
-    description: "Groups of related clients (families, businesses)",
-    key_columns: ["id", "name", "group_type", "client_manager_id", "client_owner_id"],
-  },
-  contacts: {
-    description: "Individual people - clients, prospects, and contacts",
-    key_columns: ["id", "full_name", "primary_email", "contact_type", "status"],
-  },
-  debriefs: {
-    description: "Meeting debriefs and client interaction summaries",
-    key_columns: ["id", "debrief_date", "debrief_type", "team_member", "organization_name", "status", "notes"],
-  },
-  invoices: {
-    description: "Client invoices and billing records",
-    key_columns: ["id", "invoice_number", "total_amount", "status", "due_date", "organization_id"],
-  },
-  karbon_notes: {
-    description: "Notes synced from Karbon practice management",
-    key_columns: ["id", "subject", "body", "author_name", "work_item_title", "contact_name"],
-  },
-  karbon_tasks: {
-    description: "Tasks synced from Karbon",
-    key_columns: ["id", "title", "status", "assignee_name", "due_date", "priority"],
-  },
-  karbon_timesheets: {
-    description: "Time entries synced from Karbon",
-    key_columns: ["id", "user_name", "minutes", "work_item_title", "client_name", "date"],
-  },
-  organizations: {
-    description: "Business entities and companies",
-    key_columns: ["id", "name", "entity_type", "industry", "primary_email"],
-  },
-  tasks: {
-    description: "Internal tasks and to-dos",
-    key_columns: ["id", "title", "status", "assignee_id", "due_date", "priority"],
-  },
-  tax_returns: {
-    description: "Tax return records and filing information",
-    key_columns: ["id", "tax_year", "form_type", "filing_status", "status", "contact_id"],
-  },
-  team_members: {
-    description: "Motta Financial team members and staff",
-    key_columns: ["id", "full_name", "email", "role", "department", "is_active"],
-  },
-  time_entries: {
-    description: "Time tracking entries for billing",
-    key_columns: ["id", "team_member_id", "minutes", "description", "date", "is_billable"],
-  },
-  tommy_award_ballots: {
-    description: "Weekly Tommy Award voting ballots",
-    key_columns: ["id", "voter_name", "week_date", "first_place_name", "second_place_name"],
-  },
-  tommy_award_points: {
-    description: "Tommy Award points by team member per week",
-    key_columns: ["id", "team_member_name", "week_date", "total_points"],
-  },
-  tommy_award_yearly_totals: {
-    description: "Yearly Tommy Award totals and rankings",
-    key_columns: ["id", "team_member_name", "year", "total_points", "current_rank"],
-  },
-  work_items: {
-    description: "Work items and projects from Karbon - the main unit of client work",
-    key_columns: ["id", "title", "status", "work_type", "client_group_name", "assignee_name", "due_date"],
-  },
-  work_status: {
-    description: "Work item status definitions",
-    key_columns: ["id", "name", "is_active", "is_default_filter"],
-  },
-  services: {
-    description: "Service offerings and pricing",
-    key_columns: ["id", "name", "category", "price", "description"],
-  },
-  recurring_revenue: {
-    description: "Recurring revenue tracking for clients",
-    key_columns: ["id", "service_type", "monthly_amount", "annual_amount", "is_active"],
-  },
-}
+import {
+  ALLOWED_TABLES,
+  TABLE_SCHEMAS,
+  type AllowedTable,
+} from "@/lib/alfred/allowed-tables"
+import { requireAlfredAuth } from "@/lib/alfred/auth-guard"
 
 export async function GET(request: NextRequest) {
+  const authError = await requireAlfredAuth(request)
+  if (authError) return authError
+
   const searchParams = request.nextUrl.searchParams
   const table = searchParams.get("table") as AllowedTable | null
   const query = searchParams.get("query") // For search queries
@@ -278,6 +150,9 @@ function getSearchColumns(table: AllowedTable): string[] {
 
 // POST endpoint for complex queries
 export async function POST(request: NextRequest) {
+  const authError = await requireAlfredAuth(request)
+  if (authError) return authError
+
   try {
     const body = await request.json()
     const {

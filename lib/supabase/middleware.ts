@@ -27,7 +27,16 @@ export async function updateSession(request: NextRequest) {
           request,
         })
         cookiesToSet.forEach(({ name, value, options }) =>
-          supabaseResponse.cookies.set(name, value, options)
+          // Apply cross-subdomain attributes so the Supabase session
+          // cookie issued here is readable on alfred.motta.cpa as well.
+          // See lib/supabase/server.ts for the rationale on each
+          // attribute. Mirrored here because the middleware writes
+          // session cookies on every refresh.
+          supabaseResponse.cookies.set(
+            name,
+            value,
+            withCookieAttributes(options),
+          ),
         )
       },
     },
@@ -42,4 +51,22 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser()
 
   return { supabaseResponse, supabase, user }
+}
+
+/**
+ * Cookie-attribute merger shared between the SSR client (server.ts) and
+ * this middleware refresh path. See server.ts for the field-by-field
+ * rationale.
+ */
+function withCookieAttributes(
+  options: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {
+    ...(options ?? {}),
+    sameSite: "lax",
+    secure: true,
+  }
+  const domain = process.env.SUPABASE_COOKIE_DOMAIN
+  if (domain) merged.domain = domain
+  return merged
 }

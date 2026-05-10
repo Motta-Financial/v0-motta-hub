@@ -1,7 +1,11 @@
 import { createClient } from "@/lib/supabase/server"
-import { NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
+import { requireAlfredAuth } from "@/lib/alfred/auth-guard"
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const authError = await requireAlfredAuth(request)
+  if (authError) return authError
+
   try {
     const supabase = await createClient()
 

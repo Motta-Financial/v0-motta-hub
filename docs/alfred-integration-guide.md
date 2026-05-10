@@ -17,7 +17,24 @@ The Motta Hub provides 4 API endpoints for ALFRED to access all data:
 
 All API endpoints are available at your Motta Hub deployment URL:
 - Production: `https://your-motta-hub.vercel.app`
-- The endpoints require no authentication (add API key auth if needed for production)
+
+## Authentication
+
+The data REST endpoints (`/api/alfred/data`, `/api/alfred/schema`, `/api/alfred/search`, `/api/alfred/stats`) require **either**:
+
+1. **A valid Supabase session cookie** — for browser-based debugging by a logged-in Hub team member, **or**
+2. **An `x-alfred-secret` header** whose value matches the `ALFRED_API_SECRET` environment variable on the Hub server — for server-to-server calls from the ALFRED service.
+
+Server-to-server example:
+
+```bash
+curl -H "x-alfred-secret: $ALFRED_API_SECRET" \
+  "https://your-motta-hub.vercel.app/api/alfred/data?table=team_members"
+```
+
+Without one of the above, every endpoint returns `401 Unauthorized`. Set `ALFRED_API_SECRET` in the Vercel project's environment variables (Settings → Environment Variables) and store the matching value in the ALFRED service's secret store. Rotate by updating both sides simultaneously.
+
+> **Note:** `/api/alfred/chat` (the streaming chat endpoint used by the in-Hub UI) is intentionally excluded from this auth scheme — it handles its own session-based auth separately.
 
 ---
 
@@ -378,26 +395,14 @@ Test these queries in ALFRED:
 
 ## Security Recommendations
 
-For production, consider adding:
+The following are **implemented**:
 
-1. **API Key Authentication**
-   - Add `x-api-key` header requirement
-   - Store key in Vercel environment variables
+1. **Shared-secret authentication** — see the [Authentication](#authentication) section above. Enforced in `lib/alfred/auth-guard.ts`; called from every data route.
 
-2. **Rate Limiting**
-   - Implement rate limiting on endpoints
+Still **on the roadmap** (not yet implemented):
 
-3. **Audit Logging**
-   - Log all ALFRED queries for compliance
-
-Example API key implementation:
-```typescript
-// In each route.ts
-const apiKey = request.headers.get('x-api-key')
-if (apiKey !== process.env.ALFRED_API_KEY) {
-  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-}
-```
+1. **Rate limiting** — recommend Vercel KV / Upstash Ratelimit, keyed by `x-alfred-secret` value or session user id, applied at the route level.
+2. **Audit logging** — write every query to the existing `activity_log` table with `entity_type='alfred_query'` and a hash of the request body for compliance review.
 
 ---
 

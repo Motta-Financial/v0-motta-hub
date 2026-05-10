@@ -27,6 +27,14 @@ export async function middleware(request: NextRequest) {
   // happens we sign them out immediately, even if their session cookie is
   // still otherwise valid. We also ban the auth account separately so they
   // can't refresh, but this catches stale sessions on the next request.
+  //
+  // ALFRED note: The ALFRED service-account team_member row
+  // (lib/alfred/service-account.ts) is intentionally NOT special-cased here.
+  // It is treated like any other authenticated user: subject to the same
+  // is_active check, the same allowlist, and the same redirect rules. We
+  // deliberately do NOT auto-elevate ALFRED's session -- any privileged
+  // automation that runs as ALFRED must do so via service-role calls in a
+  // server action / API route, not via this middleware.
   if (user) {
     const { data: tm } = await supabase
       .from("team_members")
@@ -51,7 +59,28 @@ export async function middleware(request: NextRequest) {
   // Public auth API: /api/auth/forgot-password is the entrypoint for the
   // self-service password reset flow and must be reachable without a session.
   const isPublicAuthApi = pathname.startsWith("/api/auth/forgot-password")
-  const isPublicApi = pathname.startsWith("/api/alfred") || isPublicAuthApi
+  // /api/alfred/health is a deliberately unauthenticated status probe so
+  // alfred.motta.cpa (and any external monitor) can verify the Hub is
+  // reachable, the Supabase env is configured, and the ALFRED service
+  // account row is present BEFORE attempting any authenticated calls.
+  // The handler itself is careful not to leak any user data.
+  const isAlfredHealthCheck = pathname === "/api/alfred/health"
+  // ALFRED public-API surface. Previously the entire `/api/alfred/*`
+  // subtree was exempt, which exposed 46+ Supabase tables to anyone with
+  // the URL. The data REST endpoints (`/data`, `/schema`, `/search`,
+  // `/stats`) go through the normal middleware path AND are guarded
+  // inside their own handlers via `requireAlfredAuth()`
+  // (lib/alfred/auth-guard.ts), which accepts either a Supabase session
+  // OR an `x-alfred-secret` header.
+  //
+  // The cross-origin surface used by alfred.motta.cpa
+  // (`/api/alfred/chat`, `/api/alfred/conversations`,
+  // `/api/alfred/conversations/[id]`) is handled separately below by
+  // `isAlfredAuthedSurface` -- the route handlers enforce identity via
+  // cookie OR `Authorization: Bearer`, but middleware still has to let
+  // the request reach the handler in the Bearer case (no cookie =>
+  // `user` is null, which would otherwise 401 below).
+  const isPublicApi = isPublicAuthApi
   const isWebhook =
     pathname.startsWith("/api/webhooks") ||
     pathname.startsWith("/api/karbon/webhooks") ||
@@ -93,6 +122,10 @@ export async function middleware(request: NextRequest) {
   // Legal pages (Terms of Service, etc.) must be publicly accessible so
   // Zoom's Marketplace review bot can fetch them without authentication.
   const isLegalPage = pathname.startsWith("/legal")
+  // Documentation pages (e.g. /docs/zoom-integration) are linked from the
+  // Zoom App Marketplace listing as the "Documentation URL" and must be
+  // reachable by Zoom's review team without a Hub login.
+  const isDocsPage = pathname.startsWith("/docs")
   const isCron = pathname.startsWith("/api/cron")
   // Calendly's OAuth provider sends the user back to /api/calendly/oauth/callback
   // before our app session cookie has been issued — exempt only the callback,
@@ -107,6 +140,45 @@ export async function middleware(request: NextRequest) {
     process.env.CRON_SECRET &&
     request.headers.get("x-internal-secret") === process.env.CRON_SECRET
 
+  // Allow ALFRED server-to-server data calls. The route handler
+  // (requireAlfredAuth) re-checks the secret in constant logic, but
+  // middleware has to let the request through first or it would 401
+  // before our handler ever runs. We deliberately do NOT compare to env
+  // here -- handing that off to the route handler means a single source
+  // of truth for the secret check, and ensures a misconfigured server
+  // returns a clear 503 (from the handler) instead of the generic 401
+  // the middleware emits.
+  const isAlfredDataCall =
+    (pathname === "/api/alfred/data" ||
+      pathname === "/api/alfred/schema" ||
+      pathname === "/api/alfred/search" ||
+      pathname === "/api/alfred/stats") &&
+    request.headers.get("x-alfred-secret") !== null
+
+  // Cross-origin ALFRED surface (chat + conversations). These endpoints
+  // serve requests from alfred.motta.cpa as well as the in-Hub UI. The
+  // route handlers enforce identity themselves via cookie OR
+  // Authorization: Bearer (lib/alfred/resolve-user.ts), so middleware's
+  // job is simply to not block the Bearer case (no cookie => no `user`
+  // => the API 401 below would fire) and to let CORS preflights pass.
+  const isAlfredAuthedSurface =
+    pathname === "/api/alfred/chat" ||
+    pathname === "/api/alfred/conversations" ||
+    pathname.startsWith("/api/alfred/conversations/") ||
+    pathname === "/api/alfred/whoami"
+  // Preflight: browsers strip credentials from OPTIONS, so we cannot
+  // require auth here. Always let it through to the handler's
+  // dedicated OPTIONS export, which returns the proper CORS headers.
+  const isAlfredCorsPreflight =
+    isAlfredAuthedSurface && request.method === "OPTIONS"
+  // Bearer case: route validates the token itself. Cookie case is
+  // handled by the normal `user`-based flow further down.
+  const isAlfredBearerCall =
+    isAlfredAuthedSurface &&
+    (request.headers.get("authorization") ?? request.headers.get("Authorization") ?? "")
+      .toLowerCase()
+      .startsWith("bearer ")
+
   // Allow auth callback, public API, webhooks, cron, OAuth callbacks, and
   // internal calls without auth checks
   if (
@@ -116,8 +188,13 @@ export async function middleware(request: NextRequest) {
     isCron ||
     isCalendlyOAuthCallback ||
     isInternalCall ||
+    isAlfredDataCall ||
+    isAlfredHealthCheck ||
+    isAlfredCorsPreflight ||
+    isAlfredBearerCall ||
     isZoomEmbed ||
-    isLegalPage
+    isLegalPage ||
+    isDocsPage
   ) {
     return supabaseResponse
   }

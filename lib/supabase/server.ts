@@ -16,13 +16,44 @@ export async function createClient() {
       },
       setAll(cookiesToSet) {
         try {
-          cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options))
+          cookiesToSet.forEach(({ name, value, options }) =>
+            cookieStore.set(name, value, withCookieAttributes(options)),
+          )
         } catch {
           // The "setAll" method was called from a Server Component.
         }
       },
     },
   })
+}
+
+/**
+ * Augment the per-cookie options @supabase/ssr hands us with the
+ * cross-subdomain attributes we need so that the same Supabase session
+ * cookie issued by the Hub at e.g. `motta.cpa` is also visible to the
+ * ALFRED frontend at `alfred.motta.cpa`.
+ *
+ * - `domain` is set ONLY when SUPABASE_COOKIE_DOMAIN is defined. In
+ *   local dev the env var is unset, so the cookie stays scoped to the
+ *   exact host (typically `localhost`) and SameSite remains effective.
+ * - `sameSite: "lax"` keeps the cookie attached to top-level
+ *   navigations and same-site fetches. We deliberately do NOT use
+ *   "none" -- our cross-domain auth path uses a Bearer token, not the
+ *   cookie, so SameSite=None would only widen attack surface.
+ * - `secure: true` is always on. Modern browsers treat localhost as a
+ *   secure context, so this still works for local dev.
+ */
+function withCookieAttributes(
+  options: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {
+    ...(options ?? {}),
+    sameSite: "lax",
+    secure: true,
+  }
+  const domain = process.env.SUPABASE_COOKIE_DOMAIN
+  if (domain) merged.domain = domain
+  return merged
 }
 
 /**

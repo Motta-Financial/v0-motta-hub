@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
+import { requireAlfredAuth } from "@/lib/alfred/auth-guard"
 
 // Tables to search and their searchable columns
 const SEARCHABLE_TABLES = {
@@ -34,6 +35,9 @@ const SEARCHABLE_TABLES = {
 }
 
 export async function GET(request: NextRequest) {
+  const authError = await requireAlfredAuth(request)
+  if (authError) return authError
+
   const searchParams = request.nextUrl.searchParams
   const query = searchParams.get("q")
   const tables = searchParams.get("tables")?.split(",") || Object.keys(SEARCHABLE_TABLES)
