@@ -33,6 +33,7 @@ import {
 } from "lucide-react"
 import { useUser } from "@/hooks/use-user"
 import type { ZoomMeeting, ZoomCallHistory } from "@/lib/zoom-types"
+import { ZoomConnectPrompt } from "@/components/zoom-connect-prompt"
 
 interface ZoomConnection {
   id: string
@@ -361,6 +362,12 @@ export function ZoomDashboard() {
           <AlertTitle>Error</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
+      )}
+
+      {/* Connect Zoom prompt -- shown only when the signed-in team member
+          has not yet authorized the Hub against their personal Zoom account. */}
+      {!myConnection && (
+        <ZoomConnectPrompt teamMemberId={teamMember?.id} />
       )}
 
       {/* Stats Cards */}
