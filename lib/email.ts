@@ -791,6 +791,29 @@ export function buildDailyBriefingHtml(opts: {
     date: string
     url: string
   }>
+  /** New intake form submissions from yesterday. */
+  newIntakeForms?: Array<{
+    name: string
+    businessName?: string | null
+    services: string[]
+    url: string
+  }>
+  /** New feedback submissions from yesterday. */
+  newFeedback?: Array<{
+    name: string
+    rating?: number | null
+    comment?: string | null
+    url: string
+  }>
+  /** Proposals accepted yesterday. */
+  newProposalsAccepted?: Array<{
+    clientName: string
+    title?: string | null
+    value?: number | null
+    url: string
+  }>
+  /** Total value of proposals accepted yesterday. */
+  proposalsTotalValue?: number
   /** Witty butler closing line. */
   signOff: string
   hubUrl: string
@@ -806,6 +829,10 @@ export function buildDailyBriefingHtml(opts: {
     marketNews,
     taxNews,
     hubUpdates,
+    newIntakeForms,
+    newFeedback,
+    newProposalsAccepted,
+    proposalsTotalValue,
     signOff,
     hubUrl,
   } = opts
@@ -943,37 +970,83 @@ export function buildDailyBriefingHtml(opts: {
     </div>`
 
   // ── Section: Hub Updates (Appendix) ────────────────────────────────────
-  // Convert commit messages to friendly bullet points
-  const formatUpdateBullet = (message: string): string => {
-    // Extract the first line and clean it up for readability
-    const firstLine = message.split("\n")[0].trim()
-    // Remove common prefixes like "fix:", "feat:", "chore:", etc.
-    const cleaned = firstLine
-      .replace(/^(fix|feat|chore|refactor|docs|style|test|perf|ci|build)(\(.+?\))?:\s*/i, "")
-      .replace(/^(Add|Added|Update|Updated|Fix|Fixed|Remove|Removed|Implement|Implemented)\s+/i, (m) => m)
-    // Capitalize first letter
-    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
-  }
-
   const hubUpdatesHtml = hubUpdates && hubUpdates.length > 0
-    ? `<div style="background:${BRAND.background};border-radius:8px;padding:16px 20px;">
-        <p style="margin:0 0 12px;color:${BRAND.textMuted};font-size:13px;line-height:1.5;">
-          Your platform received ${hubUpdates.length} update${hubUpdates.length === 1 ? "" : "s"} yesterday. Here&apos;s what changed:
-        </p>
-        <ul style="margin:0;padding:0 0 0 20px;color:${BRAND.textPrimary};font-size:14px;line-height:1.7;">
-          ${hubUpdates
-            .map(
-              (u) => `<li style="margin:6px 0;">
-                <span>${escapeHtml(formatUpdateBullet(u.message))}</span>
-              </li>`,
-            )
-            .join("")}
-        </ul>
-        <p style="margin:12px 0 0;font-size:12px;color:${BRAND.textMuted};">
-          <a href="https://github.com/Motta-Financial/v0-motta-hub/commits/main" style="color:${BRAND.primary};text-decoration:none;">View full changelog &rarr;</a>
-        </p>
-      </div>`
+    ? `<table style="width:100%;border-collapse:collapse;">
+        ${hubUpdates
+          .map(
+            (u) => `
+              <tr style="border-bottom:1px solid ${BRAND.border};">
+                <td style="padding:10px 12px;font-size:13px;color:${BRAND.textMuted};white-space:nowrap;vertical-align:top;width:100px;">${escapeHtml(u.date)}</td>
+                <td style="padding:10px 12px;font-size:14px;vertical-align:top;">
+                  <a href="${u.url}" style="color:${BRAND.textPrimary};font-weight:600;text-decoration:none;">${escapeHtml(u.message.split("\n")[0])}</a>
+                  <div style="color:${BRAND.textMuted};font-size:12px;margin-top:2px;">by ${escapeHtml(u.author)}</div>
+                </td>
+              </tr>`,
+          )
+          .join("")}
+      </table>`
     : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No updates were shipped yesterday — the Hub rests quietly.</p>`
+
+  // ── Section: Business Metrics (Appendix) ───────────────────────────────
+  const hasBusinessMetrics =
+    (newIntakeForms && newIntakeForms.length > 0) ||
+    (newFeedback && newFeedback.length > 0) ||
+    (newProposalsAccepted && newProposalsAccepted.length > 0)
+
+  const formatCurrency = (val: number | null | undefined) =>
+    val != null
+      ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0 }).format(val)
+      : ""
+
+  const businessMetricsHtml = hasBusinessMetrics
+    ? `<div style="background:${BRAND.background};border-radius:8px;padding:16px 20px;">
+        ${newProposalsAccepted && newProposalsAccepted.length > 0
+          ? `<div style="margin-bottom:16px;">
+              <p style="margin:0 0 8px;color:${BRAND.textPrimary};font-size:14px;font-weight:600;">
+                Proposals Accepted ${proposalsTotalValue ? `&mdash; ${formatCurrency(proposalsTotalValue)} total` : ""}
+              </p>
+              <ul style="margin:0;padding:0 0 0 20px;color:${BRAND.textPrimary};font-size:13px;line-height:1.6;">
+                ${newProposalsAccepted.map((p) => `<li style="margin:4px 0;">
+                  <a href="${p.url}" style="color:${BRAND.primary};text-decoration:none;font-weight:500;">${escapeHtml(p.clientName)}</a>
+                  ${p.title ? ` &mdash; ${escapeHtml(p.title)}` : ""}
+                  ${p.value ? ` (${formatCurrency(p.value)})` : ""}
+                </li>`).join("")}
+              </ul>
+            </div>`
+          : ""
+        }
+        ${newIntakeForms && newIntakeForms.length > 0
+          ? `<div style="margin-bottom:16px;">
+              <p style="margin:0 0 8px;color:${BRAND.textPrimary};font-size:14px;font-weight:600;">
+                New Intake Forms (${newIntakeForms.length})
+              </p>
+              <ul style="margin:0;padding:0 0 0 20px;color:${BRAND.textPrimary};font-size:13px;line-height:1.6;">
+                ${newIntakeForms.map((i) => `<li style="margin:4px 0;">
+                  <a href="${i.url}" style="color:${BRAND.primary};text-decoration:none;font-weight:500;">${escapeHtml(i.name)}</a>
+                  ${i.businessName ? ` (${escapeHtml(i.businessName)})` : ""}
+                  ${i.services.length > 0 ? ` &mdash; interested in ${escapeHtml(i.services.slice(0, 2).join(", "))}${i.services.length > 2 ? "..." : ""}` : ""}
+                </li>`).join("")}
+              </ul>
+            </div>`
+          : ""
+        }
+        ${newFeedback && newFeedback.length > 0
+          ? `<div>
+              <p style="margin:0 0 8px;color:${BRAND.textPrimary};font-size:14px;font-weight:600;">
+                New Client Feedback (${newFeedback.length})
+              </p>
+              <ul style="margin:0;padding:0 0 0 20px;color:${BRAND.textPrimary};font-size:13px;line-height:1.6;">
+                ${newFeedback.map((f) => `<li style="margin:4px 0;">
+                  <a href="${f.url}" style="color:${BRAND.primary};text-decoration:none;font-weight:500;">${escapeHtml(f.name)}</a>
+                  ${f.rating != null ? ` &mdash; rated ${f.rating}/5` : ""}
+                  ${f.comment ? ` &ldquo;${escapeHtml(f.comment.slice(0, 60))}${f.comment.length > 60 ? "..." : ""}&rdquo;` : ""}
+                </li>`).join("")}
+              </ul>
+            </div>`
+          : ""
+        }
+      </div>`
+    : ""
 
   // ── Compose ────────────────────────────────────────────────────────────
   const sectionHeader = (title: string, subtitle?: string) => `
@@ -1000,11 +1073,17 @@ export function buildDailyBriefingHtml(opts: {
     ${sectionHeader("In the News")}
     ${newsHtml}
 
-    ${hubUpdates && hubUpdates.length > 0 ? `
+    ${(hubUpdates && hubUpdates.length > 0) || hasBusinessMetrics ? `
     <div style="margin:48px 0 0;padding-top:24px;border-top:2px solid ${BRAND.border};">
       <p style="margin:0 0 4px;color:${BRAND.textMuted};font-size:10px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;">Appendix</p>
-      ${sectionHeader("What's New in the Hub", "Your platform is always improving")}
-      ${hubUpdatesHtml}
+      ${hasBusinessMetrics ? `
+        ${sectionHeader("Yesterday's Wins", "New leads, feedback, and closed deals")}
+        ${businessMetricsHtml}
+      ` : ""}
+      ${hubUpdates && hubUpdates.length > 0 ? `
+        ${sectionHeader("What's New in the Hub", "Your platform is always improving")}
+        ${hubUpdatesHtml}
+      ` : ""}
     </div>` : ""}
 
     <div style="margin:32px 0 8px;text-align:center;">
