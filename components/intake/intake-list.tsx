@@ -14,7 +14,8 @@
  * a full page reload.
  */
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useEffect } from "react"
+import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import { JotformStatusCard } from "./jotform-status-card"
 import {
@@ -164,6 +165,7 @@ function isThisMonth(iso: string | null): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function IntakeList() {
+  const searchParams = useSearchParams()
   const [statusTab, setStatusTab] = useState<"all" | StatusValue>("all")
   const [focus, setFocus] = useState<string>("all")
   // Filter for the linked-client column. "all" hides the filter,
@@ -171,8 +173,17 @@ export function IntakeList() {
   // "no" surfaces the unlinked queue for triage. Server-side filter
   // keeps the row count honest.
   const [linked, setLinked] = useState<"all" | "yes" | "no">("all")
-  const [search, setSearch] = useState("")
+  // Initialize search from URL param (supports deep-linking from Daily Briefing)
+  const [search, setSearch] = useState(searchParams.get("search") || "")
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Sync search state if URL param changes (e.g., navigating back)
+  useEffect(() => {
+    const urlSearch = searchParams.get("search") || ""
+    if (urlSearch && urlSearch !== search) {
+      setSearch(urlSearch)
+    }
+  }, [searchParams])
 
   const qs = new URLSearchParams()
   if (statusTab !== "all") qs.set("status", statusTab)

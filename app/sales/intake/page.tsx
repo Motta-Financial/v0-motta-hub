@@ -1,3 +1,4 @@
+import { Suspense } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { IntakeList } from "@/components/intake/intake-list"
 
@@ -8,16 +9,21 @@ import { IntakeList } from "@/components/intake/intake-list"
  * triage controls (status, owner, notes). Lives under Sales because
  * intake is the literal first stage of the sales funnel — every row
  * here is a prospect to qualify, propose to, or decline.
+ *
+ * Supports ?search= URL param for deep-linking from Daily Briefing.
  */
 export const metadata = {
   title: "Intake Submissions | Motta Hub",
   description: "Triage prospects who submitted the embedded intake form.",
 }
 
+// IntakeList uses useSearchParams for deep-linking, so we need Suspense
 export default function IntakePage() {
   return (
     <DashboardLayout>
-      <IntakeList />
+      <Suspense fallback={null}>
+        <IntakeList />
+      </Suspense>
     </DashboardLayout>
   )
 }

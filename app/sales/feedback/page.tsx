@@ -1,3 +1,4 @@
+import { Suspense } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { FeedbackList } from "@/components/feedback/feedback-list"
 
@@ -8,19 +9,20 @@ import { FeedbackList } from "@/components/feedback/feedback-list"
  * the revenue funnel — feedback drives referrals (new leads) and
  * detractor recovery (retention), both of which are sales motions.
  *
- * No server data fetched here — FeedbackList drives everything via
- * SWR against `/api/jotform/feedback*` so triage edits revalidate the
- * list in place without a route refresh.
+ * Supports ?search= URL param for deep-linking from Daily Briefing.
  */
 export const metadata = {
   title: "Client Feedback | Motta Hub",
   description: "Triage client feedback submissions from the Jotform Feedback & Referral form.",
 }
 
+// FeedbackList uses useSearchParams for deep-linking, so we need Suspense
 export default function FeedbackPage() {
   return (
     <DashboardLayout>
-      <FeedbackList />
+      <Suspense fallback={null}>
+        <FeedbackList />
+      </Suspense>
     </DashboardLayout>
   )
 }
