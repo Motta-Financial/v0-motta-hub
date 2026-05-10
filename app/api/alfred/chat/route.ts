@@ -18,6 +18,7 @@ import {
 import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
+import { buildPolicy, type Audience } from "@/lib/alfred/policy"
 
 // Shape of the requesting user, sent from the client transport body.
 // See components/alfred-chat.tsx for the producer side.
@@ -615,8 +616,37 @@ export async function POST(req: Request) {
     // currentUser is intentionally NOT typed/read here -- it is an
     // untrusted hint only and is silently discarded.
     conversationId?: string | null
-    audience?: "staff" | "client"
+    audience?: Audience
   } = await req.json()
+
+  // Build the audience policy (staff today, client deliberately
+  // throws). Doing this BEFORE we touch the model lets the route fail
+  // fast with a 403 for unsupported audiences instead of streaming
+  // back a half-formed response.
+  let policy
+  try {
+    policy = buildPolicy({
+      audience,
+      currentUser: {
+        teamMemberId: currentUser.teamMemberId,
+        fullName: currentUser.fullName,
+        email: currentUser.email,
+        role: currentUser.role,
+        department: currentUser.department,
+      },
+    })
+  } catch (e) {
+    return applyAlfredCors(
+      Response.json(
+        {
+          error: "Forbidden",
+          detail: e instanceof Error ? e.message : "Audience not enabled.",
+        },
+        { status: 403 },
+      ),
+      req,
+    )
+  }
 
   // AI SDK 6: convertToModelMessages returns Promise<ModelMessage[]>
   const modelMessages = await convertToModelMessages(messages)
@@ -831,11 +861,51 @@ export async function POST(req: Request) {
         })
       }
 
+      // Layer the per-request policy on top of the static tools:
+      //   1. Wrap `queryDatabase` so its `execute` rejects any table
+      //      that is not in `policy.tableAllowlist`. The wrapper runs
+      //      BEFORE the static `isAllowedTable` guard, so a future
+      //      narrower client policy can lock the model out of a table
+      //      even though the table still exists in `ALLOWED_TABLES`.
+      //   2. Filter the merged tool map down to `policy.allowedTools`
+      //      via Object.fromEntries so the model literally cannot see
+      //      tools the audience isn't allowed to call.
+      const queryDatabaseBase = alfredTools.queryDatabase
+      const policyAwareQueryDatabase = {
+        ...queryDatabaseBase,
+        execute: async (input: { table: string }, opts: unknown) => {
+          if (!policy.tableAllowlist.includes(input.table)) {
+            return {
+              success: false,
+              error:
+                `Table "${input.table}" is not allowed for the current ` +
+                `ALFRED audience (${policy.audience}). Allowed tables: ` +
+                `${policy.tableAllowlist.join(", ")}.`,
+            }
+          }
+          // Delegate to the static execute. Cast through `Function`
+          // because the static execute's input type is the inferred
+          // Zod schema type, which we only loosely re-typed above.
+          return (queryDatabaseBase.execute as Function)(input, opts)
+        },
+      } as typeof queryDatabaseBase
+
+      const mergedTools = {
+        ...alfredTools,
+        queryDatabase: policyAwareQueryDatabase,
+        ...userScopedTools,
+      }
+      const filteredTools = Object.fromEntries(
+        Object.entries(mergedTools).filter(([name]) =>
+          policy.allowedTools.includes(name),
+        ),
+      ) as typeof mergedTools
+
       const result = streamText({
         model: "openai/gpt-4o",
-        system: `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}`,
+        system: `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`,
         messages: modelMessages,
-        tools: { ...alfredTools, ...userScopedTools },
+        tools: filteredTools,
         // 12 steps lets ALFRED chain webSearch → pick a result → browsePage →
         // reply, with a couple DB lookups in the same turn if needed.
         stopWhen: stepCountIs(12),
