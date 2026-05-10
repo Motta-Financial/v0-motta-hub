@@ -41,6 +41,14 @@ export interface ResolvedAlfredUser {
    * use this to allow / disallow service-account-initiated traffic.
    */
   isServiceAccount: boolean
+  /**
+   * Which auth strategy actually resolved this user. Set by
+   * `resolveAlfredUser` -- "bearer" if the Authorization header
+   * validated, "cookie" if the Supabase session cookie did. Useful
+   * primarily for the /api/alfred/whoami debug endpoint and for
+   * audit logs.
+   */
+  resolvedVia: "bearer" | "cookie"
 }
 
 /**
@@ -70,7 +78,7 @@ export async function resolveAlfredUser(
         const { data, error } = await admin.auth.getUser(token)
         if (!error && data?.user) {
           const tm = await loadTeamMember(admin, data.user.id, data.user.email ?? null)
-          if (tm) return tm
+          if (tm) return { ...tm, resolvedVia: "bearer" }
           // Auth user exists but isn't onboarded into team_members yet.
           // Fall through and try the cookie path -- in practice a
           // cross-domain Bearer call won't have a cookie either, but
@@ -94,7 +102,7 @@ export async function resolveAlfredUser(
       // bypassing it here keeps a single shape regardless of strategy.
       const admin = createAdminClient()
       const tm = await loadTeamMember(admin, data.user.id, data.user.email ?? null)
-      if (tm) return tm
+      if (tm) return { ...tm, resolvedVia: "cookie" }
     }
   } catch {
     // Same rationale as above -- don't bubble infra errors out as 500s.
@@ -103,11 +111,14 @@ export async function resolveAlfredUser(
   return null
 }
 
+// `loadTeamMember` doesn't know which auth strategy invoked it -- the
+// caller layers `resolvedVia` on top of the returned object via a spread
+// before handing the final value back to the consumer.
 async function loadTeamMember(
   admin: SupabaseClient,
   authUserId: string,
   email: string | null,
-): Promise<ResolvedAlfredUser | null> {
+): Promise<Omit<ResolvedAlfredUser, "resolvedVia"> | null> {
   // Primary key: auth_user_id. This is the link the existing middleware
   // uses for the deactivation check, so we mirror it.
   const primary = await admin

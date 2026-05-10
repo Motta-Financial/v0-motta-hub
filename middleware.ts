@@ -59,6 +59,12 @@ export async function middleware(request: NextRequest) {
   // Public auth API: /api/auth/forgot-password is the entrypoint for the
   // self-service password reset flow and must be reachable without a session.
   const isPublicAuthApi = pathname.startsWith("/api/auth/forgot-password")
+  // /api/alfred/health is a deliberately unauthenticated status probe so
+  // alfred.motta.cpa (and any external monitor) can verify the Hub is
+  // reachable, the Supabase env is configured, and the ALFRED service
+  // account row is present BEFORE attempting any authenticated calls.
+  // The handler itself is careful not to leak any user data.
+  const isAlfredHealthCheck = pathname === "/api/alfred/health"
   // ALFRED public-API surface. Previously the entire `/api/alfred/*`
   // subtree was exempt, which exposed 46+ Supabase tables to anyone with
   // the URL. The data REST endpoints (`/data`, `/schema`, `/search`,
@@ -158,7 +164,8 @@ export async function middleware(request: NextRequest) {
   const isAlfredAuthedSurface =
     pathname === "/api/alfred/chat" ||
     pathname === "/api/alfred/conversations" ||
-    pathname.startsWith("/api/alfred/conversations/")
+    pathname.startsWith("/api/alfred/conversations/") ||
+    pathname === "/api/alfred/whoami"
   // Preflight: browsers strip credentials from OPTIONS, so we cannot
   // require auth here. Always let it through to the handler's
   // dedicated OPTIONS export, which returns the proper CORS headers.
@@ -182,6 +189,7 @@ export async function middleware(request: NextRequest) {
     isCalendlyOAuthCallback ||
     isInternalCall ||
     isAlfredDataCall ||
+    isAlfredHealthCheck ||
     isAlfredCorsPreflight ||
     isAlfredBearerCall ||
     isZoomEmbed ||
