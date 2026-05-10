@@ -48,7 +48,7 @@ export async function GET(request: Request) {
       supabase
         .from("messages")
         .select(
-          "id, author_name, author_initials, author_id, content, gif_url, is_pinned, created_at, updated_at, message_reactions(id, emoji), message_comments(id)",
+          "id, author_name, author_initials, author_id, content, gif_url, is_pinned, created_at, updated_at, message_reactions(id, emoji, team_member_id), message_comments(id, author_name, author_initials, content, created_at)",
         )
         .gte("created_at", lookback7d.toISOString())
         .order("created_at", { ascending: false })
@@ -56,7 +56,7 @@ export async function GET(request: Request) {
       supabase
         .from("debriefs_full")
         .select(
-          "id, debrief_date, notes, debrief_type, organization_name, contact_full_name, organization_display_name, work_item_title, team_member_full_name, created_by_full_name, created_at, action_items, follow_up_date, status",
+          "id, debrief_date, notes, debrief_type, contact_id, organization_id, work_item_id, organization_name, contact_full_name, organization_display_name, work_item_title, work_item_karbon_url, karbon_work_url, team_member_full_name, created_by_full_name, created_at, action_items, follow_up_date, status",
         )
         .gte("created_at", lookback14d.toISOString())
         .order("created_at", { ascending: false })
@@ -64,7 +64,7 @@ export async function GET(request: Request) {
       supabase
         .from("calendly_events")
         .select(
-          "id, calendly_uuid, name, start_time, end_time, status, calendly_user_name, team_member_id, location_type, calendly_created_at, event_type_name",
+          "id, calendly_uuid, name, start_time, end_time, status, calendly_user_name, team_member_id, location_type, location, join_url, meeting_id, calendly_created_at, event_type_name",
         )
         // Surface meetings that were *scheduled* recently, regardless of
         // when the meeting itself takes place — that's the "new meeting"
@@ -76,7 +76,7 @@ export async function GET(request: Request) {
       supabase
         .from("ignition_proposals_enriched")
         .select(
-          "proposal_id, title, client_name, contact_full_name, organization_name, accepted_at, total_value, currency, status, signed_url, proposal_sent_by",
+          "proposal_id, title, client_name, contact_full_name, organization_name, contact_id, organization_id, accepted_at, total_value, recurring_total, one_time_total, recurring_frequency, currency, status, signed_url, proposal_sent_by, client_partner, client_manager",
         )
         .gte("accepted_at", lookback14d.toISOString())
         .order("accepted_at", { ascending: false })
@@ -103,6 +103,24 @@ export async function GET(request: Request) {
     if (messagesRes.status === "fulfilled" && !messagesRes.value.error) {
       for (const m of messagesRes.value.data || []) {
         if (dismissed.has(`team_message:${m.id}`)) continue
+        const rawReactions = (m.message_reactions || []) as Array<{
+          id: string
+          emoji: string
+          team_member_id: string | null
+        }>
+        const rawComments = (m.message_comments || []) as Array<{
+          id: string
+          author_name: string
+          author_initials: string | null
+          content: string
+          created_at: string
+        }>
+        // Aggregate reactions by emoji for the expanded view so we don't
+        // ship every individual reaction row to the client.
+        const reactionTally: Record<string, number> = {}
+        for (const r of rawReactions) {
+          reactionTally[r.emoji] = (reactionTally[r.emoji] || 0) + 1
+        }
         items.push({
           id: m.id,
           source_type: "team_message",
@@ -116,8 +134,19 @@ export async function GET(request: Request) {
           metadata: {
             gif_url: m.gif_url,
             is_pinned: m.is_pinned,
-            reaction_count: (m.message_reactions || []).length,
-            comment_count: (m.message_comments || []).length,
+            reaction_count: rawReactions.length,
+            comment_count: rawComments.length,
+            reactions: Object.entries(reactionTally).map(([emoji, count]) => ({ emoji, count })),
+            comments: rawComments
+              .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+              .slice(0, 20)
+              .map((c) => ({
+                id: c.id,
+                author_name: c.author_name,
+                author_initials: c.author_initials,
+                content: c.content,
+                created_at: c.created_at,
+              })),
             updated_at: m.updated_at,
           },
         })
@@ -134,9 +163,19 @@ export async function GET(request: Request) {
           d.organization_name ||
           "Untagged client"
         const author = d.team_member_full_name || d.created_by_full_name || "Team member"
-        const actionItemCount = Array.isArray(d.action_items?.items)
-          ? d.action_items!.items.length
-          : 0
+        const actionItemsArray = Array.isArray(d.action_items?.items)
+          ? (d.action_items!.items as Array<Record<string, unknown>>)
+          : []
+        // Prefer the contact link, fall back to organization. The
+        // /clients/[id] page resolves either uuid kind, so we hand it
+        // off whichever we have without forcing the caller to know
+        // which.
+        const clientId = d.contact_id || d.organization_id || null
+        const clientKind: "contact" | "organization" | null = d.contact_id
+          ? "contact"
+          : d.organization_id
+            ? "organization"
+            : null
         items.push({
           id: d.id,
           source_type: "debrief",
@@ -148,9 +187,20 @@ export async function GET(request: Request) {
           metadata: {
             debrief_type: d.debrief_type,
             work_item_title: d.work_item_title,
+            work_item_id: d.work_item_id,
+            // `debriefs_full` exposes the work item's Karbon URL alongside
+            // the debrief's own Karbon URL — prefer whichever is set.
+            karbon_work_url: d.work_item_karbon_url || d.karbon_work_url || null,
+            client_id: clientId,
+            client_kind: clientKind,
+            client_name: clientName,
             follow_up_date: d.follow_up_date,
             status: d.status,
-            action_item_count: actionItemCount,
+            action_item_count: actionItemsArray.length,
+            // Full action item list for the expanded view. Capped to 25
+            // so a runaway debrief doesn't bloat the response.
+            action_items: actionItemsArray.slice(0, 25),
+            full_notes: d.notes || "",
           },
         })
       }
@@ -158,8 +208,130 @@ export async function GET(request: Request) {
 
     // ── New Calendly meetings ────────────────────────────────────────────
     if (calendlyRes.status === "fulfilled" && !calendlyRes.value.error) {
-      for (const e of calendlyRes.value.data || []) {
-        if (dismissed.has(`calendly_meeting:${e.id}`)) continue
+      const events = (calendlyRes.value.data || []).filter(
+        (e) => !dismissed.has(`calendly_meeting:${e.calendly_uuid || e.id}`),
+      )
+
+      // Batch-look up linked clients and work items for the visible event
+      // set in one round-trip apiece so partners see "Open client", "Open
+      // work item" affordances in the expanded card without us issuing
+      // N+1 queries.
+      const eventIds = events.map((e) => e.id)
+      const meetingIds = events.map((e) => e.meeting_id).filter(Boolean) as string[]
+
+      const [eventClientsRes, eventWorkItemsRes, eventInviteesRes, linkedMeetingsRes] =
+        eventIds.length > 0
+          ? await Promise.allSettled([
+              supabase
+                .from("calendly_event_clients")
+                .select("calendly_event_id, contact_id, organization_id")
+                .in("calendly_event_id", eventIds),
+              supabase
+                .from("calendly_event_work_items")
+                .select("calendly_event_id, work_item_id")
+                .in("calendly_event_id", eventIds),
+              supabase
+                .from("calendly_invitees")
+                .select("calendly_event_id, name, email, contact_id")
+                .in("calendly_event_id", eventIds),
+              meetingIds.length > 0
+                ? supabase
+                    .from("meetings")
+                    .select("id, contact_id, organization_id, work_item_id, video_link")
+                    .in("id", meetingIds)
+                : Promise.resolve({ data: [], error: null }),
+            ])
+          : []
+
+      const clientsByEvent = new Map<
+        string,
+        { contact_id: string | null; organization_id: string | null }
+      >()
+      if (eventClientsRes?.status === "fulfilled" && !eventClientsRes.value.error) {
+        for (const row of (eventClientsRes.value.data || []) as Array<{
+          calendly_event_id: string
+          contact_id: string | null
+          organization_id: string | null
+        }>) {
+          // First explicit link wins; an event may be tagged to multiple
+          // clients but the triage row only surfaces one.
+          if (!clientsByEvent.has(row.calendly_event_id)) {
+            clientsByEvent.set(row.calendly_event_id, {
+              contact_id: row.contact_id,
+              organization_id: row.organization_id,
+            })
+          }
+        }
+      }
+      const workItemByEvent = new Map<string, string>()
+      if (eventWorkItemsRes?.status === "fulfilled" && !eventWorkItemsRes.value.error) {
+        for (const row of (eventWorkItemsRes.value.data || []) as Array<{
+          calendly_event_id: string
+          work_item_id: string
+        }>) {
+          if (!workItemByEvent.has(row.calendly_event_id)) {
+            workItemByEvent.set(row.calendly_event_id, row.work_item_id)
+          }
+        }
+      }
+      const inviteesByEvent = new Map<
+        string,
+        Array<{ name: string | null; email: string | null; contact_id: string | null }>
+      >()
+      if (eventInviteesRes?.status === "fulfilled" && !eventInviteesRes.value.error) {
+        for (const row of (eventInviteesRes.value.data || []) as Array<{
+          calendly_event_id: string
+          name: string | null
+          email: string | null
+          contact_id: string | null
+        }>) {
+          const list = inviteesByEvent.get(row.calendly_event_id) || []
+          list.push({ name: row.name, email: row.email, contact_id: row.contact_id })
+          inviteesByEvent.set(row.calendly_event_id, list)
+        }
+      }
+      const meetingById = new Map<
+        string,
+        {
+          contact_id: string | null
+          organization_id: string | null
+          work_item_id: string | null
+          video_link: string | null
+        }
+      >()
+      if (linkedMeetingsRes?.status === "fulfilled" && !linkedMeetingsRes.value.error) {
+        for (const row of (linkedMeetingsRes.value.data || []) as Array<{
+          id: string
+          contact_id: string | null
+          organization_id: string | null
+          work_item_id: string | null
+          video_link: string | null
+        }>) {
+          meetingById.set(row.id, row)
+        }
+      }
+
+      for (const e of events) {
+        // Resolve linked client / work item / video link by checking
+        // explicit Calendly tags first, then falling back to the linked
+        // Hub `meetings` row, then to the invitee with a Supabase
+        // contact match.
+        const explicitClient = clientsByEvent.get(e.id) || null
+        const linkedMeeting = e.meeting_id ? meetingById.get(e.meeting_id) || null : null
+        const invitees = inviteesByEvent.get(e.id) || []
+        const inviteeContactId = invitees.find((iv) => iv.contact_id)?.contact_id || null
+
+        const clientContactId =
+          explicitClient?.contact_id || linkedMeeting?.contact_id || inviteeContactId || null
+        const clientOrgId =
+          explicitClient?.organization_id || linkedMeeting?.organization_id || null
+        const clientId = clientContactId || clientOrgId || null
+        const clientKind: "contact" | "organization" | null = clientContactId
+          ? "contact"
+          : clientOrgId
+            ? "organization"
+            : null
+
         items.push({
           id: e.id,
           source_type: "calendly_meeting",
@@ -174,8 +346,21 @@ export async function GET(request: Request) {
             start_time: e.start_time,
             end_time: e.end_time,
             location_type: e.location_type,
+            location: e.location,
             host_name: e.calendly_user_name,
             event_type_name: e.event_type_name,
+            join_url: e.join_url || linkedMeeting?.video_link || null,
+            meeting_id: e.meeting_id,
+            client_id: clientId,
+            client_kind: clientKind,
+            work_item_id: workItemByEvent.get(e.id) || linkedMeeting?.work_item_id || null,
+            // Compact list of invitees — useful in the expanded view so
+            // the user can see who actually booked the slot.
+            invitees: invitees.slice(0, 5).map((iv) => ({
+              name: iv.name,
+              email: iv.email,
+              contact_id: iv.contact_id,
+            })),
           },
         })
       }
@@ -212,14 +397,63 @@ export async function GET(request: Request) {
 
     // ── Accepted Ignition proposals ──────────────────────────────────────
     if (proposalsRes.status === "fulfilled" && !proposalsRes.value.error) {
-      for (const p of proposalsRes.value.data || []) {
-        if (!p.accepted_at) continue
-        if (dismissed.has(`accepted_proposal:${p.proposal_id}`)) continue
+      const proposals = (proposalsRes.value.data || []).filter(
+        (p) => p.accepted_at && !dismissed.has(`accepted_proposal:${p.proposal_id}`),
+      )
+
+      // Pull line items for the visible proposal set so the expanded
+      // card can show what was actually accepted.
+      const proposalIds = proposals.map((p) => p.proposal_id).filter(Boolean) as string[]
+      const servicesByProposal = new Map<
+        string,
+        Array<{
+          service_name: string
+          description: string | null
+          total_amount: number | null
+          billing_frequency: string | null
+          quantity: number | null
+        }>
+      >()
+      if (proposalIds.length > 0) {
+        const servicesRes = await supabase
+          .from("ignition_proposal_services")
+          .select("proposal_id, service_name, description, total_amount, billing_frequency, quantity, ordinal")
+          .in("proposal_id", proposalIds)
+          .order("ordinal", { ascending: true })
+        if (!servicesRes.error) {
+          for (const s of (servicesRes.data || []) as Array<{
+            proposal_id: string
+            service_name: string
+            description: string | null
+            total_amount: number | null
+            billing_frequency: string | null
+            quantity: number | null
+          }>) {
+            const list = servicesByProposal.get(s.proposal_id) || []
+            list.push({
+              service_name: s.service_name,
+              description: s.description,
+              total_amount: s.total_amount,
+              billing_frequency: s.billing_frequency,
+              quantity: s.quantity,
+            })
+            servicesByProposal.set(s.proposal_id, list)
+          }
+        }
+      }
+
+      for (const p of proposals) {
         const clientName =
           p.contact_full_name ||
           p.organization_name ||
           p.client_name ||
           "Client"
+        const clientId = p.contact_id || p.organization_id || null
+        const clientKind: "contact" | "organization" | null = p.contact_id
+          ? "contact"
+          : p.organization_id
+            ? "organization"
+            : null
         items.push({
           id: p.proposal_id,
           source_type: "accepted_proposal",
@@ -232,9 +466,18 @@ export async function GET(request: Request) {
           }`,
           metadata: {
             total_value: p.total_value,
+            recurring_total: p.recurring_total,
+            one_time_total: p.one_time_total,
+            recurring_frequency: p.recurring_frequency,
             currency: p.currency,
             client_name: clientName,
+            client_id: clientId,
+            client_kind: clientKind,
+            client_partner: p.client_partner,
+            client_manager: p.client_manager,
+            proposal_sent_by: p.proposal_sent_by,
             proposal_url: p.signed_url,
+            services: servicesByProposal.get(p.proposal_id) || [],
           },
         })
       }

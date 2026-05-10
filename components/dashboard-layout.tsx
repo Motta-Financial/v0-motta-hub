@@ -64,15 +64,18 @@ import {
 import { useRouter } from "next/navigation"
 import { WorkItemSearchTrigger } from "@/components/work-item-search"
 
-// Top-level sections are organised by *function*, not by team. The five
+// Top-level sections are organised by *function*, not by team, and ordered
+// to mirror how teammates actually use the app day-to-day. The five
 // daily-driver pages (Triage, Work Items, Clients, Calendar, Debriefs) all
-// live under "Home" so the root of the app stays the launchpad. "Sales"
-// owns everything that touches a proposal-to-payment lifecycle, including
-// Payments and the Ignition admin. "Talent" is the people side of the
-// firm (directory + recognition). "Departments" is the operational
-// pipeline taxonomy (Tax / Accounting / Special Teams). "Settings"
-// absorbs both the legacy "Karbon Data" page and the engineer-facing
-// "Admin" tools so non-admins see a single configuration entry-point.
+// live under "Home" so the root of the app stays the launchpad.
+// "Departments" — the operational pipeline taxonomy (Tax / Accounting /
+// Special Teams) — sits directly above "Sales" because most teammates
+// open the app to find their work queue first; Sales follows as the
+// proposal-to-payment lifecycle hub (incl. Payments + Ignition admin).
+// "Talent" is the people side of the firm (directory + recognition).
+// "Settings" absorbs both the legacy "Karbon Data" page and the
+// engineer-facing "Admin" tools so non-admins see a single
+// configuration entry-point.
 const navigation = [
   // Home is the launchpad — everything that's part of a teammate's daily
   // driver workflow lives here. Calendar and Debriefs each have their own
@@ -103,6 +106,42 @@ const navigation = [
         icon: MessageSquare,
         children: [{ name: "New Debrief", href: "/debriefs/new", icon: NotebookPen }],
       },
+    ],
+  },
+  // "Departments" is the operational pipeline taxonomy and now lives
+  // directly above Sales because the firm's day-to-day work happens here
+  // — teammates scan Departments first to find the queue they own, then
+  // drop into Sales for proposal/billing follow-ups. Onboarding moved
+  // under Accounting because it's the kickoff step for every new
+  // bookkeeping engagement.
+  {
+    name: "Departments",
+    href: "/pipelines",
+    icon: ClipboardList,
+    children: [
+      {
+        name: "Accounting",
+        href: "/accounting",
+        icon: Calculator,
+        children: [
+          { name: "Project Plan", href: "/accounting/project-plan", icon: ClipboardList },
+          { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
+          { name: "Onboarding", href: "/onboarding", icon: UserPlus },
+        ],
+      },
+      {
+        name: "Tax",
+        href: "/tax",
+        icon: FileText,
+        children: [
+          { name: "Busy Season", href: "/tax/busy-season", icon: FileText },
+          { name: "Tax Planning", href: "/tax/planning", icon: Lightbulb },
+          { name: "Estimates", href: "/tax/estimates", icon: FileSpreadsheet },
+          { name: "IRS Notices", href: "/tax/irs-notices", icon: AlertTriangle },
+          { name: "Advisory", href: "/tax/advisory", icon: TrendingUp },
+        ],
+      },
+      { name: "Special Teams", href: "/special-teams", icon: Flame },
     ],
   },
   // Sales is the proposal-to-payment lifecycle hub. Payments and the
@@ -152,39 +191,6 @@ const navigation = [
           { name: "Submit Ballot", href: "/tommy-awards/ballot", icon: Send },
         ],
       },
-    ],
-  },
-  // "Departments" is the operational pipeline taxonomy. Onboarding moved
-  // under Accounting because it's the kickoff step for every new
-  // bookkeeping engagement.
-  {
-    name: "Departments",
-    href: "/pipelines",
-    icon: ClipboardList,
-    children: [
-      {
-        name: "Accounting",
-        href: "/accounting",
-        icon: Calculator,
-        children: [
-          { name: "Project Plan", href: "/accounting/project-plan", icon: ClipboardList },
-          { name: "Bookkeeping", href: "/accounting/bookkeeping", icon: DollarSign },
-          { name: "Onboarding", href: "/onboarding", icon: UserPlus },
-        ],
-      },
-      {
-        name: "Tax",
-        href: "/tax",
-        icon: FileText,
-        children: [
-          { name: "Busy Season", href: "/tax/busy-season", icon: FileText },
-          { name: "Tax Planning", href: "/tax/planning", icon: Lightbulb },
-          { name: "Estimates", href: "/tax/estimates", icon: FileSpreadsheet },
-          { name: "IRS Notices", href: "/tax/irs-notices", icon: AlertTriangle },
-          { name: "Advisory", href: "/tax/advisory", icon: TrendingUp },
-        ],
-      },
-      { name: "Special Teams", href: "/special-teams", icon: Flame },
     ],
   },
   // Settings absorbed Karbon Data and the Admin sub-tree — non-admins

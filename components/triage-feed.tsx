@@ -8,6 +8,8 @@ import {
   Briefcase,
   Calendar,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   ExternalLink,
   FileText,
   ImageIcon,
@@ -15,12 +17,17 @@ import {
   Loader2,
   Mail,
   MessageSquare,
+  Receipt,
   Send,
   Smile,
   Sparkles,
   Trash2,
+  User,
+  Users,
+  Video,
   X,
 } from "lucide-react"
+import Link from "next/link"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -450,6 +457,12 @@ function MessageComposer({ onPosted }: { onPosted: () => void }) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * FeedCard — one item, dispatched to a source-specific summary block.
+ *
+ * The card is a disclosure: the always-visible top half is the same compact
+ * summary as before, and a chevron-driven panel below expands into the
+ * full record (untruncated notes, action items, comments, services,
+ * invitees, etc.) plus a footer of "Open in …" links to the related Hub
+ * pages — Client profile, Karbon work item, Ignition proposal, etc.
  * ─────────────────────────────────────────────────────────────────────── */
 
 function FeedCard({
@@ -461,10 +474,28 @@ function FeedCard({
 }) {
   const meta = SOURCE_META[item.source_type]
   const Icon = meta.icon
+  const [expanded, setExpanded] = useState(false)
+
+  const toggle = () => setExpanded((v) => !v)
+  const panelId = `triage-card-${item.source_type}-${item.source_id}-detail`
 
   return (
-    <li className="group relative rounded-lg border border-gray-200 bg-white p-3 hover:border-gray-300 hover:shadow-sm transition-all">
-      <div className="flex items-start gap-3">
+    <li className="group relative rounded-lg border border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm transition-all">
+      <div className="flex items-start gap-2 p-3">
+        {/* Expand toggle — full-height hit target on the left edge so
+            keyboard users get an obvious affordance and the entire row
+            isn't a single sprawling button. */}
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          aria-label={expanded ? "Collapse details" : "Expand details"}
+          className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
+        >
+          {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </button>
+
         <div
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gray-50 ${meta.accent}`}
           aria-hidden
@@ -472,8 +503,24 @@ function FeedCard({
           <Icon className="h-4 w-4" />
         </div>
 
+        {/* Body: NOT wrapped in a <button> because SourceBody can contain
+            anchor/link descendants for some sources, which would be
+            invalid nesting. Clicking the meta row still toggles. */}
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={toggle}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                toggle()
+              }
+            }}
+            aria-expanded={expanded}
+            aria-controls={panelId}
+            className="flex items-center gap-2 flex-wrap cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-200 rounded -mx-1 px-1"
+          >
             <Badge variant="outline" className={`text-[10px] ${meta.accent}`}>
               {meta.label}
             </Badge>
@@ -497,11 +544,24 @@ function FeedCard({
           size="sm"
           className="h-7 w-7 p-0 opacity-50 group-hover:opacity-100 transition-opacity"
           aria-label="Clear this item"
-          onClick={() => onDismiss(item)}
+          onClick={(e) => {
+            e.stopPropagation()
+            onDismiss(item)
+          }}
         >
           <X className="h-3.5 w-3.5" />
         </Button>
       </div>
+
+      {expanded ? (
+        <div
+          id={panelId}
+          className="border-t border-gray-100 bg-gray-50/60 px-3 py-3 rounded-b-lg"
+        >
+          <ExpandedDetail item={item} />
+          <ItemLinkFooter item={item} />
+        </div>
+      ) : null}
     </li>
   )
 }
@@ -650,6 +710,514 @@ function ProposalBody({ item }: { item: TriageItem }) {
       ) : null}
     </>
   )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * ExpandedDetail — full-record view rendered when the card is opened.
+ * Each branch surfaces the untruncated fields the corresponding
+ * compact summary intentionally hides.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+function ExpandedDetail({ item }: { item: TriageItem }) {
+  switch (item.source_type) {
+    case "team_message":
+      return <TeamMessageExpanded item={item} />
+    case "debrief":
+      return <DebriefExpanded item={item} />
+    case "calendly_meeting":
+      return <CalendlyExpanded item={item} />
+    case "daily_briefing":
+      return <BriefingExpanded item={item} />
+    case "accepted_proposal":
+      return <ProposalExpanded item={item} />
+  }
+}
+
+function TeamMessageExpanded({ item }: { item: TriageItem }) {
+  const gifUrl = item.metadata?.gif_url as string | undefined
+  const reactions = (item.metadata?.reactions as Array<{ emoji: string; count: number }>) || []
+  const comments =
+    (item.metadata?.comments as Array<{
+      id: string
+      author_name: string
+      author_initials: string | null
+      content: string
+      created_at: string
+    }>) || []
+
+  return (
+    <div className="space-y-3 text-sm">
+      {item.summary ? (
+        <p className="whitespace-pre-wrap text-gray-800">{item.summary}</p>
+      ) : (
+        <p className="italic text-gray-500">No message text — media-only post.</p>
+      )}
+
+      {gifUrl ? (
+        <img
+          src={gifUrl || "/placeholder.svg"}
+          alt="Attached GIF"
+          className="rounded max-w-[280px] max-h-[200px] object-cover border border-gray-200"
+        />
+      ) : null}
+
+      {reactions.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {reactions.map((r) => (
+            <span
+              key={r.emoji}
+              className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs"
+            >
+              <span>{r.emoji}</span>
+              <span className="text-gray-600">{r.count}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {comments.length > 0 ? (
+        <div className="rounded-md border border-gray-200 bg-white">
+          <div className="border-b border-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600">
+            {comments.length} {comments.length === 1 ? "comment" : "comments"}
+          </div>
+          <ul className="divide-y divide-gray-100">
+            {comments.map((c) => (
+              <li key={c.id} className="px-3 py-2">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <Avatar className="h-5 w-5 bg-gray-100">
+                    <AvatarFallback className="text-[10px] text-gray-700">
+                      {c.author_initials ||
+                        c.author_name
+                          .split(" ")
+                          .map((n) => n[0])
+                          .join("")
+                          .toUpperCase()
+                          .slice(0, 2)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-xs font-medium text-gray-800">{c.author_name}</span>
+                  <span className="text-[11px] text-gray-500">
+                    {formatDistanceToNow(new Date(c.created_at), { addSuffix: true })}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-700 whitespace-pre-wrap pl-7">{c.content}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function DebriefExpanded({ item }: { item: TriageItem }) {
+  const fullNotes = (item.metadata?.full_notes as string) || item.summary || ""
+  const debriefType = item.metadata?.debrief_type as string | undefined
+  const status = item.metadata?.status as string | undefined
+  const followUpDate = item.metadata?.follow_up_date as string | undefined
+  const actionItems =
+    (item.metadata?.action_items as Array<Record<string, unknown>>) || []
+
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        {debriefType ? (
+          <DetailField label="Type" value={debriefType} />
+        ) : null}
+        {status ? <DetailField label="Status" value={status} /> : null}
+        {followUpDate ? (
+          <DetailField
+            label="Follow-up"
+            value={new Date(followUpDate).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })}
+          />
+        ) : null}
+        <DetailField label="Logged by" value={item.actor_name} />
+      </div>
+
+      {fullNotes ? (
+        <div>
+          <div className="text-xs font-medium text-gray-600 mb-1">Notes</div>
+          <p className="whitespace-pre-wrap text-gray-800 rounded-md border border-gray-200 bg-white p-3">
+            {fullNotes}
+          </p>
+        </div>
+      ) : null}
+
+      {actionItems.length > 0 ? (
+        <div>
+          <div className="text-xs font-medium text-gray-600 mb-1">
+            {actionItems.length} action item{actionItems.length === 1 ? "" : "s"}
+          </div>
+          <ul className="space-y-1 rounded-md border border-gray-200 bg-white p-2">
+            {actionItems.map((ai, idx) => {
+              const text =
+                (ai.text as string) ||
+                (ai.title as string) ||
+                (ai.description as string) ||
+                JSON.stringify(ai)
+              const done = Boolean(ai.completed || ai.done)
+              const owner = (ai.owner as string) || (ai.assignee as string) || undefined
+              const dueDate = (ai.due_date as string) || (ai.due as string) || undefined
+              return (
+                <li key={idx} className="flex items-start gap-2 text-sm">
+                  <span
+                    className={`mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                      done ? "bg-emerald-500 border-emerald-500 text-white" : "border-gray-300"
+                    }`}
+                  >
+                    {done ? <CheckCircle2 className="h-3 w-3" /> : null}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p
+                      className={`whitespace-pre-wrap ${
+                        done ? "text-gray-400 line-through" : "text-gray-800"
+                      }`}
+                    >
+                      {text}
+                    </p>
+                    {(owner || dueDate) && (
+                      <p className="text-[11px] text-gray-500">
+                        {owner ? owner : null}
+                        {owner && dueDate ? " • " : null}
+                        {dueDate
+                          ? `Due ${new Date(dueDate).toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                            })}`
+                          : null}
+                      </p>
+                    )}
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function CalendlyExpanded({ item }: { item: TriageItem }) {
+  const startTime = item.metadata?.start_time as string | undefined
+  const endTime = item.metadata?.end_time as string | undefined
+  const host = item.metadata?.host_name as string | undefined
+  const locationType = item.metadata?.location_type as string | undefined
+  const location = item.metadata?.location as string | undefined
+  const eventTypeName = item.metadata?.event_type_name as string | undefined
+  const invitees =
+    (item.metadata?.invitees as Array<{
+      name: string | null
+      email: string | null
+      contact_id: string | null
+    }>) || []
+
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        {eventTypeName ? <DetailField label="Event type" value={eventTypeName} /> : null}
+        {host ? <DetailField label="Host" value={host} /> : null}
+        {startTime ? (
+          <DetailField label="Starts" value={formatTime(startTime)} />
+        ) : null}
+        {endTime ? <DetailField label="Ends" value={formatTime(endTime)} /> : null}
+        {locationType ? (
+          <DetailField label="Location" value={location || locationType} />
+        ) : null}
+      </div>
+
+      {invitees.length > 0 ? (
+        <div>
+          <div className="text-xs font-medium text-gray-600 mb-1">
+            Invitee{invitees.length === 1 ? "" : "s"}
+          </div>
+          <ul className="rounded-md border border-gray-200 bg-white divide-y divide-gray-100">
+            {invitees.map((iv, idx) => (
+              <li key={idx} className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm">
+                <div className="min-w-0">
+                  <p className="truncate font-medium text-gray-800">{iv.name || "Unknown invitee"}</p>
+                  {iv.email ? (
+                    <p className="truncate text-xs text-gray-500">{iv.email}</p>
+                  ) : null}
+                </div>
+                {iv.contact_id ? (
+                  <Link
+                    href={`/clients/${iv.contact_id}`}
+                    className="shrink-0 text-xs text-blue-600 hover:underline"
+                  >
+                    View client
+                  </Link>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function BriefingExpanded({ item }: { item: TriageItem }) {
+  const dateKey = item.metadata?.date_key as string | undefined
+  return (
+    <div className="space-y-2 text-sm text-gray-700">
+      <p>{item.summary}</p>
+      {dateKey ? (
+        <p className="text-xs text-gray-500">
+          Briefing date: <span className="font-medium text-gray-700">{dateKey}</span>
+        </p>
+      ) : null}
+      <p className="text-xs text-gray-500">
+        The full digest is delivered to your inbox each weekday morning. Check your email
+        for the complete client priority list, upcoming meetings, and pending follow-ups.
+      </p>
+    </div>
+  )
+}
+
+function ProposalExpanded({ item }: { item: TriageItem }) {
+  const currency = (item.metadata?.currency as string) || "USD"
+  const totalValue = item.metadata?.total_value as number | null | undefined
+  const recurringTotal = item.metadata?.recurring_total as number | null | undefined
+  const oneTimeTotal = item.metadata?.one_time_total as number | null | undefined
+  const recurringFrequency = item.metadata?.recurring_frequency as string | undefined
+  const clientPartner = item.metadata?.client_partner as string | undefined
+  const clientManager = item.metadata?.client_manager as string | undefined
+  const proposalSentBy = item.metadata?.proposal_sent_by as string | undefined
+  const services =
+    (item.metadata?.services as Array<{
+      service_name: string
+      description: string | null
+      total_amount: number | null
+      billing_frequency: string | null
+      quantity: number | null
+    }>) || []
+
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        {totalValue != null ? (
+          <DetailField label="Total" value={formatCurrencyClient(totalValue, currency)} />
+        ) : null}
+        {recurringTotal != null && recurringTotal !== 0 ? (
+          <DetailField
+            label="Recurring"
+            value={`${formatCurrencyClient(recurringTotal, currency)}${
+              recurringFrequency ? ` / ${recurringFrequency}` : ""
+            }`}
+          />
+        ) : null}
+        {oneTimeTotal != null && oneTimeTotal !== 0 ? (
+          <DetailField label="One-time" value={formatCurrencyClient(oneTimeTotal, currency)} />
+        ) : null}
+        {proposalSentBy ? <DetailField label="Sent by" value={proposalSentBy} /> : null}
+        {clientPartner ? <DetailField label="Partner" value={clientPartner} /> : null}
+        {clientManager ? <DetailField label="Manager" value={clientManager} /> : null}
+      </div>
+
+      {services.length > 0 ? (
+        <div>
+          <div className="text-xs font-medium text-gray-600 mb-1">
+            {services.length} service{services.length === 1 ? "" : "s"}
+          </div>
+          <ul className="rounded-md border border-gray-200 bg-white divide-y divide-gray-100">
+            {services.map((s, idx) => (
+              <li key={idx} className="flex items-start justify-between gap-3 px-3 py-2 text-sm">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-gray-800">{s.service_name}</p>
+                  {s.description ? (
+                    <p className="text-xs text-gray-500 line-clamp-2">{s.description}</p>
+                  ) : null}
+                  {s.billing_frequency ? (
+                    <p className="text-[11px] text-gray-500">
+                      {s.billing_frequency}
+                      {s.quantity ? ` • Qty ${s.quantity}` : ""}
+                    </p>
+                  ) : null}
+                </div>
+                {s.total_amount != null ? (
+                  <span className="shrink-0 text-sm font-medium text-gray-800">
+                    {formatCurrencyClient(s.total_amount, currency)}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Footer of contextual "Open in …" links. Each builds on metadata IDs
+ * shipped by /api/triage/feed so we never need a per-card follow-up
+ * fetch just to know whether a link can be rendered.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+function ItemLinkFooter({ item }: { item: TriageItem }) {
+  const links: Array<{
+    label: string
+    href: string
+    icon: React.ComponentType<{ className?: string }>
+    external?: boolean
+  }> = []
+
+  const md = item.metadata || {}
+  const clientId = md.client_id as string | undefined
+  const workItemId = md.work_item_id as string | undefined
+  const karbonUrl = (md.karbon_work_url as string) || (md.karbon_url as string) || undefined
+
+  switch (item.source_type) {
+    case "debrief": {
+      if (clientId) {
+        links.push({
+          label: "View client",
+          href: `/clients/${clientId}`,
+          icon: User,
+        })
+      }
+      if (karbonUrl) {
+        links.push({
+          label: "Open work item in Karbon",
+          href: karbonUrl,
+          icon: Briefcase,
+          external: true,
+        })
+      }
+      if (workItemId) {
+        links.push({
+          label: "All work items",
+          href: `/work-items`,
+          icon: Briefcase,
+        })
+      }
+      links.push({ label: "All debriefs", href: "/debriefs", icon: FileText })
+      break
+    }
+    case "calendly_meeting": {
+      const joinUrl = md.join_url as string | undefined
+      if (joinUrl) {
+        links.push({
+          label: "Join meeting",
+          href: joinUrl,
+          icon: Video,
+          external: true,
+        })
+      }
+      if (clientId) {
+        links.push({
+          label: "View client",
+          href: `/clients/${clientId}`,
+          icon: User,
+        })
+      }
+      if (workItemId) {
+        links.push({
+          label: "All work items",
+          href: `/work-items`,
+          icon: Briefcase,
+        })
+      }
+      links.push({ label: "Open calendar", href: "/calendar", icon: Calendar })
+      break
+    }
+    case "accepted_proposal": {
+      const proposalUrl = md.proposal_url as string | undefined
+      if (clientId) {
+        links.push({
+          label: "View client",
+          href: `/clients/${clientId}`,
+          icon: User,
+        })
+      }
+      if (proposalUrl) {
+        links.push({
+          label: "View signed proposal",
+          href: proposalUrl,
+          icon: Receipt,
+          external: true,
+        })
+      }
+      links.push({ label: "All proposals", href: "/sales/proposals", icon: FileText })
+      break
+    }
+    case "team_message": {
+      // Nothing canonical to link to — comments live inline in the
+      // expanded view. We still surface a way to open the broader team
+      // message archive if/when that surface exists.
+      break
+    }
+    case "daily_briefing": {
+      links.push({ label: "Open intake queue", href: "/sales/intake", icon: Users })
+      links.push({ label: "View today on calendar", href: "/calendar", icon: Calendar })
+      break
+    }
+  }
+
+  if (links.length === 0) return null
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
+      {links.map((link) => {
+        const LinkIcon = link.icon
+        const inner = (
+          <>
+            <LinkIcon className="h-3 w-3" />
+            <span>{link.label}</span>
+            {link.external ? <ExternalLink className="h-3 w-3 text-gray-400" /> : null}
+          </>
+        )
+        if (link.external) {
+          return (
+            <a
+              key={link.label}
+              href={link.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 hover:text-gray-900"
+            >
+              {inner}
+            </a>
+          )
+        }
+        return (
+          <Link
+            key={link.label}
+            href={link.href}
+            className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 hover:text-gray-900"
+          >
+            {inner}
+          </Link>
+        )
+      })}
+    </div>
+  )
+}
+
+function DetailField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-gray-200 bg-white px-2 py-1.5">
+      <div className="text-[10px] uppercase tracking-wide text-gray-500">{label}</div>
+      <div className="text-sm text-gray-800 truncate">{value}</div>
+    </div>
+  )
+}
+
+function formatCurrencyClient(value: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency || "USD",
+      maximumFractionDigits: 0,
+    }).format(value)
+  } catch {
+    return `$${value}`
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

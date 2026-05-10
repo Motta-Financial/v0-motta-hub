@@ -19,7 +19,7 @@ const TABS: { value: ProjectPlanTab; label: string }[] = [
   { value: "roster", label: "Client Roster" },
   { value: "timeline", label: "Timeline" },
   { value: "kanban", label: "Kanban" },
-  { value: "checklist", label: "Bookkeeping Checklist" },
+  { value: "checklist", label: "Monthly Bookkeeping" },
 ]
 
 interface ProjectPlanViewProps {
