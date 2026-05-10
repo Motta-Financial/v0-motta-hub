@@ -393,7 +393,12 @@ export function ProjectPlanChecklist() {
   )
 }
 
-function ChecklistForWorkItem({ item }: { item: KarbonWorkItem }) {
+// Exported so the dedicated Bookkeeping Dashboard
+// (components/bookkeeping/bookkeeping-dashboard.tsx) can embed the same
+// 10-step checklist inline when a user expands an engagement row.
+// Keeping a single component means the Project Plan tab and the
+// Bookkeeping page can never drift apart.
+export function ChecklistForWorkItem({ item }: { item: KarbonWorkItem }) {
   const workItemId = item.id || item.karbon_work_item_key || ""
   const endpoint = `/api/accounting/bookkeeping-checklist/${workItemId}`
   const { data, error, isLoading } = useSWR<{ progress: ProgressRow[] }>(
