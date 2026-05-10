@@ -26,6 +26,7 @@ import {
   DollarSign,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useUser } from "@/contexts/user-context"
 
 interface AlfredChatProps {
   isOpen: boolean
@@ -49,8 +50,28 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Identify the requesting user so ALFRED can answer "my work items" /
+  // "my deadlines" questions. The DefaultChatTransport `body` factory is
+  // invoked on every turn, so if the team member loads after first paint
+  // the next message will still include their identity.
+  const { teamMember, user } = useUser()
+
   const { messages, sendMessage, status, error } = useChat({
-    transport: new DefaultChatTransport({ api: "/api/alfred/chat" }),
+    transport: new DefaultChatTransport({
+      api: "/api/alfred/chat",
+      body: () => ({
+        currentUser: teamMember
+          ? {
+              teamMemberId: teamMember.id,
+              fullName: teamMember.full_name,
+              email: teamMember.email,
+              role: teamMember.title ?? teamMember.role ?? null,
+              department: teamMember.department ?? null,
+              karbonUserKey: teamMember.karbon_user_key ?? null,
+            }
+          : null,
+      }),
+    }),
   })
 
   const isLoading = status === "streaming" || status === "submitted"
