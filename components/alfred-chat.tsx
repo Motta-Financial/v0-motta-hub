@@ -2,8 +2,10 @@
 
 import type React from "react"
 
-import { useState, useRef, useEffect, useCallback } from "react"
+import { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import Image from "next/image"
+import ReactMarkdown, { type Components } from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport, type UIMessage } from "ai"
 import { Button } from "@/components/ui/button"
@@ -17,13 +19,12 @@ import {
   Minimize2,
   Loader2,
   User,
-  Bot,
-  Database,
   Search,
   Calendar,
   Users,
   FileText,
   DollarSign,
+  Database,
   History,
   Plus,
 } from "lucide-react"
@@ -80,6 +81,18 @@ const suggestedQueries = [
   { icon: DollarSign, text: "Financial summary", query: "What's our current financial summary?" },
   { icon: Database, text: "Work items by status", query: "Summarize work items by status" },
 ]
+
+// Brand palette — the olive from the ALFRED sphere, kept on a neutral
+// Hub-consistent base (zinc/slate) so the chat no longer looks like a
+// separate orange product wedged into the Hub. Defined once at the top
+// of the file rather than inlined so a future palette tweak (e.g. dark
+// mode) is a single-place change.
+const OLIVE = {
+  ring: "#C4CB8B",       // light olive — borders, idle ring
+  mid: "#9CA757",        // mid olive   — small accents
+  deep: "#7E8845",       // deep olive  — links, primary text accents
+  wash: "#F5F6E8",       // pale wash   — hover/tint backgrounds
+}
 
 export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className }: AlfredChatProps) {
   const [inputValue, setInputValue] = useState("")
@@ -212,6 +225,24 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
 
   const isLoading = status === "streaming" || status === "submitted"
 
+  // The last assistant message may already have text streaming in — in
+  // that case the text itself IS the loading indicator, so we suppress
+  // the "Consulting the archives…" placeholder to avoid double UI. We
+  // only show the placeholder when the model has not produced any text
+  // yet (typically during the silent tool-loop phase).
+  const lastAssistantHasText = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role !== "assistant") continue
+      return (m.parts ?? []).some(
+        (p: any) => p?.type === "text" && typeof p.text === "string" && p.text.trim().length > 0,
+      )
+    }
+    return false
+  }, [messages])
+
+  const showThinking = isLoading && !lastAssistantHasText
+
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     if (scrollRef.current) {
@@ -255,20 +286,31 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
           aria-label="Restore ALFRED"
           // Mirrors the launcher styling so the FAB looks consistent
           // whether the chat has never been opened or is just minimized.
-          // Olive-green tones pulled from the brand sphere (see
-          // alfred-chat-trigger.tsx for the matching values).
-          className="h-14 w-14 rounded-full bg-white hover:bg-[#F5F6E8] ring-1 ring-[#C4CB8B] shadow-lg p-0 overflow-hidden"
+          // Olive-green ring + halo pulse keep the brand identity going
+          // while the chat is tucked away.
+          className="h-14 w-14 rounded-full bg-white hover:bg-[#F5F6E8] ring-1 ring-[#C4CB8B] shadow-lg p-0 overflow-hidden relative"
         >
+          <span
+            aria-hidden
+            className="absolute inset-0 rounded-full animate-alfred-halo"
+            style={{
+              background:
+                "radial-gradient(circle at 50% 45%, rgba(156,167,87,0.45) 0%, rgba(196,203,139,0) 65%)",
+            }}
+          />
           <Image
             src="/images/alfred-logo.png"
             alt=""
             width={48}
             height={48}
-            className="object-contain"
+            className="object-contain relative z-10"
           />
         </Button>
         {messages.length > 0 && (
-          <Badge className="absolute -top-1 -right-1 bg-red-500 text-white text-xs">
+          <Badge
+            className="absolute -top-1 -right-1 text-white text-xs"
+            style={{ backgroundColor: OLIVE.deep }}
+          >
             {messages.filter((m) => m.role === "assistant").length}
           </Badge>
         )}
@@ -279,34 +321,26 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
   return (
     <Card
       className={cn(
-        "fixed bottom-4 right-4 z-50 w-[420px] h-[600px] flex flex-col shadow-2xl border-amber-200/50",
+        "fixed bottom-4 right-4 z-50 w-[420px] h-[600px] flex flex-col shadow-2xl border-border/60",
         className,
       )}
     >
-      {/* Header */}
-      <CardHeader className="flex flex-row items-center justify-between py-3 px-4 bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded-t-lg">
-        <div className="flex items-center gap-2">
-          {/* Solid white avatar so the dark "ai" mark in the new logo
-              has enough contrast against the amber/orange header. */}
-          <div className="h-8 w-8 rounded-full bg-white flex items-center justify-center overflow-hidden p-1">
-            <Image
-              src="/images/alfred-logo.png"
-              alt=""
-              width={24}
-              height={24}
-              className="object-contain"
-            />
-          </div>
+      {/* Header — switched from the amber/orange gradient to the Hub's
+          dark slate primary token. The futuristic orb supplies all the
+          colour and motion the header needs. */}
+      <CardHeader className="flex flex-row items-center justify-between py-3 px-4 bg-foreground text-background rounded-t-lg">
+        <div className="flex items-center gap-2.5">
+          <AlfredOrb size={36} active={isLoading} />
           <div>
-            <CardTitle className="text-base font-semibold">ALFRED AI</CardTitle>
-            <p className="text-xs text-amber-100">Motta Hub Assistant</p>
+            <CardTitle className="text-base font-semibold tracking-tight">ALFRED Ai</CardTitle>
+            <p className="text-[11px] text-background/70">Motta Hub Assistant</p>
           </div>
         </div>
         <div className="flex items-center gap-1">
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 text-white hover:bg-white/20"
+            className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
             onClick={startNewChat}
             title="Start a new chat"
             aria-label="Start a new chat"
@@ -314,10 +348,20 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
           >
             <Plus className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={onMinimize}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
+            onClick={onMinimize}
+          >
             <Minimize2 className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={onClose}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
+            onClick={onClose}
+          >
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -329,20 +373,16 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
           {messages.length === 0 ? (
             <div className="space-y-4">
               <div className="text-center py-6">
-                {/* Logo stands on its own here -- the brand mark already
-                    has its own visual weight (black "ai" + green sphere)
-                    so a colored ring would compete with it. */}
-                <div className="relative h-20 w-20 mx-auto mb-4">
-                  <Image
-                    src="/images/alfred-logo.png"
-                    alt="ALFRED"
-                    fill
-                    sizes="5rem"
-                    className="object-contain"
-                  />
+                {/* Empty state — large breathing orb. Same animation
+                    vocabulary as the header orb just up-scaled, so the
+                    user immediately reads them as the same brand. */}
+                <div className="mx-auto mb-4 w-fit">
+                  <AlfredOrb size={88} active glow />
                 </div>
-                <h3 className="font-semibold text-gray-900">Hello! I&apos;m ALFRED</h3>
-                <p className="text-sm text-gray-500 mt-1">Your AI assistant with access to all Motta Hub data</p>
+                <h3 className="font-semibold text-foreground">At your service.</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Ask me anything about Motta Hub — I&apos;ll see to it.
+                </p>
               </div>
 
               {/* Recent conversations rail. Hidden when the user has no
@@ -351,12 +391,12 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
               {recentConversations.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wide flex items-center gap-1">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1">
                       <History className="h-3 w-3" />
                       Recent conversations
                     </p>
                     {recentLoading && (
-                      <Loader2 className="h-3 w-3 animate-spin text-gray-400" />
+                      <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
                     )}
                   </div>
                   <div className="space-y-1">
@@ -365,12 +405,18 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
                         key={c.id}
                         onClick={() => loadConversation(c.id)}
                         disabled={hydrating}
-                        className="w-full flex items-center justify-between gap-2 p-2 text-left text-sm rounded-lg border border-gray-200 hover:bg-amber-50 hover:border-amber-200 transition-colors disabled:opacity-50"
+                        className="w-full flex items-center justify-between gap-2 p-2 text-left text-sm rounded-lg border border-border hover:bg-[var(--alfred-wash)] hover:border-[var(--alfred-ring)] transition-colors disabled:opacity-50"
+                        style={
+                          {
+                            "--alfred-wash": OLIVE.wash,
+                            "--alfred-ring": OLIVE.ring,
+                          } as React.CSSProperties
+                        }
                       >
-                        <span className="truncate text-gray-700">
+                        <span className="truncate text-foreground">
                           {c.title?.trim() || "Untitled conversation"}
                         </span>
-                        <span className="text-xs text-gray-400 shrink-0">
+                        <span className="text-xs text-muted-foreground shrink-0">
                           {formatRelative(c.updated_at)}
                         </span>
                       </button>
@@ -380,16 +426,27 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
               )}
 
               <div className="space-y-2">
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Try asking about:</p>
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  May I suggest:
+                </p>
                 <div className="grid grid-cols-2 gap-2">
                   {suggestedQueries.map((suggestion, index) => (
                     <button
                       key={index}
                       onClick={() => handleSuggestionClick(suggestion.query)}
-                      className="flex items-center gap-2 p-2 text-left text-sm rounded-lg border border-gray-200 hover:bg-amber-50 hover:border-amber-200 transition-colors"
+                      className="flex items-center gap-2 p-2 text-left text-sm rounded-lg border border-border hover:bg-[var(--alfred-wash)] hover:border-[var(--alfred-ring)] transition-colors"
+                      style={
+                        {
+                          "--alfred-wash": OLIVE.wash,
+                          "--alfred-ring": OLIVE.ring,
+                        } as React.CSSProperties
+                      }
                     >
-                      <suggestion.icon className="h-4 w-4 text-amber-600 flex-shrink-0" />
-                      <span className="text-gray-700 truncate">{suggestion.text}</span>
+                      <suggestion.icon
+                        className="h-4 w-4 flex-shrink-0"
+                        style={{ color: OLIVE.deep }}
+                      />
+                      <span className="text-foreground truncate">{suggestion.text}</span>
                     </button>
                   ))}
                 </div>
@@ -398,63 +455,10 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
           ) : (
             <div className="space-y-4">
               {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={cn("flex gap-3", message.role === "user" ? "justify-end" : "justify-start")}
-                >
-                  {message.role === "assistant" && (
-                    <div className="h-8 w-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center flex-shrink-0">
-                      <Bot className="h-4 w-4 text-white" />
-                    </div>
-                  )}
-                  <div
-                    className={cn(
-                      "max-w-[85%] rounded-lg px-3 py-2",
-                      message.role === "user" ? "bg-amber-500 text-white" : "bg-gray-100 text-gray-900",
-                    )}
-                  >
-                    {message.parts.map((part, index) => {
-                      if (part.type === "text") {
-                        return (
-                          <div key={index} className="text-sm whitespace-pre-wrap">
-                            {part.text}
-                          </div>
-                        )
-                      }
-                      // Handle tool calls
-                      if (part.type && part.type.startsWith("tool-")) {
-                        const toolName = part.type.replace("tool-", "")
-                        return (
-                          <div key={index} className="flex items-center gap-2 text-xs text-gray-500 mt-1">
-                            <Database className="h-3 w-3" />
-                            <span>Querying {toolName}...</span>
-                          </div>
-                        )
-                      }
-                      return null
-                    })}
-                  </div>
-                  {message.role === "user" && (
-                    <div className="h-8 w-8 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
-                      <User className="h-4 w-4 text-gray-600" />
-                    </div>
-                  )}
-                </div>
+                <MessageRow key={message.id} message={message} />
               ))}
 
-              {isLoading && (
-                <div className="flex gap-3 justify-start">
-                  <div className="h-8 w-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center flex-shrink-0">
-                    <Bot className="h-4 w-4 text-white" />
-                  </div>
-                  <div className="bg-gray-100 rounded-lg px-3 py-2">
-                    <div className="flex items-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
-                      <span className="text-sm text-gray-500">Thinking...</span>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {showThinking && <ThinkingRow />}
 
               {error && (
                 <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600">
@@ -467,21 +471,327 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
       </CardContent>
 
       {/* Input */}
-      <div className="p-4 border-t">
+      <div className="p-3 border-t bg-background">
         <form onSubmit={handleSubmit} className="flex gap-2">
           <Input
             ref={inputRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Ask ALFRED anything..."
+            placeholder="Ask ALFRED anything…"
             disabled={isLoading}
-            className="flex-1"
+            className="flex-1 focus-visible:ring-[var(--alfred-ring)]"
+            style={{ ["--alfred-ring" as any]: OLIVE.ring }}
           />
-          <Button type="submit" disabled={isLoading || !inputValue.trim()} className="bg-amber-500 hover:bg-amber-600">
-            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          <Button
+            type="submit"
+            disabled={isLoading || !inputValue.trim()}
+            className="bg-foreground text-background hover:bg-foreground/90"
+          >
+            {isLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
           </Button>
         </form>
       </div>
     </Card>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * AlfredOrb
+ *
+ * Futuristic, layered presentation of the ALFRED brand mark. Three
+ * stacked layers:
+ *   1. A soft olive radial halo that breathes (alfred-halo keyframe)
+ *   2. A conic-gradient ring that slowly rotates (alfred-orbit) —
+ *      masked into a thin annulus so it reads as an orbital trace
+ *      rather than a filled disc
+ *   3. The static logo image on a white core
+ *
+ * `active` ramps up the halo opacity when the model is working.
+ * `glow` adds an extra outer aureole for the hero/empty-state use.
+ * ───────────────────────────────────────────────────────────── */
+function AlfredOrb({
+  size,
+  active = false,
+  glow = false,
+}: {
+  size: number
+  active?: boolean
+  glow?: boolean
+}) {
+  // The conic ring needs an annular mask. We build the mask inline so
+  // the thickness scales sensibly with `size` (a 36px header orb wants
+  // a thinner ring than the 88px hero orb).
+  const annulusInner = Math.max(0.62, 0.78 - size / 600) // 0.62 at small, 0.78 at large
+  const ringMask = `radial-gradient(circle, transparent ${annulusInner * 100}%, black ${(annulusInner + 0.04) * 100}%, black ${(annulusInner + 0.18) * 100}%, transparent ${(annulusInner + 0.22) * 100}%)`
+
+  return (
+    <div
+      className="relative shrink-0"
+      style={{ width: size, height: size }}
+      aria-hidden
+    >
+      {/* Outer aureole — only on the big hero version, sits beyond the
+          card bounds slightly and gives the orb extra presence. */}
+      {glow && (
+        <div
+          className="absolute -inset-3 rounded-full animate-alfred-halo"
+          style={{
+            background:
+              "radial-gradient(circle, rgba(156,167,87,0.30) 0%, rgba(196,203,139,0) 70%)",
+          }}
+        />
+      )}
+      {/* Breathing halo */}
+      <div
+        className="absolute inset-0 rounded-full animate-alfred-halo"
+        style={{
+          background:
+            "radial-gradient(circle at 50% 45%, rgba(156,167,87,0.55) 0%, rgba(196,203,139,0) 70%)",
+          opacity: active ? 1 : 0.7,
+        }}
+      />
+      {/* Rotating conic ring */}
+      <div
+        className="absolute inset-0 rounded-full animate-alfred-orbit"
+        style={{
+          background:
+            "conic-gradient(from 0deg, transparent 0deg, #C4CB8B 90deg, #7E8845 180deg, #C4CB8B 270deg, transparent 360deg)",
+          maskImage: ringMask,
+          WebkitMaskImage: ringMask,
+          opacity: active ? 0.9 : 0.55,
+        }}
+      />
+      {/* White core that hosts the logo */}
+      <div
+        className="absolute rounded-full bg-white flex items-center justify-center overflow-hidden"
+        style={{
+          inset: Math.max(2, Math.round(size * 0.1)),
+          boxShadow: "inset 0 0 0 1px rgba(126,136,69,0.25)",
+        }}
+      >
+        <Image
+          src="/images/alfred-logo.png"
+          alt=""
+          width={size}
+          height={size}
+          className="object-contain"
+          style={{
+            width: `${Math.round(size * 0.72)}px`,
+            height: `${Math.round(size * 0.72)}px`,
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * MessageRow
+ *
+ * Renders a single chat turn. The two important behaviour changes
+ * from the previous implementation:
+ *   1. Tool-call parts (`tool-*`) are silently dropped. The model's
+ *      privately gathered intelligence is none of the user's
+ *      business; we only show the final composed reply.
+ *   2. Assistant text is rendered through `react-markdown` with GFM
+ *      so headings, lists, tables, and links all come through tidy
+ *      instead of leaking raw `### Contact` literals into the bubble.
+ * ───────────────────────────────────────────────────────────── */
+function MessageRow({ message }: { message: UIMessage }) {
+  // Concatenate every text part into a single Markdown source. We
+  // strip tool parts entirely. If an assistant message has no text
+  // yet (i.e. the model is still in its silent tool-loop) we render
+  // nothing — the global ThinkingRow handles that state.
+  const text = useMemo(() => {
+    const parts = (message.parts ?? []) as Array<{ type: string; text?: string }>
+    return parts
+      .filter((p) => p?.type === "text" && typeof p.text === "string")
+      .map((p) => p.text as string)
+      .join("")
+      .trim()
+  }, [message.parts])
+
+  if (!text) return null
+
+  const isUser = message.role === "user"
+
+  return (
+    <div className={cn("flex gap-3", isUser ? "justify-end" : "justify-start")}>
+      {!isUser && <AlfredOrb size={28} />}
+      <div
+        className={cn(
+          "max-w-[85%] rounded-lg px-3 py-2 text-sm",
+          isUser
+            ? "bg-foreground text-background"
+            : "bg-muted text-foreground",
+        )}
+      >
+        {isUser ? (
+          // User input is plain text — never run user content through
+          // a markdown renderer (XSS risk + the user didn't ask for
+          // their input to be reformatted anyway).
+          <div className="whitespace-pre-wrap">{text}</div>
+        ) : (
+          <AlfredMarkdown>{text}</AlfredMarkdown>
+        )}
+      </div>
+      {isUser && (
+        <div className="h-7 w-7 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
+          <User className="h-3.5 w-3.5 text-muted-foreground" />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * AlfredMarkdown
+ *
+ * Tight, opinionated markdown styling for ALFRED's replies. Goals:
+ *   - Compact line-height — the bubble is narrow, breathing room
+ *     would only make answers feel sprawling.
+ *   - Bold labels render inline ("**Full Name:** Dat Le" stays on
+ *     one line), which is the formatting our system prompt asks
+ *     for. The default browser `<p>` margin would otherwise split
+ *     each bullet across two visual lines.
+ *   - Links open in a new tab and use the brand olive so they're
+ *     clearly interactive without screaming.
+ * ───────────────────────────────────────────────────────────── */
+const markdownComponents: Components = {
+  // Paragraphs get tight vertical rhythm. `last:mb-0` keeps the bubble
+  // from having a stray bottom margin after the final paragraph.
+  p: ({ children }) => (
+    <p className="leading-relaxed mb-2 last:mb-0">{children}</p>
+  ),
+  h1: ({ children }) => (
+    <h3 className="text-sm font-semibold text-foreground mt-2 first:mt-0 mb-1">
+      {children}
+    </h3>
+  ),
+  h2: ({ children }) => (
+    <h3 className="text-sm font-semibold text-foreground mt-2 first:mt-0 mb-1">
+      {children}
+    </h3>
+  ),
+  h3: ({ children }) => (
+    <h3 className="text-sm font-semibold text-foreground mt-2 first:mt-0 mb-1">
+      {children}
+    </h3>
+  ),
+  ul: ({ children }) => (
+    <ul className="list-disc pl-5 my-1.5 space-y-0.5">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="list-decimal pl-5 my-1.5 space-y-0.5">{children}</ol>
+  ),
+  li: ({ children }) => <li className="leading-snug">{children}</li>,
+  // Bold labels stay foreground-coloured so they pop against the
+  // bubble's muted text. Italic stays default.
+  strong: ({ children }) => (
+    <strong className="font-semibold text-foreground">{children}</strong>
+  ),
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="underline underline-offset-2 break-all"
+      style={{ color: OLIVE.deep }}
+    >
+      {children}
+    </a>
+  ),
+  // Inline vs block code — react-markdown v10 removed the `inline`
+  // prop, so we use the GFM convention: fenced code blocks always
+  // carry a `language-*` className (or at least *some* className from
+  // the parent <pre>), while inline `code` spans never do. This is
+  // the same detection the v10 docs recommend.
+  code: ({ children, className }: any) => {
+    const isBlock = typeof className === "string" && className.startsWith("language-")
+    if (!isBlock) {
+      return (
+        <code className="font-mono text-[0.8em] bg-black/10 px-1 py-0.5 rounded">
+          {children}
+        </code>
+      )
+    }
+    return (
+      <code className={cn("font-mono text-[0.8em]", className)}>{children}</code>
+    )
+  },
+  pre: ({ children }) => (
+    <pre className="bg-black/10 p-2 rounded my-2 overflow-x-auto text-[0.8em] leading-snug">
+      {children}
+    </pre>
+  ),
+  table: ({ children }) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="text-xs border-collapse">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="border border-border px-2 py-1 text-left font-semibold bg-black/5">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border border-border px-2 py-1 align-top">{children}</td>
+  ),
+  hr: () => <hr className="my-2 border-border" />,
+  blockquote: ({ children }) => (
+    <blockquote className="border-l-2 pl-2 my-2 italic text-muted-foreground"
+      style={{ borderColor: OLIVE.ring }}
+    >
+      {children}
+    </blockquote>
+  ),
+}
+
+function AlfredMarkdown({ children }: { children: string }) {
+  return (
+    <div className="alfred-md">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {children}
+      </ReactMarkdown>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * ThinkingRow
+ *
+ * Replaces the old "Querying getClientInfo…" / "Thinking…" UI with
+ * a butler-toned placeholder. Three sequenced dots provide motion
+ * without spinning, paired with the small ALFRED orb so the user
+ * understands which entity is doing the thinking.
+ * ───────────────────────────────────────────────────────────── */
+function ThinkingRow() {
+  return (
+    <div className="flex gap-3 justify-start">
+      <AlfredOrb size={28} active />
+      <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 min-h-[34px]">
+        <span className="flex items-center gap-1" aria-hidden>
+          <span
+            className="inline-block h-1.5 w-1.5 rounded-full animate-alfred-dot"
+            style={{ backgroundColor: OLIVE.deep, animationDelay: "0s" }}
+          />
+          <span
+            className="inline-block h-1.5 w-1.5 rounded-full animate-alfred-dot"
+            style={{ backgroundColor: OLIVE.deep, animationDelay: "0.2s" }}
+          />
+          <span
+            className="inline-block h-1.5 w-1.5 rounded-full animate-alfred-dot"
+            style={{ backgroundColor: OLIVE.deep, animationDelay: "0.4s" }}
+          />
+        </span>
+        <span className="text-xs text-muted-foreground italic">
+          Consulting the archives…
+        </span>
+      </div>
+    </div>
   )
 }

@@ -123,3 +123,44 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────
+ * ALFRED Ai orb animations
+ *
+ * Pulled out of the chat component so any surface that needs to
+ * render the futuristic ALFRED mark (chat header, empty state,
+ * floating launcher, future inline triggers) can reuse the same
+ * motion vocabulary. The palette is the olive sphere from the
+ * brand logo (#7E8845 / #9CA757 / #C4CB8B), kept on a neutral
+ * Hub-consistent base so the chat no longer looks like a separate
+ * orange product.
+ * ────────────────────────────────────────────────────────────── */
+@keyframes alfred-halo {
+  0%, 100% { transform: scale(1); opacity: 0.45; }
+  50%      { transform: scale(1.12); opacity: 0.85; }
+}
+@keyframes alfred-orbit {
+  to { transform: rotate(360deg); }
+}
+@keyframes alfred-dot {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.85); }
+  40%           { opacity: 1;    transform: scale(1); }
+}
+@keyframes alfred-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+.animate-alfred-halo  { animation: alfred-halo  3s ease-in-out infinite; }
+.animate-alfred-orbit { animation: alfred-orbit 9s linear      infinite; }
+.animate-alfred-dot   { animation: alfred-dot   1.4s ease-in-out infinite; }
+.animate-alfred-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(124, 136, 69, 0.18) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: alfred-shimmer 2s linear infinite;
+}
