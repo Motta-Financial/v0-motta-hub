@@ -255,7 +255,9 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
           aria-label="Restore ALFRED"
           // Mirrors the launcher styling so the FAB looks consistent
           // whether the chat has never been opened or is just minimized.
-          className="h-14 w-14 rounded-full bg-white hover:bg-amber-50 ring-1 ring-amber-200 shadow-lg p-0 overflow-hidden"
+          // Olive-green tones pulled from the brand sphere (see
+          // alfred-chat-trigger.tsx for the matching values).
+          className="h-14 w-14 rounded-full bg-white hover:bg-[#F5F6E8] ring-1 ring-[#C4CB8B] shadow-lg p-0 overflow-hidden"
         >
           <Image
             src="/images/alfred-logo.png"
