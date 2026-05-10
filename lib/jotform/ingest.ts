@@ -8,6 +8,7 @@ import { createClient } from "@supabase/supabase-js"
 import { buildIntakeRow } from "./parse"
 import { buildFeedbackRow } from "./parse-feedback"
 import { autoLinkIntakeSubmission, autoLinkFeedbackSubmission } from "./match-client"
+import { findOrCreateClient } from "@/lib/karbon/client-sync"
 import type { JotformSubmission } from "./client"
 
 function getServiceClient() {
@@ -60,17 +61,46 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
     // upserted by `jotform_submission_id` so that's our key here.
     const { data: persisted } = await supabase
       .from("jotform_intake_submissions")
-      .select("id, submitter_email, submitter_full_name, business_name, contact_id, organization_id, link_method")
+      .select("id, submitter_email, submitter_full_name, business_name, phone_number, contact_id, organization_id, link_method")
       .eq("jotform_submission_id", submission.id)
       .maybeSingle()
     if (persisted) {
-      const result = await autoLinkIntakeSubmission(supabase, persisted.id, persisted)
-      if (result?.link_method) {
-        console.log(`[v0] auto-linked intake ${submission.id} via ${result.link_method}: ${result.reason}`)
+      // First try the standard auto-link (Supabase-only)
+      let result = await autoLinkIntakeSubmission(supabase, persisted.id, persisted)
+      
+      // If no match found, use the enhanced Karbon search + create flow
+      if (!result?.link_method) {
+        const karbonResult = await findOrCreateClient(
+          {
+            email: persisted.submitter_email || undefined,
+            fullName: persisted.submitter_full_name || undefined,
+            businessName: persisted.business_name || undefined,
+            phone: persisted.phone_number || undefined,
+          },
+          { autoCreate: true, source: "Jotform Intake" }
+        )
+        
+        if (karbonResult.contact_id || karbonResult.organization_id) {
+          // Update the submission with the new link
+          const linkMethod = karbonResult.method === "karbon_created" ? "auto_karbon_created" : "auto_karbon_match"
+          await supabase
+            .from("jotform_intake_submissions")
+            .update({
+              contact_id: karbonResult.contact_id,
+              organization_id: karbonResult.organization_id,
+              link_method: linkMethod,
+              linked_at: new Date().toISOString(),
+            })
+            .eq("id", persisted.id)
+          
+          console.log(`[Jotform] Karbon ${karbonResult.method}: ${karbonResult.reason}`)
+        }
+      } else {
+        console.log(`[Jotform] auto-linked intake ${submission.id} via ${result.link_method}: ${result.reason}`)
       }
     }
   } catch (err) {
-    console.log("[v0] intake auto-link skipped:", (err as Error).message)
+    console.log("[Jotform] intake auto-link error:", (err as Error).message)
   }
 
   return { id: submission.id }

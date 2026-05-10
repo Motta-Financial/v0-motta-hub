@@ -25,7 +25,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-export type LinkMethod = "auto_email" | "auto_business_name" | "auto_name" | "manual"
+export type LinkMethod = "auto_email" | "auto_business_name" | "auto_name" | "auto_karbon_match" | "auto_karbon_created" | "manual"
 
 export interface MatchResult {
   contact_id: string | null
