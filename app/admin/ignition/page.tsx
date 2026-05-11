@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import useSWR from "swr"
 import {
   AlertCircle,
@@ -8,10 +8,14 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
+  KeyRound,
+  Link2,
+  Link2Off,
   RefreshCw,
   Search,
   Webhook,
   Workflow,
+  XCircle,
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -107,6 +111,24 @@ type Stats = {
   }>
 }
 
+type IgnitionConnection = {
+  id: string
+  scope: string | null
+  expiresAt: string
+  isExpired: boolean
+  practiceId: string | null
+  practiceName: string | null
+  userEmail: string | null
+  userName: string | null
+  isActive: boolean | null
+  syncEnabled: boolean | null
+  lastSyncedAt: string | null
+  lastSyncError: string | null
+  createdAt: string
+  updatedAt: string
+  installedBy: { id: string; full_name: string | null; email: string | null } | null
+}
+
 type UnmatchedClient = {
   ignition_client_id: string
   name: string
@@ -144,6 +166,103 @@ export default function IgnitionAdminPage() {
   )
 
   const unmatched = unmatchedData?.clients ?? []
+
+  const {
+    data: connectionData,
+    isLoading: connectionLoading,
+    mutate: refetchConnection,
+  } = useSWR<{ connection: IgnitionConnection | null }>(
+    "/api/ignition/connections",
+    fetcher,
+    { refreshInterval: 60_000 },
+  )
+  const connection = connectionData?.connection ?? null
+
+  // Surface OAuth round-trip outcomes coming back via ?connected=true /
+  // ?error=<code>. We read from window.location instead of useSearchParams
+  // so the page doesn't have to be wrapped in a Suspense boundary for
+  // prerendering, and we strip the params after toasting so a refresh
+  // doesn't re-fire the toast.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    const connected = params.get("connected")
+    const error = params.get("error")
+    if (!connected && !error) return
+
+    if (connected === "true") {
+      toast({
+        title: "Ignition connected",
+        description: "OAuth handshake complete. You can now run a backfill sync.",
+      })
+      refetchConnection()
+    } else if (error) {
+      const message: Record<string, string> = {
+        oauth_denied: "Ignition denied the authorization request.",
+        missing_params: "Ignition redirected back without the expected parameters.",
+        invalid_state: "Security check failed — please try connecting again.",
+        save_failed: "Connection succeeded but the credentials could not be saved.",
+        callback_failed: "Could not exchange the authorization code with Ignition.",
+        user_fetch_failed: "Could not load practice details from Ignition.",
+      }
+      toast({
+        title: "Connection failed",
+        description: message[error] ?? `Unknown error: ${error}`,
+        variant: "destructive",
+      })
+    }
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href)
+      url.searchParams.delete("connected")
+      url.searchParams.delete("error")
+      window.history.replaceState({}, "", url.toString())
+    }
+    // We only want this to run once on mount; subsequent param changes are
+    // handled by us writing replaceState, not by Next.js routing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const [disconnecting, setDisconnecting] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+
+  async function handleDisconnect() {
+    if (!confirm("Disconnect Ignition? Existing synced data is preserved.")) return
+    setDisconnecting(true)
+    try {
+      const res = await fetch("/api/ignition/oauth/disconnect", { method: "POST" })
+      if (!res.ok) throw new Error(await res.text())
+      toast({ title: "Disconnected" })
+      refetchConnection()
+    } catch (e) {
+      toast({
+        title: "Disconnect failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      })
+    } finally {
+      setDisconnecting(false)
+    }
+  }
+
+  async function handleRefreshToken() {
+    setRefreshing(true)
+    try {
+      const res = await fetch("/api/ignition/oauth/refresh", { method: "POST" })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.error ?? "Refresh failed")
+      toast({ title: "Token refreshed" })
+      refetchConnection()
+    } catch (e) {
+      toast({
+        title: "Refresh failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      })
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const baseUrl = useMemo(() => {
     if (typeof window === "undefined") return ""
@@ -225,8 +344,26 @@ export default function IgnitionAdminPage() {
           />
         </div>
 
-        <Tabs defaultValue="mapping" className="w-full">
+        <Tabs defaultValue={connection ? "mapping" : "connection"} className="w-full">
           <TabsList>
+            <TabsTrigger value="connection">
+              Connection
+              {connection ? (
+                connection.isExpired || connection.isActive === false ? (
+                  <Badge variant="secondary" className="ml-2 bg-rose-100 text-rose-800">
+                    Action needed
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary" className="ml-2 bg-emerald-100 text-emerald-800">
+                    Active
+                  </Badge>
+                )
+              ) : (
+                <Badge variant="secondary" className="ml-2 bg-stone-200 text-stone-700">
+                  Not connected
+                </Badge>
+              )}
+            </TabsTrigger>
             <TabsTrigger value="mapping">
               Client Mapping
               {stats && stats.totals.unmatched > 0 ? (
@@ -238,6 +375,164 @@ export default function IgnitionAdminPage() {
             <TabsTrigger value="setup">Zapier Setup</TabsTrigger>
             <TabsTrigger value="activity">Recent Activity</TabsTrigger>
           </TabsList>
+
+          {/* === CONNECTION TAB === */}
+          <TabsContent value="connection" className="mt-4 space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <KeyRound className="h-4 w-4 text-stone-500" />
+                  Ignition Reporting API
+                </CardTitle>
+                <CardDescription>
+                  OAuth 2.0 connection to the Ignition Reporting API. Once connected, the hub can
+                  pull clients, contacts, deals, services, proposals, invoices, payments, and
+                  collections directly — no Zapier round-trip required. Requires Pro+ or Enterprise
+                  and a practice admin.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {connectionLoading ? (
+                  <div className="rounded-md border border-stone-200 bg-stone-50 p-6 text-center text-sm text-stone-500">
+                    Loading connection status...
+                  </div>
+                ) : !connection ? (
+                  <div className="space-y-3">
+                    <Alert>
+                      <Link2Off className="h-4 w-4" />
+                      <AlertTitle>Not connected</AlertTitle>
+                      <AlertDescription>
+                        Click Connect to start the OAuth handshake. You&apos;ll be redirected to
+                        Ignition, asked to approve <code className="rounded bg-stone-200 px-1 text-xs">reporting</code>{" "}
+                        scope, then sent back here.
+                      </AlertDescription>
+                    </Alert>
+                    <Button asChild>
+                      <a href="/api/ignition/oauth/authorize">
+                        <Link2 className="mr-2 h-4 w-4" />
+                        Connect Ignition
+                      </a>
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {connection.isExpired || connection.isActive === false ? (
+                      <Alert className="border-rose-200 bg-rose-50 text-rose-900">
+                        <XCircle className="h-4 w-4 text-rose-600" />
+                        <AlertTitle>Reauthorization required</AlertTitle>
+                        <AlertDescription>
+                          {connection.lastSyncError ||
+                            "The access token has expired and could not be refreshed. Reconnect to restore access."}
+                        </AlertDescription>
+                      </Alert>
+                    ) : (
+                      <Alert className="border-emerald-200 bg-emerald-50 text-emerald-900">
+                        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                        <AlertTitle>Connected</AlertTitle>
+                        <AlertDescription>
+                          The Ignition Reporting API is reachable from this app. Token expires{" "}
+                          {new Date(connection.expiresAt).toLocaleString()}.
+                        </AlertDescription>
+                      </Alert>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <DetailRow label="Scope" value={connection.scope ?? "—"} mono />
+                      <DetailRow
+                        label="Expires"
+                        value={new Date(connection.expiresAt).toLocaleString()}
+                      />
+                      <DetailRow
+                        label="Installed by"
+                        value={
+                          connection.installedBy?.full_name ||
+                          connection.installedBy?.email ||
+                          "—"
+                        }
+                      />
+                      <DetailRow
+                        label="Connected on"
+                        value={new Date(connection.createdAt).toLocaleString()}
+                      />
+                      <DetailRow
+                        label="Last refresh"
+                        value={new Date(connection.updatedAt).toLocaleString()}
+                      />
+                      <DetailRow
+                        label="Last sync"
+                        value={
+                          connection.lastSyncedAt
+                            ? new Date(connection.lastSyncedAt).toLocaleString()
+                            : "Never"
+                        }
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleRefreshToken}
+                        disabled={refreshing}
+                      >
+                        <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+                        {refreshing ? "Refreshing..." : "Refresh token"}
+                      </Button>
+                      <Button asChild variant="outline" size="sm">
+                        <a href="/api/ignition/oauth/authorize">
+                          <Link2 className="mr-2 h-4 w-4" />
+                          Reconnect
+                        </a>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleDisconnect}
+                        disabled={disconnecting}
+                        className="text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                      >
+                        <Link2Off className="mr-2 h-4 w-4" />
+                        {disconnecting ? "Disconnecting..." : "Disconnect"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Plan & permission requirements</CardTitle>
+                <CardDescription>
+                  Per Ignition&apos;s{" "}
+                  <a
+                    className="inline-flex items-center gap-1 text-stone-700 underline hover:text-stone-900"
+                    href="https://developers.ignitionapp.com/docs/reporting"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Reporting API documentation <ExternalLink className="h-3 w-3" />
+                  </a>
+                  , the OAuth app needs:
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm text-stone-700">
+                <ul className="ml-4 list-disc space-y-1">
+                  <li>An Ignition <span className="font-medium">Pro+</span> or{" "}
+                    <span className="font-medium">Enterprise</span> plan.
+                  </li>
+                  <li>
+                    A practice <span className="font-medium">admin</span> to authorize the app —
+                    non-admins cannot grant the <code className="rounded bg-stone-200 px-1 text-xs">reporting</code> scope.
+                  </li>
+                  <li>
+                    Rate limit: <span className="font-medium">1,000 requests per hour</span> per
+                    practice. The shared client respects 429s and waits for the reset window.
+                  </li>
+                </ul>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           {/* === MAPPING TAB === */}
           <TabsContent value="mapping" className="mt-4 space-y-4">
@@ -639,6 +934,27 @@ function StatCard({
         {loading ? "—" : typeof value === "number" ? value.toLocaleString() : value}
       </div>
       {sub ? <div className="mt-0.5 text-xs text-stone-500">{sub}</div> : null}
+    </div>
+  )
+}
+
+function DetailRow({
+  label,
+  value,
+  mono,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+}) {
+  return (
+    <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2">
+      <div className="text-xs uppercase tracking-wide text-stone-500">{label}</div>
+      <div
+        className={`mt-0.5 break-all text-sm text-stone-900 ${mono ? "font-mono text-xs" : ""}`}
+      >
+        {value}
+      </div>
     </div>
   )
 }
