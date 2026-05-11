@@ -390,6 +390,18 @@ const HEADER_FORMS: ReadonlyArray<{
     icon: NotebookPen,
   },
   {
+    // Internal-only intake: a teammate just met or already has the
+    // prospect's information and wants to capture it (plus their own
+    // notes / screenshots) without making the prospect fill out the
+    // public Jotform intake. The form lives at /prospects/new and
+    // post-submit redirects to /prospects/[id] for review + the
+    // "Create Karbon Work Item" action — same UX as the intake page.
+    name: "Prospect Form",
+    href: "/prospects/new",
+    description: "Capture a prospect you met or already have info on",
+    icon: UserPlus,
+  },
+  {
     name: "Tommy Award Ballot",
     href: "/tommy-awards/ballot",
     description: "Nominate a teammate for this week's award",

@@ -204,7 +204,11 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
     }
   }
 
-  if (isLoading || !prospect) {
+  // Guard on `data` (not just the derived `prospect`) so TypeScript can
+  // narrow both inside the render block below — otherwise it keeps
+  // flagging every `data.linkedClient` / `data.createdBy` access as
+  // possibly undefined.
+  if (isLoading || !data || !prospect) {
     return (
       <div className="mx-auto max-w-3xl p-6">
         <div className="flex items-center justify-center py-16 text-muted-foreground">
