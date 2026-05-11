@@ -50,7 +50,6 @@ import {
   Repeat,
   Headphones,
   Inbox,
-  Send,
   Link2,
   ExternalLink,
   FilePlus2,
@@ -103,10 +102,14 @@ const navigation = [
         ],
       },
       {
+        // "New Debrief" used to live as a child here, but the form is now
+        // surfaced exclusively through the header Forms dropdown (alongside
+        // Prospect Form + Tommy Award Ballot). The Debriefs hub itself has
+        // a "+ New Debrief" button on its own page, so keeping a sidebar
+        // child was redundant.
         name: "Debriefs",
         href: "/debriefs",
         icon: MessageSquare,
-        children: [{ name: "New Debrief", href: "/debriefs/new", icon: NotebookPen }],
       },
     ],
   },
@@ -158,25 +161,35 @@ const navigation = [
     icon: BarChart3,
     children: [
       { name: "Sales Dashboard", href: "/sales/dashboard", icon: TrendingUp },
-      // Inbound prospects from the embedded Jotform on
-      // mottafinancial.com/intake-form. Sits right after the dashboard
-      // because it's the entry point of the proposal-to-payment funnel
-      // — every intake submission either becomes a Karbon contact +
-      // Ignition proposal, or gets declined and audited later.
-      { name: "Intake", href: "/sales/intake", icon: Inbox },
-      // Client feedback drives referrals (new pipeline) and detractor
-      // recovery (retention) — both sales motions, so this lives next
-      // to Intake under Sales rather than under Home.
-      { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
-      { name: "Proposals", href: "/sales/proposals", icon: FileText },
-      { name: "Invoices", href: "/sales/invoices", icon: Receipt },
-      { name: "Services", href: "/sales/services", icon: Briefcase },
+      // Recurring Revenue is the firm's headline KPI for the sales motion,
+      // so it sits directly under the Sales Dashboard — every leader
+      // checks "where are we vs MRR target" before drilling into the
+      // funnel below.
       { name: "Recurring Revenue", href: "/sales/recurring-revenue", icon: Repeat },
-      { name: "Payments", href: "/payments", icon: CreditCard },
-      // Ignition admin lives at /admin/ignition (mirrors /admin/karbon-sync);
-      // surfacing it under Sales keeps the mapping queue + Zap setup near
-      // the Proposals/Invoices it produces.
-      { name: "Ignition", href: "/admin/ignition", icon: Workflow },
+      // Ignition is the proposal-to-payment engine, so Proposals,
+      // Invoices, and Payments live underneath it as a single grouped
+      // workflow (matches the way Ignition organizes them in its own
+      // product). Ignition itself stays at /admin/ignition — the parent
+      // entry just opens the admin queue / Zap setup.
+      {
+        name: "Ignition",
+        href: "/admin/ignition",
+        icon: Workflow,
+        children: [
+          { name: "Proposals", href: "/sales/proposals", icon: FileText },
+          { name: "Invoices", href: "/sales/invoices", icon: Receipt },
+          { name: "Payments", href: "/payments", icon: CreditCard },
+        ],
+      },
+      // Inbound prospects from the embedded Jotform on
+      // mottafinancial.com/intake-form. Sits below Ignition because a
+      // submission's natural next step is to become an Ignition proposal.
+      { name: "Intake", href: "/sales/intake", icon: Inbox },
+      { name: "Services", href: "/sales/services", icon: Briefcase },
+      // Feedback is the closing of the loop — it drives referrals
+      // (new pipeline) and detractor recovery (retention), so it lives
+      // at the bottom of the Sales tree as the post-engagement step.
+      { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
     ],
   },
   // "Talent" is the people side of the firm — directory + recognition.
@@ -186,15 +199,13 @@ const navigation = [
     icon: UserCircle,
     children: [
       {
+        // "Submit Ballot" used to live as a child here, but the ballot is
+        // now surfaced exclusively through the header Forms dropdown.
+        // The main Tommy Awards screen still links to /tommy-awards/ballot
+        // from its primary CTA.
         name: "Tommy Awards",
         href: "/tommy-awards",
         icon: Trophy,
-        children: [
-          // Ballot lives on its own page so the main Tommy Awards screen
-          // can stay focused on standings & feedback. Both routes are
-          // discoverable from the sidebar.
-          { name: "Submit Ballot", href: "/tommy-awards/ballot", icon: Send },
-        ],
       },
     ],
   },
