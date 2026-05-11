@@ -53,6 +53,10 @@ import {
   MoreHorizontal,
   ChevronRight,
   PieChart,
+  Wallet,
+  Receipt,
+  Banknote,
+  Users,
 } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -179,6 +183,35 @@ interface DashboardResponse {
     distinct_clients: number
     service_lines: number
   }
+  /**
+   * Payouts (collected cash) roll-up, scoped to the same date window
+   * as the proposal set. Sourced from `ignition_payments.paid_at`
+   * because `ignition_disbursals` is the legacy Zapier-fed table and
+   * is effectively empty in production.
+   */
+  payouts: {
+    count: number
+    gross: number
+    fees: number
+    net: number
+    distinctClients: number
+    byMonth: Array<{
+      month: string
+      count: number
+      gross: number
+      net: number
+      fees: number
+    }>
+    topClients: Array<{
+      ignition_client_id: string
+      name: string
+      kind: "organization" | "contact" | null
+      id: string | null
+      payment_count: number
+      gross: number
+      net: number
+    }>
+  }
 }
 
 const fetcher = (url: string): Promise<DashboardResponse> =>
@@ -188,17 +221,29 @@ const fetcher = (url: string): Promise<DashboardResponse> =>
   })
 
 // ── Status palette (matches the rest of the platform) ────────────────────
+// Source-of-truth statuses observed in `ignition_proposals.status`:
+// accepted, completed, lost, awaiting_acceptance, archived, draft. We
+// also keep `sent` and `revoked` entries for legacy/safety: the original
+// Zapier-fed mapping briefly emitted `sent`, and the Reporting API
+// occasionally surfaces `revoked` on cancelled engagements.
 const STATUS_META: Record<string, { label: string; color: string; tone: string }> = {
-  accepted:  { label: "Accepted",  color: "#3F7D58", tone: "bg-emerald-100 text-emerald-800 border-emerald-200" },
-  completed: { label: "Completed", color: "#1F4E40", tone: "bg-emerald-100 text-emerald-900 border-emerald-200" },
-  sent:      { label: "Sent",      color: "#C97A2C", tone: "bg-amber-100 text-amber-800 border-amber-200" },
-  draft:     { label: "Draft",     color: "#9C9285", tone: "bg-stone-100 text-stone-700 border-stone-200" },
-  lost:      { label: "Lost",      color: "#A6433A", tone: "bg-rose-100 text-rose-800 border-rose-200" },
-  archived:  { label: "Archived",  color: "#7A7164", tone: "bg-stone-200 text-stone-700 border-stone-300" },
-  revoked:   { label: "Revoked",   color: "#7A4A3A", tone: "bg-stone-200 text-stone-700 border-stone-300" },
+  accepted:            { label: "Accepted",  color: "#3F7D58", tone: "bg-emerald-100 text-emerald-800 border-emerald-200" },
+  completed:           { label: "Completed", color: "#1F4E40", tone: "bg-emerald-100 text-emerald-900 border-emerald-200" },
+  awaiting_acceptance: { label: "Awaiting",  color: "#C97A2C", tone: "bg-amber-100 text-amber-800 border-amber-200" },
+  sent:                { label: "Sent",      color: "#C97A2C", tone: "bg-amber-100 text-amber-800 border-amber-200" },
+  draft:               { label: "Draft",     color: "#9C9285", tone: "bg-stone-100 text-stone-700 border-stone-200" },
+  lost:                { label: "Lost",      color: "#A6433A", tone: "bg-rose-100 text-rose-800 border-rose-200" },
+  archived:            { label: "Archived",  color: "#7A7164", tone: "bg-stone-200 text-stone-700 border-stone-300" },
+  revoked:             { label: "Revoked",   color: "#7A4A3A", tone: "bg-stone-200 text-stone-700 border-stone-300" },
 }
 const statusMeta = (s: string) =>
-  STATUS_META[s] ?? { label: s, color: "#7A7164", tone: "bg-stone-100 text-stone-700 border-stone-200" }
+  STATUS_META[s] ?? { label: s || "Unknown", color: "#7A7164", tone: "bg-stone-100 text-stone-700 border-stone-200" }
+
+// Categorise a status into the high-level lifecycle bucket the KPIs roll
+// up against. Centralised so the funnel/trend/KPIs can't drift apart.
+const PIPELINE_STATUSES = new Set(["sent", "awaiting_acceptance", "draft"])
+const WON_STATUSES = new Set(["accepted", "completed"])
+const LOST_STATUSES = new Set(["lost"])
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 const fmtMoney = (n: number) =>
@@ -231,13 +276,20 @@ export function SalesDashboard() {
   const searchParams = useSearchParams()
 
   // ── Filter state ── pulled from URL so reloads / shares preserve view ──
-  // Default to `accepted_at`: in the live data only ~4 proposals have a
-  // current-year `created_at` (the column is import-stamped from the
-  // historical Ignition migration) while ~244 have a YTD `accepted_at`.
-  // `accepted_at` is also what sales partners actually care about for
-  // YTD reporting since it's when revenue was won.
+  // Default to `activity`: matches a proposal when ANY of its lifecycle
+  // dates (accepted_at, lost_at, sent_at, created_at) falls in the
+  // window. Earlier we defaulted to `accepted_at` which silently hid
+  // every lost / draft / awaiting_acceptance row (those columns are
+  // null until the proposal closes), so users couldn't see what was
+  // actually in flight. The strict single-column modes are still
+  // available via the Date tabs for users who want a pure "won YTD" or
+  // "sent YTD" lens.
   const dateField =
-    (searchParams.get("dateField") as "created_at" | "accepted_at" | "sent_at") || "accepted_at"
+    (searchParams.get("dateField") as
+      | "activity"
+      | "created_at"
+      | "accepted_at"
+      | "sent_at") || "activity"
   const startDate = searchParams.get("startDate") || defaultStart
   const endDate = searchParams.get("endDate") || ""
   const statusFilter = (searchParams.get("status") || "").split(",").filter(Boolean)
@@ -311,6 +363,9 @@ export function SalesDashboard() {
     let pipelineCount = 0
     let lostValue = 0
     let lostCount = 0
+    let awaitingCount = 0
+    let awaitingValue = 0
+    let draftCount = 0
     let oneTimeAccepted = 0
     let totalContractValue = 0
 
@@ -318,21 +373,33 @@ export function SalesDashboard() {
       totalCount++
       totalContractValue += p.total_value
       const s = p.status
-      if (s === "accepted" || s === "completed") {
+      if (WON_STATUSES.has(s)) {
         acceptedCount++
         acceptedValue += p.total_value
         oneTimeAccepted += p.one_time_total
-      } else if (s === "sent") {
+      } else if (PIPELINE_STATUSES.has(s)) {
+        // "Pipeline" = anything still in motion. The live DB uses
+        // `awaiting_acceptance` (60+ rows) for sent-but-undecided —
+        // matching only on the legacy `sent` value showed an empty
+        // Pipeline KPI even on dashboards where the partner had ~30
+        // open deals.
         pipelineCount++
         pipelineValue += p.total_value
-      } else if (s === "lost") {
+        if (s === "awaiting_acceptance" || s === "sent") {
+          awaitingCount++
+          awaitingValue += p.total_value
+        } else if (s === "draft") {
+          draftCount++
+        }
+      } else if (LOST_STATUSES.has(s)) {
         lostCount++
         lostValue += p.total_value
       }
     }
 
     // Win rate is calculated against decided proposals only (won + lost)
-    // since "sent" is still in flight and shouldn't dilute the metric.
+    // since pipeline rows are still in flight and shouldn't dilute the
+    // metric.
     const decided = acceptedCount + lostCount
     const winRate = decided > 0 ? acceptedCount / decided : 0
     const avgDealSize = acceptedCount > 0 ? acceptedValue / acceptedCount : 0
@@ -341,6 +408,8 @@ export function SalesDashboard() {
       totalCount, totalContractValue,
       acceptedCount, acceptedValue, oneTimeAccepted, avgDealSize,
       pipelineCount, pipelineValue,
+      awaitingCount, awaitingValue,
+      draftCount,
       lostCount, lostValue,
       winRate,
     }
@@ -348,7 +417,19 @@ export function SalesDashboard() {
 
   // ── Status funnel (counts + sums) ─────────────────────────────────────
   const funnelData = useMemo(() => {
-    const order = ["draft", "sent", "accepted", "completed", "lost", "archived"]
+    // Order reflects the actual lifecycle stages we see in production
+    // (awaiting_acceptance is the post-send / pre-decision state) plus
+    // legacy `sent` as a fallback.
+    const order = [
+      "draft",
+      "sent",
+      "awaiting_acceptance",
+      "accepted",
+      "completed",
+      "lost",
+      "revoked",
+      "archived",
+    ]
     const map = new Map<string, { status: string; count: number; value: number }>()
     for (const p of proposals) {
       const cur = map.get(p.status) ?? { status: p.status, count: 0, value: 0 }
@@ -452,8 +533,8 @@ export function SalesDashboard() {
         pipeline: 0,
       }
       cur.proposals += 1
-      if (p.status === "accepted" || p.status === "completed") cur.accepted += p.total_value
-      if (p.status === "sent") cur.pipeline += p.total_value
+      if (WON_STATUSES.has(p.status)) cur.accepted += p.total_value
+      if (PIPELINE_STATUSES.has(p.status)) cur.pipeline += p.total_value
       map.set(key, cur)
     }
     return Array.from(map.values())
@@ -469,8 +550,8 @@ export function SalesDashboard() {
       const owner = p.client_partner || p.proposal_sent_by || "Unassigned"
       const cur = map.get(owner) ?? { name: owner, accepted: 0, pipeline: 0, count: 0 }
       cur.count += 1
-      if (p.status === "accepted" || p.status === "completed") cur.accepted += p.total_value
-      if (p.status === "sent") cur.pipeline += p.total_value
+      if (WON_STATUSES.has(p.status)) cur.accepted += p.total_value
+      if (PIPELINE_STATUSES.has(p.status)) cur.pipeline += p.total_value
       map.set(owner, cur)
     }
     return Array.from(map.values()).sort((a, b) => b.accepted - a.accepted)
@@ -496,7 +577,8 @@ export function SalesDashboard() {
         <div>
           <h1 className="text-2xl font-semibold text-stone-900 tracking-tight">Sales Dashboard</h1>
           <p className="text-sm text-stone-600 mt-1">
-            Pipeline, won deals, and recurring revenue across {fmtCount(data?.totalUnfiltered ?? 0)} proposals
+            Won, in-flight, and lost proposals plus collected payouts across{" "}
+            {fmtCount(data?.totalUnfiltered ?? 0)} active proposals
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -528,6 +610,14 @@ export function SalesDashboard() {
               <span className="text-sm font-medium text-stone-700">Date</span>
               <Tabs value={dateField} onValueChange={(v) => setParam("dateField", v)}>
                 <TabsList className="h-8">
+                  {/*
+                    "Activity" is the default — matches any of the
+                    lifecycle dates so lost / awaiting / draft rows
+                    aren't silently filtered out of YTD views. The
+                    single-column tabs still let users slice strictly
+                    by "won YTD" or "sent YTD" when they need it.
+                  */}
+                  <TabsTrigger value="activity" className="text-xs px-2.5">Activity</TabsTrigger>
                   <TabsTrigger value="created_at" className="text-xs px-2.5">Created</TabsTrigger>
                   <TabsTrigger value="accepted_at" className="text-xs px-2.5">Accepted</TabsTrigger>
                   <TabsTrigger value="sent_at" className="text-xs px-2.5">Sent</TabsTrigger>
@@ -649,7 +739,15 @@ export function SalesDashboard() {
           icon={<Hourglass className="h-4 w-4" />}
           label="Pipeline"
           value={fmtMoney(kpis.pipelineValue)}
-          sub={`${fmtCount(kpis.pipelineCount)} sent / awaiting`}
+          // Spell out the mix because "Pipeline" historically only
+          // counted `sent`, missing the production `awaiting_acceptance`
+          // status. Showing both numbers makes the discrepancy obvious
+          // when partners ask why this differs from Ignition's UI.
+          sub={
+            kpis.draftCount > 0
+              ? `${fmtCount(kpis.awaitingCount)} awaiting · ${fmtCount(kpis.draftCount)} draft`
+              : `${fmtCount(kpis.pipelineCount)} awaiting / sent`
+          }
           tone="amber"
           loading={isLoading}
         />
@@ -689,6 +787,9 @@ export function SalesDashboard() {
           loading={isLoading}
         />
       </div>
+
+      {/* ── Payouts (collected cash from clients in the same window) ──── */}
+      <PayoutsSection payouts={data?.payouts} loading={isLoading} />
 
       {/* ── Service Line KPIs ─────────────────────────────────────────── */}
       <ServiceLineSection
@@ -947,10 +1048,16 @@ export function SalesDashboard() {
                 <tbody className="divide-y divide-stone-100">
                   {proposals.slice(0, 250).map((p) => {
                     const meta = statusMeta(p.status)
+                    // In activity mode the column shows whichever
+                    // lifecycle date best represents the row (won →
+                    // accepted, lost → lost_at, otherwise the most
+                    // recent event). The fixed-field modes show that
+                    // exact column.
                     const dateStr =
                       dateField === "accepted_at" ? p.accepted_at
                       : dateField === "sent_at" ? p.sent_at
-                      : p.created_at
+                      : dateField === "created_at" ? p.created_at
+                      : (p.accepted_at || p.lost_at || p.sent_at || p.created_at)
                     return (
                       <tr key={p.proposal_id} className="hover:bg-stone-50/60 transition-colors">
                         <td className="px-4 py-2.5">
@@ -1423,3 +1530,252 @@ function ServiceLineSection({
 // Quiet down react/no-unused — Cell is imported for potential future use in
 // stacked bars (kept to avoid churn if we add segmented coloring back).
 void Cell
+
+// ── Payouts Section ──────────────────────────────────────────────────────
+// Shows YTD collected cash alongside the proposal KPIs. The data is
+// sourced from `ignition_payments.paid_at` (the legacy
+// `ignition_disbursals` table is empty in prod) and shares the
+// dashboard's date window — so when the partner narrows to "last 30
+// days" they see proposals AND collections for the same window.
+function PayoutsSection({
+  payouts,
+  loading,
+}: {
+  payouts: DashboardResponse["payouts"] | undefined
+  loading: boolean
+}) {
+  if (loading || !payouts) {
+    return (
+      <Card className="border-stone-200">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-stone-700 flex items-center gap-2">
+            <Wallet className="h-4 w-4 text-stone-500" />
+            Payouts · collected cash
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-20" />
+            ))}
+          </div>
+          <Skeleton className="h-[220px] w-full mt-4" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const { count, gross, net, fees, distinctClients, byMonth, topClients } =
+    payouts
+  const feeRate = gross > 0 ? fees / gross : 0
+  const chartData = byMonth.map((m) => ({
+    ...m,
+    label: format(parseISO(m.month + "-01"), "MMM yy"),
+  }))
+
+  return (
+    <Card className="border-stone-200">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-stone-700 flex items-center gap-2">
+          <Wallet className="h-4 w-4 text-stone-500" />
+          Payouts · collected cash
+          <span className="text-xs font-normal text-stone-500 ml-auto">
+            Same date window as proposals
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0 space-y-4">
+        {count === 0 ? (
+          <div className="py-8 text-center text-sm text-stone-500">
+            No payments collected in the selected window.
+          </div>
+        ) : (
+          <>
+            {/* KPI tiles */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <PayoutTile
+                icon={<Banknote className="h-4 w-4" />}
+                label="Collected"
+                value={fmtMoney(gross)}
+                sub={`${fmtCount(count)} payments`}
+                tone="emerald"
+              />
+              <PayoutTile
+                icon={<Wallet className="h-4 w-4" />}
+                label="Net to Motta"
+                value={fmtMoney(net)}
+                sub={`after processor fees`}
+                tone="emerald"
+              />
+              <PayoutTile
+                icon={<Receipt className="h-4 w-4" />}
+                label="Processor fees"
+                value={fmtMoney(fees)}
+                sub={fmtPct(feeRate) + " of gross"}
+                tone="rose"
+              />
+              <PayoutTile
+                icon={<Users className="h-4 w-4" />}
+                label="Clients paid"
+                value={fmtCount(distinctClients)}
+                sub={
+                  distinctClients > 0
+                    ? fmtMoney(gross / distinctClients) + " avg"
+                    : "—"
+                }
+              />
+            </div>
+
+            {/* Trend + Top clients */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2">
+                <div className="text-xs font-medium text-stone-600 mb-2">
+                  Monthly collections
+                </div>
+                <div className="h-[220px]">
+                  {chartData.length === 0 ? (
+                    <EmptyChart message="No collections in this window" />
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={chartData}
+                        margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+                      >
+                        <CartesianGrid
+                          strokeDasharray="3 3"
+                          stroke="#E7E2DA"
+                          vertical={false}
+                        />
+                        <XAxis
+                          dataKey="label"
+                          tick={{ fontSize: 11, fill: "#78716C" }}
+                          stroke="#D6CFC2"
+                        />
+                        <YAxis
+                          tickFormatter={(v) => fmtMoneyCompact(v as number)}
+                          tick={{ fontSize: 11, fill: "#78716C" }}
+                          stroke="#D6CFC2"
+                          width={60}
+                        />
+                        <Tooltip
+                          formatter={(v: number, name: string) => [
+                            fmtMoney(v),
+                            name === "net" ? "Net" : "Fees",
+                          ]}
+                          contentStyle={{
+                            borderRadius: 6,
+                            border: "1px solid #E7E2DA",
+                            fontSize: 12,
+                          }}
+                          cursor={{ fill: "rgba(120,113,108,0.06)" }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} />
+                        <Bar
+                          dataKey="net"
+                          stackId="a"
+                          name="Net to Motta"
+                          fill="#3F7D58"
+                          radius={[0, 0, 0, 0]}
+                        />
+                        <Bar
+                          dataKey="fees"
+                          stackId="a"
+                          name="Fees"
+                          fill="#C97A2C"
+                          radius={[3, 3, 0, 0]}
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-medium text-stone-600 mb-2">
+                  Top clients · collected
+                </div>
+                {topClients.length === 0 ? (
+                  <EmptyChart message="No collections" />
+                ) : (
+                  <ul className="divide-y divide-stone-100 border border-stone-200 rounded-md overflow-hidden">
+                    {topClients.map((c, i) => (
+                      <li
+                        key={c.ignition_client_id}
+                        className="px-3 py-2 flex items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span className="w-4 text-[11px] text-stone-400 tabular-nums">
+                            {i + 1}.
+                          </span>
+                          {c.id && c.kind ? (
+                            <Link
+                              href={`/clients/${
+                                c.kind === "organization" ? "org" : "contact"
+                              }/${c.id}`}
+                              className="text-xs text-stone-800 hover:underline truncate"
+                            >
+                              {c.name}
+                            </Link>
+                          ) : (
+                            <span className="text-xs text-stone-800 truncate">
+                              {c.name}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex flex-col items-end shrink-0">
+                          <span className="text-xs font-semibold text-stone-900 tabular-nums">
+                            {fmtMoneyCompact(c.gross)}
+                          </span>
+                          <span className="text-[10px] text-stone-500 tabular-nums">
+                            {fmtCount(c.payment_count)} payments
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function PayoutTile({
+  icon,
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string
+  sub?: string
+  tone?: "emerald" | "amber" | "rose"
+}) {
+  const toneClass =
+    tone === "emerald"
+      ? "text-emerald-700"
+      : tone === "amber"
+      ? "text-amber-700"
+      : tone === "rose"
+      ? "text-rose-700"
+      : "text-stone-700"
+  return (
+    <div className="rounded-lg border border-stone-200 bg-stone-50/50 p-3">
+      <div className="flex items-center gap-1.5 text-stone-500 text-[11px] uppercase tracking-wide font-medium">
+        <span className={toneClass}>{icon}</span>
+        {label}
+      </div>
+      <div className="text-lg font-semibold text-stone-900 tabular-nums mt-1">
+        {value}
+      </div>
+      {sub ? (
+        <div className="text-[11px] text-stone-500 mt-0.5 truncate">{sub}</div>
+      ) : null}
+    </div>
+  )
+}
