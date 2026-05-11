@@ -10,9 +10,11 @@
  *
  *   - Author is the logged-in teammate (created_by_id), not the
  *     prospect.
- *   - The "Internal notes" textarea replaces the prospect-authored
- *     "questions or concerns" — the teammate captures their own
- *     read of the conversation.
+ *   - The "Internal notes" textarea replaces both the prospect-authored
+ *     "questions or concerns" AND the older "How you met" capture — the
+ *     teammate puts where/when they met the prospect, the conversation,
+ *     and their read of it all in one free-form field (same convention
+ *     as a debrief's notes).
  *   - Attachments (screenshots of prior texts, photos of business
  *     cards, PDFs) are supported via the /attachments endpoint and
  *     stored on the Vercel Blob store.
@@ -20,25 +22,32 @@
  *     the form is usually the same person who'll own the follow-up,
  *     so this is the right default).
  *
+ * Services selected drive the form's shape:
+ *   - Personal services (Tax Prep, Tax Planning, IRS Support) → show personal block
+ *   - Business services (Bookkeeping, Payroll, etc.) → show business block
+ *   - Selecting both shows both sections
+ *
  * Flow:
  *   1. Teammate fills out the form.
  *   2. Submit -> POST /api/prospects (creates the row + auto-links
- *      a Karbon contact).
+ *      a Karbon contact + broadcasts a team-wide email).
  *   3. If attachments are queued, they upload to
  *      /api/prospects/[id]/attachments in parallel.
  *   4. router.push("/prospects/[id]") for the detail/review page,
  *      where the "Create Karbon Work Item" action lives.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
+import { format } from "date-fns"
 import {
   Building2,
-  FileText,
+  CalendarIcon,
+  ListTodo,
   Loader2,
   NotebookPen,
   Paperclip,
-  Sparkles,
+  Target,
   Trash2,
   User,
   X,
@@ -46,6 +55,7 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
 import {
   Card,
   CardContent,
@@ -56,6 +66,11 @@ import {
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -76,22 +91,21 @@ import { useUser } from "@/hooks/use-user"
 // internal-only.
 // ─────────────────────────────────────────────────────────────────────
 
-const SERVICE_FOCUSES = [
-  "Personal Only",
-  "Business Only",
-  "Both Personal & Business",
-] as const
-
+// Services are the primary driver now. We categorize them by which
+// sections they imply. Personal services imply we need personal info;
+// business services imply we need business info; some imply both.
 const SERVICES = [
-  "Tax Preparation",
-  "Tax Planning & Advisory",
-  "Accounting & Bookkeeping",
-  "Payroll Services",
-  "Business Advisory",
-  "Financial Planning & Wealth Management",
-  "IRS Support & Resolution",
-  "LLC Formation",
-  "Legal Entity Services",
+  // Personal-focused services
+  { label: "Tax Preparation", category: "personal" },
+  { label: "Tax Planning & Advisory", category: "personal" },
+  { label: "IRS Support & Resolution", category: "personal" },
+  { label: "Financial Planning & Wealth Management", category: "personal" },
+  // Business-focused services
+  { label: "Accounting & Bookkeeping", category: "business" },
+  { label: "Payroll Services", category: "business" },
+  { label: "Business Advisory", category: "business" },
+  { label: "LLC Formation", category: "business" },
+  { label: "Legal Entity Services", category: "business" },
 ] as const
 
 const ENTITY_TYPES = [
@@ -141,7 +155,22 @@ interface QueuedAttachment {
   pathname?: string
 }
 
-type ServiceFocus = (typeof SERVICE_FOCUSES)[number]
+interface ActionItem {
+  id: string
+  description: string
+  assignee_id: string
+  assignee_name: string
+  due_date: Date | null
+  priority: "low" | "medium" | "high"
+  create_task: boolean
+}
+
+interface TeamMember {
+  id: string
+  full_name: string
+  email: string
+  role?: string
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Form
@@ -151,9 +180,32 @@ export function ProspectForm() {
   const router = useRouter()
   const { teamMember } = useUser()
 
-  // ── Section state ──────────────────────────────────────────────────
-  const [meetingContext, setMeetingContext] = useState("")
+  // ── Services (drives the rest of the form) ─────────────────────────
+  const [selectedServices, setSelectedServices] = useState<string[]>([])
 
+  // Derive which sections to show based on selected services
+  const hasPersonalServices = useMemo(() => {
+    return selectedServices.some((s) =>
+      SERVICES.find((svc) => svc.label === s && svc.category === "personal"),
+    )
+  }, [selectedServices])
+
+  const hasBusinessServices = useMemo(() => {
+    return selectedServices.some((s) =>
+      SERVICES.find((svc) => svc.label === s && svc.category === "business"),
+    )
+  }, [selectedServices])
+
+  // Show sections: if no services selected, show both; otherwise show based on selection
+  const personalVisible = selectedServices.length === 0 || hasPersonalServices
+  const businessVisible = selectedServices.length === 0 || hasBusinessServices
+
+  // Required: Personal is required if ONLY personal services selected (no business services)
+  const personalRequired = hasPersonalServices && !hasBusinessServices
+  // Required: Business is required if ONLY business services selected (no personal services)
+  const businessRequired = hasBusinessServices && !hasPersonalServices
+
+  // ── Personal ───────────────────────────────────────────────────────
   const [firstName, setFirstName] = useState("")
   const [lastName, setLastName] = useState("")
   const [email, setEmail] = useState("")
@@ -162,10 +214,8 @@ export function ProspectForm() {
   const [state, setState] = useState("")
   const [zip, setZip] = useState("")
 
-  const [serviceFocus, setServiceFocus] = useState<ServiceFocus | "">("")
-  const [services, setServices] = useState<string[]>([])
+  // ── Business (entity types now lives in this section) ─────────────
   const [entityTypes, setEntityTypes] = useState<string[]>([])
-
   const [businessSituation, setBusinessSituation] = useState<string>("")
   const [businessName, setBusinessName] = useState("")
   const [businessEmail, setBusinessEmail] = useState("")
@@ -177,7 +227,15 @@ export function ProspectForm() {
   const [businessUsesSystem, setBusinessUsesSystem] = useState<string>("")
   const [businessSummary, setBusinessSummary] = useState("")
 
+  // ── Internal notes (also captures the "how/where you met" context
+  //    that used to live in its own card — same convention as a
+  //    debrief, where everything goes in one free-form notes field) ──
   const [internalNotes, setInternalNotes] = useState("")
+
+  // ── Action Items ───────────────────────────────────────────────────
+  const [actionItems, setActionItems] = useState<ActionItem[]>([])
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
+  const [loadingTeamMembers, setLoadingTeamMembers] = useState(false)
 
   const [attachments, setAttachments] = useState<QueuedAttachment[]>([])
 
@@ -186,22 +244,82 @@ export function ProspectForm() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
-  // Disable the business section when the focus is personal-only —
-  // mirrors the public form's branching so the teammate isn't
-  // tempted to fill out business fields that the pipeline will
-  // ignore.
-  const businessDisabled = serviceFocus === "Personal Only"
+  // Fetch team members for action item assignees
+  useEffect(() => {
+    async function fetchTeamMembers() {
+      setLoadingTeamMembers(true)
+      try {
+        const res = await fetch("/api/team-members")
+        const data = await res.json()
+        setTeamMembers(
+          (data.team_members || []).map((t: any) => ({
+            id: t.id,
+            full_name: t.full_name,
+            email: t.email,
+            role: t.role,
+          })),
+        )
+      } catch (err) {
+        console.error("Error fetching team members:", err)
+      } finally {
+        setLoadingTeamMembers(false)
+      }
+    }
+    fetchTeamMembers()
+  }, [])
 
   // ── Validation ─────────────────────────────────────────────────────
-  // We require either a complete personal name OR a business name so
-  // the row can always render with a sensible identity.
+  // Required fields are driven by the selected services:
+  //   Personal only services → First, Last, Email, Phone
+  //   Business only services → Business Name
+  //   Both types of services → both sets of fields
+  //   No services selected   → fall back to "first+last OR business" so
+  //                            the form still works as a quick capture
+  //                            while a teammate is mid-thought.
   const canSubmit = useMemo(() => {
     if (submitting) return false
     if (!teamMember?.id) return false
+
+    // If personal services only — require personal info
+    if (personalRequired) {
+      return Boolean(
+        firstName.trim() && lastName.trim() && email.trim() && phone.trim(),
+      )
+    }
+
+    // If business services only — require business name
+    if (businessRequired) {
+      return Boolean(businessName.trim())
+    }
+
+    // If both types selected — require both
+    if (hasPersonalServices && hasBusinessServices) {
+      return Boolean(
+        firstName.trim() &&
+          lastName.trim() &&
+          email.trim() &&
+          phone.trim() &&
+          businessName.trim(),
+      )
+    }
+
+    // No services selected yet — fall back to the original rule.
     const hasPersonal = firstName.trim() && lastName.trim()
     const hasBusiness = businessName.trim()
     return Boolean(hasPersonal || hasBusiness)
-  }, [submitting, teamMember?.id, firstName, lastName, businessName])
+  }, [
+    submitting,
+    teamMember?.id,
+    personalRequired,
+    businessRequired,
+    hasPersonalServices,
+    hasBusinessServices,
+    firstName,
+    lastName,
+    email,
+    phone,
+    businessName,
+  ])
 
   // ── Helpers ────────────────────────────────────────────────────────
   function toggle(list: string[], value: string): string[] {
@@ -234,6 +352,30 @@ export function ProspectForm() {
     setAttachments((prev) => prev.filter((a) => a.tempId !== tempId))
   }
 
+  // ── Action Item Helpers ────────────────────────────────────────────
+  function addActionItem() {
+    const newItem: ActionItem = {
+      id: crypto.randomUUID(),
+      description: "",
+      assignee_id: teamMember?.id || "",
+      assignee_name: teamMember?.full_name || "",
+      due_date: null,
+      priority: "medium",
+      create_task: true,
+    }
+    setActionItems((prev) => [...prev, newItem])
+  }
+
+  function updateActionItem(id: string, updates: Partial<ActionItem>) {
+    setActionItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...updates } : item)),
+    )
+  }
+
+  function removeActionItem(id: string) {
+    setActionItems((prev) => prev.filter((item) => item.id !== id))
+  }
+
   // ── Submit ─────────────────────────────────────────────────────────
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -242,13 +384,29 @@ export function ProspectForm() {
     setError(null)
 
     try {
-      // Step 1 — create the row + auto-link Karbon contact.
+      // When the teammate selected only personal services we explicitly
+      // null out the business payload so the server doesn't persist
+      // half-typed-then-abandoned fields if the user toggled services
+      // late in the session.
+      const onlyPersonal = hasPersonalServices && !hasBusinessServices
+
+      // Derive a "service_focus" value for backward compatibility
+      let serviceFocus: string | null = null
+      if (hasPersonalServices && hasBusinessServices) {
+        serviceFocus = "Both Personal & Business"
+      } else if (hasPersonalServices) {
+        serviceFocus = "Personal Only"
+      } else if (hasBusinessServices) {
+        serviceFocus = "Business Only"
+      }
+
+      // Step 1 — create the row + auto-link Karbon contact + send
+      // the team-wide email (server-side).
       const createRes = await fetch("/api/prospects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           created_by_id: teamMember.id,
-          meeting_context: meetingContext,
 
           submitter_first_name: firstName,
           submitter_last_name: lastName,
@@ -258,24 +416,34 @@ export function ProspectForm() {
           submitter_state: state,
           submitter_zip: zip,
 
-          services_requested: services,
-          service_focus: serviceFocus || null,
-          entity_types: entityTypes,
+          services_requested: selectedServices,
+          service_focus: serviceFocus,
+          entity_types: onlyPersonal ? null : entityTypes,
 
-          business_situation: businessDisabled ? null : businessSituation || null,
-          business_name: businessDisabled ? null : businessName,
-          business_email: businessDisabled ? null : businessEmail,
-          business_phone: businessDisabled ? null : businessPhone,
-          business_state: businessDisabled ? null : businessState,
-          business_tax_classification: businessDisabled ? null : businessTaxClass || null,
-          business_revenue_range: businessDisabled ? null : businessRevenue || null,
-          business_employee_count: businessDisabled ? null : businessEmployees,
-          business_uses_accounting_system: businessDisabled
+          business_situation: onlyPersonal ? null : businessSituation || null,
+          business_name: onlyPersonal ? null : businessName,
+          business_email: onlyPersonal ? null : businessEmail,
+          business_phone: onlyPersonal ? null : businessPhone,
+          business_state: onlyPersonal ? null : businessState,
+          business_tax_classification: onlyPersonal ? null : businessTaxClass || null,
+          business_revenue_range: onlyPersonal ? null : businessRevenue || null,
+          business_employee_count: onlyPersonal ? null : businessEmployees,
+          business_uses_accounting_system: onlyPersonal
             ? null
             : businessUsesSystem || null,
-          business_summary: businessDisabled ? null : businessSummary,
+          business_summary: onlyPersonal ? null : businessSummary,
 
           internal_notes: internalNotes,
+
+          // Action items — same shape as debriefs
+          action_items: actionItems.map((item) => ({
+            description: item.description,
+            assignee_id: item.assignee_id,
+            assignee_name: item.assignee_name,
+            due_date: item.due_date?.toISOString().split("T")[0] || null,
+            priority: item.priority,
+            create_task: item.create_task,
+          })),
         }),
       })
 
@@ -328,186 +496,186 @@ export function ProspectForm() {
         </p>
       </header>
 
-      {/* ─── Meeting context ─── */}
+      {/* ─── Services (hoisted to top — drives the rest of the form) ─── */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-base">How you met</CardTitle>
+            <Target className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">Services requested</CardTitle>
           </div>
           <CardDescription>
-            Where and when you connected. Surfaces on the Karbon timeline so partners reading the
-            contact later understand the provenance.
+            What services is this prospect interested in? Your selection determines which
+            sections appear below — personal services show the personal info block, business
+            services show the business info block.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Textarea
-            value={meetingContext}
-            onChange={(e) => setMeetingContext(e.target.value)}
-            placeholder='e.g. "Met at AICPA Engage 06/10. Referred by Jane Doe. Sat next to him at lunch — runs a 6-person CPA firm in Atlanta and wants to outsource bookkeeping."'
-            className="min-h-[88px]"
-          />
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {SERVICES.map((svc) => (
+              <label
+                key={svc.label}
+                className={cn(
+                  "flex cursor-pointer items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm transition-colors hover:bg-muted/40",
+                  selectedServices.includes(svc.label) && "border-foreground/40 bg-muted/60",
+                )}
+              >
+                <Checkbox
+                  checked={selectedServices.includes(svc.label)}
+                  onCheckedChange={() =>
+                    setSelectedServices((prev) => toggle(prev, svc.label))
+                  }
+                />
+                <span className="text-foreground">{svc.label}</span>
+                <Badge variant="outline" className="ml-auto text-[10px] capitalize">
+                  {svc.category}
+                </Badge>
+              </label>
+            ))}
+          </div>
+          {selectedServices.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Selected: {selectedServices.join(", ")}
+            </p>
+          )}
         </CardContent>
       </Card>
 
       {/* ─── Personal info ─── */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <User className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-base">Prospect details</CardTitle>
-          </div>
-          <CardDescription>
-            Anything you know about the person. Email or phone is what powers
-            the Karbon contact match.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="first">First name</Label>
-            <Input id="first" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="last">Last name</Label>
-            <Input id="last" value={lastName} onChange={(e) => setLastName(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="prospect@example.com"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="phone">Phone</Label>
-            <Input
-              id="phone"
-              type="tel"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="(555) 123-4567"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="city">City</Label>
-            <Input id="city" value={city} onChange={(e) => setCity(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="state">State</Label>
-            <Input id="state" value={state} onChange={(e) => setState(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="zip">ZIP</Label>
-            <Input id="zip" value={zip} onChange={(e) => setZip(e.target.value)} />
-          </div>
-        </CardContent>
-      </Card>
+      {personalVisible && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <User className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Prospect details</CardTitle>
+              {personalRequired && (
+                <Badge variant="outline" className="text-[10px]">
+                  Required
+                </Badge>
+              )}
+            </div>
+            <CardDescription>
+              {personalRequired
+                ? "First name, last name, email, and phone are required."
+                : "Anything you know about the person. Email or phone is what powers the Karbon contact match."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="first">
+                First name {personalRequired && <span className="text-destructive">*</span>}
+              </Label>
+              <Input
+                id="first"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                required={personalRequired}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="last">
+                Last name {personalRequired && <span className="text-destructive">*</span>}
+              </Label>
+              <Input
+                id="last"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                required={personalRequired}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="email">
+                Email {personalRequired && <span className="text-destructive">*</span>}
+              </Label>
+              <Input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="prospect@example.com"
+                required={personalRequired}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="phone">
+                Phone {personalRequired && <span className="text-destructive">*</span>}
+              </Label>
+              <Input
+                id="phone"
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="(555) 123-4567"
+                required={personalRequired}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="city">City</Label>
+              <Input id="city" value={city} onChange={(e) => setCity(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="state">State</Label>
+              <Input id="state" value={state} onChange={(e) => setState(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="zip">ZIP</Label>
+              <Input id="zip" value={zip} onChange={(e) => setZip(e.target.value)} />
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* ─── Services ─── */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <FileText className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-base">Services & interest</CardTitle>
-          </div>
-          <CardDescription>
-            What is the prospect actually asking for? Matches the option set on the public
-            intake form so downstream Karbon work-template selection stays consistent.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="focus">Service focus</Label>
-            <Select
-              value={serviceFocus}
-              onValueChange={(v) => setServiceFocus(v as ServiceFocus)}
-            >
-              <SelectTrigger id="focus">
-                <SelectValue placeholder="Personal, business, or both?" />
-              </SelectTrigger>
-              <SelectContent>
-                {SERVICE_FOCUSES.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
+      {/* ─── Business info (includes Entity types) ─── */}
+      {businessVisible && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Building2 className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Business details</CardTitle>
+              {businessRequired && (
+                <Badge variant="outline" className="text-[10px]">
+                  Required
+                </Badge>
+              )}
+            </div>
+            <CardDescription>
+              {businessRequired
+                ? "Business name is required. Fill in everything else you know."
+                : "Fill in whatever you know. Leave the rest blank — the form mirrors the public intake and tolerates partial data the same way."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Entity types (if known)</Label>
+              <div className="flex flex-wrap gap-2">
+                {ENTITY_TYPES.map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    onClick={() => setEntityTypes((prev) => toggle(prev, e))}
+                    className={cn(
+                      "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                      entityTypes.includes(e)
+                        ? "border-foreground/40 bg-foreground text-background"
+                        : "border-border bg-card text-muted-foreground hover:bg-muted",
+                    )}
+                  >
+                    {e}
+                  </button>
                 ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label>Services requested</Label>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {SERVICES.map((s) => (
-                <label
-                  key={s}
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm transition-colors hover:bg-muted/40",
-                    services.includes(s) && "border-foreground/40 bg-muted/60",
-                  )}
-                >
-                  <Checkbox
-                    checked={services.includes(s)}
-                    onCheckedChange={() => setServices((prev) => toggle(prev, s))}
-                  />
-                  <span className="text-foreground">{s}</span>
-                </label>
-              ))}
+              </div>
             </div>
-          </div>
 
-          <div className="space-y-1.5">
-            <Label>Entity types (if known)</Label>
-            <div className="flex flex-wrap gap-2">
-              {ENTITY_TYPES.map((e) => (
-                <button
-                  key={e}
-                  type="button"
-                  onClick={() => setEntityTypes((prev) => toggle(prev, e))}
-                  className={cn(
-                    "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                    entityTypes.includes(e)
-                      ? "border-foreground/40 bg-foreground text-background"
-                      : "border-border bg-card text-muted-foreground hover:bg-muted",
-                  )}
-                >
-                  {e}
-                </button>
-              ))}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* ─── Business info ─── */}
-      <Card className={cn(businessDisabled && "opacity-60")}>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Building2 className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-base">Business details</CardTitle>
-            {businessDisabled && (
-              <Badge variant="outline" className="text-[10px]">
-                Skipped — Personal Only
-              </Badge>
-            )}
-          </div>
-          <CardDescription>
-            Fill in whatever you know. Leave the rest blank — the form mirrors the
-            public intake and tolerates partial data the same way.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <fieldset disabled={businessDisabled} className="space-y-4">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-1.5">
-                <Label htmlFor="biz-name">Business name</Label>
+                <Label htmlFor="biz-name">
+                  Business name{" "}
+                  {businessRequired && <span className="text-destructive">*</span>}
+                </Label>
                 <Input
                   id="biz-name"
                   value={businessName}
                   onChange={(e) => setBusinessName(e.target.value)}
+                  required={businessRequired}
                 />
               </div>
               <div className="space-y-1.5">
@@ -611,11 +779,12 @@ export function ProspectForm() {
                 placeholder="What the business does, customers, anything else relevant."
               />
             </div>
-          </fieldset>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* ─── Internal notes ─── */}
+      {/* ─── Internal notes (also captures how/where you met — same
+           convention as a debrief, free-form) ─── */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
@@ -623,18 +792,146 @@ export function ProspectForm() {
             <CardTitle className="text-base">Internal notes</CardTitle>
           </div>
           <CardDescription>
-            Your read of the conversation — pain points they mentioned, services they'd
-            be a fit for, references they shared, anything else. Never visible to the
-            prospect.
+            Where and when you met them, your read of the conversation, pain points
+            they mentioned, services they&apos;d be a fit for, references they shared
+            — anything else. Never visible to the prospect.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <Textarea
             value={internalNotes}
             onChange={(e) => setInternalNotes(e.target.value)}
-            className="min-h-[140px]"
-            placeholder="Free-form. Bullet points, paragraphs, whatever's quickest."
+            className="min-h-[160px]"
+            placeholder='e.g. "Met at AICPA Engage 06/10. Referred by Jane Doe. Runs a 6-person CPA firm in Atlanta — wants to outsource bookkeeping. Pain point: month-end close takes them 3 weeks."'
           />
+        </CardContent>
+      </Card>
+
+      {/* ─── Action Items ─── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ListTodo className="h-5 w-5" />
+            Action Items & Follow-ups
+          </CardTitle>
+          <CardDescription>
+            Add tasks with assignees. Enable "Create Task" to automatically create a task in the system.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {actionItems.map((item, index) => (
+            <div key={item.id} className="p-4 border rounded-lg space-y-3 bg-muted/30">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Action Item {index + 1}</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeActionItem(item.id)}
+                >
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                </Button>
+              </div>
+
+              <Input
+                placeholder="Describe the action item..."
+                value={item.description}
+                onChange={(e) => updateActionItem(item.id, { description: e.target.value })}
+              />
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Assignee</Label>
+                  <Select
+                    value={item.assignee_id}
+                    onValueChange={(value) => {
+                      const member = teamMembers.find((m) => m.id === value)
+                      updateActionItem(item.id, {
+                        assignee_id: value,
+                        assignee_name: member?.full_name || "",
+                      })
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {teamMembers.map((member) => (
+                        <SelectItem key={member.id} value={member.id}>
+                          {member.full_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Priority</Label>
+                  <Select
+                    value={item.priority}
+                    onValueChange={(value: "low" | "medium" | "high") =>
+                      updateActionItem(item.id, { priority: value })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Due Date</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className={cn(
+                          "w-full justify-start text-left font-normal",
+                          !item.due_date && "text-muted-foreground",
+                        )}
+                      >
+                        <CalendarIcon className="mr-2 h-3 w-3" />
+                        {item.due_date ? format(item.due_date, "MM/dd/yy") : "Set date"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={item.due_date || undefined}
+                        onSelect={(date) => updateActionItem(item.id, { due_date: date || null })}
+                        initialFocus
+                      />
+                    </PopoverContent>
+                  </Popover>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={`create-task-${item.id}`}
+                  checked={item.create_task}
+                  onCheckedChange={(checked) =>
+                    updateActionItem(item.id, { create_task: !!checked })
+                  }
+                />
+                <Label htmlFor={`create-task-${item.id}`} className="text-xs">
+                  Create as task in system
+                </Label>
+              </div>
+            </div>
+          ))}
+
+          <Button type="button" variant="outline" className="w-full" onClick={addActionItem}>
+            <ListTodo className="mr-2 h-4 w-4" />
+            Add Action Item
+          </Button>
         </CardContent>
       </Card>
 
@@ -663,7 +960,7 @@ export function ProspectForm() {
             <Paperclip className="h-5 w-5" />
             <p>
               <span className="font-medium text-foreground">Click to upload</span> or
-              drag & drop
+              drag &amp; drop
             </p>
             <p className="text-xs">PNG, JPG, PDF, screenshots, etc.</p>
           </div>
@@ -710,8 +1007,9 @@ export function ProspectForm() {
       {/* ─── Submit ─── */}
       <div className="flex flex-col gap-3 rounded-md border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-xs text-muted-foreground">
-          On submit, we'll auto-match a Karbon contact (or create one) and take you to
-          the prospect's detail page where you can create the Karbon Work Item.
+          On submit, we&apos;ll auto-match a Karbon contact (or create one), email the
+          team, and take you to the prospect&apos;s detail page where you can create
+          the Karbon Work Item.
         </div>
         <div className="flex items-center gap-2">
           {error && (
