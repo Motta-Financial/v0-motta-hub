@@ -1,5 +1,9 @@
 "use client"
 
+// Branding: MOTTA HUB headline + Motta lotus logo, "Powered by ALFRED AI"
+// as the secondary tagline; footer is "Motta Financial © 2023". This
+// replaced the prior ALFRED-led branding.
+
 import type React from "react"
 
 import { Suspense, useState, useEffect } from "react"
