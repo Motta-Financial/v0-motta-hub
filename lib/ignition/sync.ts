@@ -216,6 +216,17 @@ export interface FullBackfillResult {
 
 const BATCH_SIZE = 250
 
+/**
+ * Options passed to every per-resource sync function. The single
+ * `updatedSince` flag turns the run from a full backfill into an
+ * incremental tick — the value is forwarded as the API's `updated_from`
+ * query param (see oauth.ts ignitionPaginate). When unset, every record is
+ * fetched and the run behaves like the original backfill.
+ */
+export interface ResourceSyncOptions {
+  updatedSince?: string | null
+}
+
 async function runResource<T>(
   resource: ResourceName,
   connection: IgnitionConnectionRow,
@@ -223,6 +234,7 @@ async function runResource<T>(
   path: string,
   upsertBatch: (rows: T[]) => Promise<{ upserted: number; error?: string }>,
   mapRow: (raw: any) => T | null,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
   const start = Date.now()
   const errors: string[] = []
@@ -232,7 +244,9 @@ async function runResource<T>(
   let mappedNulls = 0
 
   try {
-    for await (const page of ignitionPaginate<any>(connection, supabase, path)) {
+    for await (const page of ignitionPaginate<any>(connection, supabase, path, {
+      query: { updated_from: options.updatedSince ?? undefined },
+    })) {
       pages += 1
       const pageData = page.data ?? []
       fetched += pageData.length
@@ -282,6 +296,7 @@ async function runResource<T>(
 export async function syncClients(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
   return runResource(
     "clients",
@@ -319,12 +334,14 @@ export async function syncClients(
         updated_at: new Date().toISOString(),
       }
     },
+    options,
   )
 }
 
 export async function syncContacts(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
   return runResource(
     "contacts",
@@ -362,12 +379,14 @@ export async function syncContacts(
         updated_at: new Date().toISOString(),
       }
     },
+    options,
   )
 }
 
 export async function syncDealStages(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
   return runResource(
     "deal_stages",
@@ -408,12 +427,14 @@ export async function syncDealStages(
         updated_at: new Date().toISOString(),
       }
     },
+    options,
   )
 }
 
 export async function syncDeals(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
   return runResource(
     "deals",
@@ -465,12 +486,14 @@ export async function syncDeals(
         updated_at: new Date().toISOString(),
       }
     },
+    options,
   )
 }
 
 export async function syncServices(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
   return runResource(
     "services",
@@ -503,16 +526,19 @@ export async function syncServices(
         updated_at: new Date().toISOString(),
       }
     },
+    options,
   )
 }
 
 export async function syncProposals(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
-  // Proposals are already populated by Zapier — we UPSERT and intentionally
-  // only fill columns we are confident about, so the Zapier-set columns we
-  // don't touch (payload, client_partner, etc.) survive the merge.
+  // Proposals are now sourced exclusively from the Ignition Reporting API.
+  // We still UPSERT (rather than INSERT/REPLACE) so any legacy Zapier-era
+  // columns we don't touch (e.g. the historical `payload` blob) survive the
+  // merge unchanged.
   //
   // ignition_proposals.ignition_client_id is a FK into ignition_clients.
   // Some proposals reference clients that don't come back from /reporting/clients
@@ -572,12 +598,14 @@ export async function syncProposals(
         updated_at: new Date().toISOString(),
       }
     },
+    options,
   )
 }
 
 export async function syncInvoices(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
   // Pre-fetch the set of proposal AND client slugs we actually have on disk.
   // Both columns are FKs and will reject references to rows we never received
@@ -629,12 +657,14 @@ export async function syncInvoices(
         updated_at: new Date().toISOString(),
       }
     },
+    options,
   )
 }
 
 export async function syncPayments(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
   // Same FK story as invoices — ignition_payments has FKs into BOTH
   // ignition_invoices AND ignition_clients. We pre-fetch both sets so the
@@ -691,17 +721,22 @@ export async function syncPayments(
         updated_at: new Date().toISOString(),
       }
     },
+    options,
   )
 }
 
 export async function syncCollections(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
+  options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
   // /reporting/collections returns one row PER PAYMENT TRANSACTION. It's not
   // the same shape as ignition_disbursals (which represents a payout batch),
-  // so this feeds the per-transaction table instead. Disbursals continue to
-  // be populated by the existing webhook/Zapier flow.
+  // so this feeds the per-transaction table instead. The `ignition_disbursals`
+  // table is now a frozen historical archive — it was previously fed by the
+  // retired Zapier webhook flow and the Reporting API has no equivalent
+  // endpoint. Payout-batch data should be derived from collections rows
+  // grouped by disbursal date going forward.
   //
   // ignition_payment_transactions.disbursal_id is a FK into ignition_disbursals,
   // so we only set it when we already have that disbursal on disk — otherwise
@@ -751,6 +786,7 @@ export async function syncCollections(
         updated_at: new Date().toISOString(),
       }
     },
+    options,
   )
 }
 
@@ -760,7 +796,11 @@ export async function syncCollections(
 
 const RESOURCE_FUNCTIONS: Record<
   ResourceName,
-  (conn: IgnitionConnectionRow, sb: SupabaseClient) => Promise<ResourceSyncResult>
+  (
+    conn: IgnitionConnectionRow,
+    sb: SupabaseClient,
+    opts?: ResourceSyncOptions,
+  ) => Promise<ResourceSyncResult>
 > = {
   clients: syncClients,
   contacts: syncContacts,
@@ -777,13 +817,22 @@ const RESOURCE_FUNCTIONS: Record<
  * Run a backfill across one or more resources. Updates the connection row's
  * sync timestamps and writes a `sync_log` entry summarizing the run.
  *
+ * When `updatedSince` is supplied the run becomes an INCREMENTAL TICK: each
+ * resource is queried with `?updated_from=<ISO>` so only records modified
+ * after that cutoff are fetched. The cron path passes
+ * `connection.last_synced_at - 5 minutes` to maintain freshness without
+ * paying for a full backfill every 15 minutes. When omitted, the run is a
+ * full backfill (every record on every page).
+ *
  * If any single resource fails, we keep going and aggregate errors at the
  * end. A partial success leaves `last_synced_at` updated but also writes
  * `last_sync_error` so the UI can warn the user.
  *
  * The per-resource breakdown is ALWAYS persisted to `sync_log.error_details`
  * (even on full success) so the admin UI can render the table of "fetched /
- * upserted / pages / duration" for the last run.
+ * upserted / pages / duration" for the last run. The `sync_type` differs
+ * between `ignition_backfill` and `ignition_incremental` so the UI can
+ * pivot on it when displaying recent runs.
  */
 export async function runFullBackfill(
   connection: IgnitionConnectionRow,
@@ -792,12 +841,16 @@ export async function runFullBackfill(
     resources?: ResourceName[]
     triggeredByTeamMemberId?: string | null
     isManual?: boolean
+    /** ISO timestamp; when set, runs an incremental sync via `updated_from`. */
+    updatedSince?: string | null
   } = {},
 ): Promise<FullBackfillResult> {
   const startedAt = new Date().toISOString()
   const resources = options.resources?.length
     ? options.resources.filter((r): r is ResourceName => r in RESOURCE_FUNCTIONS)
     : RESOURCE_ORDER
+
+  const isIncremental = !!options.updatedSince
 
   await supabase
     .from("ignition_connections")
@@ -811,7 +864,7 @@ export async function runFullBackfill(
   const { data: syncLogRow } = await supabase
     .from("sync_log")
     .insert({
-      sync_type: "ignition_backfill",
+      sync_type: isIncremental ? "ignition_incremental" : "ignition_backfill",
       sync_direction: "inbound",
       status: "running",
       started_at: startedAt,
@@ -821,11 +874,15 @@ export async function runFullBackfill(
     .select("id")
     .maybeSingle()
 
+  const resourceOptions: ResourceSyncOptions = {
+    updatedSince: options.updatedSince ?? null,
+  }
+
   const results: ResourceSyncResult[] = []
   for (const resource of resources) {
     const fn = RESOURCE_FUNCTIONS[resource]
     if (!fn) continue
-    const result = await fn(connection, supabase)
+    const result = await fn(connection, supabase, resourceOptions)
     results.push(result)
   }
 

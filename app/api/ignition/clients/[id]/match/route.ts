@@ -12,7 +12,7 @@
  *
  * DELETE /api/ignition/clients/[id]/match
  *   Resets the client back to 'unmatched' state so the auto-matcher can
- *   re-evaluate it on the next webhook arrival.
+ *   re-evaluate it on the next sync tick (15-min cron).
  */
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
@@ -97,7 +97,7 @@ export async function DELETE(_req: Request, { params }: RouteCtx) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
-  // Reset to unmatched so the next webhook re-runs auto-matching.
+  // Reset to unmatched so the next sync tick re-runs auto-matching.
   const { error } = await supabase
     .from("ignition_clients")
     .update({

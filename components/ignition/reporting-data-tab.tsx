@@ -5,8 +5,10 @@
  *
  * Surfaces the Ignition Reporting-API tables that don't have their own
  * dedicated UI: contacts, deals (by stage + recent), pipeline definitions,
- * payment transactions, and disbursals. Without this tab those tables get
- * populated by the OAuth backfill but stay invisible to users.
+ * payment transactions, and the disbursals archive. Without this tab those
+ * tables get populated by the OAuth sync but stay invisible to users. The
+ * disbursals card is a read-only view onto the frozen Zapier-era archive
+ * — see its CardDescription for details.
  *
  * Data source: /api/ignition/reporting-overview (single GET, all sections
  * fetched in parallel server-side, capped at 25 recent rows each).
@@ -419,19 +421,28 @@ export function IgnitionReportingDataTab() {
         </CardContent>
       </Card>
 
-      {/* Disbursals */}
+      {/* Disbursals (frozen archive) */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Disbursals</CardTitle>
+          <CardTitle className="text-base">
+            Disbursals
+            <Badge variant="outline" className="ml-2 font-normal">
+              Historical archive
+            </Badge>
+          </CardTitle>
           <CardDescription>
-            Batched payouts from Ignition to your bank account. Populated by
-            the Zapier webhook today; the OAuth sync currently leaves this
-            table alone.
+            Batched payouts from Ignition to your bank account. This table is
+            a frozen historical archive — it was populated by the retired
+            Zapier bridge and the Reporting API has no equivalent endpoint.
+            New payout data should be derived from the Payment Transactions
+            card above (group by <code className="rounded bg-stone-200 px-1 text-xs">payment_date</code>).
           </CardDescription>
         </CardHeader>
         <CardContent>
           {data.disbursals.recent.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No disbursals on file yet.</p>
+            <p className="text-sm text-muted-foreground">
+              No disbursals in the archive.
+            </p>
           ) : (
             <Table>
               <TableHeader>
