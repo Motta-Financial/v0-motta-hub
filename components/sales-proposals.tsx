@@ -32,6 +32,7 @@ import {
   MapPin,
 } from "lucide-react"
 import { ProposalEditSheet } from "@/components/sales/proposal-edit-sheet"
+import { IgnitionLiveBadge } from "@/components/sales/ignition-live-badge"
 import {
   MultiSelectChip,
   RangeChip,
@@ -263,7 +264,10 @@ export function SalesProposals() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold text-stone-900">Proposals</h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold text-stone-900">Proposals</h1>
+          <IgnitionLiveBadge />
+        </div>
         <p className="text-sm text-muted-foreground">
           {data ? `${data.total.toLocaleString()} proposals` : "Loading proposals…"}
           {data && activeFilterCount > 0

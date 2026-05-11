@@ -1,14 +1,21 @@
 "use client"
 
 /**
- * Sales > Invoices listing
+ * Sales > Payments listing
  * ────────────────────────────────────────────────────────────────────────
- * Server-paginated invoice table with KPI strip showing total billed, paid,
- * and outstanding across the full set (not the current page). Stripe invoice
- * IDs link out to the Stripe dashboard when present.
+ * Server-paginated payment table with KPI strip showing gross collected,
+ * processing fees, net revenue, and refunds across the full set (not the
+ * current page). Stripe charge IDs link out to the Stripe dashboard when
+ * present.
  *
- * URL state covers every filter (page, search, status, state, amount range,
- * date range/field, sort) so the view is shareable and reload-stable.
+ * Mirrors the architecture of SalesInvoices and SalesProposals: URL state
+ * for every filter (page, search, status, state, amount range, date
+ * range, sort) and an IgnitionLiveBadge in the header so users can verify
+ * the data is being pulled from the live Reporting API feed.
+ *
+ * Payments don't carry direct FKs to organization/contact — the server
+ * route resolves the client via the linked invoice's organization_id /
+ * contact_id / ignition_client_id chain.
  */
 
 import { useMemo, useState } from "react"
@@ -26,14 +33,13 @@ import {
   ChevronRight,
   RefreshCcw,
   Filter as FilterIcon,
-  Receipt,
-  CheckCircle2,
-  Clock,
-  AlertCircle,
-  Pencil,
+  Wallet,
+  TrendingDown,
+  TrendingUp,
+  RotateCcw,
   MapPin,
+  Info,
 } from "lucide-react"
-import { InvoiceEditSheet } from "@/components/sales/invoice-edit-sheet"
 import { IgnitionLiveBadge } from "@/components/sales/ignition-live-badge"
 import {
   MultiSelectChip,
@@ -50,31 +56,32 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 import { US_STATE_NAMES } from "@/lib/sales/us-geo"
 
-interface Invoice {
-  ignition_invoice_id: string
-  invoice_number: string | null
-  status: string | null
+interface Payment {
+  ignition_payment_id: string
+  payment_status: string | null
   amount: number | null
-  amount_paid: number | null
-  amount_outstanding: number | null
-  currency: string | null
-  invoice_date: string | null
-  due_date: string | null
-  sent_at: string | null
+  fees: number | null
+  net_amount: number | null
+  currency: string
+  payment_method: string | null
   paid_at: string | null
-  voided_at: string | null
-  stripe_invoice_id: string | null
+  refunded_at: string | null
+  refund_amount: number | null
+  stripe_charge_id: string | null
+  stripe_payment_intent_id: string | null
+  ignition_invoice_id: string | null
+  invoice_number: string | null
   proposal_id: string | null
   organization_id: string | null
   contact_id: string | null
-  organizations: { id: string; name: string } | null
-  contacts: { id: string; full_name: string } | null
-  /** Geographic state resolved via org → contact → ignition_client. */
+  organization: { id: string; name: string } | null
+  contact: { id: string; full_name: string } | null
+  client_name: string | null
   state: string | null
   city: string | null
 }
-interface InvoicesResponse {
-  invoices: Invoice[]
+interface PaymentsResponse {
+  payments: Payment[]
   page: number
   pageSize: number
   total: number
@@ -82,8 +89,9 @@ interface InvoicesResponse {
   stats: {
     total: number
     totalAmount: number
-    totalPaid: number
-    totalOutstanding: number
+    totalFees: number
+    totalNet: number
+    totalRefunded: number
     byStatus: Record<string, number>
   }
   dimensions: {
@@ -94,21 +102,21 @@ interface InvoicesResponse {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
+// Ignition's real payment_status values are `disbursed` (paid out to
+// the practice's bank), `collected` (received but not yet disbursed),
+// and `uncollected` (client owes). We tone-map them rather than using
+// generic Stripe-like buckets.
 const STATUS_TONE: Record<string, string> = {
-  paid: "bg-emerald-100 text-emerald-900 border-emerald-200",
-  sent: "bg-blue-100 text-blue-900 border-blue-200",
-  outstanding: "bg-amber-100 text-amber-900 border-amber-200",
-  overdue: "bg-rose-100 text-rose-900 border-rose-200",
-  voided: "bg-stone-100 text-stone-500 border-stone-200",
-  draft: "bg-stone-100 text-stone-700 border-stone-200",
+  disbursed: "bg-emerald-100 text-emerald-900 border-emerald-200",
+  collected: "bg-blue-100 text-blue-900 border-blue-200",
+  uncollected: "bg-amber-100 text-amber-900 border-amber-200",
+  refunded: "bg-rose-100 text-rose-900 border-rose-200",
+  failed: "bg-rose-100 text-rose-900 border-rose-200",
+  "(none)": "bg-stone-100 text-stone-500 border-stone-200",
 }
 
-const INVOICE_DATE_FIELDS: DateFieldOption[] = [
-  { value: "invoice_date", label: "Invoice date" },
-  { value: "due_date", label: "Due date" },
+const PAYMENT_DATE_FIELDS: DateFieldOption[] = [
   { value: "paid_at", label: "Paid date" },
-  { value: "sent_at", label: "Sent date" },
-  { value: "created_at", label: "Created" },
 ]
 
 function fmtMoney(n: number | null | undefined, currency = "USD") {
@@ -140,7 +148,7 @@ function titleCase(s: string | null | undefined) {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-export function SalesInvoices() {
+export function SalesPayments() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -152,14 +160,13 @@ export function SalesInvoices() {
   const state = (searchParams.get("state") || "").split(",").filter(Boolean)
   const minAmount = searchParams.get("minAmount") || ""
   const maxAmount = searchParams.get("maxAmount") || ""
-  const dateField = searchParams.get("dateField") || "invoice_date"
+  const dateField = searchParams.get("dateField") || "paid_at"
   const dateFrom = searchParams.get("dateFrom") || ""
   const dateTo = searchParams.get("dateTo") || ""
-  const sortBy = searchParams.get("sortBy") || "invoice_date"
+  const sortBy = searchParams.get("sortBy") || "paid_at"
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
 
   const [searchInput, setSearchInput] = useState(search)
-  const [editing, setEditing] = useState<Invoice | null>(null)
 
   const queryString = useMemo(() => {
     const sp = new URLSearchParams()
@@ -170,7 +177,7 @@ export function SalesInvoices() {
     if (state.length) sp.set("state", state.join(","))
     if (minAmount) sp.set("minAmount", minAmount)
     if (maxAmount) sp.set("maxAmount", maxAmount)
-    if (dateField !== "invoice_date") sp.set("dateField", dateField)
+    if (dateField !== "paid_at") sp.set("dateField", dateField)
     if (dateFrom) sp.set("dateFrom", dateFrom)
     if (dateTo) sp.set("dateTo", dateTo)
     sp.set("sortBy", sortBy)
@@ -190,8 +197,8 @@ export function SalesInvoices() {
     sortDir,
   ])
 
-  const { data, error, isLoading, mutate } = useSWR<InvoicesResponse>(
-    `/api/sales/invoices?${queryString}`,
+  const { data, error, isLoading, mutate } = useSWR<PaymentsResponse>(
+    `/api/sales/payments?${queryString}`,
     fetcher,
     { keepPreviousData: true },
   )
@@ -222,15 +229,22 @@ export function SalesInvoices() {
     (minAmount || maxAmount ? 1 : 0) +
     (dateFrom || dateTo ? 1 : 0)
 
+  // Refunds are exposed as a payment-level `refund_amount` + `refunded_at`
+  // pair (Ignition doesn't issue separate refund records). The KPI counts
+  // ANY payment with refund_amount > 0 as refunded.
+  const refundedCount = data
+    ? data.payments.filter((p) => (p.refund_amount ?? 0) > 0).length
+    : 0
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-semibold text-stone-900">Invoices</h1>
+          <h1 className="text-2xl font-semibold text-stone-900">Payments</h1>
           <IgnitionLiveBadge />
         </div>
         <p className="text-sm text-muted-foreground">
-          {data ? `${data.total.toLocaleString()} invoices` : "Loading invoices…"}
+          {data ? `${data.total.toLocaleString()} payments` : "Loading payments…"}
           {data && activeFilterCount > 0
             ? ` matching ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""} (of ${data.totalUnfiltered.toLocaleString()})`
             : ""}
@@ -240,42 +254,35 @@ export function SalesInvoices() {
       {/* KPI Strip */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiCard
-          label="Total Invoiced"
+          label="Gross Collected"
           value={data ? fmtMoney(data.stats.totalAmount) : "—"}
-          subtitle={data ? `${data.stats.total} invoices` : ""}
-          icon={Receipt}
+          subtitle={data ? `${data.stats.total.toLocaleString()} payments` : ""}
+          icon={Wallet}
           tone="stone"
         />
         <KpiCard
-          label="Paid"
-          value={data ? fmtMoney(data.stats.totalPaid) : "—"}
+          label="Processing Fees"
+          value={data ? fmtMoney(data.stats.totalFees) : "—"}
           subtitle={
-            data
-              ? `${(data.stats.byStatus["paid"] || 0).toLocaleString()} invoices`
+            data && data.stats.totalAmount > 0
+              ? `${((data.stats.totalFees / data.stats.totalAmount) * 100).toFixed(2)}% of gross`
               : ""
           }
-          icon={CheckCircle2}
-          tone="emerald"
-        />
-        <KpiCard
-          label="Outstanding"
-          value={data ? fmtMoney(data.stats.totalOutstanding) : "—"}
-          subtitle={
-            data
-              ? `${(
-                  (data.stats.byStatus["sent"] || 0) +
-                  (data.stats.byStatus["outstanding"] || 0)
-                ).toLocaleString()} invoices`
-              : ""
-          }
-          icon={Clock}
+          icon={TrendingDown}
           tone="amber"
         />
         <KpiCard
-          label="Overdue"
-          value={data ? `${(data.stats.byStatus["overdue"] || 0).toLocaleString()}` : "—"}
-          subtitle="invoices past due"
-          icon={AlertCircle}
+          label="Net Revenue"
+          value={data ? fmtMoney(data.stats.totalNet) : "—"}
+          subtitle="after Stripe fees"
+          icon={TrendingUp}
+          tone="emerald"
+        />
+        <KpiCard
+          label="Refunded"
+          value={data ? fmtMoney(data.stats.totalRefunded) : "—"}
+          subtitle={refundedCount > 0 ? `${refundedCount} payment${refundedCount === 1 ? "" : "s"}` : "no refunds"}
+          icon={RotateCcw}
           tone="rose"
         />
       </div>
@@ -291,7 +298,7 @@ export function SalesInvoices() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") updateParams({ search: searchInput || null })
               }}
-              placeholder="Search invoice #, proposal #, client…"
+              placeholder="Search payment ID, invoice #, client, Stripe charge…"
               className="pl-8"
             />
           </div>
@@ -307,6 +314,7 @@ export function SalesInvoices() {
             label="Status"
             options={data?.dimensions.statuses || []}
             value={status}
+            formatLabel={(v) => (v === "(none)" ? "(no status)" : titleCase(v))}
             onChange={(v) => updateParams({ status: v.length ? v.join(",") : null })}
           />
           <MultiSelectChip
@@ -334,10 +342,10 @@ export function SalesInvoices() {
             field={dateField}
             from={dateFrom}
             to={dateTo}
-            fieldOptions={INVOICE_DATE_FIELDS}
+            fieldOptions={PAYMENT_DATE_FIELDS}
             onChange={({ from, to, field }) =>
               updateParams({
-                dateField: field === "invoice_date" ? null : field,
+                dateField: field === "paid_at" ? null : field,
                 dateFrom: from || null,
                 dateTo: to || null,
               })
@@ -371,15 +379,16 @@ export function SalesInvoices() {
               <thead className="bg-stone-50 border-b">
                 <tr className="text-xs uppercase text-muted-foreground">
                   <SortableHeader
-                    field="invoice_number"
-                    label="Invoice #"
+                    field="paid_at"
+                    label="Paid"
                     sortBy={sortBy}
                     sortDir={sortDir}
                     onSort={toggleSort}
                   />
                   <th className="text-left px-3 py-2 font-medium">Client</th>
+                  <th className="text-left px-3 py-2 font-medium">Invoice</th>
                   <SortableHeader
-                    field="status"
+                    field="payment_status"
                     label="Status"
                     sortBy={sortBy}
                     sortDir={sortDir}
@@ -387,144 +396,130 @@ export function SalesInvoices() {
                   />
                   <SortableHeader
                     field="amount"
-                    label="Amount"
+                    label="Gross"
                     sortBy={sortBy}
                     sortDir={sortDir}
                     onSort={toggleSort}
                     align="right"
                   />
                   <SortableHeader
-                    field="amount_paid"
-                    label="Paid"
+                    field="fees"
+                    label="Fees"
                     sortBy={sortBy}
                     sortDir={sortDir}
                     onSort={toggleSort}
                     align="right"
                   />
                   <SortableHeader
-                    field="amount_outstanding"
-                    label="Outstanding"
+                    field="net_amount"
+                    label="Net"
                     sortBy={sortBy}
                     sortDir={sortDir}
                     onSort={toggleSort}
                     align="right"
                   />
-                  <SortableHeader
-                    field="invoice_date"
-                    label="Date"
-                    sortBy={sortBy}
-                    sortDir={sortDir}
-                    onSort={toggleSort}
-                  />
-                  <SortableHeader
-                    field="due_date"
-                    label="Due"
-                    sortBy={sortBy}
-                    sortDir={sortDir}
-                    onSort={toggleSort}
-                  />
-                  <th />
+                  <th className="w-20" />
                 </tr>
               </thead>
               <tbody>
                 {isLoading && !data ? (
                   Array.from({ length: 10 }).map((_, i) => (
                     <tr key={i} className="border-b">
-                      <td colSpan={9} className="px-3 py-3">
+                      <td colSpan={8} className="px-3 py-3">
                         <Skeleton className="h-5 w-full" />
                       </td>
                     </tr>
                   ))
                 ) : error ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-center text-rose-600">
-                      Failed to load invoices.
+                    <td colSpan={8} className="px-3 py-6 text-center text-rose-600">
+                      Failed to load payments.
                     </td>
                   </tr>
-                ) : data && data.invoices.length === 0 ? (
+                ) : data && data.payments.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">
+                    <td colSpan={8} className="px-3 py-10 text-center text-muted-foreground">
                       <FilterIcon className="h-6 w-6 mx-auto mb-2 opacity-40" />
-                      No invoices match the current filters.
+                      No payments match the current filters.
                     </td>
                   </tr>
                 ) : (
-                  data?.invoices.map((inv) => {
-                    const orgName = inv.organizations?.name || inv.contacts?.full_name || "—"
-                    const orgHref = inv.organization_id
-                      ? `/clients/${inv.organization_id}`
-                      : inv.contact_id
-                        ? `/clients/${inv.contact_id}`
+                  data?.payments.map((p) => {
+                    const clientName =
+                      p.organization?.name || p.contact?.full_name || p.client_name || "—"
+                    const orgHref = p.organization_id
+                      ? `/clients/${p.organization_id}`
+                      : p.contact_id
+                        ? `/clients/${p.contact_id}`
                         : null
-                    const tone = STATUS_TONE[inv.status || ""] || "bg-stone-100 text-stone-700 border-stone-200"
+                    const statusKey = p.payment_status || "(none)"
+                    const tone = STATUS_TONE[statusKey] || "bg-stone-100 text-stone-700 border-stone-200"
+                    const isRefunded = (p.refund_amount ?? 0) > 0
                     return (
-                      <tr key={inv.ignition_invoice_id} className="border-b hover:bg-stone-50/60">
-                        <td className="px-3 py-2 font-mono text-xs">
-                          {inv.invoice_number || inv.ignition_invoice_id.slice(0, 8)}
+                      <tr key={p.ignition_payment_id} className="border-b hover:bg-stone-50/60">
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <div className="text-stone-900">{fmtDate(p.paid_at)}</div>
+                          <div className="text-[10px] font-mono text-muted-foreground truncate max-w-[120px]">
+                            {p.ignition_payment_id.replace(/^pypay_/, "")}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-2">
                             {orgHref ? (
                               <Link href={orgHref} className="hover:underline font-medium">
-                                {orgName}
+                                {clientName}
                               </Link>
                             ) : (
-                              <span className="font-medium">{orgName}</span>
+                              <span className="font-medium">{clientName}</span>
                             )}
-                            {inv.state ? (
+                            {p.state ? (
                               <span
-                                title={US_STATE_NAMES[inv.state] || inv.state}
+                                title={US_STATE_NAMES[p.state] || p.state}
                                 className="inline-flex items-center gap-0.5 text-[10px] font-medium text-stone-500 bg-stone-100 border border-stone-200 rounded px-1 py-0.5"
                               >
                                 <MapPin className="h-2.5 w-2.5" />
-                                {inv.state}
+                                {p.state}
                               </span>
                             ) : null}
                           </div>
                         </td>
+                        <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
+                          {p.invoice_number || (p.ignition_invoice_id ? p.ignition_invoice_id.slice(0, 12) : "—")}
+                        </td>
                         <td className="px-3 py-2">
                           <Badge variant="outline" className={cn("border", tone)}>
-                            {titleCase(inv.status)}
+                            {titleCase(statusKey)}
                           </Badge>
+                          {isRefunded ? (
+                            <Badge
+                              variant="outline"
+                              className="ml-1 border bg-rose-50 text-rose-900 border-rose-200"
+                            >
+                              Refunded
+                            </Badge>
+                          ) : null}
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums font-medium">
-                          {fmtMoney(inv.amount, inv.currency || "USD")}
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums text-emerald-700">
-                          {fmtMoney(inv.amount_paid, inv.currency || "USD")}
+                          {fmtMoney(p.amount, p.currency)}
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums text-amber-700">
-                          {fmtMoney(inv.amount_outstanding, inv.currency || "USD")}
+                          {p.fees != null ? fmtMoney(p.fees, p.currency) : "—"}
                         </td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
-                          {fmtDate(inv.invoice_date)}
-                        </td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
-                          {fmtDate(inv.due_date)}
+                        <td className="px-3 py-2 text-right tabular-nums text-emerald-700 font-medium">
+                          {p.net_amount != null ? fmtMoney(p.net_amount, p.currency) : "—"}
                         </td>
                         <td className="px-3 py-2 text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-stone-500 hover:text-stone-900"
-                              onClick={() => setEditing(inv)}
-                              title="Edit invoice"
+                          {p.stripe_charge_id ? (
+                            <a
+                              href={`https://dashboard.stripe.com/payments/${p.stripe_charge_id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-stone-500 hover:text-stone-900 inline-flex p-1"
+                              title="View in Stripe"
                             >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            {inv.stripe_invoice_id ? (
-                              <a
-                                href={`https://dashboard.stripe.com/invoices/${inv.stripe_invoice_id}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-stone-500 hover:text-stone-900 p-1"
-                                title="View in Stripe"
-                              >
-                                <ExternalLink className="h-3.5 w-3.5" />
-                              </a>
-                            ) : null}
-                          </div>
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                          ) : null}
                         </td>
                       </tr>
                     )
@@ -535,16 +530,6 @@ export function SalesInvoices() {
           </div>
         </CardContent>
       </Card>
-
-      <InvoiceEditSheet
-        invoice={editing}
-        statuses={data?.dimensions.statuses || []}
-        open={!!editing}
-        onOpenChange={(o) => {
-          if (!o) setEditing(null)
-        }}
-        onSaved={() => mutate()}
-      />
 
       {/* Pagination */}
       {data ? (
@@ -572,6 +557,26 @@ export function SalesInvoices() {
           </div>
         </div>
       ) : null}
+
+      {/* Disbursals archive note */}
+      <Card>
+        <CardContent className="p-3 flex items-start gap-3 text-sm">
+          <Info className="h-4 w-4 mt-0.5 text-stone-500 shrink-0" />
+          <div className="text-stone-700">
+            <span className="font-medium">Looking for disbursal batches?</span> The
+            Ignition Reporting API doesn&apos;t expose payouts, so the historical
+            disbursals archive (~53 batches from the retired Zapier feed) lives on the{" "}
+            <Link
+              href="/admin/ignition"
+              className="text-stone-900 underline hover:no-underline"
+            >
+              Ignition admin page
+            </Link>
+            {" "}under the Reporting Data tab. Going forward, payout reconciliation should
+            be done by grouping the rows above by paid date.
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }
