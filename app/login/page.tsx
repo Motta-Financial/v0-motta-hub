@@ -8,6 +8,7 @@ import type React from "react"
 
 import { Suspense, useState, useEffect } from "react"
 import { createClient } from "@/lib/supabase/client"
+import { clearUserCache } from "@/contexts/user-context"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -190,6 +191,10 @@ function LoginContent() {
         return
       }
 
+      // Clear the UserContext cache before navigating so the dashboard
+      // picks up the new session immediately (the onAuthStateChange listener
+      // in UserProvider will also fire, but doing it here ensures zero delay).
+      clearUserCache()
       router.push("/")
       router.refresh()
     } catch (err) {

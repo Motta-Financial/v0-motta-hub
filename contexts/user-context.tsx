@@ -1,7 +1,8 @@
 "use client"
 
 import { createContext, useContext, useState, useEffect, useRef, useCallback, type ReactNode } from "react"
-import type { User } from "@supabase/supabase-js"
+import type { User, AuthChangeEvent } from "@supabase/supabase-js"
+import { createClient } from "@/lib/supabase/client"
 
 // Team member type based on Supabase schema
 export interface TeamMember {
@@ -32,6 +33,9 @@ interface UserContextType {
   isLoading: boolean
   error: string | null
   refetch: () => Promise<void>
+  /** Clear the in-memory cache and refetch. Call this after login/logout
+   *  so the context picks up the new session immediately. */
+  clearCacheAndRefetch: () => Promise<void>
 }
 
 const UserContext = createContext<UserContextType>({
@@ -40,11 +44,21 @@ const UserContext = createContext<UserContextType>({
   isLoading: true,
   error: null,
   refetch: async () => {},
+  clearCacheAndRefetch: async () => {},
 })
 
-// Module-level cache
+// Module-level cache — helps avoid redundant fetches during normal
+// navigation, but must be cleared on auth state changes (login/logout).
 let cachedUser: User | null = null
 let cachedTeamMember: TeamMember | null = null
+let hasFetched = false
+
+/** Exported so login/logout can nuke the cache before navigating. */
+export function clearUserCache() {
+  cachedUser = null
+  cachedTeamMember = null
+  hasFetched = false
+}
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(cachedUser)
@@ -52,13 +66,12 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(!cachedUser && !cachedTeamMember)
   const [error, setError] = useState<string | null>(null)
   const isFetchingRef = useRef(false)
-  const hasFetchedRef = useRef(false)
 
-  const fetchUserData = useCallback(async () => {
+  const fetchUserData = useCallback(async (force = false) => {
     if (isFetchingRef.current) return
 
-    // Return cached data if already fetched
-    if (hasFetchedRef.current && cachedUser) {
+    // Return cached data if already fetched (unless forced)
+    if (!force && hasFetched && cachedUser) {
       setUser(cachedUser)
       setTeamMember(cachedTeamMember)
       setIsLoading(false)
@@ -81,7 +94,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
       cachedUser = data.user
       cachedTeamMember = data.teamMember
-      hasFetchedRef.current = true
+      hasFetched = true
 
       setUser(data.user)
       setTeamMember(data.teamMember)
@@ -96,12 +109,40 @@ export function UserProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const clearCacheAndRefetch = useCallback(async () => {
+    clearUserCache()
+    await fetchUserData(true)
+  }, [fetchUserData])
+
   useEffect(() => {
     fetchUserData()
   }, [fetchUserData])
 
+  // Listen for Supabase auth state changes (SIGNED_IN, SIGNED_OUT, etc.)
+  // so we automatically refetch when the user logs in or out from another
+  // tab / component without having to call clearCacheAndRefetch manually.
+  useEffect(() => {
+    const supabase = createClient()
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event: AuthChangeEvent) => {
+        // On any auth change, clear the cache and refetch. This handles:
+        // - SIGNED_IN after login
+        // - SIGNED_OUT after logout
+        // - TOKEN_REFRESHED (session renewed in the background)
+        // - USER_UPDATED
+        if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+          clearUserCache()
+          fetchUserData(true)
+        }
+      },
+    )
+    return () => {
+      subscription.unsubscribe()
+    }
+  }, [fetchUserData])
+
   return (
-    <UserContext.Provider value={{ user, teamMember, isLoading, error, refetch: fetchUserData }}>
+    <UserContext.Provider value={{ user, teamMember, isLoading, error, refetch: fetchUserData, clearCacheAndRefetch }}>
       {children}
     </UserContext.Provider>
   )

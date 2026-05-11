@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-context"
+import { useUser, useDisplayName, useUserInitials, clearUserCache } from "@/contexts/user-context"
 import {
   LayoutDashboard,
   Users,
@@ -639,6 +639,9 @@ function HeaderUserMenu() {
   const handleLogout = async () => {
     const response = await fetch("/api/auth/logout", { method: "POST" })
     if (response.ok) {
+      // Clear the cached user data so the login page and any other pages
+      // don't show stale profile info if the user logs back in.
+      clearUserCache()
       router.push("/login")
     }
   }
