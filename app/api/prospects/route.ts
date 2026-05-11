@@ -24,6 +24,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { findOrCreateClient } from "@/lib/karbon/client-sync"
+import { buildProspectEmailHtml, sendEmail } from "@/lib/email"
 
 interface CreateProspectBody {
   // Always required — the teammate filing the form.
@@ -185,6 +186,135 @@ export async function POST(req: NextRequest) {
       }
     } catch (err) {
       console.error("[v0] POST /api/prospects auto-link failed:", err)
+    }
+
+    // ── 4. Team-wide notification — UNCONDITIONAL ──────────────────
+    // Same firm policy as debriefs: every new prospect is broadcast
+    // to ALL active teammates (excluding Company / Alumni roles),
+    // author included. In-app notification + email. Failures here
+    // never fail the request — the row is already persisted, the
+    // teammate is mid-redirect to the detail page, and we don't want
+    // a transient Resend hiccup to surface as a "save failed" error.
+    try {
+      const { data: authorRow } = await supabase
+        .from("team_members")
+        .select("full_name")
+        .eq("id", body.created_by_id)
+        .single()
+      const authorName = authorRow?.full_name || "A team member"
+
+      // Display name for the email subject and body banner. Prefer the
+      // person's name (consistent with how partners think about new
+      // prospects), fall back to the business if it's a business-only.
+      const prospectDisplayName =
+        fullName || body.business_name?.trim() || "(unnamed prospect)"
+
+      const { data: activeTeam } = await supabase
+        .from("team_members")
+        .select("id, full_name, email, role")
+        .eq("is_active", true)
+        .not("role", "eq", "Company")
+        .not("role", "eq", "Alumni")
+
+      const recipients = activeTeam || []
+
+      if (recipients.length > 0) {
+        // 4a. In-app notification row for every active teammate.
+        //     Author gets a confirmation-styled message so they can
+        //     verify the broadcast went through.
+        const notifications = recipients.map((tm: any) => {
+          const isAuthor = tm.id === body.created_by_id
+          return {
+            team_member_id: tm.id,
+            notification_type: "prospect",
+            entity_type: "prospect",
+            entity_id: inserted.id,
+            title: isAuthor ? "Prospect Submitted" : "New Prospect",
+            message: isAuthor
+              ? `Your prospect ${prospectDisplayName} was saved and emailed to the team.`
+              : `${authorName} added a new prospect: ${prospectDisplayName}`,
+            action_url: `/prospects/${inserted.id}`,
+            is_read: false,
+          }
+        })
+        await supabase.from("notifications").insert(notifications)
+
+        // 4b. Email every active teammate who has an email address.
+        //     Like debriefs this bypasses per-user opt-outs because
+        //     new prospects are a firm-wide signal.
+        const recipientEmails = recipients
+          .filter((tm: any) => !!tm.email)
+          .map((tm: any) => tm.email as string)
+
+        if (recipientEmails.length > 0) {
+          const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+          const prospectUrl = `${appUrl}/prospects/${inserted.id}`
+
+          // Stitch a single "City, ST ZIP" string from the parts so
+          // the email doesn't show a row per geographic component.
+          const locationParts = [
+            body.submitter_city?.trim(),
+            [body.submitter_state?.trim(), body.submitter_zip?.trim()]
+              .filter(Boolean)
+              .join(" "),
+          ].filter(Boolean)
+          const location = locationParts.length > 0 ? locationParts.join(", ") : null
+
+          const html = buildProspectEmailHtml({
+            authorName,
+            prospectName: prospectDisplayName,
+            serviceFocus: body.service_focus ?? null,
+            servicesRequested: body.services_requested ?? [],
+            entityTypes: body.entity_types ?? [],
+            personal: {
+              email: body.submitter_email ?? null,
+              phone: body.submitter_phone ?? null,
+              location,
+            },
+            business: body.business_name?.trim()
+              ? {
+                  name: body.business_name ?? null,
+                  situation: body.business_situation ?? null,
+                  email: body.business_email ?? null,
+                  phone: body.business_phone ?? null,
+                  state: body.business_state ?? null,
+                  taxClassification: body.business_tax_classification ?? null,
+                  revenueRange: body.business_revenue_range ?? null,
+                  employees: body.business_employee_count ?? null,
+                  accountingSystem: body.business_uses_accounting_system ?? null,
+                  summary: body.business_summary ?? null,
+                }
+              : null,
+            internalNotes: body.internal_notes ?? null,
+            // Attachments upload AFTER this row is created (the
+            // client sequences POST /api/prospects -> POST
+            // /api/prospects/[id]/attachments) so we can't surface a
+            // count here. The email's CTA links to the detail page
+            // which will show them whenever they finish uploading.
+            attachmentCount: 0,
+            prospectUrl,
+          })
+
+          const emailResult = await sendEmail({
+            to: recipientEmails,
+            subject: `PROSPECT: ${prospectDisplayName}`,
+            html,
+          })
+
+          if (!emailResult.success) {
+            console.warn(
+              "[prospect] Email send failed (in-app notifications still created):",
+              emailResult.error,
+            )
+          } else {
+            console.log(
+              `[prospect] Email sent to ${recipientEmails.length} active team members for prospect ${inserted.id}`,
+            )
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[v0] POST /api/prospects broadcast failed:", err)
     }
 
     return NextResponse.json({ id: inserted.id }, { status: 201 })

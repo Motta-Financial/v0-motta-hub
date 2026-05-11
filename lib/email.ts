@@ -443,6 +443,233 @@ export function buildDebriefEmailHtml({
 }
 
 // ============================================================
+// Prospect notification email (mirrors debrief template shape so the
+// inbox visually groups Hub-authored team broadcasts together).
+// Used when a teammate submits the internal Prospect Form
+// (/api/prospects). Broadcast firm-wide with the same UNCONDITIONAL
+// pattern as debriefs — partners need to know about new prospects.
+// ============================================================
+export function buildProspectEmailHtml({
+  authorName,
+  prospectName,
+  serviceFocus,
+  servicesRequested,
+  entityTypes,
+  personal,
+  business,
+  internalNotes,
+  attachmentCount,
+  prospectUrl,
+  logoUrl,
+}: {
+  authorName: string
+  prospectName: string
+  serviceFocus?: string | null
+  servicesRequested?: string[]
+  entityTypes?: string[]
+  // Contact info for the prospect-as-person. Phone/email/location are
+  // optional; we only render rows for what was actually provided so
+  // the email doesn't have a wall of "—" placeholders.
+  personal?: {
+    email?: string | null
+    phone?: string | null
+    location?: string | null
+  } | null
+  // Business details — same "render only what's present" rule.
+  business?: {
+    name?: string | null
+    situation?: string | null
+    email?: string | null
+    phone?: string | null
+    state?: string | null
+    taxClassification?: string | null
+    revenueRange?: string | null
+    employees?: string | null
+    accountingSystem?: string | null
+    summary?: string | null
+  } | null
+  internalNotes?: string | null
+  attachmentCount?: number
+  prospectUrl: string
+  logoUrl?: string
+}) {
+  const siteUrl =
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    process.env.APP_BASE_URL ||
+    "https://mottahub-motta.vercel.app"
+  const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
+  const today = new Date().toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  })
+
+  // -- helpers --------------------------------------------------------
+  const row = (label: string, valueHtml: string) => `
+    <tr>
+      <td style="padding: 8px 12px; font-size: 13px; color: #666; width: 160px; vertical-align: top;">${label}</td>
+      <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${valueHtml}</td>
+    </tr>`
+
+  // -- 1. Prospect details (always present) ---------------------------
+  const detailRows: string[] = []
+  detailRows.push(row("Submitted By", authorName))
+  detailRows.push(row("Submitted On", today))
+  if (serviceFocus) detailRows.push(row("Service Focus", serviceFocus))
+  if (servicesRequested && servicesRequested.length > 0) {
+    detailRows.push(row("Services Requested", servicesRequested.join(", ")))
+  }
+  if (entityTypes && entityTypes.length > 0) {
+    detailRows.push(row("Entity Types", entityTypes.join(", ")))
+  }
+
+  const detailsSection = `
+    <div style="margin-bottom: 24px;">
+      <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Prospect Details</h2>
+      <table style="width: 100%; border-collapse: collapse;"><tbody>${detailRows.join("")}</tbody></table>
+    </div>`
+
+  // -- 2. Personal contact (conditional) ------------------------------
+  let personalSection = ""
+  if (personal && (personal.email || personal.phone || personal.location)) {
+    const rows: string[] = []
+    if (personal.email)
+      rows.push(
+        row(
+          "Email",
+          `<a href="mailto:${personal.email}" style="color: #2563eb; text-decoration: underline;">${personal.email}</a>`,
+        ),
+      )
+    if (personal.phone) rows.push(row("Phone", personal.phone))
+    if (personal.location) rows.push(row("Location", personal.location))
+    personalSection = `
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Contact</h2>
+        <table style="width: 100%; border-collapse: collapse;"><tbody>${rows.join("")}</tbody></table>
+      </div>`
+  }
+
+  // -- 3. Business (conditional) --------------------------------------
+  let businessSection = ""
+  if (business && (business.name || business.email || business.phone || business.summary)) {
+    const rows: string[] = []
+    if (business.name) rows.push(row("Business Name", `<strong>${business.name}</strong>`))
+    if (business.situation) rows.push(row("Situation", business.situation))
+    if (business.email)
+      rows.push(
+        row(
+          "Business Email",
+          `<a href="mailto:${business.email}" style="color: #2563eb; text-decoration: underline;">${business.email}</a>`,
+        ),
+      )
+    if (business.phone) rows.push(row("Business Phone", business.phone))
+    if (business.state) rows.push(row("Business State", business.state))
+    if (business.taxClassification) rows.push(row("Tax Classification", business.taxClassification))
+    if (business.revenueRange) rows.push(row("Revenue Range", business.revenueRange))
+    if (business.employees) rows.push(row("Employees", business.employees))
+    if (business.accountingSystem) rows.push(row("Accounting System", business.accountingSystem))
+    let summaryHtml = ""
+    if (business.summary) {
+      summaryHtml = `
+        <div style="margin-top: 12px;">
+          <h3 style="color: #666; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Business Summary</h3>
+          <div style="background: #f9fafb; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #333; white-space: pre-wrap; line-height: 1.5;">${business.summary}</div>
+        </div>`
+    }
+    businessSection = `
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Business</h2>
+        <table style="width: 100%; border-collapse: collapse;"><tbody>${rows.join("")}</tbody></table>
+        ${summaryHtml}
+      </div>`
+  }
+
+  // -- 4. Internal notes (conditional) --------------------------------
+  let notesSection = ""
+  if (internalNotes && internalNotes.trim()) {
+    notesSection = `
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Internal Notes</h2>
+        <div style="background: #f9fafb; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #333; white-space: pre-wrap; line-height: 1.5;">${internalNotes}</div>
+      </div>`
+  }
+
+  // -- 5. Attachments hint (conditional) ------------------------------
+  // We don't embed the actual files in the email -- they live behind
+  // an auth-gated /attachments route -- so we just nudge the team to
+  // open the detail page when there are any.
+  const attachmentHint =
+    attachmentCount && attachmentCount > 0
+      ? `
+      <div style="margin-bottom: 24px; padding: 12px 16px; background: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 6px; font-size: 13px; color: #92400e;">
+        ${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"} included — view them on the prospect&apos;s page.
+      </div>`
+      : ""
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>New Prospect</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: ${BRAND.background};">
+  <div style="max-width: 680px; margin: 0 auto; padding: 24px 16px;">
+    <div style="background: ${BRAND.surface}; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04); border: 1px solid ${BRAND.border};">
+      <!-- Header bar -->
+      <div style="background: ${BRAND.primary}; padding: 18px 28px;">
+        <table width="100%" cellspacing="0" cellpadding="0" border="0">
+          <tr>
+            <td style="vertical-align: middle;">
+              <img src="${resolvedLogoUrl}" alt="ALFRED AI" width="40" height="40" style="display: block; border: 0; border-radius: 6px; background: ${BRAND.surface}; padding: 4px;" />
+            </td>
+            <td style="vertical-align: middle; padding-left: 14px;">
+              <div style="color: ${BRAND.surface}; font-size: 18px; font-weight: 700; letter-spacing: 0.04em;">MOTTA HUB</div>
+              <div style="color: rgba(255,255,255,0.8); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 2px;">Powered by ALFRED AI</div>
+            </td>
+            <td style="vertical-align: middle; text-align: right;">
+              <span style="display: inline-block; background: rgba(255,255,255,0.15); color: ${BRAND.surface}; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; padding: 5px 10px; border-radius: 999px;">Prospect</span>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Body -->
+      <div style="padding: 32px;">
+        <h1 style="color: ${BRAND.textPrimary}; font-size: 22px; margin: 0 0 4px; font-weight: 700; letter-spacing: -0.01em;">New Prospect Submitted</h1>
+        <p style="color: ${BRAND.textMuted}; font-size: 13px; margin: 0 0 18px;">${today}</p>
+
+        <div style="background: ${BRAND.background}; border-radius: 8px; padding: 14px 16px; border-left: 3px solid ${BRAND.primary}; margin-bottom: 24px;">
+          <p style="font-size: 14px; color: ${BRAND.textPrimary}; margin: 0; line-height: 1.5;">
+            <strong style="color: ${BRAND.primaryDark};">${authorName}</strong> added a new prospect &mdash; <strong style="color: ${BRAND.primaryDark};">${prospectName}</strong>.
+          </p>
+        </div>
+
+        ${detailsSection}
+        ${personalSection}
+        ${businessSection}
+        ${notesSection}
+        ${attachmentHint}
+
+        <div style="margin-top: 32px; text-align: center;">
+          <a href="${prospectUrl}" style="display: inline-block; background: ${BRAND.primary}; color: ${BRAND.surface}; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 600; letter-spacing: 0.02em;">View Prospect in MOTTA HUB &rarr;</a>
+        </div>
+      </div>
+
+      <div style="background: ${BRAND.background}; padding: 16px 28px; border-top: 1px solid ${BRAND.border};">
+        <p style="font-size: 11px; color: ${BRAND.textMuted}; margin: 0; text-align: center; letter-spacing: 0.02em;">
+          This is an automated notification from MOTTA HUB. Please do not reply to this email.
+        </p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+`
+}
+
+// ============================================================
 // Preference-aware email helpers (used by /api/notifications/send,
 // cron jobs, and admin broadcast).
 // ============================================================
