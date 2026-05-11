@@ -177,12 +177,195 @@ export async function GET(req: Request) {
     })
 
     // ── Stats from the unfiltered set (so KPI strip stays stable) ────────
+    // We intentionally do NOT scope stats to the current filter set. The
+    // strip is meant to be a "business-wide" pulse — collections health
+    // and AR position — that shouldn't move every time someone toggles
+    // a state filter.
+    const totalAmount = sum(enriched, "amount")
+    const totalPaid = sum(enriched, "amount_paid")
+    const totalOutstanding = sum(enriched, "amount_outstanding")
+    const byStatus = countBy(enriched, "status")
+
+    // ── Overdue analysis ────────────────────────────────────────────────
+    // The DB has a `status='overdue'` value, but the *real* overdue set
+    // is "invoices with outstanding balance whose due_date is in the
+    // past" — that's broader because it includes `issued` / `outstanding`
+    // rows that have aged past their due dates without the status being
+    // refreshed. The Ignition Reporting API only re-syncs status on
+    // certain events, so we always recompute aging from the dates.
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const day = 24 * 60 * 60 * 1000
+
+    const aging = {
+      current: { count: 0, amount: 0 },
+      d1to30: { count: 0, amount: 0 },
+      d31to60: { count: 0, amount: 0 },
+      d61to90: { count: 0, amount: 0 },
+      d90plus: { count: 0, amount: 0 },
+    }
+    let overdueCount = 0
+    let overdueAmount = 0
+    for (const inv of enriched) {
+      const out = Number(inv.amount_outstanding) || 0
+      if (out <= 0) continue
+      if (!inv.due_date) {
+        // No due date — bucket as current so we don't double-count it
+        // into a fake aging bucket.
+        aging.current.count++
+        aging.current.amount += out
+        continue
+      }
+      const due = new Date(inv.due_date)
+      due.setHours(0, 0, 0, 0)
+      const daysPast = Math.floor((today.getTime() - due.getTime()) / day)
+      if (daysPast <= 0) {
+        aging.current.count++
+        aging.current.amount += out
+      } else {
+        overdueCount++
+        overdueAmount += out
+        if (daysPast <= 30) {
+          aging.d1to30.count++
+          aging.d1to30.amount += out
+        } else if (daysPast <= 60) {
+          aging.d31to60.count++
+          aging.d31to60.amount += out
+        } else if (daysPast <= 90) {
+          aging.d61to90.count++
+          aging.d61to90.amount += out
+        } else {
+          aging.d90plus.count++
+          aging.d90plus.amount += out
+        }
+      }
+    }
+
+    // ── Collection-rate + payment-timing ─────────────────────────────────
+    // collectionRate is paid / billed across the full history. It's a
+    // gentler signal than "% of invoices marked paid" because partial
+    // payments (rare here, but possible) still count.
+    const collectionRate = totalAmount > 0 ? totalPaid / totalAmount : 0
+
+    // Median days-to-pay among invoices we *know* were paid. Using the
+    // median rather than mean because Motta has a long tail of legacy
+    // ACH/Bill.com invoices that take 30-60 days to clear and would
+    // skew a mean.
+    const daysToPay: number[] = []
+    for (const inv of enriched) {
+      if (!inv.paid_at || !inv.invoice_date) continue
+      const paid = new Date(inv.paid_at).getTime()
+      const billed = new Date(inv.invoice_date).getTime()
+      if (Number.isNaN(paid) || Number.isNaN(billed)) continue
+      const d = (paid - billed) / day
+      if (d < 0) continue
+      daysToPay.push(d)
+    }
+    daysToPay.sort((a, b) => a - b)
+    const medianDaysToPay =
+      daysToPay.length === 0
+        ? null
+        : daysToPay[Math.floor(daysToPay.length / 2)]
+
+    // ── Monthly trend (last 12 months on invoice_date) ──────────────────
+    // We synthesize the bucket keys deterministically so months with
+    // zero invoices still appear on the chart (otherwise the chart
+    // collapses to whatever months happened to have activity).
+    const trendMonths: string[] = []
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(today.getFullYear(), today.getMonth() - i, 1)
+      trendMonths.push(
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      )
+    }
+    const trendMap = new Map(
+      trendMonths.map((m) => [
+        m,
+        { month: m, billed: 0, paid: 0, outstanding: 0, count: 0 },
+      ]),
+    )
+    for (const inv of enriched) {
+      if (!inv.invoice_date) continue
+      const m = inv.invoice_date.slice(0, 7)
+      const bucket = trendMap.get(m)
+      if (!bucket) continue // outside the 12-month window
+      bucket.billed += Number(inv.amount) || 0
+      bucket.paid += Number(inv.amount_paid) || 0
+      bucket.outstanding += Number(inv.amount_outstanding) || 0
+      bucket.count++
+    }
+    const trend = Array.from(trendMap.values()).map((b) => ({
+      ...b,
+      billed: round2(b.billed),
+      paid: round2(b.paid),
+      outstanding: round2(b.outstanding),
+    }))
+
+    // ── Top 10 clients by outstanding balance ───────────────────────────
+    // The most actionable view on this page: "who owes us money right
+    // now". We dedupe by org > contact > "(Unknown)" so an org with
+    // multiple contact-attached invoices still rolls up to one row.
+    type TopRow = {
+      key: string
+      name: string
+      id: string | null
+      kind: "organization" | "contact" | null
+      count: number
+      billed: number
+      outstanding: number
+    }
+    const topMap = new Map<string, TopRow>()
+    for (const inv of enriched) {
+      const out = Number(inv.amount_outstanding) || 0
+      if (out <= 0) continue
+      const orgName = inv.organizations?.name
+      const ctName = inv.contacts?.full_name
+      const name = orgName || ctName || "(Unknown client)"
+      const id = inv.organization_id || inv.contact_id || null
+      const kind: "organization" | "contact" | null = inv.organization_id
+        ? "organization"
+        : inv.contact_id
+        ? "contact"
+        : null
+      const key = id || `name:${name}`
+      const cur = topMap.get(key) ?? {
+        key,
+        name,
+        id,
+        kind,
+        count: 0,
+        billed: 0,
+        outstanding: 0,
+      }
+      cur.count++
+      cur.billed += Number(inv.amount) || 0
+      cur.outstanding += out
+      topMap.set(key, cur)
+    }
+    const topOutstanding = Array.from(topMap.values())
+      .sort((a, b) => b.outstanding - a.outstanding)
+      .slice(0, 10)
+      .map((r) => ({
+        ...r,
+        billed: round2(r.billed),
+        outstanding: round2(r.outstanding),
+      }))
+
     const stats = {
       total: enriched.length,
-      totalAmount: sum(enriched, "amount"),
-      totalPaid: sum(enriched, "amount_paid"),
-      totalOutstanding: sum(enriched, "amount_outstanding"),
-      byStatus: countBy(enriched, "status"),
+      totalAmount: round2(totalAmount),
+      totalPaid: round2(totalPaid),
+      totalOutstanding: round2(totalOutstanding),
+      byStatus,
+      // Computed-overdue (date-based) — see comment block above. This is
+      // the metric KPIs and the bucket chip use, not the raw status
+      // count.
+      overdueCount,
+      overdueAmount: round2(overdueAmount),
+      collectionRate,
+      medianDaysToPay,
+      // Aging buckets keyed by the standard 0/30/60/90 cutoffs.
+      aging,
     }
 
     // ── Filter dimensions (full domain, ignoring current filters) ────────
@@ -272,11 +455,23 @@ export async function GET(req: Request) {
       totalUnfiltered: enriched.length,
       stats,
       dimensions,
+      // Analytics blocks for the charts strip. These are intentionally
+      // computed off the *unfiltered* set so the charts give a stable
+      // business overview even when filters narrow the table.
+      trend,
+      topOutstanding,
     })
   } catch (error) {
     console.error("[sales/invoices] Error:", error)
     return NextResponse.json({ error: "Failed to load invoices" }, { status: 500 })
   }
+}
+
+// Round to 2dp the cheap way. We do this on every aggregated number so
+// the JSON payload doesn't ship floating-point cruft like 12345.679999996
+// (an actual issue caused by repeated += on numeric columns).
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
 }
 
 function sum(arr: any[] | null | undefined, key: string): number {

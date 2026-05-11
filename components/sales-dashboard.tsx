@@ -57,6 +57,9 @@ import {
   Receipt,
   Banknote,
   Users,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -304,6 +307,37 @@ export function SalesDashboard() {
   // Search input is debounced locally before being mirrored to the URL,
   // otherwise every keystroke would trigger a refetch.
   const [searchInput, setSearchInput] = useState(search)
+
+  // ── Table-local refinement state ──────────────────────────────────────
+  // These are intentionally NOT URL-synced. They refine the already-
+  // fetched proposal set in-place (no extra round-trip), and acting on
+  // them feels instant — perfect for letting a partner quickly carve up
+  // "show me only what I lost this year" without losing the rest of
+  // the page's filter context.
+  const [tableBucket, setTableBucket] = useState<
+    "all" | "won" | "pipeline" | "lost" | "other"
+  >("all")
+  const [tableSearch, setTableSearch] = useState("")
+  const [tableSortBy, setTableSortBy] = useState<
+    "date" | "value" | "status" | "proposal" | "client"
+  >("date")
+  const [tableSortDir, setTableSortDir] = useState<"asc" | "desc">("desc")
+  const toggleTableSort = (col: typeof tableSortBy) => {
+    if (tableSortBy === col) {
+      setTableSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    } else {
+      setTableSortBy(col)
+      // Value/date columns are most useful as "biggest first"; text
+      // columns default to A→Z which matches user mental model.
+      setTableSortDir(col === "proposal" || col === "client" ? "asc" : "desc")
+    }
+  }
+  const resetTableFilters = () => {
+    setTableBucket("all")
+    setTableSearch("")
+    setTableSortBy("date")
+    setTableSortDir("desc")
+  }
 
   // Updates a single param while preserving the rest. Empty string removes it.
   const setParam = (key: string, value: string | null) => {
@@ -1015,38 +1049,322 @@ export function SalesDashboard() {
       </div>
 
       {/* ── Proposal table ────────────────────────────────────────────── */}
-      <Card className="border-stone-200">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-stone-700 flex items-center justify-between">
-            <span>Proposals · {fmtCount(proposals.length)} matching</span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          {isLoading ? (
-            <div className="p-4 space-y-2">
-              {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+      <ProposalTable
+        proposals={proposals}
+        isLoading={isLoading}
+        dateField={dateField}
+        bucket={tableBucket}
+        onBucketChange={setTableBucket}
+        tableSearch={tableSearch}
+        onTableSearchChange={setTableSearch}
+        sortBy={tableSortBy}
+        sortDir={tableSortDir}
+        onSort={toggleTableSort}
+        onReset={resetTableFilters}
+        onProposalsMutate={mutate}
+      />
+    </div>
+  )
+}
+
+// ── Proposal table (refined client-side from the already-fetched set) ────
+//
+// Lives below the page's URL-driven filter bar. The toolbar here adds
+// lightweight refinements — lifecycle bucket chips, an inline search,
+// and sortable column headers — without triggering an API refetch.
+// Bucket chip counts are computed once on render so users see the size
+// of each bucket up front.
+type SortableTableField = "date" | "value" | "status" | "proposal" | "client"
+
+function ProposalTable({
+  proposals,
+  isLoading,
+  dateField,
+  bucket,
+  onBucketChange,
+  tableSearch,
+  onTableSearchChange,
+  sortBy,
+  sortDir,
+  onSort,
+  onReset,
+  onProposalsMutate,
+}: {
+  proposals: Proposal[]
+  isLoading: boolean
+  dateField: "activity" | "created_at" | "accepted_at" | "sent_at"
+  bucket: "all" | "won" | "pipeline" | "lost" | "other"
+  onBucketChange: (b: "all" | "won" | "pipeline" | "lost" | "other") => void
+  tableSearch: string
+  onTableSearchChange: (v: string) => void
+  sortBy: SortableTableField
+  sortDir: "asc" | "desc"
+  onSort: (col: SortableTableField) => void
+  onReset: () => void
+  onProposalsMutate: () => void
+}) {
+  // Per-row best-effort date — re-uses the same precedence as the row
+  // body so sort ordering matches what users see in the Date column.
+  const rowDate = (p: Proposal): string | null => {
+    if (dateField === "accepted_at") return p.accepted_at ?? null
+    if (dateField === "sent_at") return p.sent_at ?? null
+    if (dateField === "created_at") return p.created_at ?? null
+    return p.accepted_at || p.lost_at || p.sent_at || p.created_at || null
+  }
+
+  // Bucket counts: computed on the unfiltered set so the chips always
+  // reflect the underlying mix (otherwise selecting "Won" would zero
+  // out the other chips and the user couldn't see what they were
+  // skipping).
+  const bucketCounts = useMemo(() => {
+    let won = 0, pipeline = 0, lost = 0, other = 0
+    for (const p of proposals) {
+      if (WON_STATUSES.has(p.status)) won++
+      else if (PIPELINE_STATUSES.has(p.status)) pipeline++
+      else if (LOST_STATUSES.has(p.status)) lost++
+      else other++
+    }
+    return { all: proposals.length, won, pipeline, lost, other }
+  }, [proposals])
+
+  const refined = useMemo(() => {
+    const q = tableSearch.trim().toLowerCase()
+    const filtered = proposals.filter((p) => {
+      // Bucket gate
+      if (bucket === "won" && !WON_STATUSES.has(p.status)) return false
+      if (bucket === "pipeline" && !PIPELINE_STATUSES.has(p.status)) return false
+      if (bucket === "lost" && !LOST_STATUSES.has(p.status)) return false
+      if (
+        bucket === "other" &&
+        (WON_STATUSES.has(p.status) ||
+          PIPELINE_STATUSES.has(p.status) ||
+          LOST_STATUSES.has(p.status))
+      ) {
+        return false
+      }
+      // Text gate — proposal #, title, client display, partner name. The
+      // page-level search is server-side and broader; this one is just
+      // for narrowing the visible 250.
+      if (q) {
+        const hay = (
+          (p.proposal_number || "") +
+          " " +
+          (p.title || "") +
+          " " +
+          (p.client_display || "") +
+          " " +
+          (p.client_partner || "") +
+          " " +
+          (p.proposal_sent_by || "")
+        ).toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      return true
+    })
+
+    const dir = sortDir === "asc" ? 1 : -1
+    const sorted = [...filtered].sort((a, b) => {
+      switch (sortBy) {
+        case "value":
+          return ((a.total_value || 0) - (b.total_value || 0)) * dir
+        case "status":
+          return (a.status || "").localeCompare(b.status || "") * dir
+        case "proposal":
+          return (a.proposal_number || "").localeCompare(b.proposal_number || "") * dir
+        case "client":
+          return (a.client_display || "").localeCompare(b.client_display || "") * dir
+        case "date":
+        default: {
+          const da = rowDate(a)
+          const db = rowDate(b)
+          // Nulls sort last regardless of direction so partners never
+          // get a top row that has no date at all.
+          if (!da && !db) return 0
+          if (!da) return 1
+          if (!db) return -1
+          return (new Date(da).getTime() - new Date(db).getTime()) * dir
+        }
+      }
+    })
+    return sorted
+    // rowDate is a stable closure over dateField only — safe to omit
+    // from deps because dateField is already listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proposals, bucket, tableSearch, sortBy, sortDir, dateField])
+
+  const hasRefinement =
+    bucket !== "all" ||
+    tableSearch.trim().length > 0 ||
+    sortBy !== "date" ||
+    sortDir !== "desc"
+
+  return (
+    <Card className="border-stone-200">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-stone-700 flex items-center justify-between gap-2 flex-wrap">
+          <span>
+            Proposals · {fmtCount(refined.length)}
+            {refined.length !== proposals.length ? (
+              <span className="text-stone-400 font-normal">
+                {" "}/ {fmtCount(proposals.length)}
+              </span>
+            ) : null}{" "}
+            <span className="text-stone-400 font-normal">matching</span>
+          </span>
+          {hasRefinement ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onReset}
+              className="h-7 text-xs text-stone-500 hover:text-stone-900"
+            >
+              <X className="h-3 w-3 mr-1" />
+              Reset table filters
+            </Button>
+          ) : null}
+        </CardTitle>
+      </CardHeader>
+
+      {/* ── Table refinement toolbar ───────────────────────────────── */}
+      <div className="px-4 pb-3 flex flex-wrap items-center gap-2 border-b border-stone-100">
+        <div className="flex flex-wrap items-center gap-1">
+          <TableBucketChip
+            label="All"
+            count={bucketCounts.all}
+            active={bucket === "all"}
+            onClick={() => onBucketChange("all")}
+          />
+          <TableBucketChip
+            label="Won"
+            count={bucketCounts.won}
+            active={bucket === "won"}
+            tone="emerald"
+            onClick={() => onBucketChange("won")}
+          />
+          <TableBucketChip
+            label="Pipeline"
+            count={bucketCounts.pipeline}
+            active={bucket === "pipeline"}
+            tone="amber"
+            onClick={() => onBucketChange("pipeline")}
+          />
+          <TableBucketChip
+            label="Lost"
+            count={bucketCounts.lost}
+            active={bucket === "lost"}
+            tone="rose"
+            onClick={() => onBucketChange("lost")}
+          />
+          {bucketCounts.other > 0 ? (
+            <TableBucketChip
+              label="Other"
+              count={bucketCounts.other}
+              active={bucket === "other"}
+              onClick={() => onBucketChange("other")}
+            />
+          ) : null}
+        </div>
+
+        <div className="relative ml-auto w-full sm:w-64">
+          <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-stone-400" />
+          <Input
+            value={tableSearch}
+            onChange={(e) => onTableSearchChange(e.target.value)}
+            placeholder="Filter table (proposal, client, owner)…"
+            className="h-8 pl-8 pr-7 text-xs"
+          />
+          {tableSearch ? (
+            <button
+              type="button"
+              onClick={() => onTableSearchChange("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-stone-400 hover:text-stone-700"
+              aria-label="Clear table search"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <CardContent className="p-0">
+        {isLoading ? (
+          <div className="p-4 space-y-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
+          </div>
+        ) : proposals.length === 0 ? (
+          <div className="p-8 text-center text-sm text-stone-500">
+            No proposals match the current filters.
+          </div>
+        ) : refined.length === 0 ? (
+          // Distinct empty state when the table-local refinements
+          // (chips / search) hid every row — the user can recover
+          // by resetting just those, without losing the page's
+          // top-of-screen filter context.
+          <div className="p-8 text-center text-sm text-stone-500">
+            <FilterIcon className="h-5 w-5 mx-auto mb-2 opacity-40" />
+            No proposals match the table refinements.
+            <div className="mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onReset}
+                className="h-7 text-xs"
+              >
+                <X className="h-3 w-3 mr-1" />
+                Reset table filters
+              </Button>
             </div>
-          ) : proposals.length === 0 ? (
-            <div className="p-8 text-center text-sm text-stone-500">
-              No proposals match the current filters.
-            </div>
-          ) : (
-            <ScrollArea className="max-h-[600px]">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-stone-50 border-b border-stone-200 z-10">
-                  <tr className="text-xs text-stone-500 uppercase tracking-wide">
-                    <th className="text-left px-4 py-2 font-medium">Proposal</th>
-                    <th className="text-left px-4 py-2 font-medium">Client</th>
-                    <th className="text-left px-4 py-2 font-medium">State</th>
-                    <th className="text-left px-4 py-2 font-medium">Status</th>
-                    <th className="text-right px-4 py-2 font-medium">Value</th>
-                    <th className="text-right px-4 py-2 font-medium">Recurring</th>
-                    <th className="text-left px-4 py-2 font-medium">Owner</th>
-                    <th className="text-left px-4 py-2 font-medium">Date</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-stone-100">
-                  {proposals.slice(0, 250).map((p) => {
+          </div>
+        ) : (
+          <ScrollArea className="max-h-[600px]">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-stone-50 border-b border-stone-200 z-10">
+                <tr className="text-xs text-stone-500 uppercase tracking-wide">
+                  <SortHeaderCell
+                    field="proposal"
+                    label="Proposal"
+                    sortBy={sortBy}
+                    sortDir={sortDir}
+                    onSort={onSort}
+                  />
+                  <SortHeaderCell
+                    field="client"
+                    label="Client"
+                    sortBy={sortBy}
+                    sortDir={sortDir}
+                    onSort={onSort}
+                  />
+                  <th className="text-left px-4 py-2 font-medium">State</th>
+                  <SortHeaderCell
+                    field="status"
+                    label="Status"
+                    sortBy={sortBy}
+                    sortDir={sortDir}
+                    onSort={onSort}
+                  />
+                  <SortHeaderCell
+                    field="value"
+                    label="Value"
+                    sortBy={sortBy}
+                    sortDir={sortDir}
+                    onSort={onSort}
+                    align="right"
+                  />
+                  <th className="text-right px-4 py-2 font-medium">Recurring</th>
+                  <th className="text-left px-4 py-2 font-medium">Owner</th>
+                  <SortHeaderCell
+                    field="date"
+                    label="Date"
+                    sortBy={sortBy}
+                    sortDir={sortDir}
+                    onSort={onSort}
+                  />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-stone-100">
+                {refined.slice(0, 250).map((p) => {
                     const meta = statusMeta(p.status)
                     // In activity mode the column shows whichever
                     // lifecycle date best represents the row (won →
@@ -1084,11 +1402,15 @@ export function SalesDashboard() {
                           )}
                         </td>
                         <td className="px-4 py-2.5 text-xs text-stone-600">
+                          {/* Inline state-edit triggers a parent SWR
+                              revalidation so the row reflects the
+                              freshly persisted value without a full
+                              page reload. */}
                           <ProposalStateEdit
                             proposalId={p.proposal_id}
                             value={p.state}
                             source={p.state_source}
-                            onSaved={() => mutate()}
+                            onSaved={onProposalsMutate}
                           />
                         </td>
                         <td className="px-4 py-2.5">
@@ -1113,20 +1435,123 @@ export function SalesDashboard() {
                   })}
                 </tbody>
               </table>
-              {proposals.length > 250 ? (
+              {refined.length > 250 ? (
                 <div className="p-3 text-center text-xs text-stone-500 border-t border-stone-100 bg-stone-50">
-                  Showing first 250 of {fmtCount(proposals.length)} matching proposals — refine filters to see more
+                  Showing first 250 of {fmtCount(refined.length)} matching proposals — refine filters to see more
                 </div>
               ) : null}
             </ScrollArea>
           )}
         </CardContent>
       </Card>
-    </div>
   )
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────
+
+// Bucket chip used in the proposal-table toolbar. Each chip shows a
+// count so partners can see the size of every lifecycle bucket up-front
+// before drilling in.
+function TableBucketChip({
+  label,
+  count,
+  active,
+  tone,
+  onClick,
+}: {
+  label: string
+  count: number
+  active: boolean
+  tone?: "emerald" | "amber" | "rose"
+  onClick: () => void
+}) {
+  // Active style picks up the bucket's semantic colour so the active
+  // state matches the status badges used in the table itself.
+  const activeTone =
+    tone === "emerald"
+      ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+      : tone === "amber"
+      ? "bg-amber-100 text-amber-800 border-amber-200"
+      : tone === "rose"
+      ? "bg-rose-100 text-rose-800 border-rose-200"
+      : "bg-stone-200 text-stone-800 border-stone-300"
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border text-xs font-medium transition-colors",
+        active
+          ? activeTone
+          : "bg-white border-stone-200 text-stone-600 hover:bg-stone-50 hover:text-stone-900",
+      )}
+      aria-pressed={active}
+    >
+      {label}
+      <span
+        className={cn(
+          "tabular-nums text-[10px] px-1.5 py-0.5 rounded-sm font-semibold",
+          active ? "bg-white/60" : "bg-stone-100 text-stone-500",
+        )}
+      >
+        {fmtCount(count)}
+      </span>
+    </button>
+  )
+}
+
+// Clickable column header with a tri-state sort indicator (idle ⇄ asc ⇄
+// desc). Used by every sortable column in the proposal table so the
+// interaction is consistent across columns.
+function SortHeaderCell({
+  field,
+  label,
+  sortBy,
+  sortDir,
+  onSort,
+  align = "left",
+}: {
+  field: SortableTableField
+  label: string
+  sortBy: SortableTableField
+  sortDir: "asc" | "desc"
+  onSort: (field: SortableTableField) => void
+  align?: "left" | "right"
+}) {
+  const isActive = sortBy === field
+  const Icon = !isActive ? ArrowUpDown : sortDir === "asc" ? ArrowUp : ArrowDown
+  return (
+    <th
+      className={cn(
+        "px-4 py-2 font-medium select-none",
+        align === "right" ? "text-right" : "text-left",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        className={cn(
+          "inline-flex items-center gap-1 text-xs uppercase tracking-wide transition-colors",
+          align === "right" ? "ml-auto flex-row-reverse" : "",
+          isActive
+            ? "text-stone-900"
+            : "text-stone-500 hover:text-stone-800",
+        )}
+        aria-sort={
+          isActive ? (sortDir === "asc" ? "ascending" : "descending") : "none"
+        }
+      >
+        {label}
+        <Icon
+          className={cn(
+            "h-3 w-3 transition-opacity",
+            isActive ? "opacity-100" : "opacity-50",
+          )}
+        />
+      </button>
+    </th>
+  )
+}
 
 function KpiCard({
   icon, label, value, sub, tone, loading,
