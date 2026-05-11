@@ -41,7 +41,17 @@ export async function GET(req: Request) {
 
   // ── Filters from query string ──────────────────────────────────────────
   // All filters are optional. Multi-value filters are comma-separated.
-  const dateField = (sp.get("dateField") || "created_at") as
+  //
+  // `dateField=activity` (the default) treats a proposal as "in window"
+  // when ANY of its lifecycle dates (accepted_at, lost_at, sent_at,
+  // created_at) falls inside the range. Previously the dashboard
+  // defaulted to `accepted_at`, which silently hid every lost / draft /
+  // awaiting_acceptance proposal because those rows have a null
+  // accepted_at — so users opening the page never saw deals that were
+  // still in flight or that fell through. The explicit single-column
+  // modes are kept for users who want a strict "won in YTD" lens.
+  const dateField = (sp.get("dateField") || "activity") as
+    | "activity"
     | "created_at"
     | "accepted_at"
     | "sent_at"
@@ -86,14 +96,50 @@ export async function GET(req: Request) {
   // value, and search filters here — they're computed against the *enriched*
   // record (after joining state from contacts/orgs) and are cheap enough to
   // do in JS once we have ~900 rows in memory.
-  if (startDate) q = q.gte(dateField, startDate)
-  if (endDate) q = q.lte(dateField, endDate + "T23:59:59")
+  //
+  // For the activity (any-date) mode we emit an .or() bundling the four
+  // lifecycle date columns so PostgREST treats them as a single
+  // predicate. Without this PostgREST would AND them together and zero
+  // rows would match.
+  if (dateField === "activity") {
+    if (startDate) {
+      q = q.or(
+        [
+          `accepted_at.gte.${startDate}`,
+          `lost_at.gte.${startDate}`,
+          `sent_at.gte.${startDate}`,
+          `created_at.gte.${startDate}`,
+        ].join(","),
+      )
+    }
+    if (endDate) {
+      const upper = endDate + "T23:59:59"
+      q = q.or(
+        [
+          `accepted_at.lte.${upper}`,
+          `lost_at.lte.${upper}`,
+          `sent_at.lte.${upper}`,
+          `created_at.lte.${upper}`,
+        ].join(","),
+      )
+    }
+  } else {
+    if (startDate) q = q.gte(dateField, startDate)
+    if (endDate) q = q.lte(dateField, endDate + "T23:59:59")
+  }
   if (statusFilter.length) q = q.in("status", statusFilter)
   if (partnerFilter.length) q = q.in("client_partner", partnerFilter)
   if (managerFilter.length) q = q.in("client_manager", managerFilter)
   if (sentByFilter.length) q = q.in("proposal_sent_by", sentByFilter)
 
-  q = q.order(dateField, { ascending: false, nullsFirst: false })
+  // Order by the most recent activity touch for the activity mode so the
+  // proposal list reads chronologically regardless of which lifecycle
+  // event fired last (won, lost, sent, etc).
+  if (dateField === "activity") {
+    q = q.order("updated_at", { ascending: false, nullsFirst: false })
+  } else {
+    q = q.order(dateField, { ascending: false, nullsFirst: false })
+  }
 
   const { data: proposals, error } = await q
 
@@ -635,6 +681,157 @@ export async function GET(req: Request) {
     }))
     .sort((a, b) => b.acceptedValue - a.acceptedValue)
 
+  // ── Payouts roll-up (collected cash from ignition_payments) ───────────
+  // The `ignition_disbursals` table is the legacy Zapier-fed stream and
+  // is effectively empty in production (no net_amount / arrival_date
+  // populated). The Reporting API doesn't expose disbursals either, so
+  // "Payouts" on the dashboard actually means "money collected from
+  // clients" — sourced from `ignition_payments.paid_at`. That's the
+  // number partners care about anyway (cash in vs. proposals won).
+  //
+  // The date range matches the proposals window so the two surfaces
+  // tell one consistent story — if the user is looking at YTD
+  // proposals, they see YTD collections beside them.
+  type PaymentRow = {
+    ignition_payment_id: string
+    amount: number | null
+    fees: number | null
+    net_amount: number | null
+    paid_at: string | null
+    ignition_client_id: string | null
+  }
+  let payQ = supabase
+    .from("ignition_payments")
+    .select(
+      "ignition_payment_id, amount, fees, net_amount, paid_at, ignition_client_id",
+    )
+    .not("paid_at", "is", null)
+    .limit(5000)
+  if (startDate) payQ = payQ.gte("paid_at", startDate)
+  if (endDate) payQ = payQ.lte("paid_at", endDate + "T23:59:59")
+  const { data: paymentRows } = await payQ
+  const payments = (paymentRows ?? []) as PaymentRow[]
+
+  let payoutsGross = 0
+  let payoutsFees = 0
+  let payoutsNet = 0
+  const payoutsByMonth = new Map<
+    string,
+    { month: string; count: number; gross: number; net: number; fees: number }
+  >()
+  const payoutsByClient = new Map<
+    string,
+    { ignition_client_id: string; count: number; gross: number; net: number }
+  >()
+
+  for (const p of payments) {
+    const amount = Number(p.amount) || 0
+    const fees = Number(p.fees) || 0
+    const net = Number(p.net_amount) || amount - fees
+    payoutsGross += amount
+    payoutsFees += fees
+    payoutsNet += net
+
+    if (p.paid_at) {
+      const month = p.paid_at.slice(0, 7) // "YYYY-MM"
+      const bucket = payoutsByMonth.get(month) ?? {
+        month,
+        count: 0,
+        gross: 0,
+        net: 0,
+        fees: 0,
+      }
+      bucket.count += 1
+      bucket.gross += amount
+      bucket.net += net
+      bucket.fees += fees
+      payoutsByMonth.set(month, bucket)
+    }
+
+    if (p.ignition_client_id) {
+      const bucket = payoutsByClient.get(p.ignition_client_id) ?? {
+        ignition_client_id: p.ignition_client_id,
+        count: 0,
+        gross: 0,
+        net: 0,
+      }
+      bucket.count += 1
+      bucket.gross += amount
+      bucket.net += net
+      payoutsByClient.set(p.ignition_client_id, bucket)
+    }
+  }
+
+  // Hydrate the top-paying clients with display names + linked
+  // org/contact ids so the dashboard can render them as actual links
+  // rather than opaque Ignition uuids. We only look up the top 10 by
+  // gross — anything beyond that is noise on the dashboard.
+  const topPayoutClientsRaw = Array.from(payoutsByClient.values())
+    .sort((a, b) => b.gross - a.gross)
+    .slice(0, 10)
+  const topClientIds = topPayoutClientsRaw.map((c) => c.ignition_client_id)
+  type IgcNameRow = {
+    ignition_client_id: string
+    name: string | null
+    business_name: string | null
+    organization_id: string | null
+    contact_id: string | null
+  }
+  const igcNameMap = new Map<string, IgcNameRow>()
+  if (topClientIds.length) {
+    const { data: igcs } = await supabase
+      .from("ignition_clients")
+      .select(
+        "ignition_client_id, name, business_name, organization_id, contact_id",
+      )
+      .in("ignition_client_id", topClientIds)
+    for (const ig of (igcs ?? []) as IgcNameRow[]) {
+      igcNameMap.set(ig.ignition_client_id, ig)
+    }
+  }
+
+  const topPayoutClients = topPayoutClientsRaw.map((c) => {
+    const ig = igcNameMap.get(c.ignition_client_id)
+    const linkedKind: "organization" | "contact" | null = ig?.organization_id
+      ? "organization"
+      : ig?.contact_id
+      ? "contact"
+      : null
+    const linkedId = ig?.organization_id ?? ig?.contact_id ?? null
+    return {
+      ignition_client_id: c.ignition_client_id,
+      name:
+        // Org/contact name (after linking) > Ignition's business_name >
+        // Ignition's raw name. Falls back to a generic label only if
+        // the entire client record is missing.
+        (linkedKind === "organization"
+          ? orgInfo.get(ig?.organization_id ?? "")?.name
+          : linkedKind === "contact"
+          ? contactInfo.get(ig?.contact_id ?? "")?.name
+          : null) ||
+        ig?.business_name ||
+        ig?.name ||
+        "(Unknown client)",
+      kind: linkedKind,
+      id: linkedId,
+      payment_count: c.count,
+      gross: c.gross,
+      net: c.net,
+    }
+  })
+
+  const payoutsSummary = {
+    count: payments.length,
+    gross: round2(payoutsGross),
+    fees: round2(payoutsFees),
+    net: round2(payoutsNet),
+    distinctClients: payoutsByClient.size,
+    byMonth: Array.from(payoutsByMonth.values()).sort((a, b) =>
+      a.month.localeCompare(b.month),
+    ),
+    topClients: topPayoutClients,
+  }
+
   return NextResponse.json({
     proposals: filtered,
     totalUnfiltered: enriched.length,
@@ -652,5 +849,9 @@ export async function GET(req: Request) {
     // exactly. It is intentionally not subject to the date-range filter
     // because the curated CSV is a current-state snapshot, not history.
     recurringSummary,
+    // Payouts (collected cash) roll-up for the same date window as the
+    // proposals — see comment block above for why this comes from
+    // ignition_payments rather than ignition_disbursals.
+    payouts: payoutsSummary,
   })
 }
