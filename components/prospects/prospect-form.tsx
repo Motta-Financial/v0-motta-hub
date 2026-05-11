@@ -182,6 +182,15 @@ export function ProspectForm() {
 
   // ── Services (drives the rest of the form) ─────────────────────────
   const [selectedServices, setSelectedServices] = useState<string[]>([])
+  // Free-text description shown when "Other" is checked. We keep this
+  // as a separate state (rather than stuffing it into selectedServices)
+  // so checking/unchecking "Other" doesn't blow away what the teammate
+  // typed -- they can toggle off, change their mind, and the text is
+  // preserved until submit. On submit we collapse `"Other" + text` to
+  // a single `"Other: <text>"` string in the services array so the
+  // server, Karbon sync, and email template don't need a new field.
+  const [otherServiceText, setOtherServiceText] = useState("")
+  const includesOther = selectedServices.includes("Other")
 
   // Derive which sections to show based on selected services
   const hasPersonalServices = useMemo(() => {
@@ -416,7 +425,17 @@ export function ProspectForm() {
           submitter_state: state,
           submitter_zip: zip,
 
-          services_requested: selectedServices,
+          // Collapse the "Other" sentinel + the free-text description
+          // into a single string so the downstream pipeline (server,
+          // Karbon sync, broadcast email) keeps using a flat string[].
+          // If "Other" is checked but the description is empty we just
+          // pass through "Other" -- the team can see it in the email
+          // and ask follow-up questions.
+          services_requested: selectedServices.map((s) =>
+            s === "Other" && otherServiceText.trim()
+              ? `Other: ${otherServiceText.trim()}`
+              : s,
+          ),
           service_focus: serviceFocus,
           entity_types: onlyPersonal ? null : entityTypes,
 
@@ -494,6 +513,11 @@ export function ProspectForm() {
           conference, by referral, by text — and want to capture them in Motta Hub
           without asking them to fill out the public intake form.
         </p>
+        <p className="text-xs text-muted-foreground">
+          Required fields are marked with{" "}
+          <span className="text-destructive">*</span> — which fields are required
+          depends on which services you select below.
+        </p>
       </header>
 
       {/* ─── Services (hoisted to top — drives the rest of the form) ─── */}
@@ -531,10 +555,53 @@ export function ProspectForm() {
                 </Badge>
               </label>
             ))}
+
+            {/* "Other" tile -- full-width so the description input has
+                room to read. Intentionally not added to the SERVICES
+                array (which has category-based section gating); "Other"
+                has no implied category so it doesn't toggle the personal
+                or business sections on its own. If a teammate selects
+                ONLY "Other", the form falls back to the no-services
+                rule (first+last OR business name) and both sections
+                stay visible. */}
+            <div
+              className={cn(
+                "flex flex-col gap-2 rounded-md border bg-card px-3 py-2 text-sm transition-colors sm:col-span-2",
+                includesOther && "border-foreground/40 bg-muted/60",
+              )}
+            >
+              <label className="flex cursor-pointer items-center gap-2">
+                <Checkbox
+                  checked={includesOther}
+                  onCheckedChange={() =>
+                    setSelectedServices((prev) => toggle(prev, "Other"))
+                  }
+                />
+                <span className="text-foreground">Other</span>
+                <Badge variant="outline" className="ml-auto text-[10px] capitalize">
+                  Custom
+                </Badge>
+              </label>
+              {includesOther && (
+                <Textarea
+                  value={otherServiceText}
+                  onChange={(e) => setOtherServiceText(e.target.value)}
+                  placeholder='Describe the service the prospect is interested in — e.g. "M&A due diligence", "Quarterly CFO advisory", "Estate planning for a recent inheritance"'
+                  className="min-h-[64px] text-sm"
+                />
+              )}
+            </div>
           </div>
           {selectedServices.length > 0 && (
             <p className="text-xs text-muted-foreground">
-              Selected: {selectedServices.join(", ")}
+              Selected:{" "}
+              {selectedServices
+                .map((s) =>
+                  s === "Other" && otherServiceText.trim()
+                    ? `Other: ${otherServiceText.trim()}`
+                    : s,
+                )
+                .join(", ")}
             </p>
           )}
         </CardContent>
