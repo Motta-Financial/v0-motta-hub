@@ -37,6 +37,22 @@ function LoginContent() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [showForgotPassword, setShowForgotPassword] = useState(false)
   const [resetEmailSent, setResetEmailSent] = useState(false)
+  // Defer rendering of the full login UI until after client mount.
+  //
+  // This page has been hit by intermittent hydration mismatches when
+  // the dev-mode / preview HTML cache is out of sync with the live
+  // bundle (e.g. right after a brand rename: the cached SSR HTML
+  // still has the old logo + headline while the new client bundle
+  // has the new ones). By rendering a stable spinner during SSR and
+  // only showing the real form after mount, the server-rendered HTML
+  // is guaranteed to match the first client render regardless of
+  // any upstream cache state — eliminating that whole class of bug
+  // for a page that is, by design, always client-rendered anyway
+  // (every interaction here calls into the Supabase browser client).
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -209,6 +225,19 @@ function LoginContent() {
             </Button>
           </div>
         </div>
+      </div>
+    )
+  }
+
+  // Render a stable spinner during SSR / before client mount. The
+  // JSX here must exactly match the Suspense fallback in LoginPage so
+  // there's nothing for React to mismatch on initial hydration -- once
+  // mounted, the real form takes over below. See the `mounted` comment
+  // above for the full rationale.
+  if (!mounted) {
+    return (
+      <div className="min-h-screen bg-[#EAE8E1] flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-[#6B745D]" />
       </div>
     )
   }
