@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/collapsible"
 import { useToast } from "@/hooks/use-toast"
 import { MatchPickerDialog } from "@/components/ignition/match-picker-dialog"
+import { IgnitionBackfillCard } from "@/components/ignition/backfill-card"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -499,6 +500,8 @@ export default function IgnitionAdminPage() {
                 )}
               </CardContent>
             </Card>
+
+            {connection && !connection.isExpired ? <IgnitionBackfillCard /> : null}
 
             <Card>
               <CardHeader>
