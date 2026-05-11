@@ -38,12 +38,28 @@ import {
   Users,
   MapPin,
   Info,
+  Timer,
+  PieChart as PieChartIcon,
 } from "lucide-react"
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts"
 import { IgnitionLiveBadge } from "@/components/sales/ignition-live-badge"
 import {
   MultiSelectChip,
   RangeChip,
   DateRangeChip,
+  DateRangePresets,
   type DateFieldOption,
 } from "@/components/sales/filter-chips"
 
@@ -92,6 +108,28 @@ interface PaymentsResponse {
     totalNet: number
     totalRefunded: number
     byStatus: Record<string, number>
+  }
+  analytics: {
+    /** Monthly trend across the past 12 months, in chronological order. */
+    trend: Array<{
+      month: string // "YYYY-MM"
+      count: number
+      gross: number
+      net: number
+      fees: number
+    }>
+    /** Top 10 clients by gross collected within the filtered window. */
+    topClients: Array<{
+      key: string
+      name: string
+      orgId: string | null
+      contactId: string | null
+      count: number
+      gross: number
+      net: number
+    }>
+    /** Median days from invoice issuance → payment, within the window. */
+    medianDaysToCollect: number | null
   }
   dimensions: {
     statuses: string[]
@@ -270,6 +308,21 @@ export function SalesPayments() {
             ? ` matching ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""} (of ${data.totalUnfiltered.toLocaleString()})`
             : ""}
         </p>
+        {/* Quick-pick range presets. The default view is YTD; partners
+            who want a tighter (MTD/QTD) or wider (Last 12mo / All time)
+            framing can flip it with a single click. The active preset
+            stays highlighted so the page always shows "what window am
+            I looking at" without having to inspect the Date chip. */}
+        <DateRangePresets
+          from={dateFrom}
+          to={dateTo}
+          onChange={({ from, to }) =>
+            updateParams({
+              dateFrom: from || null,
+              dateTo: to || null,
+            })
+          }
+        />
       </div>
 
       {/* KPI Strip */}
@@ -295,7 +348,16 @@ export function SalesPayments() {
         <KpiCard
           label="Net Revenue"
           value={data ? fmtMoney(data.stats.totalNet) : "—"}
-          subtitle="after Stripe fees"
+          subtitle={
+            // Lead with median-days-to-collect when we have it — far
+            // more actionable than the static "after Stripe fees"
+            // descriptor. Falls back to the old descriptor when the
+            // filtered window has no invoice/payment pairs (e.g.
+            // MTD on day 1 of a month).
+            data?.analytics.medianDaysToCollect != null
+              ? `${data.analytics.medianDaysToCollect}d median to collect`
+              : "after Stripe fees"
+          }
           icon={TrendingUp}
           tone="emerald"
         />
@@ -311,6 +373,12 @@ export function SalesPayments() {
           tone="blue"
         />
       </div>
+
+      {/* Charts Strip — monthly trend + status mix + top clients.
+          Reads the analytics block from the API which is computed
+          across the *currently filtered* window so the chart and the
+          table below stay in sync. */}
+      <PaymentsCharts data={data} isLoading={isLoading} />
 
       {/* Filter bar */}
       <Card>
@@ -680,4 +748,281 @@ function SortableHeader({
       </button>
     </th>
   )
+}
+
+// ── Charts strip ───────────────────────────────────────────────────────
+// Three-panel analytics row: monthly trend (12mo), status mix, and
+// top-collected clients. All panels read from the API's `analytics`
+// block which is computed against the same filter predicate the table
+// uses — so when the user is on YTD the chart shows YTD, when they
+// click MTD it switches to MTD, etc.
+//
+// Why we don't render method mix: payment_method is never populated by
+// the Ignition Reporting API (verified 0/1,531 rows in prod), so a chart
+// would always be a single grey wedge labelled "(none)". Until the
+// upstream API starts wiring methods through we skip the panel entirely.
+function PaymentsCharts({
+  data,
+  isLoading,
+}: {
+  data: PaymentsResponse | undefined
+  isLoading: boolean
+}) {
+  if (isLoading && !data) {
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <Skeleton className="h-[260px] lg:col-span-2" />
+        <Skeleton className="h-[260px]" />
+      </div>
+    )
+  }
+  if (!data) return null
+
+  const trendData = data.analytics.trend.map((t) => ({
+    ...t,
+    label: monthLabel(t.month),
+  }))
+  const trendIsEmpty = trendData.every((t) => t.gross === 0)
+
+  // Sort status entries by count so the legend / colour order stays
+  // stable across renders even as the underlying counts change.
+  const statusEntries = Object.entries(data.stats.byStatus)
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Row 1: trend (wide) + status mix (narrow) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <Card className="lg:col-span-2">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <TrendingUp className="h-4 w-4 text-stone-500" />
+              <h3 className="text-sm font-semibold text-stone-900">
+                Last 12 months · net collected
+              </h3>
+              <span className="ml-auto text-xs text-muted-foreground">
+                stacked with processing fees
+              </span>
+            </div>
+            {trendIsEmpty ? (
+              <EmptyChartFallback message="No payments in the last 12 months" />
+            ) : (
+              <div className="h-[220px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={trendData}
+                    margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
+                  >
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      stroke="#E7E5E4"
+                      vertical={false}
+                    />
+                    <XAxis
+                      dataKey="label"
+                      tick={{ fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tickFormatter={(v) => fmtMoneyCompact(v as number)}
+                      tick={{ fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={48}
+                    />
+                    <Tooltip
+                      formatter={(v: number) => fmtMoney(v)}
+                      labelClassName="text-xs"
+                      contentStyle={{
+                        borderRadius: 6,
+                        fontSize: 12,
+                        border: "1px solid #E7E5E4",
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" />
+                    {/* Stack net + fees so the total bar height = gross
+                        and the green vs amber split tells the
+                        "what landed in our pocket" story at a glance. */}
+                    <Bar
+                      dataKey="net"
+                      name="Net"
+                      stackId="amt"
+                      fill="#059669"
+                      radius={[0, 0, 0, 0]}
+                    />
+                    <Bar
+                      dataKey="fees"
+                      name="Fees"
+                      stackId="amt"
+                      fill="#F59E0B"
+                      radius={[3, 3, 0, 0]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <PieChartIcon className="h-4 w-4 text-stone-500" />
+              <h3 className="text-sm font-semibold text-stone-900">Status mix</h3>
+            </div>
+            {statusEntries.length === 0 ? (
+              <EmptyChartFallback message="No payments yet" />
+            ) : (
+              <div className="h-[220px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={statusEntries.map(([k, v]) => ({
+                        name: titleCase(k),
+                        key: k,
+                        value: v,
+                      }))}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={50}
+                      outerRadius={80}
+                      paddingAngle={2}
+                      stroke="#fff"
+                    >
+                      {statusEntries.map(([k]) => (
+                        <Cell key={k} fill={statusColor(k)} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      formatter={(v: number, _name, item: any) => [
+                        `${v} payment${v === 1 ? "" : "s"}`,
+                        item?.payload?.name,
+                      ]}
+                      contentStyle={{
+                        borderRadius: 6,
+                        fontSize: 12,
+                        border: "1px solid #E7E5E4",
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Row 2: top collected clients — list view (no chart) keeps it
+          readable when names are long. */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Users className="h-4 w-4 text-stone-500" />
+            <h3 className="text-sm font-semibold text-stone-900">
+              Top collected clients
+            </h3>
+            <span className="ml-auto text-xs text-muted-foreground">
+              {data.analytics.topClients.length === 0
+                ? ""
+                : `top ${data.analytics.topClients.length} by gross`}
+            </span>
+          </div>
+          {data.analytics.topClients.length === 0 ? (
+            <EmptyChartFallback message="No payments in the active window" />
+          ) : (
+            <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
+              {data.analytics.topClients.map((c) => {
+                const href = c.orgId
+                  ? `/clients/${c.orgId}`
+                  : c.contactId
+                    ? `/clients/${c.contactId}`
+                    : null
+                return (
+                  <li
+                    key={c.key}
+                    className="flex items-center gap-2 py-1.5 text-sm border-b border-stone-100 last:border-b-0 md:[&:nth-last-child(2)]:border-b-0"
+                  >
+                    <div className="flex-1 min-w-0">
+                      {href ? (
+                        <Link
+                          href={href}
+                          className="font-medium text-stone-900 hover:underline truncate block"
+                          title={c.name}
+                        >
+                          {c.name}
+                        </Link>
+                      ) : (
+                        <span
+                          className="font-medium text-stone-700 truncate block"
+                          title={c.name}
+                        >
+                          {c.name}
+                        </span>
+                      )}
+                      <span className="text-xs text-muted-foreground">
+                        {c.count} payment{c.count === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="tabular-nums text-emerald-700 font-semibold text-sm">
+                      {fmtMoneyCompact(c.gross)}
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function EmptyChartFallback({ message }: { message: string }) {
+  return (
+    <div className="h-[200px] flex items-center justify-center text-sm text-muted-foreground">
+      {message}
+    </div>
+  )
+}
+
+// Compact-money formatter for chart axes: $1.2k, $25k, $1.4M. Keeps the
+// y-axis readable when payment volumes span $0–$80k bars.
+function fmtMoneyCompact(n: number): string {
+  if (!Number.isFinite(n)) return "—"
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`
+  if (abs >= 1_000) return `$${Math.round(n / 1_000)}k`
+  return `$${Math.round(n)}`
+}
+
+// Map "YYYY-MM" → short axis label. Includes a 2-digit year suffix when
+// the 12-month window straddles a year boundary so the axis doesn't say
+// "Jan…Dec…Jan" without context. Mirrors the helper on the invoices page.
+function monthLabel(yyyymm: string): string {
+  const [y, m] = yyyymm.split("-").map(Number)
+  if (!y || !m) return yyyymm
+  const d = new Date(y, m - 1, 1)
+  const short = d.toLocaleDateString("en-US", { month: "short" })
+  return m === 1 ? `${short} ${String(y).slice(-2)}` : short
+}
+
+// Tone colours for status pie slices. Mirrors the badge palette so the
+// chart and the table rows reinforce the same colour vocabulary.
+function statusColor(status: string): string {
+  switch (status) {
+    case "disbursed":
+      return "#059669" // emerald — money landed in our bank
+    case "collected":
+      return "#3B82F6" // blue — received but not yet disbursed
+    case "uncollected":
+      return "#F59E0B" // amber — client still owes
+    case "refunded":
+    case "failed":
+      return "#DC2626" // rose
+    default:
+      return "#A8A29E" // stone
+  }
 }

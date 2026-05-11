@@ -56,6 +56,7 @@ import {
   MultiSelectChip,
   RangeChip,
   DateRangeChip,
+  DateRangePresets,
   type DateFieldOption,
 } from "@/components/sales/filter-chips"
 
@@ -372,6 +373,21 @@ export function SalesInvoices() {
             ? ` matching ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""} (of ${data.totalUnfiltered.toLocaleString()})`
             : ""}
         </p>
+        {/* Quick-pick range presets. The default view is YTD; partners
+            who want a tighter (MTD/QTD) or wider (Last 12mo / All time)
+            framing can flip it with a single click. The active preset
+            stays highlighted so the page always shows "what window am
+            I looking at" without having to inspect the Date chip. */}
+        <DateRangePresets
+          from={dateFrom}
+          to={dateTo}
+          onChange={({ from, to }) =>
+            updateParams({
+              dateFrom: from || null,
+              dateTo: to || null,
+            })
+          }
+        />
       </div>
 
       {/* KPI Strip */}
