@@ -56,6 +56,8 @@ import {
   Sparkles,
   Layers,
   BookOpen,
+  Palette,
+  Wallet,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -331,7 +333,7 @@ function HubHeader({
         </div>
         <div className="flex items-center gap-2">
           <FormsMenu />
-          <QuickLinksMenu />
+          <AiToolsMenu />
           <TechStackMenu />
           <Button
             variant="ghost"
@@ -451,76 +453,131 @@ const HEADER_FORMS: ReadonlyArray<HeaderMenuItem> = [
   },
 ]
 
-// AI assistants Motta uses daily. Alfred is our custom GPT (the
-// trigger icon mirrors the "Powered by ALFRED AI" badge in the
-// header), Claude is the general-purpose model, AnyQuest is the
-// Motta-tenant agent platform.
-const HEADER_QUICK_LINKS: ReadonlyArray<HeaderMenuItem> = [
+// AI assistants Motta uses daily. The top-line `name` is the
+// friendly product-facing label (what teammates actually call the
+// tool inside the firm); `category` is the underlying vendor that
+// powers it, rendered as a muted subheader so it's obvious which
+// account / provider the link opens to.
+const HEADER_AI_TOOLS: ReadonlyArray<HeaderMenuItem> = [
   {
-    name: "OpenAI -- Alfred",
+    name: "ALFRED GPT",
     href: "https://chatgpt.com/g/g-VZHJiFTtK-alfred",
-    category: "AI",
+    category: "OpenAI",
     icon: Sparkles,
   },
   {
     name: "Claude",
     href: "https://claude.ai/new",
-    category: "AI",
+    category: "Anthropic",
     icon: Sparkles,
   },
   {
-    name: "AnyQuest",
+    name: "Agent Builder",
     href: "https://mottafinancial.anyquest.ai/login",
-    category: "AI",
+    category: "AnyQuest",
     icon: Sparkles,
   },
 ]
 
-// External SaaS platforms in Motta's tech stack. Ordered by the
-// natural client-engagement flow: billing/proposals -> accounting ->
-// FP&A / valuation -> tax prep -> tax advisory -> wealth mgmt.
-const HEADER_TECH_STACK: ReadonlyArray<HeaderMenuItem> = [
+// External SaaS platforms in Motta's tech stack. Grouped by the
+// department / engagement-stage the tool serves so teammates can
+// scan the dropdown by what they're trying to do (sell, bookkeep,
+// run payroll, prep taxes, manage wealth) rather than memorize
+// vendor names. Within each group the order matches the firm's
+// preferred-vendor priority.
+type HeaderMenuGroup = {
+  label: string
+  items: ReadonlyArray<HeaderMenuItem>
+}
+
+const HEADER_TECH_STACK: ReadonlyArray<HeaderMenuGroup> = [
   {
-    name: "Ignition",
-    href: "https://go.ignitionapp.com/home",
-    category: "Billing / Proposals",
-    icon: FileText,
+    label: "Sales & Marketing",
+    items: [
+      {
+        name: "Ignition",
+        href: "https://go.ignitionapp.com/home",
+        category: "Proposals & Billing",
+        icon: FileText,
+      },
+      {
+        name: "Canva",
+        href: "https://www.canva.com/",
+        category: "Marketing",
+        icon: Palette,
+      },
+    ],
   },
   {
-    name: "QuickBooks Online",
-    href: "https://accounts.intuit.com/app/sign-in?app_group=QBO&asset_alias=Intuit.accounting.core.qbowebapp&app_environment=prod&iux_redirect_reason=UNAUTHENTICATED",
-    category: "Accounting",
-    icon: Calculator,
+    label: "Accounting",
+    items: [
+      {
+        name: "QuickBooks Online",
+        href: "https://accounts.intuit.com/app/sign-in?app_group=QBO&asset_alias=Intuit.accounting.core.qbowebapp&app_environment=prod&iux_redirect_reason=UNAUTHENTICATED",
+        category: "Bookkeeping",
+        icon: Calculator,
+      },
+      {
+        name: "Aider",
+        href: "https://advisory.app.aider.ai/advisory-dashboard",
+        category: "FP&A",
+        icon: BarChart3,
+      },
+      {
+        name: "BizEquity",
+        href: "https://motta.bizequity.com/login?redirectPath=%2Fuser%2Fcompanies",
+        category: "Business Valuation",
+        icon: TrendingUp,
+      },
+    ],
   },
   {
-    name: "Aider",
-    href: "https://advisory.app.aider.ai/advisory-dashboard",
-    category: "Accounting (FP&A)",
-    icon: BarChart3,
+    label: "Payroll",
+    items: [
+      {
+        name: "Gusto",
+        // Long signed-state-bearing URL preserved verbatim from the
+        // spec so the Keycloak SSO handoff keeps working; truncating
+        // any query param breaks the redirect back into app.gusto.com.
+        href: "https://login.gusto.com/realms/zenpayroll/protocol/openid-connect/auth?alert=&client_id=zenpayroll&device_uuid=dc674477-e4a7-486e-b8a6-85977088fbc1&redirect_to_partner=false&redirect_uri=https%3A%2F%2Fapp.gusto.com%2Fuser%2Fauth%2Fkeycloak_openid%2Fcallback&response_type=code&scope=openid&session_key=c8MUXiP45sLqa29q4STQ23qU9Jik0derlu5VgBOgAgg%3D&state=b0039a014aec9802c87b5fd2c91e29f20b40610d237e3860",
+        category: "Payroll",
+        icon: Wallet,
+      },
+      {
+        name: "ADP",
+        href: "https://online.adp.com/signin/v1/?APPID=AccountantConnect&productId=80e309c3-70cf-bae1-e053-3505430b5495&returnURL=https://runpayroll.adp.com/enrollment.aspx?lightbrand=accountantconnect&callingAppId=AccountantConnect&TARGET=-SM-https://runpayroll.adp.com/protected/auth.aspx?brand=45135cd7-de34-4a45-a9de-ef8c5a2d6fa6&auth=OLP&lightbrand=accountantconnect&lightbrand=accountantconnect",
+        category: "Payroll",
+        icon: Wallet,
+      },
+    ],
   },
   {
-    name: "BizEquity",
-    href: "https://motta.bizequity.com/login?redirectPath=%2Fuser%2Fcompanies",
-    category: "Accounting (Biz Valuation)",
-    icon: TrendingUp,
+    label: "Tax",
+    items: [
+      {
+        name: "ProConnect",
+        href: "https://ito.intuit.com/app/protax/welcome?iux_intuit_tid=1-69ef56fb-7a6e28034d449fbb11b2852f",
+        category: "Tax Prep",
+        icon: Receipt,
+      },
+      {
+        name: "ProConnect Tax Advisor",
+        href: "https://taxadvisor.app.intuit.com/tax-advisor-ui/welcome",
+        category: "Tax Advisory",
+        icon: Lightbulb,
+      },
+    ],
   },
   {
-    name: "ProConnect",
-    href: "https://ito.intuit.com/app/protax/welcome?iux_intuit_tid=1-69ef56fb-7a6e28034d449fbb11b2852f",
-    category: "Tax Prep",
-    icon: Receipt,
-  },
-  {
-    name: "ProConnect Tax Advisor",
-    href: "https://taxadvisor.app.intuit.com/tax-advisor-ui/welcome",
-    category: "Tax Advisory",
-    icon: Lightbulb,
-  },
-  {
-    name: "Altruist",
-    href: "https://app.altruist.com/dashboard",
-    category: "Wealth Mgmt",
-    icon: Briefcase,
+    label: "Wealth Management",
+    items: [
+      {
+        name: "Altruist",
+        href: "https://app.altruist.com/dashboard",
+        category: "Wealth Mgmt",
+        icon: Briefcase,
+      },
+    ],
   },
 ]
 
@@ -528,19 +585,55 @@ function openInNewTab(href: string) {
   window.open(href, "_blank", "noopener,noreferrer")
 }
 
+// Render one row inside the dropdown -- pulled out so both the flat
+// and grouped branches below stay tiny.
+function HeaderMenuRow({ item }: { item: HeaderMenuItem }) {
+  const Icon = item.icon
+  return (
+    <DropdownMenuItem
+      onClick={() => openInNewTab(item.href)}
+      className="cursor-pointer items-start gap-3 py-2.5"
+    >
+      <span
+        className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+        style={{ backgroundColor: "#EAE6E1" }}
+      >
+        <Icon className="h-4 w-4" style={{ color: "#6B745D" }} />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col leading-tight">
+        <span className="flex items-center gap-1.5 text-sm font-medium text-gray-900">
+          {item.name}
+          <ExternalLink className="h-3 w-3 text-gray-400" />
+        </span>
+        {item.description && (
+          <span className="text-xs text-gray-500">{item.description}</span>
+        )}
+        {item.category && (
+          <span className="text-xs text-gray-500">{item.category}</span>
+        )}
+      </span>
+    </DropdownMenuItem>
+  )
+}
+
 function HeaderLinkMenu({
   label,
   triggerIcon: TriggerIcon,
   groupLabel,
   items,
+  groups,
   width = "w-72",
 }: {
   label: string
   triggerIcon: typeof FilePlus2
   groupLabel: string
-  items: ReadonlyArray<HeaderMenuItem>
+  // Pass `items` for a flat list (Forms, AI Tools) or `groups` for
+  // a sectioned list with sub-headers between rows (Tech Stack).
+  // Exactly one of the two must be provided.
+  items?: ReadonlyArray<HeaderMenuItem>
+  groups?: ReadonlyArray<HeaderMenuGroup>
   // Tech Stack rows have longer "Category | Vendor" labels, so we
-  // widen that menu. Forms and Quick Links use the default.
+  // widen that menu. Forms and AI Tools use the default.
   width?: string
 }) {
   return (
@@ -562,35 +655,21 @@ function HeaderLinkMenu({
           {groupLabel}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {items.map((item) => {
-          const Icon = item.icon
-          return (
-            <DropdownMenuItem
-              key={item.href}
-              onClick={() => openInNewTab(item.href)}
-              className="cursor-pointer items-start gap-3 py-2.5"
-            >
-              <span
-                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
-                style={{ backgroundColor: "#EAE6E1" }}
-              >
-                <Icon className="h-4 w-4" style={{ color: "#6B745D" }} />
-              </span>
-              <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                <span className="flex items-center gap-1.5 text-sm font-medium text-gray-900">
-                  {item.name}
-                  <ExternalLink className="h-3 w-3 text-gray-400" />
-                </span>
-                {item.description && (
-                  <span className="text-xs text-gray-500">{item.description}</span>
-                )}
-                {item.category && (
-                  <span className="text-xs text-gray-500">{item.category}</span>
-                )}
-              </span>
-            </DropdownMenuItem>
-          )
-        })}
+        {items?.map((item) => <HeaderMenuRow key={item.href} item={item} />)}
+        {groups?.map((group, groupIdx) => (
+          <div key={group.label}>
+            {/* Section divider between groups; the menu's own top
+                separator handles the gap above the first group, so
+                we only need an extra separator for groups 2..N. */}
+            {groupIdx > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuLabel className="px-2 pt-1.5 pb-0.5 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+              {group.label}
+            </DropdownMenuLabel>
+            {group.items.map((item) => (
+              <HeaderMenuRow key={item.href} item={item} />
+            ))}
+          </div>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -607,13 +686,13 @@ function FormsMenu() {
   )
 }
 
-function QuickLinksMenu() {
+function AiToolsMenu() {
   return (
     <HeaderLinkMenu
-      label="Quick Links"
+      label="AI Tools"
       triggerIcon={Sparkles}
-      groupLabel="Quick Links"
-      items={HEADER_QUICK_LINKS}
+      groupLabel="AI Tools"
+      items={HEADER_AI_TOOLS}
     />
   )
 }
@@ -624,7 +703,7 @@ function TechStackMenu() {
       label="Tech Stack"
       triggerIcon={Layers}
       groupLabel="Motta Tech Stack"
-      items={HEADER_TECH_STACK}
+      groups={HEADER_TECH_STACK}
       width="w-80"
     />
   )
