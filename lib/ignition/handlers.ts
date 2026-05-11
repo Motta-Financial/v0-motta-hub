@@ -13,6 +13,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { createIdResolver } from "./id-resolver"
 
 // -------- Types ----------------------------------------------------------
 
@@ -222,19 +223,36 @@ export async function handleIgnitionEvent(
   // else `id` typically refers to the proposal/invoice/payment, so we only
   // fall back to it on client.* events.
   const isClientEvent = eventType.startsWith("client.")
-  const clientId = pick<string>(
+  const rawClientId = pick<string>(
     payload,
     isClientEvent
       ? ["client_id", "ignition_client_id", "client__id", "client_uuid", "id"]
       : ["client_id", "ignition_client_id", "client__id", "client_uuid"],
   )
-  const proposalId = pick<string>(payload, [
+  const rawProposalId = pick<string>(payload, [
     "proposal_id",
     "ignition_proposal_id",
     "proposal__id",
     // Only fall back to top-level `id` for proposal.* events.
     ...(eventType.startsWith("proposal.") ? ["id"] : []),
   ])
+
+  // Translate legacy Zapier-era IDs into Reporting-API slug IDs so the upsert
+  // lands on the canonical row instead of creating a duplicate. The resolver
+  // returns the input unchanged when:
+  //   - the ID already has a slug prefix (cli_, prop_, inv_, etc.)
+  //   - no natural-key match is found (genuinely new resource — the next
+  //     OAuth sync will pull it in under the slug ID and the reconciliation
+  //     script can merge later if needed)
+  const resolver = createIdResolver(supabase)
+  const clientId = await resolver.resolve("client", rawClientId, payload)
+  const proposalId = await resolver.resolve("proposal", rawProposalId, payload)
+  if (rawClientId && clientId !== rawClientId) {
+    console.log(`[ignition/handlers] translated client_id ${rawClientId} -> ${clientId}`)
+  }
+  if (rawProposalId && proposalId !== rawProposalId) {
+    console.log(`[ignition/handlers] translated proposal_id ${rawProposalId} -> ${proposalId}`)
+  }
 
   // ---- Client events ---------------------------------------------------
   if (eventType.startsWith("client.")) {
@@ -384,13 +402,17 @@ export async function handleIgnitionEvent(
 
   // ---- Invoice events --------------------------------------------------
   if (eventType.startsWith("invoice.")) {
-    const invoiceId = pick<string>(payload, [
+    const rawInvoiceId = pick<string>(payload, [
       "invoice_id",
       "ignition_invoice_id",
       "invoice__id",
       "id",
     ])
-    if (!invoiceId) return { status: "skipped", message: "no invoice_id" }
+    if (!rawInvoiceId) return { status: "skipped", message: "no invoice_id" }
+    const invoiceId = await resolver.resolve("invoice", rawInvoiceId, payload)
+    if (invoiceId !== rawInvoiceId) {
+      console.log(`[ignition/handlers] translated invoice_id ${rawInvoiceId} -> ${invoiceId}`)
+    }
 
     // Seed the FKs from whatever the client is currently matched to. If the
     // client hasn't been seen yet, both will be null and the cascade will
@@ -433,7 +455,7 @@ export async function handleIgnitionEvent(
       .from("ignition_invoices")
       .upsert(row, { onConflict: "ignition_invoice_id" })
     if (error) throw new Error(`upsert ignition_invoice: ${error.message}`)
-    return { status: "success", resourceId: invoiceId }
+    return { status: "success", resourceId: invoiceId ?? undefined }
   }
 
   // ---- Payment events --------------------------------------------------
@@ -444,8 +466,13 @@ export async function handleIgnitionEvent(
       "payment__id",
       "id",
     ])
-    const invoiceId = pick<string>(payload, ["invoice_id", "ignition_invoice_id"])
+    const rawInvoiceIdForPmt = pick<string>(payload, ["invoice_id", "ignition_invoice_id"])
     if (!paymentId) return { status: "skipped", message: "no payment_id" }
+    // Translate the FK so the payment row points at the canonical slug-keyed
+    // invoice. Payment IDs themselves don't have a reliable natural key in
+    // the Zapier payload, so we use them as-is — same-event re-deliveries
+    // are still idempotent via the payment_id unique constraint.
+    const invoiceId = await resolver.resolve("invoice", rawInvoiceIdForPmt, payload)
 
     const fks = await fetchClientFKs(supabase, clientId)
 
