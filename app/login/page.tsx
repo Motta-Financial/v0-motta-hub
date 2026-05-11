@@ -14,6 +14,78 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Eye, EyeOff, Loader2, AlertCircle, CheckCircle2, ArrowLeft } from "lucide-react"
 
+/**
+ * Brand panel used on the left half of the login, forgot-password, and
+ * reset-confirmation screens (desktop only — hidden below lg). All three
+ * screens share this so the auth flow feels like one continuous surface
+ * with only the right-hand form swapping in and out.
+ *
+ * Visuals:
+ *   - Dark olive vertical gradient using the brand's primary (#6B745D)
+ *     anchored by a slightly darker shade so the white logo + headline
+ *     read with confident contrast.
+ *   - A very low-opacity radial dot pattern provides texture without
+ *     being noisy (the prior design relied on four bright blurry blobs
+ *     that fought with the form for attention).
+ *   - Two soft sage glows in opposite corners that breathe slowly via
+ *     the existing `pulse` keyframes. Modern auth screens use one or
+ *     two of these, far apart, slow-moving — not a busy lava-lamp wall.
+ */
+function BrandPanel() {
+  return (
+    <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-gradient-to-br from-[#6B745D] via-[#5a6350] to-[#454d3c]">
+      <div
+        className="absolute inset-0 opacity-[0.06] pointer-events-none"
+        style={{
+          backgroundImage:
+            "radial-gradient(circle at 1px 1px, white 1px, transparent 0)",
+          backgroundSize: "28px 28px",
+        }}
+      />
+      <div
+        className="absolute -top-40 -left-40 w-[520px] h-[520px] bg-[#8E9B79]/25 rounded-full blur-3xl pointer-events-none"
+        style={{ animation: "pulse 10s ease-in-out infinite" }}
+      />
+      <div
+        className="absolute -bottom-40 -right-40 w-[480px] h-[480px] bg-[#8E9B79]/15 rounded-full blur-3xl pointer-events-none"
+        style={{ animation: "pulse 10s ease-in-out infinite 3s" }}
+      />
+
+      <div className="relative z-10 flex flex-col justify-between p-12 xl:p-16 w-full text-white">
+        {/* Top: the Motta logo, inverted to pure white so the lotus
+            silhouette stays legible against the dark olive backdrop. */}
+        <div className="flex items-center gap-3">
+          <img
+            src="/images/motta-logo.png"
+            alt="Motta"
+            className="h-14 w-auto brightness-0 invert opacity-90"
+            suppressHydrationWarning
+          />
+        </div>
+
+        {/* Middle: confident statement headline + secondary line. The
+            cream-tinted highlight on "Motta Financial" mirrors the page
+            background and ties the two halves of the screen together. */}
+        <div className="space-y-5 max-w-md">
+          <h2 className="text-4xl xl:text-5xl font-semibold tracking-tight leading-[1.1] text-balance">
+            The operating system for{" "}
+            <span className="text-[#D4D9C9]">Motta Financial</span>.
+          </h2>
+          <p className="text-base text-white/70 leading-relaxed text-pretty">
+            One place for clients, work, and the team. Powered by ALFRED AI.
+          </p>
+        </div>
+
+        {/* Bottom: brand footer + internal-use marker. */}
+        <div className="flex items-center justify-between text-xs text-white/50">
+          <span suppressHydrationWarning>Motta Financial &copy; 2023</span>
+          <span>Internal use only</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function LoginPage() {
   return (
     <Suspense
@@ -169,33 +241,28 @@ function LoginContent() {
 
   if (resetEmailSent) {
     return (
-      <div
-        className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden"
-        suppressHydrationWarning
-      >
-        {/* Background gradients */}
-        <div className="absolute inset-0 overflow-hidden">
-          <div
-            className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/15 via-[#8E9B79]/10 to-[#6B745D]/15 rounded-full blur-3xl opacity-50"
-            style={{ animation: "pulse 8s ease-in-out infinite" }}
-          />
-          <div
-            className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/10 via-[#6B745D]/10 to-[#8E9B79]/10 rounded-full blur-3xl opacity-50"
-            style={{ animation: "pulse 8s ease-in-out infinite 2s" }}
-          />
-        </div>
+      <div className="min-h-screen flex bg-[#EAE8E1]" suppressHydrationWarning>
+        <BrandPanel />
 
-        <div className="relative z-10 w-full max-w-md mx-4">
-          <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-10" />
-          <div className="relative bg-white/80 backdrop-blur-xl border border-[#6B745D]/10 rounded-2xl p-8 shadow-xl text-center">
-            <div className="h-16 w-16 rounded-full bg-[#8E9B79]/20 flex items-center justify-center mx-auto mb-6">
-              <CheckCircle2 className="h-8 w-8 text-[#6B745D]" />
+        <div className="flex-1 flex items-center justify-center px-6 py-12 lg:px-12 relative overflow-hidden">
+          {/* Mobile-only ambient glow -- desktop hands all atmospheric
+              color over to the brand panel so the form side stays calm. */}
+          <div className="lg:hidden absolute top-0 left-1/2 -translate-x-1/2 w-[500px] h-[500px] bg-[#8E9B79]/20 rounded-full blur-3xl pointer-events-none" />
+
+          <div className="w-full max-w-sm relative z-10 text-center">
+            <div className="h-14 w-14 rounded-full bg-[#8E9B79]/20 flex items-center justify-center mx-auto mb-6">
+              <CheckCircle2 className="h-7 w-7 text-[#6B745D]" />
             </div>
-            <h2 className="text-xl font-semibold text-[#2D2D2D] mb-2">Check Your Email</h2>
-            <p className="text-[#5A5A5A] mb-6">
-              {"We've sent a password reset link to "}<span className="text-[#2D2D2D] font-medium">{email}</span>
+            <h1 className="text-2xl font-semibold text-[#2D2D2D] tracking-tight mb-2">
+              Check your email
+            </h1>
+            <p className="text-sm text-[#5A5A5A] mb-2">
+              {"We've sent a password reset link to"}
             </p>
-            <p className="text-[#7A7A7A] text-sm mb-6">
+            <p className="text-sm text-[#2D2D2D] font-medium mb-6 break-all">
+              {email}
+            </p>
+            <p className="text-xs text-[#7A7A7A] mb-8 leading-relaxed">
               {"Click the link in the email to reset your password. If you don't see it, check your spam folder."}
             </p>
             <Button
@@ -205,11 +272,15 @@ function LoginContent() {
                 setEmail("")
               }}
               variant="outline"
-              className="w-full bg-white border-[#6B745D]/20 text-[#2D2D2D] hover:bg-[#6B745D]/5"
+              className="w-full h-11 bg-white border-[#6B745D]/20 text-[#2D2D2D] hover:bg-[#6B745D]/5 rounded-lg"
             >
               <ArrowLeft className="w-4 h-4 mr-2" />
-              Back to Sign In
+              Back to sign in
             </Button>
+
+            <p className="lg:hidden text-center text-xs text-[#AAAAAA] mt-10" suppressHydrationWarning>
+              Motta Financial &copy; 2023
+            </p>
           </div>
         </div>
       </div>
@@ -218,49 +289,43 @@ function LoginContent() {
 
   if (showForgotPassword) {
     return (
-      <div
-        className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden"
-        suppressHydrationWarning
-      >
-        {/* Background gradients */}
-        <div className="absolute inset-0 overflow-hidden">
-          <div
-            className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/15 via-[#8E9B79]/10 to-[#6B745D]/15 rounded-full blur-3xl opacity-50"
-            style={{ animation: "pulse 8s ease-in-out infinite" }}
-          />
-          <div
-            className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/10 via-[#6B745D]/10 to-[#8E9B79]/10 rounded-full blur-3xl opacity-50"
-            style={{ animation: "pulse 8s ease-in-out infinite 2s" }}
-          />
-        </div>
+      <div className="min-h-screen flex bg-[#EAE8E1]" suppressHydrationWarning>
+        <BrandPanel />
 
-        <div className="relative z-10 w-full max-w-md mx-4">
-          <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-10" />
-          <div className="relative bg-white/80 backdrop-blur-xl border border-[#6B745D]/10 rounded-2xl p-8 shadow-xl">
-            <div className="text-center mb-8">
-              <div className="relative inline-flex items-center justify-center mb-6">
-                <img
-                  src="/images/motta-logo.png"
-                  alt="Motta"
-                  className="relative h-20 w-auto"
-                  suppressHydrationWarning
-                />
-              </div>
-              <h1 className="text-xl font-bold text-[#2D2D2D] mb-2">Reset Password</h1>
-              <p className="text-[#7A7A7A] text-sm">Enter your email to receive a reset link</p>
+        <div className="flex-1 flex items-center justify-center px-6 py-12 lg:px-12 relative overflow-hidden">
+          <div className="lg:hidden absolute top-0 left-1/2 -translate-x-1/2 w-[500px] h-[500px] bg-[#8E9B79]/20 rounded-full blur-3xl pointer-events-none" />
+
+          <div className="w-full max-w-sm relative z-10">
+            {/* Mobile-only logo -- desktop already shows it in BrandPanel. */}
+            <div className="lg:hidden flex justify-center mb-10">
+              <img
+                src="/images/motta-logo.png"
+                alt="Motta"
+                className="h-16 w-auto"
+                suppressHydrationWarning
+              />
+            </div>
+
+            <div className="mb-8">
+              <h1 className="text-2xl font-semibold text-[#2D2D2D] tracking-tight">
+                Reset your password
+              </h1>
+              <p className="text-sm text-[#7A7A7A] mt-2">
+                Enter your email and we&apos;ll send you a reset link.
+              </p>
             </div>
 
             <form onSubmit={handleForgotPassword} className="space-y-5">
               {error && (
-                <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-600 text-sm">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <div className="flex items-start gap-2 p-3 bg-red-500/5 border border-red-500/20 rounded-lg text-red-600 text-sm">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <span>{error}</span>
                 </div>
               )}
 
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <Label htmlFor="reset-email" className="text-[#4A4A4A] text-sm font-medium">
-                  Email Address
+                  Email address
                 </Label>
                 <Input
                   id="reset-email"
@@ -269,14 +334,14 @@ function LoginContent() {
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@motta.cpa"
                   required
-                  className="bg-white border-[#6B745D]/20 text-[#2D2D2D] placeholder:text-[#AAAAAA] focus:border-[#6B745D]/50 focus:ring-[#6B745D]/20 h-11"
+                  className="bg-white border-[#6B745D]/15 text-[#2D2D2D] placeholder:text-[#AAAAAA] focus-visible:border-[#6B745D] focus-visible:ring-2 focus-visible:ring-[#6B745D]/15 h-11 rounded-lg transition-colors"
                 />
               </div>
 
               <Button
                 type="submit"
                 disabled={isLoading}
-                className="w-full h-11 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] hover:from-[#5a6350] hover:via-[#7d8a6a] hover:to-[#5a6350] text-white font-medium rounded-lg transition-all duration-300"
+                className="w-full h-11 bg-[#6B745D] hover:bg-[#5a6350] text-white font-medium rounded-lg transition-all shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? (
                   <span className="flex items-center gap-2">
@@ -284,7 +349,7 @@ function LoginContent() {
                     Sending...
                   </span>
                 ) : (
-                  "Send Reset Link"
+                  "Send reset link"
                 )}
               </Button>
 
@@ -295,12 +360,16 @@ function LoginContent() {
                   setError(null)
                 }}
                 variant="ghost"
-                className="w-full text-[#5A5A5A] hover:text-[#2D2D2D] hover:bg-[#6B745D]/5"
+                className="w-full h-10 text-[#5A5A5A] hover:text-[#2D2D2D] hover:bg-[#6B745D]/5 rounded-lg"
               >
                 <ArrowLeft className="w-4 h-4 mr-2" />
-                Back to Sign In
+                Back to sign in
               </Button>
             </form>
+
+            <p className="lg:hidden text-center text-xs text-[#AAAAAA] mt-10" suppressHydrationWarning>
+              Motta Financial &copy; 2023
+            </p>
           </div>
         </div>
       </div>
@@ -308,79 +377,56 @@ function LoginContent() {
   }
 
   return (
-    <div
-        className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden"
-        suppressHydrationWarning
-      >
-      {/* Subtle background gradients */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div
-          className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-[#6B745D]/15 via-[#8E9B79]/10 to-[#6B745D]/15 rounded-full blur-3xl opacity-50"
-          style={{ animation: "pulse 8s ease-in-out infinite" }}
-        />
-        <div
-          className="absolute bottom-1/4 -right-1/4 w-[500px] h-[500px] bg-gradient-to-r from-[#8E9B79]/10 via-[#6B745D]/10 to-[#8E9B79]/10 rounded-full blur-3xl opacity-50"
-          style={{ animation: "pulse 8s ease-in-out infinite 2s" }}
-        />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-gradient-to-r from-[#6B745D]/5 via-transparent to-[#8E9B79]/5 rounded-full blur-3xl" />
-      </div>
+    <div className="min-h-screen flex bg-[#EAE8E1]" suppressHydrationWarning>
+      <BrandPanel />
 
-      {/* Login card */}
-      <div className="relative z-10 w-full max-w-md mx-4">
-        <div className="absolute -inset-0.5 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-2xl blur opacity-10" />
+      {/* Form panel -- on desktop this is the right half; on mobile it
+          spans the full screen and gets its own subtle ambient color
+          since the brand panel is hidden. */}
+      <div className="flex-1 flex items-center justify-center px-6 py-12 lg:px-12 relative overflow-hidden">
+        <div className="lg:hidden absolute top-0 left-1/2 -translate-x-1/2 w-[500px] h-[500px] bg-[#8E9B79]/20 rounded-full blur-3xl pointer-events-none" />
 
-        <div className="relative bg-white/80 backdrop-blur-xl border border-[#6B745D]/10 rounded-2xl p-8 shadow-xl">
-          <div className="text-center mb-8">
-            <div className="relative inline-flex items-center justify-center mb-6">
-              <div
-                className="absolute inset-0 w-32 h-32 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] rounded-full blur-xl opacity-15"
-                style={{ animation: "pulse 4s ease-in-out infinite" }}
-              />
-              {/* Primary brand mark. The Motta logo replaces the prior
-                  ALFRED AI mark here — the page-header text below now
-                  carries the product name (MOTTA HUB) and ALFRED AI
-                  is demoted to an attribution tagline. */}
-              <img
-                src="/images/motta-logo.png"
-                alt="Motta"
-                className="relative h-28 w-auto"
-                suppressHydrationWarning
-              />
-            </div>
+        <div className="w-full max-w-sm relative z-10">
+          {/* Mobile-only logo. On desktop the brand panel already
+              shows the wordmark so a second copy on the form side
+              would compete with the headline. */}
+          <div className="lg:hidden flex justify-center mb-10">
+            <img
+              src="/images/motta-logo.png"
+              alt="Motta"
+              className="h-20 w-auto"
+              suppressHydrationWarning
+            />
+          </div>
 
-            {/* Title — product is MOTTA HUB, AI engine attribution is
-                the secondary line so the brand reads as "this is
-                Motta's tool, powered by our AI" instead of vice versa. */}
-            <h1 className="text-2xl font-bold text-[#2D2D2D] mb-2">
-              <span
-                className="bg-gradient-to-r from-[#6B745D] via-[#4A4A4A] to-[#6B745D] bg-clip-text text-transparent"
-                suppressHydrationWarning
-              >
-                MOTTA HUB
-              </span>
+          {/* Left-aligned heading -- modern auth forms drop the
+              centered-title-and-tagline stack in favor of a confident
+              left-aligned greeting that sits flush with the inputs. */}
+          <div className="mb-8">
+            <h1 className="text-2xl font-semibold text-[#2D2D2D] tracking-tight">
+              Sign in to <span suppressHydrationWarning>Motta Hub</span>
             </h1>
-            <p className="text-[#7A7A7A] text-sm" suppressHydrationWarning>
-              Powered by ALFRED AI
+            <p className="text-sm text-[#7A7A7A] mt-2" suppressHydrationWarning>
+              Welcome back. Powered by ALFRED AI.
             </p>
           </div>
 
-          {/* Login form */}
           <form onSubmit={handleLogin} className="space-y-5">
             {successMessage && (
-              <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-green-700 text-sm">
-                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+              <div className="flex items-start gap-2 p-3 bg-[#8E9B79]/10 border border-[#8E9B79]/30 rounded-lg text-[#4d5544] text-sm">
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0 mt-0.5" />
                 <span>{successMessage}</span>
               </div>
             )}
 
             {error && (
-              <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-600 text-sm">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <div className="flex items-start gap-2 p-3 bg-red-500/5 border border-red-500/20 rounded-lg text-red-600 text-sm">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                 <span>{error}</span>
               </div>
             )}
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="email" className="text-[#4A4A4A] text-sm font-medium">
                 Email
               </Label>
@@ -391,11 +437,11 @@ function LoginContent() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@motta.cpa"
                 required
-                className="bg-white border-[#6B745D]/20 text-[#2D2D2D] placeholder:text-[#AAAAAA] focus:border-[#6B745D]/50 focus:ring-[#6B745D]/20 h-11"
+                className="bg-white border-[#6B745D]/15 text-[#2D2D2D] placeholder:text-[#AAAAAA] focus-visible:border-[#6B745D] focus-visible:ring-2 focus-visible:ring-[#6B745D]/15 h-11 rounded-lg transition-colors"
               />
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <Label htmlFor="password" className="text-[#4A4A4A] text-sm font-medium">
                   Password
@@ -403,7 +449,7 @@ function LoginContent() {
                 <button
                   type="button"
                   onClick={() => setShowForgotPassword(true)}
-                  className="text-xs text-[#6B745D] hover:text-[#8E9B79] transition-colors"
+                  className="text-xs font-medium text-[#6B745D] hover:text-[#8E9B79] transition-colors"
                 >
                   Forgot password?
                 </button>
@@ -416,22 +462,29 @@ function LoginContent() {
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
                   required
-                  className="bg-white border-[#6B745D]/20 text-[#2D2D2D] placeholder:text-[#AAAAAA] focus:border-[#6B745D]/50 focus:ring-[#6B745D]/20 h-11 pr-10"
+                  className="bg-white border-[#6B745D]/15 text-[#2D2D2D] placeholder:text-[#AAAAAA] focus-visible:border-[#6B745D] focus-visible:ring-2 focus-visible:ring-[#6B745D]/15 h-11 rounded-lg pr-10 transition-colors"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-[#AAAAAA] hover:text-[#5A5A5A] transition-colors"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
             </div>
 
+            {/* Flat solid-olive button -- the gradient-on-gradient stack
+                of the old design (gradient text, gradient blur halo,
+                gradient button background) is exactly the kind of
+                "everything is shiny" treatment that dates a UI. A flat
+                brand-color button with a tight hover state reads as
+                modern and lets the headline carry the brand color. */}
             <Button
               type="submit"
               disabled={isLoading}
-              className="w-full h-11 bg-gradient-to-r from-[#6B745D] via-[#8E9B79] to-[#6B745D] hover:from-[#5a6350] hover:via-[#7d8a6a] hover:to-[#5a6350] text-white font-medium rounded-lg transition-all duration-300 shadow-lg shadow-[#6B745D]/20 hover:shadow-[#6B745D]/30 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full h-11 bg-[#6B745D] hover:bg-[#5a6350] text-white font-medium rounded-lg transition-all shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed mt-2"
             >
               {isLoading ? (
                 <span className="flex items-center gap-2">
@@ -439,20 +492,16 @@ function LoginContent() {
                   Signing in...
                 </span>
               ) : (
-                "Sign In"
+                "Sign in"
               )}
             </Button>
           </form>
 
-          {/* Footer — single line, no AI attribution (that already
-              lives in the page-header tagline). Year is the founding
-              year (2023) rather than the current year because this
-              footer is brand copy, not a copyright notice. */}
-          <div className="mt-8 pt-6 border-t border-[#6B745D]/10 text-center">
-            <p className="text-[#7A7A7A] text-xs" suppressHydrationWarning>
-              Motta Financial &copy; 2023
-            </p>
-          </div>
+          {/* Mobile footer -- desktop pins this to the bottom of the
+              brand panel instead. */}
+          <p className="lg:hidden text-center text-xs text-[#AAAAAA] mt-10" suppressHydrationWarning>
+            Motta Financial &copy; 2023
+          </p>
         </div>
       </div>
     </div>
