@@ -192,7 +192,12 @@ export async function GET() {
             recordsFetched: lastRun.records_fetched,
             recordsUpserted: lastRun.records_updated,
             recordsFailed: lastRun.records_failed,
-            results: lastRun.error_details,
+            // error_details is now { results: [...] } on every run, but older
+            // rows stored the array directly. Tolerate both shapes so legacy
+            // sync_log entries still render in the UI.
+            results: Array.isArray(lastRun.error_details)
+              ? lastRun.error_details
+              : (lastRun.error_details as any)?.results ?? null,
           }
         : null,
     })

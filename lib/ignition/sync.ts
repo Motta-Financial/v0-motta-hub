@@ -1,25 +1,27 @@
 /**
  * Ignition Reporting API backfill / sync layer.
  *
- * Responsibilities
- * ----------------
- * - Pull every page of every reporting endpoint we care about.
- * - Map each Ignition row to the shape of our existing `ignition_*` tables.
- * - UPSERT in batches keyed on Ignition's natural ID column so the whole
- *   thing is idempotent and safe to re-run.
- * - Always stash the raw API row into `raw_payload` so a wrong field mapping
- *   is recoverable from the database without re-hitting Ignition's rate
- *   limited API.
- *
  * Field-name strategy
  * -------------------
- * Ignition's docs and exports show different field names in different
- * places (snake_case in API, camelCase in some webhook payloads, mixed
- * `clientId` vs `client_id` in different exports). Rather than hard-code
- * one variant and risk shipping a backfill that quietly drops half the
- * columns, every mapper uses `pick(obj, ...keys)` which tries each candidate
- * key in order. This makes the mappers verbose but lets a single field name
- * change in the API roll out without breaking the sync.
+ * Empirical truth from probing the live API (see scripts/probe-ignition-reporting.mjs):
+ *   - Every resource keys off a string `slug` (e.g. `cli_xxx`, `prop_xxx`,
+ *     `inv_xxx`, `psd_xxx`, `pypay_xxx`, `pss_xxx`). The `id` numeric column
+ *     only appears on `/reporting/contacts` and `/reporting/collections`.
+ *   - Foreign keys are also slugs: `client_slug`, `stage_slug`, etc.
+ *   - Money is consistently shaped as `{ amount/total, currency }` and lives
+ *     in fields like `amount`, `minimum_contract_value`, `projected_value`.
+ *   - `/reporting/collections` returns one row PER PAYMENT TRANSACTION
+ *     (linking a payment → invoice → disbursal). It does NOT return one row
+ *     per disbursal, so it maps to `ignition_payment_transactions`, not to
+ *     `ignition_disbursals` (which is fed by webhooks/Zapier).
+ *
+ * Defensive picking
+ * -----------------
+ * We still go through `pick(...)` even when we know the field name, because
+ * (a) it tolerates the `nested.path` syntax cleanly and (b) the Ignition
+ * docs and webhook payloads sometimes use different names than the reporting
+ * API. The raw row is always stashed into `raw_payload` so any mapping
+ * mistake can be corrected without re-hitting the rate-limited API.
  */
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
@@ -32,7 +34,7 @@ import {
  * ───────────────────────────────────────────────────────────────────────── */
 
 /** Tries each key in order on `obj` and returns the first non-null/undefined
- *  value. Used everywhere in the mappers to tolerate field name variants. */
+ *  value. Supports dotted paths (`address.city`). */
 function pick<T = unknown>(obj: Record<string, any> | null | undefined, ...keys: string[]): T | null {
   if (!obj) return null
   for (const key of keys) {
@@ -64,16 +66,13 @@ function pickBool(obj: Record<string, any> | null | undefined, ...keys: string[]
   return null
 }
 
-/** Coerces to an ISO timestamp string. Accepts Date, number (epoch seconds
- *  OR milliseconds), or string. Returns null on anything unparseable. */
+/** Coerces to an ISO timestamp string. Accepts Date, number (epoch seconds OR
+ *  milliseconds), or string. Returns null on anything unparseable. */
 function pickIso(obj: Record<string, any> | null | undefined, ...keys: string[]): string | null {
   const v = pick(obj, ...keys)
   if (v == null) return null
   if (v instanceof Date) return v.toISOString()
   if (typeof v === "number") {
-    // Heuristic: anything below 10^12 we treat as seconds (since the cutoff for
-    // "year 33658 in milliseconds" is below 10^12). This matches what Stripe
-    // and similar APIs do and is safe through year ~33,000.
     const ms = v < 1e12 ? v * 1000 : v
     const d = new Date(ms)
     return Number.isFinite(d.getTime()) ? d.toISOString() : null
@@ -95,6 +94,74 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out
 }
 
+/** Loads the full set of ID values from a single text column in batches.
+ *  Used to validate FK targets before we set them — we'd rather drop a
+ *  reference than crash the entire resource's upsert on a single dangling
+ *  pointer. Supabase paginates SELECTs at 1000 rows by default; we keep
+ *  pulling until a short page comes back. */
+async function loadKnownIds(
+  supabase: SupabaseClient,
+  table: string,
+  column: string,
+): Promise<Set<string>> {
+  const out = new Set<string>()
+  const PAGE = 1000
+  let from = 0
+  for (let i = 0; i < 1000; i++) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(column)
+      .range(from, from + PAGE - 1)
+    if (error) {
+      // A read failure shouldn't blow up the whole sync — fall through with
+      // whatever we've collected so far. The mapper will treat absent IDs
+      // as "unknown" and just null the FK column.
+      console.warn(`[ignition/sync] loadKnownIds(${table}.${column}) failed:`, error.message)
+      return out
+    }
+    if (!data || data.length === 0) return out
+    for (const row of data) {
+      const v = (row as any)[column]
+      if (v != null) out.add(String(v))
+    }
+    if (data.length < PAGE) return out
+    from += PAGE
+  }
+  return out
+}
+
+/** De-duplicates an array of objects by the value of `key`. Keeps the LAST
+ *  occurrence so newer rows from later pages overwrite earlier ones. Used
+ *  to dodge "ON CONFLICT cannot affect row a second time" when a paginated
+ *  endpoint returns the same record across two pages (Ignition's payments
+ *  endpoint does this when a payment is linked to multiple invoices). */
+function dedupeByKey<T extends Record<string, any>>(rows: T[], key: keyof T): T[] {
+  const map = new Map<unknown, T>()
+  for (const row of rows) {
+    const k = row[key]
+    if (k == null) continue
+    map.set(k, row)
+  }
+  return Array.from(map.values())
+}
+
+/** Splits a single Ignition `name` ("Smith, John") into first/last as best we
+ *  can. Returns nulls when we genuinely can't tell. */
+function splitName(name: string | null): { first: string | null; last: string | null } {
+  if (!name) return { first: null, last: null }
+  const trimmed = name.trim()
+  if (!trimmed) return { first: null, last: null }
+  // "Last, First" — the dominant convention in Motta's Ignition data.
+  if (trimmed.includes(",")) {
+    const [last, ...rest] = trimmed.split(",")
+    return { first: rest.join(",").trim() || null, last: last.trim() || null }
+  }
+  // "First Last" / "First Middle Last" — fall back to space split.
+  const parts = trimmed.split(/\s+/)
+  if (parts.length === 1) return { first: parts[0], last: null }
+  return { first: parts.slice(0, -1).join(" "), last: parts[parts.length - 1] }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Public types
  * ───────────────────────────────────────────────────────────────────────── */
@@ -112,7 +179,7 @@ export type ResourceName =
 
 /** Order matters: dependencies must be synced before the things that depend
  *  on them. Specifically: deal_stages before deals (FK reference), clients
- *  before everything else (most resources carry an ignition_client_id). */
+ *  before everything else (most resources carry a client_slug). */
 export const RESOURCE_ORDER: ResourceName[] = [
   "clients",
   "contacts",
@@ -144,8 +211,7 @@ export interface FullBackfillResult {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * Shared run-loop. Every per-resource sync function follows the same
- * pattern, so we factor out the iteration and reporting boilerplate.
+ * Shared run-loop
  * ───────────────────────────────────────────────────────────────────────── */
 
 const BATCH_SIZE = 250
@@ -163,14 +229,19 @@ async function runResource<T>(
   let fetched = 0
   let upserted = 0
   let pages = 0
+  let mappedNulls = 0
 
   try {
     for await (const page of ignitionPaginate<any>(connection, supabase, path)) {
       pages += 1
-      const rows = (page.data ?? [])
-        .map(mapRow)
-        .filter((row): row is T => row !== null)
-      fetched += page.data?.length ?? 0
+      const pageData = page.data ?? []
+      fetched += pageData.length
+      const rows: T[] = []
+      for (const raw of pageData) {
+        const mapped = mapRow(raw)
+        if (mapped === null) mappedNulls += 1
+        else rows.push(mapped)
+      }
 
       for (const batch of chunk(rows, BATCH_SIZE)) {
         const { upserted: n, error } = await upsertBatch(batch)
@@ -180,6 +251,12 @@ async function runResource<T>(
     }
   } catch (err: any) {
     errors.push(`fetch_failed: ${err?.message || String(err)}`)
+  }
+
+  if (mappedNulls > 0) {
+    // Not a hard error, but surface it so the UI can show "X rows skipped" if
+    // a future API shape change starts dropping records silently.
+    errors.push(`skipped_unmappable: ${mappedNulls}`)
   }
 
   return {
@@ -195,9 +272,11 @@ async function runResource<T>(
 /* ─────────────────────────────────────────────────────────────────────────
  * Per-resource sync functions.
  *
- * Each one is intentionally explicit about which columns it writes; we
- * never blind-spread `...raw` into the database because column names in
- * the Ignition API don't match our schema and we want a stable contract.
+ * Each mapper is written against the live response shape captured by
+ * scripts/probe-ignition-reporting.mjs. When in doubt, re-run that probe
+ * and update the field names here — every row's full raw response is
+ * stashed in `raw_payload` so historical data can be re-derived without
+ * an API round-trip.
  * ───────────────────────────────────────────────────────────────────────── */
 
 export async function syncClients(
@@ -218,25 +297,24 @@ export async function syncClients(
       return { upserted: count ?? rows.length }
     },
     (raw) => {
-      const id = pickStr(raw, "id", "client_id", "ignition_client_id")
-      if (!id) return null
+      const slug = pickStr(raw, "slug")
+      if (!slug) return null
       return {
-        ignition_client_id: id,
-        name: pickStr(raw, "name", "display_name", "full_name"),
-        email: pickStr(raw, "email", "primary_email"),
-        phone: pickStr(raw, "phone", "phone_number"),
-        business_name: pickStr(raw, "business_name", "company_name", "organization_name"),
-        client_type: pickStr(raw, "client_type", "type"),
-        address_line1: pickStr(raw, "address.line1", "address.address_line1", "address_line1"),
-        address_line2: pickStr(raw, "address.line2", "address.address_line2", "address_line2"),
-        city: pickStr(raw, "address.city", "city"),
-        state: pickStr(raw, "address.state", "state", "address.region"),
-        zip_code: pickStr(raw, "address.zip", "address.zip_code", "address.postal_code", "zip_code"),
-        country: pickStr(raw, "address.country", "country"),
-        ignition_created_at: pickIso(raw, "created_at", "inserted_at"),
-        ignition_updated_at: pickIso(raw, "updated_at", "modified_at"),
-        archived_at: pickIso(raw, "archived_at", "deleted_at"),
-        last_event_at: pickIso(raw, "updated_at", "modified_at", "last_event_at"),
+        ignition_client_id: slug,
+        name: pickStr(raw, "name"),
+        email: pickStr(raw, "email"),
+        phone: pickStr(raw, "phone"),
+        // `state` is one of "lead" / "client" / "archived" / "deleted" —
+        // store it in client_type which is free-text on our side.
+        client_type: pickStr(raw, "state"),
+        // Ignition's `business_name` doesn't exist on /reporting/clients;
+        // names like "Last, First" denote individuals while plain corporate
+        // names live in `name`. We leave business_name null and let the
+        // matcher decide based on group_name and external_client_id.
+        business_name: pickStr(raw, "group_name"),
+        ignition_created_at: pickIso(raw, "created_at"),
+        ignition_updated_at: pickIso(raw, "updated_at"),
+        last_event_at: pickIso(raw, "updated_at", "created_at"),
         raw_payload: raw,
         updated_at: new Date().toISOString(),
       }
@@ -262,27 +340,25 @@ export async function syncContacts(
       return { upserted: count ?? rows.length }
     },
     (raw) => {
-      const id = pickStr(raw, "id", "contact_id", "ignition_contact_id")
-      if (!id) return null
-      const first = pickStr(raw, "first_name", "firstName", "given_name")
-      const last = pickStr(raw, "last_name", "lastName", "family_name")
-      const full =
-        pickStr(raw, "full_name", "name", "display_name") ||
-        [first, last].filter(Boolean).join(" ").trim() ||
-        null
+      // Contacts is the one endpoint with BOTH slug and numeric id — we use
+      // slug for consistency with every other table's foreign-key style.
+      const slug = pickStr(raw, "slug")
+      if (!slug) return null
+      const fullName = pickStr(raw, "name")
+      const { first, last } = splitName(fullName)
       return {
-        ignition_contact_id: id,
-        ignition_client_id: pickStr(raw, "client_id", "client.id", "clientId"),
+        ignition_contact_id: slug,
+        ignition_client_id: pickStr(raw, "client.slug"),
         first_name: first,
         last_name: last,
-        full_name: full,
-        email: pickStr(raw, "email", "primary_email"),
-        phone: pickStr(raw, "phone", "phone_number"),
-        role: pickStr(raw, "role", "title", "job_title"),
+        full_name: fullName,
+        email: pickStr(raw, "email"),
+        phone: pickStr(raw, "phone", "mobile"),
+        role: pickStr(raw, "position"),
         raw_payload: raw,
-        ignition_created_at: pickIso(raw, "created_at", "inserted_at"),
-        ignition_updated_at: pickIso(raw, "updated_at", "modified_at"),
-        last_event_at: pickIso(raw, "updated_at", "modified_at"),
+        ignition_created_at: pickIso(raw, "created_at"),
+        ignition_updated_at: pickIso(raw, "updated_at"),
+        last_event_at: pickIso(raw, "updated_at", "created_at"),
         updated_at: new Date().toISOString(),
       }
     },
@@ -307,19 +383,28 @@ export async function syncDealStages(
       return { upserted: count ?? rows.length }
     },
     (raw) => {
-      const id = pickStr(raw, "id", "stage_id", "ignition_stage_id")
-      if (!id) return null
+      const slug = pickStr(raw, "slug")
+      if (!slug) return null
+      const winLikelihood = pickNum(raw, "win_likelihood")
       return {
-        ignition_stage_id: id,
-        name: pickStr(raw, "name", "stage_name"),
-        pipeline_name: pickStr(raw, "pipeline_name", "pipeline.name", "pipeline"),
-        is_active: pickBool(raw, "is_active", "active"),
-        is_won: pickBool(raw, "is_won", "won"),
-        is_lost: pickBool(raw, "is_lost", "lost"),
-        sort_order: pickNum(raw, "sort_order", "order", "ordinal", "position"),
+        ignition_stage_id: slug,
+        name: pickStr(raw, "name"),
+        // Ignition doesn't expose pipeline grouping on /reporting/deal_stages,
+        // so we leave this null. UI code should not depend on it for now.
+        pipeline_name: null,
+        // Derive is_won/is_lost from win_likelihood: 100 → won, 0 → lost,
+        // anything between → in-flight. This matches Ignition's UX where
+        // stages at the ends of the pipeline get those probabilities.
+        is_won: winLikelihood == null ? null : winLikelihood >= 100,
+        is_lost:
+          winLikelihood == null
+            ? null
+            : winLikelihood === 0 && /lost|dead|won't proceed/i.test(pickStr(raw, "name") ?? ""),
+        is_active: true,
+        sort_order: pickNum(raw, "position"),
         raw_payload: raw,
-        ignition_created_at: pickIso(raw, "created_at", "inserted_at"),
-        ignition_updated_at: pickIso(raw, "updated_at", "modified_at"),
+        ignition_created_at: pickIso(raw, "created_at"),
+        ignition_updated_at: pickIso(raw, "updated_at"),
         updated_at: new Date().toISOString(),
       }
     },
@@ -344,26 +429,39 @@ export async function syncDeals(
       return { upserted: count ?? rows.length }
     },
     (raw) => {
-      const id = pickStr(raw, "id", "deal_id", "ignition_deal_id")
-      if (!id) return null
+      const slug = pickStr(raw, "slug")
+      if (!slug) return null
       return {
-        ignition_deal_id: id,
-        ignition_client_id: pickStr(raw, "client_id", "client.id", "clientId"),
-        ignition_stage_id: pickStr(raw, "stage_id", "stage.id", "stageId", "deal_stage_id"),
-        pipeline_name: pickStr(raw, "pipeline_name", "pipeline.name", "pipeline"),
-        stage_name: pickStr(raw, "stage_name", "stage.name", "stage"),
-        title: pickStr(raw, "title", "name", "description"),
-        status: pickStr(raw, "status", "state"),
-        owner_name: pickStr(raw, "owner_name", "owner.name", "owner.full_name"),
-        owner_email: pickStr(raw, "owner_email", "owner.email"),
-        value: pickNum(raw, "value", "amount", "total_value", "total"),
-        currency: pickStr(raw, "currency", "currency_code"),
-        expected_close_date: pickDate(raw, "expected_close_date", "expected_close", "close_date"),
-        closed_at: pickIso(raw, "closed_at", "completed_at"),
+        ignition_deal_id: slug,
+        ignition_client_id: pickStr(raw, "client_slug"),
+        ignition_stage_id: pickStr(raw, "stage_slug"),
+        // Pipeline grouping isn't exposed here, but stage_name is useful for
+        // quick rendering without a join to ignition_deal_stages.
+        pipeline_name: null,
+        stage_name: pickStr(raw, "stage_name"),
+        title: pickStr(raw, "name"),
+        status: pickStr(raw, "state"),
+        owner_name: pickStr(raw, "owner.name"),
+        owner_email: pickStr(raw, "owner.email"),
+        // Ignition returns `value` and a separate `projected_value` object.
+        // Prefer the realised value, fall back to the projection.
+        value:
+          pickNum(raw, "value") ??
+          pickNum(raw, "projected_value.amount") ??
+          null,
+        currency:
+          pickStr(raw, "currency") ??
+          pickStr(raw, "projected_value.currency") ??
+          null,
+        // `expected_close_date` isn't on this endpoint; closed_at is when it
+        // was actually closed. We still try the canonical name in case the
+        // field shape changes.
+        expected_close_date: pickDate(raw, "expected_close_date"),
+        closed_at: pickIso(raw, "closed_at"),
         raw_payload: raw,
-        ignition_created_at: pickIso(raw, "created_at", "inserted_at"),
-        ignition_updated_at: pickIso(raw, "updated_at", "modified_at"),
-        last_event_at: pickIso(raw, "updated_at", "modified_at"),
+        ignition_created_at: pickIso(raw, "created_at"),
+        ignition_updated_at: pickIso(raw, "updated_at"),
+        last_event_at: pickIso(raw, "updated_at", "created_at"),
         updated_at: new Date().toISOString(),
       }
     },
@@ -388,17 +486,19 @@ export async function syncServices(
       return { upserted: count ?? rows.length }
     },
     (raw) => {
-      const id = pickStr(raw, "id", "service_id", "ignition_service_id")
-      if (!id) return null
+      const slug = pickStr(raw, "slug")
+      if (!slug) return null
       return {
-        ignition_service_id: id,
-        name: pickStr(raw, "name", "title"),
-        description: pickStr(raw, "description", "summary"),
-        category: pickStr(raw, "category", "service_category"),
-        is_active: pickBool(raw, "is_active", "active"),
-        default_price: pickNum(raw, "default_price", "price", "unit_price"),
-        currency: pickStr(raw, "currency", "currency_code"),
-        billing_type: pickStr(raw, "billing_type", "billing_frequency", "frequency"),
+        ignition_service_id: slug,
+        name: pickStr(raw, "name"),
+        description: pickStr(raw, "description"),
+        category: pickStr(raw, "service_group_name", "service_group"),
+        // Ignition exposes `state` ("active" / "archived"). Anything other
+        // than archived counts as active for our purposes.
+        is_active: (pickStr(raw, "state") ?? "active").toLowerCase() === "active",
+        default_price: pickNum(raw, "price"),
+        currency: null,
+        billing_type: pickStr(raw, "billing_mode", "price_type"),
         raw_payload: raw,
         updated_at: new Date().toISOString(),
       }
@@ -410,10 +510,16 @@ export async function syncProposals(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
 ): Promise<ResourceSyncResult> {
-  // Proposals already have Zapier-fed columns (payload, status, client_name).
-  // We write to `raw_payload` (not `payload`) and only set columns we are
-  // confident about — the upsert leaves any column we DON'T provide untouched,
-  // so the existing webhook data stays intact.
+  // Proposals are already populated by Zapier — we UPSERT and intentionally
+  // only fill columns we are confident about, so the Zapier-set columns we
+  // don't touch (payload, client_partner, etc.) survive the merge.
+  //
+  // ignition_proposals.ignition_client_id is a FK into ignition_clients.
+  // Some proposals reference clients that don't come back from /reporting/clients
+  // (archived/deleted/legacy IDs from the Zapier era). We pre-fetch the known
+  // set so we can null those references rather than fail the batch.
+  const knownClientIds = await loadKnownIds(supabase, "ignition_clients", "ignition_client_id")
+
   return runResource(
     "proposals",
     connection,
@@ -428,38 +534,40 @@ export async function syncProposals(
       return { upserted: count ?? rows.length }
     },
     (raw) => {
-      const id = pickStr(raw, "id", "proposal_id", "ignition_proposal_id")
-      if (!id) return null
+      const slug = pickStr(raw, "slug")
+      if (!slug) return null
+      // Money lives in `minimum_contract_value: { amount, currency }`.
+      const amount = pickNum(raw, "minimum_contract_value.amount")
+      const currency = pickStr(raw, "minimum_contract_value.currency")
+      const clientCandidate = pickStr(raw, "client_slug")
       return {
-        proposal_id: id,
-        ignition_client_id: pickStr(raw, "client_id", "client.id", "clientId"),
-        title: pickStr(raw, "title", "name"),
-        proposal_number: pickStr(raw, "proposal_number", "number"),
-        status: pickStr(raw, "status", "state"),
-        client_name: pickStr(raw, "client_name", "client.name", "client.business_name"),
-        client_email: pickStr(raw, "client_email", "client.email"),
-        client_partner: pickStr(raw, "client_partner", "partner_name"),
-        client_manager: pickStr(raw, "client_manager", "manager_name"),
-        proposal_sent_by: pickStr(raw, "sent_by", "proposal_sent_by", "owner_name"),
-        recurring_frequency: pickStr(raw, "recurring_frequency", "billing_frequency"),
-        lost_reason: pickStr(raw, "lost_reason"),
-        currency: pickStr(raw, "currency", "currency_code"),
-        signed_url: pickStr(raw, "signed_url", "signing_url", "url"),
-        amount: pickNum(raw, "amount", "total"),
-        total_value: pickNum(raw, "total_value", "total", "amount"),
-        one_time_total: pickNum(raw, "one_time_total", "oneTimeTotal"),
-        recurring_total: pickNum(raw, "recurring_total", "recurringTotal"),
-        effective_start_date: pickDate(raw, "effective_start_date", "start_date"),
-        billing_starts_on: pickDate(raw, "billing_starts_on", "billing_start_date"),
+        proposal_id: slug,
+        ignition_client_id:
+          clientCandidate && knownClientIds.has(clientCandidate) ? clientCandidate : null,
+        title: pickStr(raw, "name"),
+        proposal_number: pickStr(raw, "reference_number"),
+        status: pickStr(raw, "state"),
+        client_name: pickStr(raw, "client_name"),
+        // Reporting API doesn't expose client_email / manager / partner.
+        // Those stay null here and pick up their Zapier-fed values via the
+        // partial-merge upsert. We intentionally do NOT write them as null.
+        proposal_sent_by: pickStr(raw, "sender.name", "creator.name"),
+        recurring_frequency: pickStr(raw, "contract_term"),
+        currency,
+        signed_url: pickStr(raw, "pdf_url"),
+        amount,
+        total_value: amount,
         sent_at: pickIso(raw, "sent_at"),
         accepted_at: pickIso(raw, "accepted_at"),
-        completed_at: pickIso(raw, "completed_at"),
         lost_at: pickIso(raw, "lost_at"),
-        revoked_at: pickIso(raw, "revoked_at"),
-        archived_at: pickIso(raw, "archived_at"),
-        inserted_at: pickIso(raw, "inserted_at", "created_at"),
-        modified_at: pickIso(raw, "modified_at", "updated_at"),
-        last_event_at: pickIso(raw, "updated_at", "modified_at"),
+        inserted_at: pickIso(raw, "created_at"),
+        modified_at: pickIso(raw, "updated_at", "created_at"),
+        last_event_at: pickIso(raw, "updated_at", "created_at"),
+        // The legacy `payload` column predates `raw_payload` and is still
+        // declared NOT NULL because the Zapier feed depends on it. Mirror
+        // raw into both so the schema constraint is satisfied without
+        // requiring a destructive migration.
+        payload: raw,
         raw_payload: raw,
         updated_at: new Date().toISOString(),
       }
@@ -471,6 +579,15 @@ export async function syncInvoices(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
 ): Promise<ResourceSyncResult> {
+  // Pre-fetch the set of proposal AND client slugs we actually have on disk.
+  // Both columns are FKs and will reject references to rows we never received
+  // (archived/deleted/legacy IDs). We null any unknown FK rather than crash
+  // the whole batch.
+  const [knownProposalIds, knownClientIds] = await Promise.all([
+    loadKnownIds(supabase, "ignition_proposals", "proposal_id"),
+    loadKnownIds(supabase, "ignition_clients", "ignition_client_id"),
+  ])
+
   return runResource(
     "invoices",
     connection,
@@ -485,26 +602,29 @@ export async function syncInvoices(
       return { upserted: count ?? rows.length }
     },
     (raw) => {
-      const id = pickStr(raw, "id", "invoice_id", "ignition_invoice_id")
-      if (!id) return null
+      const slug = pickStr(raw, "slug")
+      if (!slug) return null
+      // Each invoice items[].origin_identifier links back to a proposal slug.
+      // We only set proposal_id when we already have that proposal in our DB.
+      const firstItem: any = Array.isArray(raw?.items) && raw.items.length > 0 ? raw.items[0] : null
+      const proposalCandidate =
+        firstItem?.origin_type === "proposal" ? pickStr(firstItem, "origin_identifier") : null
+      const proposalId =
+        proposalCandidate && knownProposalIds.has(proposalCandidate) ? proposalCandidate : null
+      const clientCandidate = pickStr(raw, "client.slug")
       return {
-        ignition_invoice_id: id,
-        ignition_client_id: pickStr(raw, "client_id", "client.id"),
-        proposal_id: pickStr(raw, "proposal_id", "proposal.id"),
-        invoice_number: pickStr(raw, "invoice_number", "number"),
-        status: pickStr(raw, "status", "state"),
-        currency: pickStr(raw, "currency", "currency_code"),
-        amount: pickNum(raw, "amount", "total"),
-        amount_paid: pickNum(raw, "amount_paid", "paid_amount"),
-        amount_outstanding: pickNum(raw, "amount_outstanding", "outstanding_amount", "balance"),
-        stripe_invoice_id: pickStr(raw, "stripe_invoice_id"),
-        stripe_customer_id: pickStr(raw, "stripe_customer_id"),
-        invoice_date: pickDate(raw, "invoice_date", "issue_date", "issued_at"),
+        ignition_invoice_id: slug,
+        ignition_client_id:
+          clientCandidate && knownClientIds.has(clientCandidate) ? clientCandidate : null,
+        proposal_id: proposalId,
+        invoice_number: pickStr(raw, "reference_number"),
+        status: pickStr(raw, "state"),
+        currency: pickStr(raw, "amount.currency"),
+        amount: pickNum(raw, "amount.total"),
+        invoice_date: pickDate(raw, "date"),
         due_date: pickDate(raw, "due_date"),
-        sent_at: pickIso(raw, "sent_at"),
-        paid_at: pickIso(raw, "paid_at"),
-        voided_at: pickIso(raw, "voided_at"),
-        last_event_at: pickIso(raw, "updated_at", "modified_at"),
+        paid_at: pickIso(raw, "payment.collection_date", "payment_date"),
+        last_event_at: pickIso(raw, "updated_at", "date"),
         raw_payload: raw,
         updated_at: new Date().toISOString(),
       }
@@ -516,6 +636,14 @@ export async function syncPayments(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
 ): Promise<ResourceSyncResult> {
+  // Same FK story as invoices — ignition_payments has FKs into BOTH
+  // ignition_invoices AND ignition_clients. We pre-fetch both sets so the
+  // mapper can null any dangling reference rather than fail the batch.
+  const [knownInvoiceIds, knownClientIds] = await Promise.all([
+    loadKnownIds(supabase, "ignition_invoices", "ignition_invoice_id"),
+    loadKnownIds(supabase, "ignition_clients", "ignition_client_id"),
+  ])
+
   return runResource(
     "payments",
     connection,
@@ -523,31 +651,42 @@ export async function syncPayments(
     "/reporting/payments",
     async (rows) => {
       if (rows.length === 0) return { upserted: 0 }
+      // Ignition's payments endpoint can return the same payment twice when
+      // it's linked to multiple invoices on different pages. ON CONFLICT
+      // DO UPDATE rejects a batch that contains two rows with the same
+      // conflict key, so we de-dupe here to keep the last (most-recent)
+      // version of each payment slug.
+      const deduped = dedupeByKey(rows as any[], "ignition_payment_id")
       const { error, count } = await supabase
         .from("ignition_payments")
-        .upsert(rows, { onConflict: "ignition_payment_id", count: "exact" })
+        .upsert(deduped, { onConflict: "ignition_payment_id", count: "exact" })
       if (error) return { upserted: 0, error: `upsert_failed: ${error.message}` }
-      return { upserted: count ?? rows.length }
+      return { upserted: count ?? deduped.length }
     },
     (raw) => {
-      const id = pickStr(raw, "id", "payment_id", "ignition_payment_id")
-      if (!id) return null
+      const slug = pickStr(raw, "slug")
+      if (!slug) return null
+      const firstInvoice: any =
+        Array.isArray(raw?.invoices) && raw.invoices.length > 0 ? raw.invoices[0] : null
+      const invoiceSlug = firstInvoice ? pickStr(firstInvoice, "slug") : null
+      const clientCandidate = pickStr(raw, "client.slug")
+      const amount = pickNum(raw, "amount.amount", "amount.total")
+      const fee = pickNum(raw, "collection.fee_amount.amount", "collection.fee.amount")
       return {
-        ignition_payment_id: id,
-        ignition_client_id: pickStr(raw, "client_id", "client.id"),
-        ignition_invoice_id: pickStr(raw, "invoice_id", "invoice.id"),
-        proposal_id: pickStr(raw, "proposal_id", "proposal.id"),
-        payment_status: pickStr(raw, "status", "state", "payment_status"),
-        payment_method: pickStr(raw, "payment_method", "method"),
-        amount: pickNum(raw, "amount", "gross_amount"),
-        net_amount: pickNum(raw, "net_amount", "net"),
-        fees: pickNum(raw, "fees", "fee_amount"),
-        refund_amount: pickNum(raw, "refund_amount", "refunded_amount"),
-        currency: pickStr(raw, "currency", "currency_code"),
-        stripe_charge_id: pickStr(raw, "stripe_charge_id"),
-        stripe_payment_intent_id: pickStr(raw, "stripe_payment_intent_id"),
-        paid_at: pickIso(raw, "paid_at", "payment_date"),
-        refunded_at: pickIso(raw, "refunded_at"),
+        ignition_payment_id: slug,
+        ignition_client_id:
+          clientCandidate && knownClientIds.has(clientCandidate) ? clientCandidate : null,
+        ignition_invoice_id:
+          invoiceSlug && knownInvoiceIds.has(invoiceSlug) ? invoiceSlug : null,
+        payment_status: pickStr(raw, "state", "collection.state"),
+        payment_method: null, // Ignition doesn't expose this on /reporting/payments.
+        amount,
+        // Stripe-style net = gross - fees. Only compute when we have both;
+        // otherwise leave null and let the UI handle it.
+        net_amount: amount != null && fee != null ? amount - fee : null,
+        fees: fee,
+        currency: pickStr(raw, "amount.currency"),
+        paid_at: pickIso(raw, "collection.completed_at", "created_at"),
         raw_payload: raw,
         updated_at: new Date().toISOString(),
       }
@@ -559,8 +698,16 @@ export async function syncCollections(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
 ): Promise<ResourceSyncResult> {
-  // /reporting/collections returns disbursals (money paid out to the practice).
-  // Maps to the existing ignition_disbursals table.
+  // /reporting/collections returns one row PER PAYMENT TRANSACTION. It's not
+  // the same shape as ignition_disbursals (which represents a payout batch),
+  // so this feeds the per-transaction table instead. Disbursals continue to
+  // be populated by the existing webhook/Zapier flow.
+  //
+  // ignition_payment_transactions.disbursal_id is a FK into ignition_disbursals,
+  // so we only set it when we already have that disbursal on disk — otherwise
+  // the upsert would fail the entire batch.
+  const knownDisbursalIds = await loadKnownIds(supabase, "ignition_disbursals", "disbursal_id")
+
   return runResource(
     "collections",
     connection,
@@ -568,24 +715,39 @@ export async function syncCollections(
     "/reporting/collections",
     async (rows) => {
       if (rows.length === 0) return { upserted: 0 }
+      const deduped = dedupeByKey(rows as any[], "transaction_id")
       const { error, count } = await supabase
-        .from("ignition_disbursals")
-        .upsert(rows, { onConflict: "disbursal_id", count: "exact" })
+        .from("ignition_payment_transactions")
+        .upsert(deduped, { onConflict: "transaction_id", count: "exact" })
       if (error) return { upserted: 0, error: `upsert_failed: ${error.message}` }
-      return { upserted: count ?? rows.length }
+      return { upserted: count ?? deduped.length }
     },
     (raw) => {
-      const id = pickStr(raw, "id", "disbursal_id", "collection_id")
-      if (!id) return null
+      // Collections rows use a numeric `id`, the only resource that doesn't
+      // use slug as the natural key. Stringify it for our text column.
+      const id = pick(raw, "id")
+      if (id == null) return null
+      const gross = pickNum(raw, "amount.total")
+      const fee = pickNum(raw, "payment.fee")
+      const disbursalCandidate = pickStr(raw, "disbursal.id")
       return {
-        disbursal_id: id,
-        state: pickStr(raw, "state", "status"),
-        currency: pickStr(raw, "currency", "currency_code"),
-        total_amount: pickNum(raw, "total_amount", "amount", "gross_amount"),
-        total_fees: pickNum(raw, "total_fees", "fees"),
-        arrival_date: pickDate(raw, "arrival_date", "expected_arrival_date"),
-        submitted_date: pickDate(raw, "submitted_date", "submitted_at"),
-        notes: pickStr(raw, "notes", "description"),
+        transaction_id: String(id),
+        transaction_type: pickStr(raw, "type"),
+        payment_method: pickStr(raw, "type"),
+        gross_amount: gross,
+        fees: fee,
+        net_amount: gross != null && fee != null ? gross - fee : null,
+        currency: pickStr(raw, "amount.currency"),
+        payment_date: pickDate(raw, "payment.started_at"),
+        disbursal_id:
+          disbursalCandidate && knownDisbursalIds.has(disbursalCandidate)
+            ? disbursalCandidate
+            : null,
+        client_name: pickStr(raw, "client.name"),
+        client_email: null, // not provided on this endpoint
+        invoice_number: pickStr(raw, "invoice.number"),
+        proposal_name: null, // not provided directly; would require join
+        service_name: null,
         updated_at: new Date().toISOString(),
       }
     },
@@ -618,6 +780,10 @@ const RESOURCE_FUNCTIONS: Record<
  * If any single resource fails, we keep going and aggregate errors at the
  * end. A partial success leaves `last_synced_at` updated but also writes
  * `last_sync_error` so the UI can warn the user.
+ *
+ * The per-resource breakdown is ALWAYS persisted to `sync_log.error_details`
+ * (even on full success) so the admin UI can render the table of "fetched /
+ * upserted / pages / duration" for the last run.
  */
 export async function runFullBackfill(
   connection: IgnitionConnectionRow,
@@ -633,8 +799,6 @@ export async function runFullBackfill(
     ? options.resources.filter((r): r is ResourceName => r in RESOURCE_FUNCTIONS)
     : RESOURCE_ORDER
 
-  // Mark the connection row as syncing so the UI can show a spinner without
-  // having to poll the orchestrator's progress.
   await supabase
     .from("ignition_connections")
     .update({
@@ -644,7 +808,6 @@ export async function runFullBackfill(
     })
     .eq("id", connection.id)
 
-  // Open a sync_log row up-front so we have a stable id to update later.
   const { data: syncLogRow } = await supabase
     .from("sync_log")
     .insert({
@@ -669,23 +832,31 @@ export async function runFullBackfill(
   const finishedAt = new Date().toISOString()
   const totalFetched = results.reduce((sum, r) => sum + r.fetched, 0)
   const totalUpserted = results.reduce((sum, r) => sum + r.upserted, 0)
+  // "Errors" here counts all per-resource error strings — a `skipped_unmappable`
+  // is recorded as an error so it's visible, but it doesn't flip the overall
+  // status away from success unless we also have a hard fetch/upsert error.
+  const hardErrors = results.reduce(
+    (sum, r) =>
+      sum + r.errors.filter((e) => !e.startsWith("skipped_unmappable")).length,
+    0,
+  )
   const totalErrors = results.reduce((sum, r) => sum + r.errors.length, 0)
-  const overallStatus = totalErrors === 0 ? "success" : "partial"
+  const overallStatus = hardErrors === 0 ? "success" : "partial"
 
-  // Update the connection row with the outcome. We always set last_synced_at
-  // even on partial failure so subsequent jobs aren't confused by a stale
-  // "Never" — last_sync_error carries the failure context.
   await supabase
     .from("ignition_connections")
     .update({
       last_synced_at: finishedAt,
       last_sync_started_at: null,
       last_sync_error:
-        totalErrors === 0
+        hardErrors === 0
           ? null
           : results
-              .filter((r) => r.errors.length > 0)
-              .map((r) => `${r.resource}: ${r.errors[0]}`)
+              .filter((r) => r.errors.some((e) => !e.startsWith("skipped_unmappable")))
+              .map(
+                (r) =>
+                  `${r.resource}: ${r.errors.find((e) => !e.startsWith("skipped_unmappable")) ?? ""}`,
+              )
               .join("; "),
       updated_at: finishedAt,
     })
@@ -700,7 +871,9 @@ export async function runFullBackfill(
         records_fetched: totalFetched,
         records_updated: totalUpserted,
         records_failed: totalErrors,
-        error_details: totalErrors > 0 ? (results as any) : null,
+        // ALWAYS write the per-resource breakdown — the admin UI reads this
+        // out of error_details to render the results table after a run.
+        error_details: { results } as any,
       })
       .eq("id", syncLogRow.id)
   }
