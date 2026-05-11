@@ -28,11 +28,16 @@ export const metadata: Metadata = {
   generator: "v0.app",
   manifest: "/manifest.json",
   icons: {
+    // Browsers walk this list in order and pick the first format they
+    // support. Listing the Motta lotus PNG first makes it the favicon
+    // everywhere; the legacy SVG stays as a fallback for older clients.
     icon: [
+      { url: "/icon.png", type: "image/png" },
       { url: "/icon.svg", type: "image/svg+xml" },
     ],
+    shortcut: [{ url: "/icon.png", type: "image/png" }],
     apple: [
-      { url: "/apple-touch-icon.jpg", sizes: "180x180", type: "image/jpeg" },
+      { url: "/icon.png", sizes: "180x180", type: "image/png" },
     ],
   },
   appleWebApp: {
