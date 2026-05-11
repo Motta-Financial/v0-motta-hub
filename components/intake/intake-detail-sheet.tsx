@@ -25,21 +25,34 @@ import {
   AlertTriangle,
   Briefcase,
   Building2,
+  CalendarIcon,
   CheckCircle2,
   ExternalLink,
   Globe,
+  ListTodo,
   Loader2,
   Mail,
   MapPin,
   Phone,
+  Plus,
   Sparkles,
+  Trash2,
   User,
 } from "lucide-react"
+import { format } from "date-fns"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -202,9 +215,76 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
 
   const submission = data?.submission
 
-  const [savingField, setSavingField] = useState<null | "status" | "owner" | "notes">(null)
+  const [savingField, setSavingField] = useState<null | "status" | "owner" | "notes" | "action_items">(null)
   const [notesDraft, setNotesDraft] = useState("")
   const [notesDirty, setNotesDirty] = useState(false)
+
+  // ── Action Items ────────────────────────────────────────────────────
+  interface ActionItem {
+    id: string
+    description: string
+    assignee_id: string
+    assignee_name: string
+    due_date: Date | null
+    priority: "low" | "medium" | "high"
+    create_task: boolean
+  }
+  const [actionItems, setActionItems] = useState<ActionItem[]>([])
+  const [actionItemsDirty, setActionItemsDirty] = useState(false)
+
+  function addActionItem() {
+    const newItem: ActionItem = {
+      id: crypto.randomUUID(),
+      description: "",
+      assignee_id: "",
+      assignee_name: "",
+      due_date: null,
+      priority: "medium",
+      create_task: true,
+    }
+    setActionItems((prev) => [...prev, newItem])
+    setActionItemsDirty(true)
+  }
+
+  function updateActionItem(id: string, updates: Partial<ActionItem>) {
+    setActionItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...updates } : item)),
+    )
+    setActionItemsDirty(true)
+  }
+
+  function removeActionItem(id: string) {
+    setActionItems((prev) => prev.filter((item) => item.id !== id))
+    setActionItemsDirty(true)
+  }
+
+  async function saveActionItems() {
+    if (!submissionId) return
+    setSavingField("action_items")
+    try {
+      const res = await fetch(`/api/jotform/intake/${submissionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action_items: actionItems.map((item) => ({
+            description: item.description,
+            assignee_id: item.assignee_id,
+            assignee_name: item.assignee_name,
+            due_date: item.due_date?.toISOString().split("T")[0] || null,
+            priority: item.priority,
+            create_task: item.create_task,
+          })),
+        }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      setActionItemsDirty(false)
+      onChanged?.()
+    } catch (err) {
+      console.error("[v0] intake action items PATCH error:", err)
+    } finally {
+      setSavingField(null)
+    }
+  }
 
   // ── Karbon work-item action ──────────────────────────────────────
   // The action is gated on (a) a linked Karbon contact and (b) an
@@ -467,6 +547,162 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                   </Button>
                 </div>
               </div>
+            </section>
+
+            {/* ───── Action Items ───── */}
+            <section className="space-y-3 rounded-lg border bg-card p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ListTodo className="h-4 w-4 text-muted-foreground" />
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Action Items & Follow-ups
+                  </h3>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={addActionItem}
+                  className="h-7 text-xs"
+                >
+                  <Plus className="mr-1 h-3 w-3" />
+                  Add
+                </Button>
+              </div>
+
+              {actionItems.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  No action items yet. Add tasks with assignees and due dates.
+                </p>
+              )}
+
+              {actionItems.map((item, index) => (
+                <div key={item.id} className="space-y-2 rounded-md border bg-muted/30 p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium">Action Item {index + 1}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 w-6 p-0"
+                      onClick={() => removeActionItem(item.id)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                    </Button>
+                  </div>
+
+                  <Input
+                    placeholder="Describe the action item..."
+                    value={item.description}
+                    onChange={(e) => updateActionItem(item.id, { description: e.target.value })}
+                    className="h-8 text-sm"
+                  />
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-[10px] text-muted-foreground">Assignee</Label>
+                      <Select
+                        value={item.assignee_id || "unassigned"}
+                        onValueChange={(value) => {
+                          const member = teamMembers.find((m) => m.id === value)
+                          updateActionItem(item.id, {
+                            assignee_id: value === "unassigned" ? "" : value,
+                            assignee_name: member?.full_name || member?.first_name || "",
+                          })
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue placeholder="Select..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="unassigned">Unassigned</SelectItem>
+                          {teamMembers.map((m) => {
+                            const name = m.full_name || `${m.first_name ?? ""} ${m.last_name ?? ""}`.trim()
+                            return (
+                              <SelectItem key={m.id} value={m.id}>
+                                {name || "Unnamed"}
+                              </SelectItem>
+                            )
+                          })}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label className="text-[10px] text-muted-foreground">Priority</Label>
+                      <Select
+                        value={item.priority}
+                        onValueChange={(value: "low" | "medium" | "high") =>
+                          updateActionItem(item.id, { priority: value })
+                        }
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="low">Low</SelectItem>
+                          <SelectItem value="medium">Medium</SelectItem>
+                          <SelectItem value="high">High</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label className="text-[10px] text-muted-foreground">Due Date</Label>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className={cn(
+                              "h-8 w-full justify-start text-left text-xs font-normal",
+                              !item.due_date && "text-muted-foreground",
+                            )}
+                          >
+                            <CalendarIcon className="mr-1 h-3 w-3" />
+                            {item.due_date ? format(item.due_date, "MM/dd/yy") : "Set date"}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={item.due_date || undefined}
+                            onSelect={(date) => updateActionItem(item.id, { due_date: date || null })}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id={`create-task-${item.id}`}
+                      checked={item.create_task}
+                      onCheckedChange={(checked) =>
+                        updateActionItem(item.id, { create_task: !!checked })
+                      }
+                    />
+                    <Label htmlFor={`create-task-${item.id}`} className="text-xs">
+                      Create as task in system
+                    </Label>
+                  </div>
+                </div>
+              ))}
+
+              {actionItems.length > 0 && (
+                <div className="flex justify-end">
+                  <Button
+                    size="sm"
+                    variant={actionItemsDirty ? "default" : "outline"}
+                    disabled={!actionItemsDirty || savingField === "action_items"}
+                    onClick={saveActionItems}
+                  >
+                    {savingField === "action_items" ? "Saving…" : "Save action items"}
+                  </Button>
+                </div>
+              )}
             </section>
 
             {/* ───── Karbon work-item action ─────

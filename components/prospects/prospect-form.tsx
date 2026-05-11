@@ -22,10 +22,10 @@
  *     the form is usually the same person who'll own the follow-up,
  *     so this is the right default).
  *
- * Service focus drives the form's shape:
- *   - Personal Only          → only the personal block matters
- *   - Business Only          → only the business block matters
- *   - Both Personal & Business → both required
+ * Services selected drive the form's shape:
+ *   - Personal services (Tax Prep, Tax Planning, IRS Support) → show personal block
+ *   - Business services (Bookkeeping, Payroll, etc.) → show business block
+ *   - Selecting both shows both sections
  *
  * Flow:
  *   1. Teammate fills out the form.
@@ -37,20 +37,25 @@
  *      where the "Create Karbon Work Item" action lives.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
+import { format } from "date-fns"
 import {
   Building2,
+  CalendarIcon,
+  ListTodo,
   Loader2,
   NotebookPen,
   Paperclip,
   Target,
+  Trash2,
   User,
   X,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
 import {
   Card,
   CardContent,
@@ -61,6 +66,11 @@ import {
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -81,22 +91,21 @@ import { useUser } from "@/hooks/use-user"
 // internal-only.
 // ─────────────────────────────────────────────────────────────────────
 
-const SERVICE_FOCUSES = [
-  "Personal Only",
-  "Business Only",
-  "Both Personal & Business",
-] as const
-
+// Services are the primary driver now. We categorize them by which
+// sections they imply. Personal services imply we need personal info;
+// business services imply we need business info; some imply both.
 const SERVICES = [
-  "Tax Preparation",
-  "Tax Planning & Advisory",
-  "Accounting & Bookkeeping",
-  "Payroll Services",
-  "Business Advisory",
-  "Financial Planning & Wealth Management",
-  "IRS Support & Resolution",
-  "LLC Formation",
-  "Legal Entity Services",
+  // Personal-focused services
+  { label: "Tax Preparation", category: "personal" },
+  { label: "Tax Planning & Advisory", category: "personal" },
+  { label: "IRS Support & Resolution", category: "personal" },
+  { label: "Financial Planning & Wealth Management", category: "personal" },
+  // Business-focused services
+  { label: "Accounting & Bookkeeping", category: "business" },
+  { label: "Payroll Services", category: "business" },
+  { label: "Business Advisory", category: "business" },
+  { label: "LLC Formation", category: "business" },
+  { label: "Legal Entity Services", category: "business" },
 ] as const
 
 const ENTITY_TYPES = [
@@ -146,7 +155,22 @@ interface QueuedAttachment {
   pathname?: string
 }
 
-type ServiceFocus = (typeof SERVICE_FOCUSES)[number]
+interface ActionItem {
+  id: string
+  description: string
+  assignee_id: string
+  assignee_name: string
+  due_date: Date | null
+  priority: "low" | "medium" | "high"
+  create_task: boolean
+}
+
+interface TeamMember {
+  id: string
+  full_name: string
+  email: string
+  role?: string
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Form
@@ -156,11 +180,30 @@ export function ProspectForm() {
   const router = useRouter()
   const { teamMember } = useUser()
 
-  // Service focus drives validation and which sections render. We
-  // hoisted this to the top of the form (visually and in state) so
-  // teammates can answer "is this a personal or business prospect?"
-  // first and never see fields that don't apply.
-  const [serviceFocus, setServiceFocus] = useState<ServiceFocus | "">("")
+  // ── Services (drives the rest of the form) ─────────────────────────
+  const [selectedServices, setSelectedServices] = useState<string[]>([])
+
+  // Derive which sections to show based on selected services
+  const hasPersonalServices = useMemo(() => {
+    return selectedServices.some((s) =>
+      SERVICES.find((svc) => svc.label === s && svc.category === "personal"),
+    )
+  }, [selectedServices])
+
+  const hasBusinessServices = useMemo(() => {
+    return selectedServices.some((s) =>
+      SERVICES.find((svc) => svc.label === s && svc.category === "business"),
+    )
+  }, [selectedServices])
+
+  // Show sections: if no services selected, show both; otherwise show based on selection
+  const personalVisible = selectedServices.length === 0 || hasPersonalServices
+  const businessVisible = selectedServices.length === 0 || hasBusinessServices
+
+  // Required: Personal is required if ONLY personal services selected (no business services)
+  const personalRequired = hasPersonalServices && !hasBusinessServices
+  // Required: Business is required if ONLY business services selected (no personal services)
+  const businessRequired = hasBusinessServices && !hasPersonalServices
 
   // ── Personal ───────────────────────────────────────────────────────
   const [firstName, setFirstName] = useState("")
@@ -170,9 +213,6 @@ export function ProspectForm() {
   const [city, setCity] = useState("")
   const [state, setState] = useState("")
   const [zip, setZip] = useState("")
-
-  // ── Services ───────────────────────────────────────────────────────
-  const [services, setServices] = useState<string[]>([])
 
   // ── Business (entity types now lives in this section) ─────────────
   const [entityTypes, setEntityTypes] = useState<string[]>([])
@@ -192,6 +232,11 @@ export function ProspectForm() {
   //    debrief, where everything goes in one free-form notes field) ──
   const [internalNotes, setInternalNotes] = useState("")
 
+  // ── Action Items ───────────────────────────────────────────────────
+  const [actionItems, setActionItems] = useState<ActionItem[]>([])
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
+  const [loadingTeamMembers, setLoadingTeamMembers] = useState(false)
+
   const [attachments, setAttachments] = useState<QueuedAttachment[]>([])
 
   const [submitting, setSubmitting] = useState(false)
@@ -199,47 +244,56 @@ export function ProspectForm() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
-  // Focus-driven visibility flags. `personalRequired` is the
-  // "Personal Only" or "Both" branch; `businessVisible` is the
-  // "Business Only" or "Both" branch; with no focus chosen we leave
-  // BOTH sections visible (optional) so the form still works as a
-  // sandbox capture.
-  const personalRequired =
-    serviceFocus === "Personal Only" || serviceFocus === "Both Personal & Business"
-  const businessVisible =
-    serviceFocus === "Business Only" ||
-    serviceFocus === "Both Personal & Business" ||
-    serviceFocus === ""
-  const personalVisible =
-    serviceFocus === "Personal Only" ||
-    serviceFocus === "Both Personal & Business" ||
-    serviceFocus === ""
-  const businessRequired =
-    serviceFocus === "Business Only" || serviceFocus === "Both Personal & Business"
+  // Fetch team members for action item assignees
+  useEffect(() => {
+    async function fetchTeamMembers() {
+      setLoadingTeamMembers(true)
+      try {
+        const res = await fetch("/api/team-members")
+        const data = await res.json()
+        setTeamMembers(
+          (data.team_members || []).map((t: any) => ({
+            id: t.id,
+            full_name: t.full_name,
+            email: t.email,
+            role: t.role,
+          })),
+        )
+      } catch (err) {
+        console.error("Error fetching team members:", err)
+      } finally {
+        setLoadingTeamMembers(false)
+      }
+    }
+    fetchTeamMembers()
+  }, [])
 
   // ── Validation ─────────────────────────────────────────────────────
-  // Required fields are driven by the chosen service focus:
-  //   Personal Only          → First, Last, Email, Phone
-  //   Business Only          → Business Name
-  //   Both                   → all of the above
-  //   (No focus)             → fall back to "first+last OR business" so
+  // Required fields are driven by the selected services:
+  //   Personal only services → First, Last, Email, Phone
+  //   Business only services → Business Name
+  //   Both types of services → both sets of fields
+  //   No services selected   → fall back to "first+last OR business" so
   //                            the form still works as a quick capture
   //                            while a teammate is mid-thought.
   const canSubmit = useMemo(() => {
     if (submitting) return false
     if (!teamMember?.id) return false
 
-    if (serviceFocus === "Personal Only") {
+    // If personal services only — require personal info
+    if (personalRequired) {
       return Boolean(
         firstName.trim() && lastName.trim() && email.trim() && phone.trim(),
       )
     }
 
-    if (serviceFocus === "Business Only") {
+    // If business services only — require business name
+    if (businessRequired) {
       return Boolean(businessName.trim())
     }
 
-    if (serviceFocus === "Both Personal & Business") {
+    // If both types selected — require both
+    if (hasPersonalServices && hasBusinessServices) {
       return Boolean(
         firstName.trim() &&
           lastName.trim() &&
@@ -249,14 +303,17 @@ export function ProspectForm() {
       )
     }
 
-    // No focus selected yet — fall back to the original rule.
+    // No services selected yet — fall back to the original rule.
     const hasPersonal = firstName.trim() && lastName.trim()
     const hasBusiness = businessName.trim()
     return Boolean(hasPersonal || hasBusiness)
   }, [
     submitting,
     teamMember?.id,
-    serviceFocus,
+    personalRequired,
+    businessRequired,
+    hasPersonalServices,
+    hasBusinessServices,
     firstName,
     lastName,
     email,
@@ -295,6 +352,30 @@ export function ProspectForm() {
     setAttachments((prev) => prev.filter((a) => a.tempId !== tempId))
   }
 
+  // ── Action Item Helpers ────────────────────────────────────────────
+  function addActionItem() {
+    const newItem: ActionItem = {
+      id: crypto.randomUUID(),
+      description: "",
+      assignee_id: teamMember?.id || "",
+      assignee_name: teamMember?.full_name || "",
+      due_date: null,
+      priority: "medium",
+      create_task: true,
+    }
+    setActionItems((prev) => [...prev, newItem])
+  }
+
+  function updateActionItem(id: string, updates: Partial<ActionItem>) {
+    setActionItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...updates } : item)),
+    )
+  }
+
+  function removeActionItem(id: string) {
+    setActionItems((prev) => prev.filter((item) => item.id !== id))
+  }
+
   // ── Submit ─────────────────────────────────────────────────────────
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -303,11 +384,21 @@ export function ProspectForm() {
     setError(null)
 
     try {
-      // When the teammate selected "Personal Only" we explicitly
+      // When the teammate selected only personal services we explicitly
       // null out the business payload so the server doesn't persist
-      // half-typed-then-abandoned fields if the user toggled focus
+      // half-typed-then-abandoned fields if the user toggled services
       // late in the session.
-      const personalOnly = serviceFocus === "Personal Only"
+      const onlyPersonal = hasPersonalServices && !hasBusinessServices
+
+      // Derive a "service_focus" value for backward compatibility
+      let serviceFocus: string | null = null
+      if (hasPersonalServices && hasBusinessServices) {
+        serviceFocus = "Both Personal & Business"
+      } else if (hasPersonalServices) {
+        serviceFocus = "Personal Only"
+      } else if (hasBusinessServices) {
+        serviceFocus = "Business Only"
+      }
 
       // Step 1 — create the row + auto-link Karbon contact + send
       // the team-wide email (server-side).
@@ -325,24 +416,34 @@ export function ProspectForm() {
           submitter_state: state,
           submitter_zip: zip,
 
-          services_requested: services,
-          service_focus: serviceFocus || null,
-          entity_types: personalOnly ? null : entityTypes,
+          services_requested: selectedServices,
+          service_focus: serviceFocus,
+          entity_types: onlyPersonal ? null : entityTypes,
 
-          business_situation: personalOnly ? null : businessSituation || null,
-          business_name: personalOnly ? null : businessName,
-          business_email: personalOnly ? null : businessEmail,
-          business_phone: personalOnly ? null : businessPhone,
-          business_state: personalOnly ? null : businessState,
-          business_tax_classification: personalOnly ? null : businessTaxClass || null,
-          business_revenue_range: personalOnly ? null : businessRevenue || null,
-          business_employee_count: personalOnly ? null : businessEmployees,
-          business_uses_accounting_system: personalOnly
+          business_situation: onlyPersonal ? null : businessSituation || null,
+          business_name: onlyPersonal ? null : businessName,
+          business_email: onlyPersonal ? null : businessEmail,
+          business_phone: onlyPersonal ? null : businessPhone,
+          business_state: onlyPersonal ? null : businessState,
+          business_tax_classification: onlyPersonal ? null : businessTaxClass || null,
+          business_revenue_range: onlyPersonal ? null : businessRevenue || null,
+          business_employee_count: onlyPersonal ? null : businessEmployees,
+          business_uses_accounting_system: onlyPersonal
             ? null
             : businessUsesSystem || null,
-          business_summary: personalOnly ? null : businessSummary,
+          business_summary: onlyPersonal ? null : businessSummary,
 
           internal_notes: internalNotes,
+
+          // Action items — same shape as debriefs
+          action_items: actionItems.map((item) => ({
+            description: item.description,
+            assignee_id: item.assignee_id,
+            assignee_name: item.assignee_name,
+            due_date: item.due_date?.toISOString().split("T")[0] || null,
+            priority: item.priority,
+            create_task: item.create_task,
+          })),
         }),
       })
 
@@ -395,60 +496,47 @@ export function ProspectForm() {
         </p>
       </header>
 
-      {/* ─── Service focus (hoisted to top — drives the rest of the form) ─── */}
+      {/* ─── Services (hoisted to top — drives the rest of the form) ─── */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <Target className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-base">Service focus</CardTitle>
+            <CardTitle className="text-base">Services requested</CardTitle>
           </div>
           <CardDescription>
-            Is this a personal prospect, a business prospect, or both? This drives the
-            rest of the form — choose first.
+            What services is this prospect interested in? Your selection determines which
+            sections appear below — personal services show the personal info block, business
+            services show the business info block.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="focus">
-              Focus <span className="text-destructive">*</span>
-            </Label>
-            <Select
-              value={serviceFocus}
-              onValueChange={(v) => setServiceFocus(v as ServiceFocus)}
-            >
-              <SelectTrigger id="focus">
-                <SelectValue placeholder="Personal, business, or both?" />
-              </SelectTrigger>
-              <SelectContent>
-                {SERVICE_FOCUSES.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {SERVICES.map((svc) => (
+              <label
+                key={svc.label}
+                className={cn(
+                  "flex cursor-pointer items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm transition-colors hover:bg-muted/40",
+                  selectedServices.includes(svc.label) && "border-foreground/40 bg-muted/60",
+                )}
+              >
+                <Checkbox
+                  checked={selectedServices.includes(svc.label)}
+                  onCheckedChange={() =>
+                    setSelectedServices((prev) => toggle(prev, svc.label))
+                  }
+                />
+                <span className="text-foreground">{svc.label}</span>
+                <Badge variant="outline" className="ml-auto text-[10px] capitalize">
+                  {svc.category}
+                </Badge>
+              </label>
+            ))}
           </div>
-
-          <div className="space-y-1.5">
-            <Label>Services requested</Label>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {SERVICES.map((s) => (
-                <label
-                  key={s}
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm transition-colors hover:bg-muted/40",
-                    services.includes(s) && "border-foreground/40 bg-muted/60",
-                  )}
-                >
-                  <Checkbox
-                    checked={services.includes(s)}
-                    onCheckedChange={() => setServices((prev) => toggle(prev, s))}
-                  />
-                  <span className="text-foreground">{s}</span>
-                </label>
-              ))}
-            </div>
-          </div>
+          {selectedServices.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Selected: {selectedServices.join(", ")}
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -716,6 +804,134 @@ export function ProspectForm() {
             className="min-h-[160px]"
             placeholder='e.g. "Met at AICPA Engage 06/10. Referred by Jane Doe. Runs a 6-person CPA firm in Atlanta — wants to outsource bookkeeping. Pain point: month-end close takes them 3 weeks."'
           />
+        </CardContent>
+      </Card>
+
+      {/* ─── Action Items ─── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ListTodo className="h-5 w-5" />
+            Action Items & Follow-ups
+          </CardTitle>
+          <CardDescription>
+            Add tasks with assignees. Enable "Create Task" to automatically create a task in the system.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {actionItems.map((item, index) => (
+            <div key={item.id} className="p-4 border rounded-lg space-y-3 bg-muted/30">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Action Item {index + 1}</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeActionItem(item.id)}
+                >
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                </Button>
+              </div>
+
+              <Input
+                placeholder="Describe the action item..."
+                value={item.description}
+                onChange={(e) => updateActionItem(item.id, { description: e.target.value })}
+              />
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Assignee</Label>
+                  <Select
+                    value={item.assignee_id}
+                    onValueChange={(value) => {
+                      const member = teamMembers.find((m) => m.id === value)
+                      updateActionItem(item.id, {
+                        assignee_id: value,
+                        assignee_name: member?.full_name || "",
+                      })
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {teamMembers.map((member) => (
+                        <SelectItem key={member.id} value={member.id}>
+                          {member.full_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Priority</Label>
+                  <Select
+                    value={item.priority}
+                    onValueChange={(value: "low" | "medium" | "high") =>
+                      updateActionItem(item.id, { priority: value })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Due Date</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className={cn(
+                          "w-full justify-start text-left font-normal",
+                          !item.due_date && "text-muted-foreground",
+                        )}
+                      >
+                        <CalendarIcon className="mr-2 h-3 w-3" />
+                        {item.due_date ? format(item.due_date, "MM/dd/yy") : "Set date"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={item.due_date || undefined}
+                        onSelect={(date) => updateActionItem(item.id, { due_date: date || null })}
+                        initialFocus
+                      />
+                    </PopoverContent>
+                  </Popover>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={`create-task-${item.id}`}
+                  checked={item.create_task}
+                  onCheckedChange={(checked) =>
+                    updateActionItem(item.id, { create_task: !!checked })
+                  }
+                />
+                <Label htmlFor={`create-task-${item.id}`} className="text-xs">
+                  Create as task in system
+                </Label>
+              </div>
+            </div>
+          ))}
+
+          <Button type="button" variant="outline" className="w-full" onClick={addActionItem}>
+            <ListTodo className="mr-2 h-4 w-4" />
+            Add Action Item
+          </Button>
         </CardContent>
       </Card>
 
