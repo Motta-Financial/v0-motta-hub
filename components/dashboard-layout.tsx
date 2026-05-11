@@ -53,6 +53,8 @@ import {
   Link2,
   ExternalLink,
   FilePlus2,
+  Sparkles,
+  Layers,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -320,6 +322,8 @@ function HubHeader({
         </div>
         <div className="flex items-center gap-2">
           <FormsMenu />
+          <QuickLinksMenu />
+          <TechStackMenu />
           <Button
             variant="ghost"
             size="icon"
@@ -378,22 +382,40 @@ function buildInitialExpandedState(
   return expanded
 }
 
-// Quick-access dropdown in the global header for "form-style" tasks that
-// a teammate kicks off mid-workflow without losing their current page.
-// Each entry opens in a NEW tab (window.open with noopener,noreferrer)
-// so the Hub stays put behind it -- this is the whole point of the
-// dropdown vs. just routing in-place.
+// ---------------------------------------------------------------------------
+// Header quick-launcher dropdowns
+// ---------------------------------------------------------------------------
+// We expose three sibling dropdowns in the global header:
+//   - Forms       : internal Hub routes for fill-in-and-go forms
+//   - Quick Links : AI assistants we use daily
+//   - Tech Stack  : the external SaaS platforms that power the firm
 //
-// URLs live up here as plain constants so swapping an internal route for
-// an external Jotform later is a one-line change. Keep the list short --
-// this is for daily-driver forms only; everything else still lives in
-// the sidebar.
-const HEADER_FORMS: ReadonlyArray<{
+// Every item -- internal or external -- opens in a NEW tab via
+// `window.open(href, "_blank", "noopener,noreferrer")` so the Hub stays
+// put behind it. noopener,noreferrer prevents the opened tab from
+// gaining back-reference access to `window.opener`; modern browsers
+// imply noopener for _blank, but we set it explicitly so the contract
+// is obvious in code.
+//
+// All three menus share a single `HeaderLinkMenu` component below so
+// styling and a11y stay in lockstep. Adding a new entry is a one-line
+// constant edit; adding a new menu is a single <HeaderLinkMenu /> mount
+// in the header JSX.
+
+type HeaderMenuItem = {
   name: string
   href: string
-  description: string
   icon: typeof NotebookPen
-}> = [
+  // Two ways to describe the item under its name. `description` is a
+  // sentence ("Log a client meeting..."). `category` is a short tag
+  // ("Ai", "Accounting") rendered as a muted prefix -- this is the
+  // "Category | Vendor" pattern Motta uses for tech-stack links. Use
+  // one or the other, not both.
+  description?: string
+  category?: string
+}
+
+const HEADER_FORMS: ReadonlyArray<HeaderMenuItem> = [
   {
     name: "Debrief Form",
     href: "/debriefs/new",
@@ -406,7 +428,7 @@ const HEADER_FORMS: ReadonlyArray<{
     // notes / screenshots) without making the prospect fill out the
     // public Jotform intake. The form lives at /prospects/new and
     // post-submit redirects to /prospects/[id] for review + the
-    // "Create Karbon Work Item" action — same UX as the intake page.
+    // "Create Karbon Work Item" action -- same UX as the intake page.
     name: "Prospect Form",
     href: "/prospects/new",
     description: "Capture a prospect you met or already have info on",
@@ -420,15 +442,98 @@ const HEADER_FORMS: ReadonlyArray<{
   },
 ]
 
-function FormsMenu() {
-  const openInNewTab = (href: string) => {
-    // noopener,noreferrer to prevent the opened tab from gaining
-    // back-reference access to window.opener. Belt-and-suspenders --
-    // most modern browsers already imply noopener for _blank, but we
-    // set it explicitly so the contract is obvious in code.
-    window.open(href, "_blank", "noopener,noreferrer")
-  }
+// AI assistants Motta uses daily. Alfred is our custom GPT (the
+// trigger icon mirrors the "Powered by ALFRED AI" badge in the
+// header), Claude is the general-purpose model, AnyQuest is the
+// Motta-tenant agent platform.
+const HEADER_QUICK_LINKS: ReadonlyArray<HeaderMenuItem> = [
+  {
+    name: "OpenAI -- Alfred",
+    href: "https://chatgpt.com/g/g-VZHJiFTtK-alfred",
+    category: "AI",
+    icon: Sparkles,
+  },
+  {
+    name: "Claude",
+    href: "https://claude.ai/new",
+    category: "AI",
+    icon: Sparkles,
+  },
+  {
+    name: "AnyQuest",
+    href: "https://mottafinancial.anyquest.ai/login",
+    category: "AI",
+    icon: Sparkles,
+  },
+]
 
+// External SaaS platforms in Motta's tech stack. Ordered by the
+// natural client-engagement flow: billing/proposals -> accounting ->
+// FP&A / valuation -> tax prep -> tax advisory -> wealth mgmt.
+const HEADER_TECH_STACK: ReadonlyArray<HeaderMenuItem> = [
+  {
+    name: "Ignition",
+    href: "https://go.ignitionapp.com/home",
+    category: "Billing / Proposals",
+    icon: FileText,
+  },
+  {
+    name: "QuickBooks Online",
+    href: "https://accounts.intuit.com/app/sign-in?app_group=QBO&asset_alias=Intuit.accounting.core.qbowebapp&app_environment=prod&iux_redirect_reason=UNAUTHENTICATED",
+    category: "Accounting",
+    icon: Calculator,
+  },
+  {
+    name: "Aider",
+    href: "https://advisory.app.aider.ai/advisory-dashboard",
+    category: "Accounting (FP&A)",
+    icon: BarChart3,
+  },
+  {
+    name: "BizEquity",
+    href: "https://motta.bizequity.com/login?redirectPath=%2Fuser%2Fcompanies",
+    category: "Accounting (Biz Valuation)",
+    icon: TrendingUp,
+  },
+  {
+    name: "ProConnect",
+    href: "https://ito.intuit.com/app/protax/welcome?iux_intuit_tid=1-69ef56fb-7a6e28034d449fbb11b2852f",
+    category: "Tax Prep",
+    icon: Receipt,
+  },
+  {
+    name: "ProConnect Tax Advisor",
+    href: "https://taxadvisor.app.intuit.com/tax-advisor-ui/welcome",
+    category: "Tax Advisory",
+    icon: Lightbulb,
+  },
+  {
+    name: "Altruist",
+    href: "https://app.altruist.com/dashboard",
+    category: "Wealth Mgmt",
+    icon: Briefcase,
+  },
+]
+
+function openInNewTab(href: string) {
+  window.open(href, "_blank", "noopener,noreferrer")
+}
+
+function HeaderLinkMenu({
+  label,
+  triggerIcon: TriggerIcon,
+  groupLabel,
+  items,
+  width = "w-72",
+}: {
+  label: string
+  triggerIcon: typeof FilePlus2
+  groupLabel: string
+  items: ReadonlyArray<HeaderMenuItem>
+  // Tech Stack rows have longer "Category | Vendor" labels, so we
+  // widen that menu. Forms and Quick Links use the default.
+  width?: string
+}) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -436,24 +541,24 @@ function FormsMenu() {
           variant="ghost"
           size="sm"
           className="h-9 gap-1.5 px-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-900"
-          aria-label="Forms"
+          aria-label={label}
         >
-          <FilePlus2 className="h-4 w-4" />
-          <span className="hidden sm:inline">Forms</span>
+          <TriggerIcon className="h-4 w-4" />
+          <span className="hidden sm:inline">{label}</span>
           <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-72">
+      <DropdownMenuContent align="end" className={width}>
         <DropdownMenuLabel className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-          Quick Forms
+          {groupLabel}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {HEADER_FORMS.map((form) => {
-          const Icon = form.icon
+        {items.map((item) => {
+          const Icon = item.icon
           return (
             <DropdownMenuItem
-              key={form.href}
-              onClick={() => openInNewTab(form.href)}
+              key={item.href}
+              onClick={() => openInNewTab(item.href)}
               className="cursor-pointer items-start gap-3 py-2.5"
             >
               <span
@@ -464,16 +569,55 @@ function FormsMenu() {
               </span>
               <span className="flex min-w-0 flex-1 flex-col leading-tight">
                 <span className="flex items-center gap-1.5 text-sm font-medium text-gray-900">
-                  {form.name}
+                  {item.name}
                   <ExternalLink className="h-3 w-3 text-gray-400" />
                 </span>
-                <span className="text-xs text-gray-500">{form.description}</span>
+                {item.description && (
+                  <span className="text-xs text-gray-500">{item.description}</span>
+                )}
+                {item.category && (
+                  <span className="text-xs text-gray-500">{item.category}</span>
+                )}
               </span>
             </DropdownMenuItem>
           )
         })}
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+function FormsMenu() {
+  return (
+    <HeaderLinkMenu
+      label="Forms"
+      triggerIcon={FilePlus2}
+      groupLabel="Quick Forms"
+      items={HEADER_FORMS}
+    />
+  )
+}
+
+function QuickLinksMenu() {
+  return (
+    <HeaderLinkMenu
+      label="Quick Links"
+      triggerIcon={Sparkles}
+      groupLabel="Quick Links"
+      items={HEADER_QUICK_LINKS}
+    />
+  )
+}
+
+function TechStackMenu() {
+  return (
+    <HeaderLinkMenu
+      label="Tech Stack"
+      triggerIcon={Layers}
+      groupLabel="Motta Tech Stack"
+      items={HEADER_TECH_STACK}
+      width="w-80"
+    />
   )
 }
 
