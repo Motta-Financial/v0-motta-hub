@@ -239,7 +239,12 @@ function LoginContent() {
           <div className="relative bg-white/80 backdrop-blur-xl border border-[#6B745D]/10 rounded-2xl p-8 shadow-xl">
             <div className="text-center mb-8">
               <div className="relative inline-flex items-center justify-center mb-6">
-                <img src="/images/motta-logo.png" alt="Motta" className="relative h-20 w-auto" />
+                <img
+                  src="/images/motta-logo.png"
+                  alt="Motta"
+                  className="relative h-20 w-auto"
+                  suppressHydrationWarning
+                />
               </div>
               <h1 className="text-xl font-bold text-[#2D2D2D] mb-2">Reset Password</h1>
               <p className="text-[#7A7A7A] text-sm">Enter your email to receive a reset link</p>
@@ -335,18 +340,28 @@ function LoginContent() {
                   ALFRED AI mark here — the page-header text below now
                   carries the product name (MOTTA HUB) and ALFRED AI
                   is demoted to an attribution tagline. */}
-              <img src="/images/motta-logo.png" alt="Motta" className="relative h-28 w-auto" />
+              <img
+                src="/images/motta-logo.png"
+                alt="Motta"
+                className="relative h-28 w-auto"
+                suppressHydrationWarning
+              />
             </div>
 
             {/* Title — product is MOTTA HUB, AI engine attribution is
                 the secondary line so the brand reads as "this is
                 Motta's tool, powered by our AI" instead of vice versa. */}
             <h1 className="text-2xl font-bold text-[#2D2D2D] mb-2">
-              <span className="bg-gradient-to-r from-[#6B745D] via-[#4A4A4A] to-[#6B745D] bg-clip-text text-transparent">
+              <span
+                className="bg-gradient-to-r from-[#6B745D] via-[#4A4A4A] to-[#6B745D] bg-clip-text text-transparent"
+                suppressHydrationWarning
+              >
                 MOTTA HUB
               </span>
             </h1>
-            <p className="text-[#7A7A7A] text-sm">Powered by ALFRED AI</p>
+            <p className="text-[#7A7A7A] text-sm" suppressHydrationWarning>
+              Powered by ALFRED AI
+            </p>
           </div>
 
           {/* Login form */}
@@ -434,7 +449,9 @@ function LoginContent() {
               year (2023) rather than the current year because this
               footer is brand copy, not a copyright notice. */}
           <div className="mt-8 pt-6 border-t border-[#6B745D]/10 text-center">
-            <p className="text-[#7A7A7A] text-xs">Motta Financial &copy; 2023</p>
+            <p className="text-[#7A7A7A] text-xs" suppressHydrationWarning>
+              Motta Financial &copy; 2023
+            </p>
           </div>
         </div>
       </div>
