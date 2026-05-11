@@ -5,7 +5,14 @@
  *
  * Shape (matches what the page consumes — see app/admin/ignition/page.tsx):
  *   {
- *     totals: { clients, matched, unmatched, proposals, invoices, payments }
+ *     totals: {
+ *       clients, matched, unmatched,
+ *       proposals, invoices, payments,
+ *       // Reporting-API resources surfaced in the "Reporting Data" tab.
+ *       // Anything new the OAuth backfill pulls in must be added here, or
+ *       // the admin page won't know it exists.
+ *       contacts, deals, dealStages, paymentTransactions, disbursals,
+ *     }
  *     matchBreakdown: [{ method, count, avg_confidence }]
  *     recentEvents:   [{ event_type, processing_status, received_at, processing_error }]
  *   }
@@ -37,6 +44,14 @@ export async function GET() {
     proposalsTotal,
     invoicesTotal,
     paymentsTotal,
+    // Tables populated by the OAuth Reporting-API backfill that didn't
+    // previously have a UI surface. Counting them here lets the admin
+    // page show that the integration is actually pulling them in.
+    contactsTotal,
+    dealsTotal,
+    dealStagesTotal,
+    paymentTransactionsTotal,
+    disbursalsTotal,
     matchBreakdownRows,
     recentEventRows,
   ] = await Promise.all([
@@ -59,6 +74,19 @@ export async function GET() {
     supabase
       .from("ignition_payments")
       .select("ignition_payment_id", { count: "exact", head: true }),
+    supabase
+      .from("ignition_contacts")
+      .select("ignition_contact_id", { count: "exact", head: true }),
+    supabase.from("ignition_deals").select("ignition_deal_id", { count: "exact", head: true }),
+    supabase
+      .from("ignition_deal_stages")
+      .select("ignition_stage_id", { count: "exact", head: true }),
+    supabase
+      .from("ignition_payment_transactions")
+      .select("transaction_id", { count: "exact", head: true }),
+    supabase
+      .from("ignition_disbursals")
+      .select("disbursal_id", { count: "exact", head: true }),
     // Match-method breakdown for the "How clients were matched" card.
     supabase
       .from("ignition_clients")
@@ -99,6 +127,11 @@ export async function GET() {
         proposals: proposalsTotal.count || 0,
         invoices: invoicesTotal.count || 0,
         payments: paymentsTotal.count || 0,
+        contacts: contactsTotal.count || 0,
+        deals: dealsTotal.count || 0,
+        dealStages: dealStagesTotal.count || 0,
+        paymentTransactions: paymentTransactionsTotal.count || 0,
+        disbursals: disbursalsTotal.count || 0,
       },
       matchBreakdown,
       recentEvents: recentEventRows.data || [],

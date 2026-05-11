@@ -32,6 +32,7 @@ import {
 import { useToast } from "@/hooks/use-toast"
 import { MatchPickerDialog } from "@/components/ignition/match-picker-dialog"
 import { IgnitionBackfillCard } from "@/components/ignition/backfill-card"
+import { IgnitionReportingDataTab } from "@/components/ignition/reporting-data-tab"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -102,6 +103,13 @@ type Stats = {
     proposals: number
     invoices: number
     payments: number
+    // Reporting-API resources surfaced in the "Reporting Data" tab. Marked
+    // optional so older cached responses (pre-deploy) don't break the UI.
+    contacts?: number
+    deals?: number
+    dealStages?: number
+    paymentTransactions?: number
+    disbursals?: number
   }
   matchBreakdown: Array<{ method: string; count: number; avg_confidence: number }>
   recentEvents: Array<{
@@ -291,8 +299,9 @@ export default function IgnitionAdminPage() {
           <div>
             <h1 className="text-2xl font-semibold text-stone-900">Ignition Integration</h1>
             <p className="mt-1 text-sm text-stone-600">
-              Real-time sync of Ignition proposals, clients, invoices, and payments via Zapier
-              webhooks. Map Ignition clients to your Karbon contacts and organizations below.
+              Real-time sync of clients, proposals, invoices, payments, contacts, and deals via the
+              Ignition Reporting API (backfill) and Zapier webhooks (live updates). Map Ignition
+              clients to your Karbon contacts and organizations below.
             </p>
           </div>
           <Button
@@ -370,6 +379,24 @@ export default function IgnitionAdminPage() {
               {stats && stats.totals.unmatched > 0 ? (
                 <Badge variant="secondary" className="ml-2 bg-amber-100 text-amber-800">
                   {stats.totals.unmatched}
+                </Badge>
+              ) : null}
+            </TabsTrigger>
+            <TabsTrigger value="reporting">
+              Reporting Data
+              {stats &&
+              (stats.totals.contacts || 0) +
+                (stats.totals.deals || 0) +
+                (stats.totals.paymentTransactions || 0) +
+                (stats.totals.disbursals || 0) >
+                0 ? (
+                <Badge variant="secondary" className="ml-2 bg-stone-100 text-stone-700">
+                  {(
+                    (stats.totals.contacts || 0) +
+                    (stats.totals.deals || 0) +
+                    (stats.totals.paymentTransactions || 0) +
+                    (stats.totals.disbursals || 0)
+                  ).toLocaleString()}
                 </Badge>
               ) : null}
             </TabsTrigger>
@@ -685,7 +712,11 @@ export default function IgnitionAdminPage() {
           </TabsContent>
 
           {/* === ZAPIER SETUP TAB === */}
-          <TabsContent value="setup" className="mt-4 space-y-4">
+            <TabsContent value="reporting" className="mt-4">
+              <IgnitionReportingDataTab />
+            </TabsContent>
+
+            <TabsContent value="setup" className="mt-4 space-y-4">
             <Alert>
               <Workflow className="h-4 w-4" />
               <AlertTitle>One-time Zapier setup</AlertTitle>
