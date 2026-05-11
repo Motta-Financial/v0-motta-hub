@@ -27,7 +27,6 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
-  ExternalLink,
   X,
   ChevronLeft,
   ChevronRight,
@@ -36,7 +35,7 @@ import {
   Wallet,
   TrendingDown,
   TrendingUp,
-  RotateCcw,
+  Users,
   MapPin,
   Info,
 } from "lucide-react"
@@ -160,11 +159,17 @@ export function SalesPayments() {
   const state = (searchParams.get("state") || "").split(",").filter(Boolean)
   const minAmount = searchParams.get("minAmount") || ""
   const maxAmount = searchParams.get("maxAmount") || ""
+  // YTD default on paid_at. 625 of 1,531 payments are YTD — a natural
+  // "what have we collected this year so far" framing matches how
+  // partners read this surface.
+  const ytdStart = `${new Date().getFullYear()}-01-01`
   const dateField = searchParams.get("dateField") || "paid_at"
-  const dateFrom = searchParams.get("dateFrom") || ""
+  const dateFrom = searchParams.get("dateFrom") || ytdStart
   const dateTo = searchParams.get("dateTo") || ""
   const sortBy = searchParams.get("sortBy") || "paid_at"
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
+  const userSetDateRange =
+    !!searchParams.get("dateFrom") || !!searchParams.get("dateTo")
 
   const [searchInput, setSearchInput] = useState(search)
 
@@ -177,7 +182,10 @@ export function SalesPayments() {
     if (state.length) sp.set("state", state.join(","))
     if (minAmount) sp.set("minAmount", minAmount)
     if (maxAmount) sp.set("maxAmount", maxAmount)
-    if (dateField !== "paid_at") sp.set("dateField", dateField)
+    // dateField is always paid_at today (the only field Reporting API
+    // exposes) but be explicit so the server side never silently
+    // defaults to a different column.
+    sp.set("dateField", dateField)
     if (dateFrom) sp.set("dateFrom", dateFrom)
     if (dateTo) sp.set("dateTo", dateTo)
     sp.set("sortBy", sortBy)
@@ -227,14 +235,27 @@ export function SalesPayments() {
     status.length +
     state.length +
     (minAmount || maxAmount ? 1 : 0) +
-    (dateFrom || dateTo ? 1 : 0)
+    (userSetDateRange ? 1 : 0)
 
-  // Refunds are exposed as a payment-level `refund_amount` + `refunded_at`
-  // pair (Ignition doesn't issue separate refund records). The KPI counts
-  // ANY payment with refund_amount > 0 as refunded.
-  const refundedCount = data
-    ? data.payments.filter((p) => (p.refund_amount ?? 0) > 0).length
+  // The original layout had a "Refunded" KPI tile sourced from
+  // `refund_amount` + `refunded_at`. Both fields are present on the
+  // table schema but the Ignition Reporting API never populates them
+  // (0/1,531 rows in production), so the tile always rendered $0 and
+  // misled users. We replace it with "Unique Clients" — a roll-up over
+  // the resolved client_name on the current filtered set, which gives a
+  // useful "how many distinct relationships paid us" signal.
+  const uniqueClientCount = data
+    ? new Set(
+        data.payments
+          .map(
+            (p) =>
+              p.organization_id || p.contact_id || p.client_name || null,
+          )
+          .filter((v): v is string => !!v),
+      ).size
     : 0
+  const avgPaymentSize =
+    data && data.stats.total > 0 ? data.stats.totalAmount / data.stats.total : 0
 
   return (
     <div className="flex flex-col gap-4">
@@ -279,11 +300,15 @@ export function SalesPayments() {
           tone="emerald"
         />
         <KpiCard
-          label="Refunded"
-          value={data ? fmtMoney(data.stats.totalRefunded) : "—"}
-          subtitle={refundedCount > 0 ? `${refundedCount} payment${refundedCount === 1 ? "" : "s"}` : "no refunds"}
-          icon={RotateCcw}
-          tone="rose"
+          label="Unique Clients"
+          value={data ? uniqueClientCount.toLocaleString() : "—"}
+          subtitle={
+            avgPaymentSize > 0
+              ? `avg ${fmtMoney(avgPaymentSize)} / payment`
+              : "distinct relationships paid"
+          }
+          icon={Users}
+          tone="blue"
         />
       </div>
 
@@ -298,7 +323,7 @@ export function SalesPayments() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") updateParams({ search: searchInput || null })
               }}
-              placeholder="Search payment ID, invoice #, client, Stripe charge…"
+              placeholder="Search payment ID, invoice #, or client…"
               className="pl-8"
             />
           </div>
@@ -418,27 +443,39 @@ export function SalesPayments() {
                     onSort={toggleSort}
                     align="right"
                   />
-                  <th className="w-20" />
+                  {/*
+                    The trailing actions column previously hosted a
+                    Stripe deep-link icon, but `stripe_charge_id` /
+                    `stripe_payment_intent_id` are never populated by
+                    the Ignition Reporting API (0/1,531 rows in prod).
+                    Until Ignition starts wiring those through, we drop
+                    the column entirely — empty space on every row is
+                    noisier than a clean right edge.
+                  */}
                 </tr>
               </thead>
               <tbody>
                 {isLoading && !data ? (
                   Array.from({ length: 10 }).map((_, i) => (
                     <tr key={i} className="border-b">
-                      <td colSpan={8} className="px-3 py-3">
+                      {/* colSpan now matches the 7 visible headers
+                          (Paid / Client / Invoice / Status / Gross /
+                          Fees / Net) after the Stripe-actions column
+                          was retired above. */}
+                      <td colSpan={7} className="px-3 py-3">
                         <Skeleton className="h-5 w-full" />
                       </td>
                     </tr>
                   ))
                 ) : error ? (
                   <tr>
-                    <td colSpan={8} className="px-3 py-6 text-center text-rose-600">
+                    <td colSpan={7} className="px-3 py-6 text-center text-rose-600">
                       Failed to load payments.
                     </td>
                   </tr>
                 ) : data && data.payments.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-3 py-10 text-center text-muted-foreground">
+                    <td colSpan={7} className="px-3 py-10 text-center text-muted-foreground">
                       <FilterIcon className="h-6 w-6 mx-auto mb-2 opacity-40" />
                       No payments match the current filters.
                     </td>
@@ -454,6 +491,10 @@ export function SalesPayments() {
                         : null
                     const statusKey = p.payment_status || "(none)"
                     const tone = STATUS_TONE[statusKey] || "bg-stone-100 text-stone-700 border-stone-200"
+                    // Refunded indicator: the Reporting API doesn't
+                    // populate refund_amount today, but if/when it does
+                    // we'll surface a small inline pill. Until then the
+                    // condition is always false so the badge is hidden.
                     const isRefunded = (p.refund_amount ?? 0) > 0
                     return (
                       <tr key={p.ignition_payment_id} className="border-b hover:bg-stone-50/60">
@@ -507,19 +548,6 @@ export function SalesPayments() {
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums text-emerald-700 font-medium">
                           {p.net_amount != null ? fmtMoney(p.net_amount, p.currency) : "—"}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          {p.stripe_charge_id ? (
-                            <a
-                              href={`https://dashboard.stripe.com/payments/${p.stripe_charge_id}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-stone-500 hover:text-stone-900 inline-flex p-1"
-                              title="View in Stripe"
-                            >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </a>
-                          ) : null}
                         </td>
                       </tr>
                     )

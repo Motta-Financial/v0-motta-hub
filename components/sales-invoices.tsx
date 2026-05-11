@@ -152,11 +152,21 @@ export function SalesInvoices() {
   const state = (searchParams.get("state") || "").split(",").filter(Boolean)
   const minAmount = searchParams.get("minAmount") || ""
   const maxAmount = searchParams.get("maxAmount") || ""
+  // Default to YTD on invoice_date. With 1,051 invoices in the database
+  // and ~826 of them dated in the current year, a year-to-date view is
+  // both useful out of the gate AND keeps the table from defaulting to
+  // a wall of historical billing nobody is looking for.
+  const ytdStart = `${new Date().getFullYear()}-01-01`
   const dateField = searchParams.get("dateField") || "invoice_date"
-  const dateFrom = searchParams.get("dateFrom") || ""
+  const dateFrom = searchParams.get("dateFrom") || ytdStart
   const dateTo = searchParams.get("dateTo") || ""
   const sortBy = searchParams.get("sortBy") || "invoice_date"
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
+  // Track whether the user EXPLICITLY set a date range. The YTD default
+  // shouldn't count toward "active filters" — otherwise the page loads
+  // showing a non-zero filter pill but no chip is visibly engaged.
+  const userSetDateRange =
+    !!searchParams.get("dateFrom") || !!searchParams.get("dateTo")
 
   const [searchInput, setSearchInput] = useState(search)
   const [editing, setEditing] = useState<Invoice | null>(null)
@@ -170,7 +180,9 @@ export function SalesInvoices() {
     if (state.length) sp.set("state", state.join(","))
     if (minAmount) sp.set("minAmount", minAmount)
     if (maxAmount) sp.set("maxAmount", maxAmount)
-    if (dateField !== "invoice_date") sp.set("dateField", dateField)
+    // Server defaults to invoice_date too, but we send it explicitly
+    // in case the default ever drifts apart on either side.
+    sp.set("dateField", dateField)
     if (dateFrom) sp.set("dateFrom", dateFrom)
     if (dateTo) sp.set("dateTo", dateTo)
     sp.set("sortBy", sortBy)
@@ -220,7 +232,7 @@ export function SalesInvoices() {
     status.length +
     state.length +
     (minAmount || maxAmount ? 1 : 0) +
-    (dateFrom || dateTo ? 1 : 0)
+    (userSetDateRange ? 1 : 0)
 
   return (
     <div className="flex flex-col gap-4">
