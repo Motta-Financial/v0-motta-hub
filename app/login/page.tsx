@@ -37,22 +37,6 @@ function LoginContent() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [showForgotPassword, setShowForgotPassword] = useState(false)
   const [resetEmailSent, setResetEmailSent] = useState(false)
-  // Defer rendering of the full login UI until after client mount.
-  //
-  // This page has been hit by intermittent hydration mismatches when
-  // the dev-mode / preview HTML cache is out of sync with the live
-  // bundle (e.g. right after a brand rename: the cached SSR HTML
-  // still has the old logo + headline while the new client bundle
-  // has the new ones). By rendering a stable spinner during SSR and
-  // only showing the real form after mount, the server-rendered HTML
-  // is guaranteed to match the first client render regardless of
-  // any upstream cache state — eliminating that whole class of bug
-  // for a page that is, by design, always client-rendered anyway
-  // (every interaction here calls into the Supabase browser client).
-  const [mounted, setMounted] = useState(false)
-  useEffect(() => {
-    setMounted(true)
-  }, [])
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -185,7 +169,10 @@ function LoginContent() {
 
   if (resetEmailSent) {
     return (
-      <div className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden">
+      <div
+        className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden"
+        suppressHydrationWarning
+      >
         {/* Background gradients */}
         <div className="absolute inset-0 overflow-hidden">
           <div
@@ -229,22 +216,12 @@ function LoginContent() {
     )
   }
 
-  // Render a stable spinner during SSR / before client mount. The
-  // JSX here must exactly match the Suspense fallback in LoginPage so
-  // there's nothing for React to mismatch on initial hydration -- once
-  // mounted, the real form takes over below. See the `mounted` comment
-  // above for the full rationale.
-  if (!mounted) {
-    return (
-      <div className="min-h-screen bg-[#EAE8E1] flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-[#6B745D]" />
-      </div>
-    )
-  }
-
   if (showForgotPassword) {
     return (
-      <div className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden">
+      <div
+        className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden"
+        suppressHydrationWarning
+      >
         {/* Background gradients */}
         <div className="absolute inset-0 overflow-hidden">
           <div
@@ -262,7 +239,12 @@ function LoginContent() {
           <div className="relative bg-white/80 backdrop-blur-xl border border-[#6B745D]/10 rounded-2xl p-8 shadow-xl">
             <div className="text-center mb-8">
               <div className="relative inline-flex items-center justify-center mb-6">
-                <img src="/images/motta-logo.png" alt="Motta" className="relative h-20 w-auto" />
+                <img
+                  src="/images/motta-logo.png"
+                  alt="Motta"
+                  className="relative h-20 w-auto"
+                  suppressHydrationWarning
+                />
               </div>
               <h1 className="text-xl font-bold text-[#2D2D2D] mb-2">Reset Password</h1>
               <p className="text-[#7A7A7A] text-sm">Enter your email to receive a reset link</p>
@@ -326,7 +308,10 @@ function LoginContent() {
   }
 
   return (
-    <div className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden">
+    <div
+        className="min-h-screen bg-[#EAE8E1] flex items-center justify-center relative overflow-hidden"
+        suppressHydrationWarning
+      >
       {/* Subtle background gradients */}
       <div className="absolute inset-0 overflow-hidden">
         <div
@@ -355,18 +340,28 @@ function LoginContent() {
                   ALFRED AI mark here — the page-header text below now
                   carries the product name (MOTTA HUB) and ALFRED AI
                   is demoted to an attribution tagline. */}
-              <img src="/images/motta-logo.png" alt="Motta" className="relative h-28 w-auto" />
+              <img
+                src="/images/motta-logo.png"
+                alt="Motta"
+                className="relative h-28 w-auto"
+                suppressHydrationWarning
+              />
             </div>
 
             {/* Title — product is MOTTA HUB, AI engine attribution is
                 the secondary line so the brand reads as "this is
                 Motta's tool, powered by our AI" instead of vice versa. */}
             <h1 className="text-2xl font-bold text-[#2D2D2D] mb-2">
-              <span className="bg-gradient-to-r from-[#6B745D] via-[#4A4A4A] to-[#6B745D] bg-clip-text text-transparent">
+              <span
+                className="bg-gradient-to-r from-[#6B745D] via-[#4A4A4A] to-[#6B745D] bg-clip-text text-transparent"
+                suppressHydrationWarning
+              >
                 MOTTA HUB
               </span>
             </h1>
-            <p className="text-[#7A7A7A] text-sm">Powered by ALFRED AI</p>
+            <p className="text-[#7A7A7A] text-sm" suppressHydrationWarning>
+              Powered by ALFRED AI
+            </p>
           </div>
 
           {/* Login form */}
@@ -454,7 +449,9 @@ function LoginContent() {
               year (2023) rather than the current year because this
               footer is brand copy, not a copyright notice. */}
           <div className="mt-8 pt-6 border-t border-[#6B745D]/10 text-center">
-            <p className="text-[#7A7A7A] text-xs">Motta Financial &copy; 2023</p>
+            <p className="text-[#7A7A7A] text-xs" suppressHydrationWarning>
+              Motta Financial &copy; 2023
+            </p>
           </div>
         </div>
       </div>
