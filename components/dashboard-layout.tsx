@@ -55,6 +55,7 @@ import {
   FilePlus2,
   Sparkles,
   Layers,
+  BookOpen,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -208,6 +209,14 @@ const navigation = [
         name: "Tommy Awards",
         href: "/tommy-awards",
         icon: Trophy,
+      },
+      {
+        // Motta Alliance — internal comic book series. Lives under
+        // Talent because the heroes ARE the team; this is the people-
+        // and-culture artifact of the firm, not an operational page.
+        name: "Motta Alliance",
+        href: "/motta-alliance",
+        icon: BookOpen,
       },
     ],
   },
