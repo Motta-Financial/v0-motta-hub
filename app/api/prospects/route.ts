@@ -57,6 +57,16 @@ interface CreateProspectBody {
 
   internal_notes?: string | null
 
+  // Action items from the prospect form
+  action_items?: Array<{
+    description: string
+    assignee_id: string
+    assignee_name: string
+    due_date: string | null
+    priority: "low" | "medium" | "high"
+    create_task: boolean
+  }> | null
+
   // Optional teammate to assign the prospect to. Defaults to the
   // creator if omitted — most of the time the teammate filing the
   // form is also the one who will own the follow-up.
@@ -136,6 +146,8 @@ export async function POST(req: NextRequest) {
         business_summary: body.business_summary?.trim() || null,
 
         internal_notes: body.internal_notes?.trim() || null,
+
+        action_items: body.action_items?.length ? body.action_items : null,
 
         assigned_to_id: assigneeId,
         lead_status: "new",

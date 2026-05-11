@@ -82,6 +82,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (body.triage_notes !== undefined) {
       updates.triage_notes = body.triage_notes
     }
+    if (body.action_items !== undefined) {
+      // Action items from the triage sheet — store as JSONB
+      updates.action_items = body.action_items
+    }
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "No updatable fields supplied" }, { status: 400 })
