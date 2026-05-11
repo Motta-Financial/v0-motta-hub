@@ -160,12 +160,15 @@ export async function GET() {
       .eq("singleton", true)
       .maybeSingle()
 
+    // Both manual backfills and cron-driven incremental ticks land in
+    // sync_log. The UI cares about "most recent run, whatever it was", so
+    // include both sync_type values.
     const { data: lastRun } = await supabase
       .from("sync_log")
       .select(
-        "id, status, started_at, completed_at, records_fetched, records_updated, records_failed, error_details",
+        "id, sync_type, status, started_at, completed_at, records_fetched, records_updated, records_failed, error_details, is_manual",
       )
-      .eq("sync_type", "ignition_backfill")
+      .in("sync_type", ["ignition_backfill", "ignition_incremental"])
       .order("started_at", { ascending: false })
       .limit(1)
       .maybeSingle()
@@ -186,6 +189,8 @@ export async function GET() {
       lastRun: lastRun
         ? {
             id: lastRun.id,
+            syncType: lastRun.sync_type,
+            isManual: lastRun.is_manual,
             status: lastRun.status,
             startedAt: lastRun.started_at,
             completedAt: lastRun.completed_at,

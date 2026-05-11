@@ -381,30 +381,52 @@ export async function ignitionFetch<T = unknown>(
  * a time so callers can stream large datasets without loading the full result
  * into memory.
  *
+ * `query` is a free-form object of extra query-string params that are merged
+ * onto the request URL — most importantly `updated_from` for incremental
+ * polling. The Ignition reporting endpoints accept ISO 8601 timestamps for
+ * those filters and will return only records whose `updated_at` falls in the
+ * window. We use this from the cron path to do a 15-minute incremental tick.
+ *
  * Example:
- *   for await (const page of ignitionPaginate(conn, sb, "/reporting/clients")) {
- *     await upsertBatch(page.data)
- *   }
+ *   // Full backfill:
+ *   for await (const page of ignitionPaginate(conn, sb, "/reporting/clients")) {...}
+ *
+ *   // Incremental tick (last 20 minutes, with 5-min overlap for safety):
+ *   for await (const page of ignitionPaginate(conn, sb, "/reporting/clients", {
+ *     query: { updated_from: "2026-05-11T12:35:00Z" }
+ *   })) {...}
  */
 export async function* ignitionPaginate<T = unknown>(
   connection: IgnitionConnectionRow,
   supabase: SupabaseClient,
   path: string,
-  options: { limit?: number } = {},
+  options: { limit?: number; query?: Record<string, string | undefined | null> } = {},
 ): AsyncGenerator<IgnitionPage<T>> {
   const limit = options.limit ?? 100
   let cursor: string | null = null
+
+  // Build the base query string once. We strip null/undefined so callers can
+  // pass `{ updated_from: connection.last_synced_at ?? null }` without
+  // emitting `updated_from=null` on a brand-new connection.
+  const baseParams = new URLSearchParams()
+  baseParams.set("limit", String(limit))
+  if (options.query) {
+    for (const [k, v] of Object.entries(options.query)) {
+      if (v != null && v !== "") baseParams.set(k, v)
+    }
+  }
 
   // Mirror the existing loop body cap from Calendly's sync helpers to avoid
   // runaway pagination if the API ever returns has_more=true forever.
   const MAX_PAGES = 1000
   for (let i = 0; i < MAX_PAGES; i++) {
+    const params = new URLSearchParams(baseParams)
+    if (cursor) params.set("cursor", cursor)
     const sep: string = path.includes("?") ? "&" : "?"
-    const cursorParam: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
     const page: IgnitionPage<T> = await ignitionFetch<IgnitionPage<T>>(
       connection,
       supabase,
-      `${path}${sep}limit=${limit}${cursorParam}`,
+      `${path}${sep}${params.toString()}`,
     )
     yield page
     if (!page.meta?.pagination?.has_more) return

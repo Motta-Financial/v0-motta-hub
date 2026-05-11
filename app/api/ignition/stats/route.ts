@@ -92,7 +92,10 @@ export async function GET() {
       .from("ignition_clients")
       .select("match_method, match_confidence")
       .not("match_method", "is", null),
-    // Last 50 events for the activity feed. Index on received_at DESC.
+    // Last 50 webhook archive entries for the activity feed. The Zapier
+    // bridge is retired and the table is read-only now — new rows only
+    // appear when a stale Zap still posts to the deprecated receiver, at
+    // which point `processing_status = 'deprecated'`. Index on received_at DESC.
     supabase
       .from("ignition_webhook_events")
       .select("event_type, processing_status, received_at, processing_error")

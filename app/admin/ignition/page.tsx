@@ -5,7 +5,6 @@ import useSWR from "swr"
 import {
   AlertCircle,
   CheckCircle2,
-  ChevronDown,
   Copy,
   ExternalLink,
   KeyRound,
@@ -13,8 +12,6 @@ import {
   Link2Off,
   RefreshCw,
   Search,
-  Webhook,
-  Workflow,
   XCircle,
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard-layout"
@@ -24,76 +21,12 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
 import { useToast } from "@/hooks/use-toast"
 import { MatchPickerDialog } from "@/components/ignition/match-picker-dialog"
 import { IgnitionBackfillCard } from "@/components/ignition/backfill-card"
 import { IgnitionReportingDataTab } from "@/components/ignition/reporting-data-tab"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
-
-// Each Ignition Zap event we support, in the order users should set them up.
-// `path` becomes the URL slug: /api/ignition/webhook/<path>.
-const ZAP_EVENTS: Array<{
-  trigger: string
-  path: string
-  description: string
-}> = [
-  {
-    trigger: "New Client",
-    path: "client.created",
-    description: "Fires when a new client is added in Ignition.",
-  },
-  {
-    trigger: "Updated Client",
-    path: "client.updated",
-    description: "Fires when client details (email, address, etc.) change.",
-  },
-  {
-    trigger: "Proposal Awaiting Acceptance",
-    path: "proposal.awaiting_acceptance",
-    description: "Fires the moment a proposal is sent to a client.",
-  },
-  {
-    trigger: "Proposal Accepted",
-    path: "proposal.accepted",
-    description: "Fires when a client accepts a proposal — the most important trigger.",
-  },
-  {
-    trigger: "Proposal Completed",
-    path: "proposal.completed",
-    description: "Fires when all services on a proposal have been delivered/billed.",
-  },
-  {
-    trigger: "Service Accepted",
-    path: "service.accepted",
-    description: "Fires per-line-item — captures the individual services purchased.",
-  },
-  {
-    trigger: "New Invoice",
-    path: "invoice.created",
-    description: "Fires when Ignition creates an invoice from an accepted proposal.",
-  },
-  {
-    trigger: "Invoice Paid",
-    path: "invoice.paid",
-    description: "Fires when a client invoice is fully paid.",
-  },
-  {
-    trigger: "New Payment",
-    path: "payment.received",
-    description: "Fires when a Stripe payment lands — captures fees, net, charge IDs.",
-  },
-  {
-    trigger: "Failed Payment",
-    path: "payment.failed",
-    description: "Fires on declined/failed payment attempts so you can follow up.",
-  },
-]
 
 type Stats = {
   totals: {
@@ -299,9 +232,10 @@ export default function IgnitionAdminPage() {
           <div>
             <h1 className="text-2xl font-semibold text-stone-900">Ignition Integration</h1>
             <p className="mt-1 text-sm text-stone-600">
-              Real-time sync of clients, proposals, invoices, payments, contacts, and deals via the
-              Ignition Reporting API (backfill) and Zapier webhooks (live updates). Map Ignition
-              clients to your Karbon contacts and organizations below.
+              OAuth sync of clients, contacts, deals, services, proposals, invoices, payments,
+              and collections via the Ignition Reporting API. A 15-minute incremental cron
+              keeps everything fresh; use the manual backfill on the Connection tab for ad-hoc
+              full re-syncs. Map Ignition clients to your Karbon contacts below.
             </p>
           </div>
           <Button
@@ -400,8 +334,8 @@ export default function IgnitionAdminPage() {
                 </Badge>
               ) : null}
             </TabsTrigger>
-            <TabsTrigger value="setup">Zapier Setup</TabsTrigger>
-            <TabsTrigger value="activity">Recent Activity</TabsTrigger>
+            <TabsTrigger value="schedule">Sync Schedule</TabsTrigger>
+            <TabsTrigger value="activity">Webhook Archive</TabsTrigger>
           </TabsList>
 
           {/* === CONNECTION TAB === */}
@@ -413,10 +347,10 @@ export default function IgnitionAdminPage() {
                   Ignition Reporting API
                 </CardTitle>
                 <CardDescription>
-                  OAuth 2.0 connection to the Ignition Reporting API. Once connected, the hub can
-                  pull clients, contacts, deals, services, proposals, invoices, payments, and
-                  collections directly — no Zapier round-trip required. Requires Pro+ or Enterprise
-                  and a practice admin.
+                  OAuth 2.0 connection to the Ignition Reporting API. Once connected, the hub
+                  pulls clients, contacts, deals, services, proposals, invoices, payments, and
+                  collections directly — this is the single source of truth for all Ignition
+                  data. Requires Pro+ or Enterprise and a practice admin.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -716,161 +650,157 @@ export default function IgnitionAdminPage() {
               <IgnitionReportingDataTab />
             </TabsContent>
 
-            <TabsContent value="setup" className="mt-4 space-y-4">
-            <Alert>
-              <Workflow className="h-4 w-4" />
-              <AlertTitle>One-time Zapier setup</AlertTitle>
-              <AlertDescription>
-                Ignition has no public REST API — Zapier is the only programmatic way to sync
-                proposals and clients. Create one Zap per event below. They all share the same
-                authentication header and target this app&apos;s webhook receiver.
-              </AlertDescription>
-            </Alert>
+            <TabsContent value="schedule" className="mt-4 space-y-4">
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>Live sync is API-driven</AlertTitle>
+                <AlertDescription>
+                  Every 15 minutes a cron job calls the Ignition Reporting API with{" "}
+                  <code className="rounded bg-stone-200 px-1 text-xs">updated_from=</code>{" "}
+                  <span className="text-stone-700">{"<last_synced_at>"}</span> so only records
+                  modified since the previous tick are fetched. The Zapier bridge is retired —
+                  all 9 resources (clients, contacts, deals, deal stages, services, proposals,
+                  invoices, payments, collections) come from the same OAuth connection above.
+                </AlertDescription>
+              </Alert>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Shared settings (used in every Zap)</CardTitle>
-                <CardDescription>
-                  Paste these into the Zapier &quot;Webhooks by Zapier&quot; → POST action.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <CopyRow
-                  label="HTTP method"
-                  value="POST"
-                  onCopy={(v) => copyText(v, "Method")}
-                />
-                <CopyRow
-                  label="Payload type"
-                  value="JSON"
-                  onCopy={(v) => copyText(v, "Payload type")}
-                />
-                <CopyRow
-                  label="Header: Content-Type"
-                  value="application/json"
-                  onCopy={(v) => copyText(v, "Content-Type")}
-                />
-                <CopyRow
-                  label="Header: x-ignition-secret"
-                  value="(use your IGNITION_WEBHOOK_SECRET env var)"
-                  onCopy={() =>
-                    toast({
-                      title: "Get your secret from project env",
-                      description:
-                        "Open Project Settings → Vars → IGNITION_WEBHOOK_SECRET and copy that value into Zapier.",
-                    })
-                  }
-                  hint="Stored as IGNITION_WEBHOOK_SECRET. Never paste the actual value into chat or screenshots."
-                />
-              </CardContent>
-            </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Sync cadence</CardTitle>
+                  <CardDescription>
+                    The cron lives at{" "}
+                    <code className="rounded bg-stone-200 px-1 text-xs">
+                      /api/cron/ignition-sync
+                    </code>{" "}
+                    and is registered in{" "}
+                    <code className="rounded bg-stone-200 px-1 text-xs">vercel.json</code>.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+                      <div className="text-xs uppercase tracking-wide text-stone-500">
+                        Cron schedule
+                      </div>
+                      <div className="mt-1 font-mono text-sm text-stone-900">*/15 * * * *</div>
+                      <div className="mt-1 text-xs text-stone-500">
+                        Every 15 minutes, year-round
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+                      <div className="text-xs uppercase tracking-wide text-stone-500">
+                        Cutoff overlap
+                      </div>
+                      <div className="mt-1 font-mono text-sm text-stone-900">5 minutes</div>
+                      <div className="mt-1 text-xs text-stone-500">
+                        Safety window for clock skew and pending records
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+                      <div className="text-xs uppercase tracking-wide text-stone-500">
+                        Last successful sync
+                      </div>
+                      <div className="mt-1 text-sm text-stone-900">
+                        {connection?.lastSyncedAt
+                          ? new Date(connection.lastSyncedAt).toLocaleString()
+                          : "Never"}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+                      <div className="text-xs uppercase tracking-wide text-stone-500">
+                        Rate limit budget
+                      </div>
+                      <div className="mt-1 font-mono text-sm text-stone-900">
+                        ~36 / 1000 req/hr
+                      </div>
+                      <div className="mt-1 text-xs text-stone-500">
+                        9 endpoints × 4 ticks/hr (best case)
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">One Zap per event</CardTitle>
-                <CardDescription>
-                  Each event below maps to a unique webhook URL. Click an event to expand the
-                  step-by-step setup.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {ZAP_EVENTS.map((evt) => {
-                  const url = `${baseUrl}/api/ignition/webhook/${evt.path}`
-                  return (
-                    <Collapsible key={evt.path}>
-                      <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-stone-200 bg-white px-3 py-2 text-left transition hover:bg-stone-50">
-                        <div className="flex items-center gap-3">
-                          <Webhook className="h-4 w-4 text-stone-500" />
-                          <div>
-                            <div className="text-sm font-medium text-stone-900">{evt.trigger}</div>
-                            <div className="text-xs text-stone-500">{evt.description}</div>
-                          </div>
-                        </div>
-                        <ChevronDown className="h-4 w-4 text-stone-400 transition group-data-[state=open]:rotate-180" />
-                      </CollapsibleTrigger>
-                      <CollapsibleContent>
-                        <div className="mt-1 space-y-3 rounded-md border border-stone-200 bg-stone-50 p-3">
-                          <CopyRow
-                            label="Webhook URL"
-                            value={url}
-                            mono
-                            onCopy={(v) => copyText(v, "Webhook URL")}
-                          />
-                          <ol className="ml-4 list-decimal space-y-1 text-sm text-stone-700">
-                            <li>
-                              In Zapier, create a Zap with trigger{" "}
-                              <span className="font-medium">Ignition → {evt.trigger}</span>.
-                            </li>
-                            <li>
-                              For the action, choose{" "}
-                              <span className="font-medium">Webhooks by Zapier → POST</span>.
-                            </li>
-                            <li>Paste the Webhook URL above.</li>
-                            <li>Set Payload Type to JSON.</li>
-                            <li>
-                              Add header{" "}
-                              <code className="rounded bg-stone-200 px-1 text-xs">x-ignition-secret</code>{" "}
-                              with your <code className="rounded bg-stone-200 px-1 text-xs">IGNITION_WEBHOOK_SECRET</code>.
-                            </li>
-                            <li>
-                              In the Data section, map all fields from the Ignition trigger as raw
-                              keys (no transformations). The receiver auto-detects nested keys.
-                            </li>
-                            <li>Test the Zap — a 200 response means it&apos;s wired correctly.</li>
-                          </ol>
-                        </div>
-                      </CollapsibleContent>
-                    </Collapsible>
-                  )
-                })}
-              </CardContent>
-            </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Manual triggers</CardTitle>
+                  <CardDescription>
+                    For ad-hoc re-syncs use the manual backfill on the Connection tab. The cron
+                    endpoint also accepts a forced full-backfill query param.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <CopyRow
+                    label="Force full backfill"
+                    value={`${baseUrl}/api/cron/ignition-sync?full=true`}
+                    mono
+                    onCopy={(v) => copyText(v, "Cron URL")}
+                    hint="Requires Bearer CRON_SECRET when called from outside Vercel Cron."
+                  />
+                  <CopyRow
+                    label="Incremental tick (default)"
+                    value={`${baseUrl}/api/cron/ignition-sync`}
+                    mono
+                    onCopy={(v) => copyText(v, "Cron URL")}
+                  />
+                </CardContent>
+              </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Why Zapier (and not a direct API)?</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm text-stone-700">
-                <p>
-                  Ignition does not expose a public REST API. Their Zapier app exposes the full set
-                  of triggers we need (proposals, clients, services, invoices, payments) and is the
-                  only supported programmatic integration vector.
-                </p>
-                <p>
-                  Because you&apos;re on Stripe Express (not Stripe Standard), platform-level Stripe
-                  data is also unavailable. The <code className="rounded bg-stone-200 px-1 text-xs">payment.received</code> webhook from
-                  Ignition gives us the equivalent record (charge ID, fees, net amount) without
-                  needing platform access.
-                </p>
-                <p className="text-stone-500">
-                  Reference:{" "}
-                  <a
-                    className="inline-flex items-center gap-1 text-stone-700 underline hover:text-stone-900"
-                    href="https://zapier.com/apps/ignition/integrations"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Ignition on Zapier <ExternalLink className="h-3 w-3" />
-                  </a>
-                </p>
-              </CardContent>
-            </Card>
-          </TabsContent>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Why no webhooks?</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm text-stone-700">
+                  <p>
+                    The Ignition Reporting API is poll-only — it doesn&apos;t expose webhook
+                    subscriptions. The <code className="rounded bg-stone-200 px-1 text-xs">updated_from</code>{" "}
+                    filter on every resource lets us tail changes cheaply on a schedule
+                    instead.
+                  </p>
+                  <p>
+                    The legacy{" "}
+                    <code className="rounded bg-stone-200 px-1 text-xs">
+                      /api/ignition/webhook/[event]
+                    </code>{" "}
+                    receiver is still mounted but returns HTTP 410 Gone and archives the
+                    payload to <code className="rounded bg-stone-200 px-1 text-xs">ignition_webhook_events</code>{" "}
+                    for audit. Disable any remaining Zaps in your Ignition Zapier account.
+                  </p>
+                  <p className="text-stone-500">
+                    Reference:{" "}
+                    <a
+                      className="inline-flex items-center gap-1 text-stone-700 underline hover:text-stone-900"
+                      href="https://developers.ignitionapp.com/docs/reporting"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Ignition Reporting API docs{" "}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </p>
+                </CardContent>
+              </Card>
+            </TabsContent>
 
           {/* === ACTIVITY TAB === */}
           <TabsContent value="activity" className="mt-4 space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Recent webhook events</CardTitle>
+                <CardTitle className="text-base">Historical webhook archive</CardTitle>
                 <CardDescription>
-                  The last 50 events received from Zapier. Failed events are kept so you can
-                  diagnose mapping or payload issues.
+                  The last 50 events from the retired Zapier bridge. New inbound POSTs are
+                  rejected with HTTP 410 Gone but still get logged here with{" "}
+                  <code className="rounded bg-stone-200 px-1 text-xs">processing_status = &apos;deprecated&apos;</code>{" "}
+                  so you can identify any Zaps that need to be disabled. Live data now flows
+                  through the Sync Schedule.
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 {!stats || stats.recentEvents.length === 0 ? (
                   <div className="rounded-md border border-stone-200 bg-stone-50 p-6 text-center text-sm text-stone-500">
-                    No webhook events yet. Once your first Zap fires, events will appear here.
+                    No webhook events in the archive. This is expected — the Zapier bridge
+                    is retired. If new rows appear here, an old Zap is still firing and should
+                    be disabled in Ignition.
                   </div>
                 ) : (
                   <div className="overflow-hidden rounded-md border border-stone-200">
