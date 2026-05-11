@@ -109,6 +109,13 @@ export async function GET(req: Request) {
     const PAGE = 1000
     const proposals: any[] = []
     for (let offset = 0; ; offset += PAGE) {
+      // Field selection notes:
+      // - `signed_url` is populated for ~679/912 proposals (the rendered
+      //   PDF Ignition serves) and previously wasn't surfaced anywhere.
+      // - We pull `total_amount` + `billing_frequency` on the embedded
+      //   services so the table can show a "Services" cell with both
+      //   the count and the summed line-item value (442/457 service
+      //   rows have these populated; service_name is universal).
       const { data, error } = await supabase
         .from("ignition_proposals")
         .select(
@@ -116,9 +123,9 @@ export async function GET(req: Request) {
            recurring_total, recurring_frequency, currency, client_name, client_email,
            client_partner, client_manager, proposal_sent_by, billing_starts_on,
            sent_at, accepted_at, completed_at, lost_at, lost_reason, created_at, updated_at,
-           organization_id, contact_id, ignition_client_id,
+           organization_id, contact_id, ignition_client_id, signed_url,
            organizations(id, name),
-           services:ignition_proposal_services(service_name)`,
+           services:ignition_proposal_services(service_name, total_amount, billing_frequency)`,
         )
         .is("archived_at", null)
         .range(offset, offset + PAGE - 1)
@@ -225,6 +232,12 @@ export async function GET(req: Request) {
        *  Ignition side. */
       canonical_services: string[]
       is_curated_recurring: boolean
+      /** Direct link to the rendered Ignition proposal PDF. */
+      signed_url: string | null
+      /** Count of line items on this proposal. */
+      service_count: number
+      /** Whether ANY line item has billing_frequency != 'one-time'. */
+      has_recurring_line: boolean
     }
 
     const enriched: EnrichedProposal[] = proposals.map((p: any) => {
@@ -249,7 +262,16 @@ export async function GET(req: Request) {
       // filter on the unified service rather than on whatever name the
       // proposal happened to use that day.
       const canonicalSet = new Set<string>()
+      let serviceCount = 0
+      let hasRecurringLine = false
       for (const s of p.services ?? []) {
+        serviceCount++
+        if (
+          s.billing_frequency &&
+          s.billing_frequency !== "one-time"
+        ) {
+          hasRecurringLine = true
+        }
         if (s.service_name) {
           serviceLineSet.add(classifyService(s.service_name))
           const cid = canonicalIdFor(s.service_name)
@@ -302,6 +324,9 @@ export async function GET(req: Request) {
         service_lines: Array.from(serviceLineSet),
         canonical_services: Array.from(canonicalSet),
         is_curated_recurring: isCurated,
+        signed_url: p.signed_url ?? null,
+        service_count: serviceCount,
+        has_recurring_line: hasRecurringLine,
       }
     })
 

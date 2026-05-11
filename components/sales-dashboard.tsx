@@ -33,7 +33,7 @@ import {
   Legend,
   Cell,
 } from "recharts"
-import { format, parseISO, subMonths, startOfMonth } from "date-fns"
+import { format, parseISO, startOfYear } from "date-fns"
 import {
   ChevronDown,
   X,
@@ -218,8 +218,12 @@ const fmtCount = (n: number) => new Intl.NumberFormat("en-US").format(n)
 const fmtPct = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(n)
 
-// Default date range: last 12 months (covers a full annual sales cycle).
-const defaultStart = format(startOfMonth(subMonths(new Date(), 11)), "yyyy-MM-dd")
+// Default date range: year-to-date. Sales reporting is run on a
+// calendar-year cadence (annual quotas, year-end commission true-ups),
+// so anchoring the dashboard at Jan 1 of the current year matches how
+// the partners actually consume the numbers. Users can extend or
+// shorten the window via the date range chip when they need to.
+const defaultStart = format(startOfYear(new Date()), "yyyy-MM-dd")
 
 export function SalesDashboard() {
   const router = useRouter()
@@ -227,8 +231,13 @@ export function SalesDashboard() {
   const searchParams = useSearchParams()
 
   // ── Filter state ── pulled from URL so reloads / shares preserve view ──
+  // Default to `accepted_at`: in the live data only ~4 proposals have a
+  // current-year `created_at` (the column is import-stamped from the
+  // historical Ignition migration) while ~244 have a YTD `accepted_at`.
+  // `accepted_at` is also what sales partners actually care about for
+  // YTD reporting since it's when revenue was won.
   const dateField =
-    (searchParams.get("dateField") as "created_at" | "accepted_at" | "sent_at") || "created_at"
+    (searchParams.get("dateField") as "created_at" | "accepted_at" | "sent_at") || "accepted_at"
   const startDate = searchParams.get("startDate") || defaultStart
   const endDate = searchParams.get("endDate") || ""
   const statusFilter = (searchParams.get("status") || "").split(",").filter(Boolean)

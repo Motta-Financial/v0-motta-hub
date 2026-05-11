@@ -30,6 +30,7 @@ import {
   Filter as FilterIcon,
   Pencil,
   MapPin,
+  FileText,
 } from "lucide-react"
 import { ProposalEditSheet } from "@/components/sales/proposal-edit-sheet"
 import { IgnitionLiveBadge } from "@/components/sales/ignition-live-badge"
@@ -79,6 +80,16 @@ interface Proposal {
   city: string | null
   /** Service lines this proposal touches (Tax / Accounting / Advisory / Other). */
   service_lines: ServiceLine[]
+  /** Direct link to the rendered proposal PDF (when Ignition has signed
+   *  it). Populated for ~75% of proposals in practice. */
+  signed_url: string | null
+  /** Number of line items on this proposal. */
+  service_count: number
+  /** Whether ANY line item has a non-"one-time" billing frequency. Used
+   *  to decide whether to render a "Recurring" badge — far more reliable
+   *  than the proposal-level `recurring_total` column which is populated
+   *  on only ~2% of rows. */
+  has_recurring_line: boolean
 }
 interface ProposalsResponse {
   proposals: Proposal[]
@@ -174,11 +185,23 @@ export function SalesProposals() {
     .filter(Boolean)
   const minValue = searchParams.get("minValue") || ""
   const maxValue = searchParams.get("maxValue") || ""
-  const dateField = searchParams.get("dateField") || "created_at"
-  const dateFrom = searchParams.get("dateFrom") || ""
+  // Defaults: YTD on `accepted_at`. Sales partners read this page on a
+  // calendar-year cadence, and `accepted_at` is the only date field that
+  // actually reflects when revenue was won (`created_at` is import-
+  // stamped from the historical Ignition migration and bunches into a
+  // single day for most legacy rows).
+  const ytdStart = `${new Date().getFullYear()}-01-01`
+  const dateField = searchParams.get("dateField") || "accepted_at"
+  const dateFrom = searchParams.get("dateFrom") || ytdStart
   const dateTo = searchParams.get("dateTo") || ""
-  const sortBy = searchParams.get("sortBy") || "created_at"
+  const sortBy = searchParams.get("sortBy") || "accepted_at"
   const sortDir = (searchParams.get("sortDir") || "desc") as "asc" | "desc"
+  // A non-URL flag for "the user explicitly typed a date" so the
+  // Clear Filters button can wipe the YTD default but the active-filter
+  // counter doesn't include it (otherwise the chip count starts at 1
+  // on first load, which is confusing).
+  const userSetDateRange =
+    !!searchParams.get("dateFrom") || !!searchParams.get("dateTo")
 
   const [searchInput, setSearchInput] = useState(search)
   const [editing, setEditing] = useState<Proposal | null>(null)
@@ -198,7 +221,9 @@ export function SalesProposals() {
       sp.set("canonicalService", canonicalService.join(","))
     if (minValue) sp.set("minValue", minValue)
     if (maxValue) sp.set("maxValue", maxValue)
-    if (dateField !== "created_at") sp.set("dateField", dateField)
+    // Always pass the resolved dateField — the server defaults to
+    // created_at, but our UI default is accepted_at (see comment above).
+    sp.set("dateField", dateField)
     if (dateFrom) sp.set("dateFrom", dateFrom)
     if (dateTo) sp.set("dateTo", dateTo)
     sp.set("sortBy", sortBy)
@@ -259,7 +284,10 @@ export function SalesProposals() {
     serviceLine.length +
     canonicalService.length +
     (minValue || maxValue ? 1 : 0) +
-    (dateFrom || dateTo ? 1 : 0)
+    // Only the user-set date range counts toward the "active filter"
+    // tally — the YTD default doesn't, otherwise the page would load
+    // showing "1 filter" with no chip visibly engaged.
+    (userSetDateRange ? 1 : 0)
 
   return (
     <div className="flex flex-col gap-4">
@@ -443,8 +471,17 @@ export function SalesProposals() {
                     onSort={toggleSort}
                     align="right"
                   />
-                  <th className="text-right px-3 py-2 font-medium">Recurring/mo</th>
-                  <th className="text-left px-3 py-2 font-medium">Owner</th>
+                  {/*
+                    Was previously "Recurring/mo" sourced from
+                    proposal.recurring_total — only ~16 / 912 rows in
+                    production have a non-null value, so the column was
+                    blank for everyone. Service count is universally
+                    populated and gives a stronger at-a-glance signal
+                    about scope (a 6-line bundle vs a single-line
+                    engagement).
+                  */}
+                  <th className="text-right px-3 py-2 font-medium">Services</th>
+                  <th className="text-left px-3 py-2 font-medium">Sent by</th>
                   <SortableHeader
                     field="created_at"
                     label="Created"
@@ -552,13 +589,28 @@ export function SalesProposals() {
                         <td className="px-3 py-2 text-right tabular-nums font-medium">
                           {fmtMoney(p.total_value, p.currency || "USD")}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                          {p.recurring_total
-                            ? fmtMoney(p.recurring_total, p.currency || "USD")
-                            : "—"}
+                        <td className="px-3 py-2 text-right">
+                          <div className="inline-flex items-center gap-1.5 text-stone-700">
+                            <span className="tabular-nums">{p.service_count}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {p.service_count === 1 ? "line" : "lines"}
+                            </span>
+                          </div>
+                          {p.has_recurring_line ? (
+                            <div className="text-[10px] text-emerald-700 font-medium mt-0.5">
+                              Has recurring
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-3 py-2 text-xs text-muted-foreground">
-                          {p.client_partner || p.proposal_sent_by || p.client_manager || "—"}
+                          {/* In the live data `proposal_sent_by` is
+                              populated on ~95% of rows, `client_partner`
+                              on ~10%, `client_manager` on <1%. Prefer the
+                              column that's actually filled in. */}
+                          {p.proposal_sent_by ||
+                            p.client_partner ||
+                            p.client_manager ||
+                            "—"}
                         </td>
                         <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
                           {fmtDate(p.created_at)}
@@ -577,6 +629,21 @@ export function SalesProposals() {
                             >
                               <Pencil className="h-3.5 w-3.5" />
                             </Button>
+                            {p.signed_url ? (
+                              // ~75% of proposals have a signed_url
+                              // pointing at the rendered PDF; surface it
+                              // here so reps can open the actual proposal
+                              // without bouncing through Ignition's UI.
+                              <a
+                                href={p.signed_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-stone-500 hover:text-stone-900 p-1"
+                                title="Open signed proposal PDF"
+                              >
+                                <FileText className="h-3.5 w-3.5" />
+                              </a>
+                            ) : null}
                             {orgHref ? (
                               <Link
                                 href={orgHref}
