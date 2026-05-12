@@ -5,6 +5,13 @@ import {
   normalizeClientName,
 } from "@/lib/sales/recurring-scrub"
 import { classifyService, type ServiceLine } from "@/lib/sales/service-line-classifier"
+// `extractPayloadServices` reads services straight out of Ignition's raw
+// JSON payload — the authoritative source. The `ignition_proposal_services`
+// normalized table is incomplete (the sync drops rows for ~460 of the
+// firm's active proposals, including PROP-3021), which previously made
+// many proposals show "0 lines" in the Services column even when Ignition
+// had the data. Reading from payload.services fixes that gap.
+import { extractPayloadServices } from "@/lib/sales/ignition-recurring"
 import {
   canonicalIdFor,
   getCanonicalService,
@@ -112,10 +119,14 @@ export async function GET(req: Request) {
       // Field selection notes:
       // - `signed_url` is populated for ~679/912 proposals (the rendered
       //   PDF Ignition serves) and previously wasn't surfaced anywhere.
-      // - We pull `total_amount` + `billing_frequency` on the embedded
-      //   services so the table can show a "Services" cell with both
-      //   the count and the summed line-item value (442/457 service
-      //   rows have these populated; service_name is universal).
+      // - We pull `payload` (Ignition's raw JSON) and read services from
+      //   `payload.services` rather than the `ignition_proposal_services`
+      //   normalized table. The sync that populates that table is
+      //   incomplete — ~460 of the firm's active proposals (including
+      //   PROP-3021 / Synergy Rehab Scottsbluff) have zero rows there even
+      //   though Ignition's payload has the full service list. Reading
+      //   from the payload directly guarantees the Services column shows
+      //   the real line count.
       const { data, error } = await supabase
         .from("ignition_proposals")
         .select(
@@ -123,9 +134,8 @@ export async function GET(req: Request) {
            recurring_total, recurring_frequency, currency, client_name, client_email,
            client_partner, client_manager, proposal_sent_by, billing_starts_on,
            sent_at, accepted_at, completed_at, lost_at, lost_reason, created_at, updated_at,
-           organization_id, contact_id, ignition_client_id, signed_url,
-           organizations(id, name),
-           services:ignition_proposal_services(service_name, total_amount, billing_frequency)`,
+           organization_id, contact_id, ignition_client_id, signed_url, payload,
+           organizations(id, name)`,
         )
         .is("archived_at", null)
         .range(offset, offset + PAGE - 1)
@@ -264,17 +274,19 @@ export async function GET(req: Request) {
       const canonicalSet = new Set<string>()
       let serviceCount = 0
       let hasRecurringLine = false
-      for (const s of p.services ?? []) {
+      // Read services from the raw Ignition payload JSON. Each entry has
+      // { name, frequency, period_rate, contract_amount, is_recurring }
+      // already normalized — see `parsePayloadService` in
+      // `lib/sales/ignition-recurring.ts` for the field mapping.
+      const services = extractPayloadServices(p.payload)
+      for (const s of services) {
         serviceCount++
-        if (
-          s.billing_frequency &&
-          s.billing_frequency !== "one-time"
-        ) {
+        if (s.is_recurring && s.frequency !== "one-time") {
           hasRecurringLine = true
         }
-        if (s.service_name) {
-          serviceLineSet.add(classifyService(s.service_name))
-          const cid = canonicalIdFor(s.service_name)
+        if (s.name) {
+          serviceLineSet.add(classifyService(s.name))
+          const cid = canonicalIdFor(s.name)
           if (cid) canonicalSet.add(cid)
         }
       }

@@ -4,20 +4,22 @@
  * Sales > Recurring Revenue
  * ────────────────────────────────────────────────────────────────────────
  * Live MRR / ARR view for Accounting and Tax sourced directly from the
- * Ignition feed (`ignition_proposals` + `ignition_proposal_services`),
- * scoped to accepted, non-revoked engagements. The classification logic
- * lives in `lib/sales/ignition-recurring.ts`.
+ * Ignition feed via the raw `payload.services` JSON on `ignition_proposals`
+ * — not the normalized `ignition_proposal_services` table, which is
+ * populated by an incomplete sync and drops services for ~460 of the
+ * firm's active proposals. Reading from the payload guarantees the page
+ * shows the same line items partners see inside Ignition.
  *
- * Numbers refresh whenever an Ignition sync runs (cron every 15 min, plus
- * a manual "Sync now" button in the header). Onboarding & Optimization
- * one-time fees are bucketed separately from generic one-time work so
- * partners can read them off the table at a glance.
+ * The classification + frequency policy lives in
+ * `lib/sales/ignition-recurring.ts`. Tax engagements are treated as
+ * one-time regardless of how Ignition records the cadence (installment-
+ * billed returns are common). Numbers refresh whenever an Ignition sync
+ * runs (cron every 15 min, plus a manual "Sync now" button in the header).
  *
- * The previous CSV-seeded `motta_recurring_revenue` table is still queried
- * by the API for a "Not in Ignition yet" gap callout — clients that the
- * partners know are on recurring engagements but haven't been proposed
- * through Ignition yet. This keeps the live total honest while preserving
- * the institutional knowledge captured in the curated CSV.
+ * The partner-maintained `motta_recurring_revenue` CSV is still queried
+ * by the API for a "Not in Ignition yet" gap callout — clients the team
+ * tracks as recurring but who haven't been moved onto Ignition yet. The
+ * CSV is reference data, not the source of truth for MRR.
  */
 
 import { useMemo, useState } from "react"
