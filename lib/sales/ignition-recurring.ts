@@ -241,30 +241,57 @@ export function effectiveBillingFrequency(
 /**
  * Per-period rate for a service line, used as the basis for MRR/ARR math.
  *
- * Ignition stores three relevant numeric fields per service:
- *   • `unit_price`   — the per-period rate (e.g. $2,000/month for rent)
+ * Ignition stores four relevant numeric inputs per service:
+ *   • `unit_price`   — the LIST / standard rate per period (e.g. $7,500/mo)
  *   • `quantity`     — multiplier, almost always 1 in practice
- *   • `total_amount` — the CONTRACT TOTAL across the full billing period,
- *                      i.e. `unit_price × quantity × periods_in_contract`
+ *   • `total_amount` — the contract total across the full billing schedule
+ *   • `raw_payload.billing_events` — the number of cycles Ignition will
+ *                                    actually bill (one per period for
+ *                                    recurring services)
  *
- * The original implementation fed `total_amount` straight into the
- * monthly bucket, which silently multiplied every recurring engagement
- * by its number of billing periods. Example: Michael Hilborn's $2,000/mo
- * rent proposal with ~18.5 months remaining showed up as $37,000 MRR
- * (the contract total) instead of $2,000 MRR. This helper enforces the
- * correct interpretation: `unit_price × quantity` is the per-period rate.
+ * The actual NEGOTIATED rate per cycle is `total_amount / billing_events`,
+ * NOT `unit_price`. `unit_price` is the list price; partners frequently
+ * discount it on the proposal but Ignition keeps `unit_price` unchanged
+ * and lowers `total_amount` to reflect the deal. Two real examples:
  *
- * If `unit_price` is missing or zero we return 0 rather than falling
- * back to `total_amount`. A zero-rate Ignition line is intentional
- * (free clean-up, bundled add-on, courtesy line) and should not inflate
- * MRR by reinterpreting the contract total as a monthly fee.
+ *   • Milestone Mortgage — Controllership Advisory:
+ *       unit_price=$7,500, total=$16,000, events=4 → true rate $4,000/mo
+ *   • Cameron Iacomini — Bookkeeping Services:
+ *       unit_price=$499,   total=$5,985, events=15 → true rate $399/mo
+ *
+ * If `unit_price` were the truth, Milestone's MRR would show $7,500 — but
+ * the engagement is actually $4,000/mo with a separate $3,500 onboarding
+ * fee. The bug this fixes: previously we returned `unit_price × quantity`
+ * here, which over-stated MRR for every discounted recurring engagement.
+ *
+ * Fallback: when `billing_events` is missing or zero (a small handful of
+ * rows firm-wide, all also lacking `billing_frequency`), we use
+ * `unit_price × quantity` as a best-effort estimate. Returning 0 there
+ * would silently drop legitimate recurring revenue from the totals.
  */
 export type ServiceRateInput = {
   unit_price?: number | string | null
   quantity?: number | string | null
+  total_amount?: number | string | null
+  raw_payload?: Record<string, unknown> | null
 }
 
 export function servicePeriodRate(svc: ServiceRateInput): number {
+  // Preferred path: total_amount / billing_events. This is the actual
+  // per-cycle amount Ignition will bill, which captures partner
+  // discounts that `unit_price` (the list price) does not reflect.
+  const totalAmount = Number(svc.total_amount) || 0
+  const billingEvents = Number(
+    (svc.raw_payload as { billing_events?: number | string } | null | undefined)
+      ?.billing_events,
+  )
+  if (totalAmount > 0 && billingEvents > 0) {
+    return totalAmount / billingEvents
+  }
+
+  // Fallback: list price × quantity. Only triggered for rows that lack
+  // billing_events. Keeps legitimate recurring revenue from dropping out
+  // of totals when Ignition's billing schedule metadata isn't populated.
   const unit = Number(svc.unit_price) || 0
   const qty = Number(svc.quantity) || 1
   return unit * qty
