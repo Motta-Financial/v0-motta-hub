@@ -55,6 +55,7 @@ import {
   FilePlus2,
   Sparkles,
   Layers,
+  Network,
   BookOpen,
   Palette,
   Wallet,
@@ -242,6 +243,11 @@ const navigation = [
         icon: ShieldCheck,
         children: [
           { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
+          {
+            name: "Master Client Mapping",
+            href: "/admin/master-client-mapping",
+            icon: Network,
+          },
           { name: "Unlinked Records", href: "/admin/unlinked-records", icon: Link2 },
           { name: "Broadcast", href: "/admin/broadcast", icon: Radio },
           { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
