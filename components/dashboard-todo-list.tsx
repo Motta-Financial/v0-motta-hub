@@ -46,6 +46,7 @@ import {
   Search,
   Trash2,
   User,
+  Video,
 } from "lucide-react"
 import { useUser } from "@/contexts/user-context"
 import { cn } from "@/lib/utils"
@@ -80,6 +81,12 @@ interface UserTask {
   proposal_name: string | null
   karbon_work_item_id: string | null
   created_at: string
+  // Source attribution — set for auto-generated tasks (e.g. the
+  // hourly Zoom-meeting sweep that creates "Tag this Zoom meeting"
+  // todos). `source_url` deep-links back to the relevant screen.
+  source_type?: string | null
+  source_url?: string | null
+  zoom_meeting_id?: number | string | null
 }
 
 interface ActionItem {
@@ -273,6 +280,21 @@ function SortableTaskItem({ task, onToggleComplete, onDelete }: SortableTaskItem
                 <FileText className="h-3 w-3" />
                 {task.karbon_work_item_id}
               </span>
+            )}
+            {/* Auto-generated tasks (currently only the Zoom-meeting
+                sweep) get a small source pill + a click-through link.
+                Routing through a plain <a> keeps the drag-handle's
+                pointer events isolated — the link itself sits inside
+                the metadata row, never under the drag listeners. */}
+            {task.source_type === "zoom_meeting" && task.source_url && (
+              <a
+                href={task.source_url}
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-50 px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Video className="h-3 w-3" />
+                Tag Zoom meeting
+              </a>
             )}
           </div>
         </div>

@@ -1,6 +1,9 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
+import { useSearchParams } from "next/navigation"
+import { useToast } from "@/hooks/use-toast"
+import { ListChecks, Loader2 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -84,6 +87,12 @@ export function ZoomDashboard() {
     Record<string, { clients: number; workItems: number }>
   >({})
   const [tagDialogMeeting, setTagDialogMeeting] = useState<ZoomMeetingForTagging | null>(null)
+  // Pending state for the "Send untagged to my To-Do list" action so we
+  // can disable the button + render an inline spinner while the API
+  // call is in flight. The toast carries the success/failure summary.
+  const [generatingTodos, setGeneratingTodos] = useState(false)
+  const { toast } = useToast()
+  const searchParams = useSearchParams()
 
   useEffect(() => {
     fetchData()
@@ -293,6 +302,90 @@ export function ZoomDashboard() {
     })
   }
 
+  /**
+   * Recordings share their bigint id with the meeting they came from
+   * (Zoom's REST shape exposes `id` on both /meetings and /recordings),
+   * so a "Tag" button on a Recording card opens the same dialog as on
+   * the Meetings tab. This keeps the linkage table singular — one
+   * meeting → many recordings, all sharing the same tag set.
+   */
+  const openTagFromRecording = (r: any) => {
+    setTagDialogMeeting({
+      id: r.id ?? r.zoom_meeting_id ?? r.uuid,
+      topic: r.topic ?? null,
+      start_time: r.start_time ?? null,
+      duration: r.duration ?? null,
+      timezone: r.timezone ?? null,
+      agenda: r.agenda ?? null,
+      join_url: r.share_url ?? r.join_url ?? null,
+      host_email: r.host_email ?? null,
+      host_id: r.host_id ?? null,
+      status: r.status ?? null,
+    })
+  }
+
+  /**
+   * Manually trigger the meeting → todo sweep for the signed-in user.
+   * The cron runs hourly anyway, but the button gives users an
+   * immediate "do it now" path after they wrap a meeting or notice the
+   * untagged-meetings warning.
+   */
+  const handleGenerateTodos = useCallback(async () => {
+    if (!teamMember?.id || generatingTodos) return
+    setGeneratingTodos(true)
+    try {
+      const res = await fetch("/api/zoom/meetings/generate-todos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ teamMemberId: teamMember.id }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || `${res.status}`)
+
+      // Always show a toast — even a zero-new-tasks result is useful
+      // signal ("nothing new to do, you're already caught up").
+      toast({
+        title:
+          json.created > 0
+            ? `Added ${json.created} task${json.created === 1 ? "" : "s"} to your To-Do list`
+            : "You're all caught up",
+        description:
+          json.created > 0
+            ? "Find them under Home → My Tasks. Each one deep-links back here so you can tag the meeting in one click."
+            : json.candidates === 0
+              ? "No untagged meetings in the last 60 days."
+              : "Every untagged meeting in the last 60 days is already on your list.",
+      })
+    } catch (err) {
+      toast({
+        title: "Could not generate tasks",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      })
+    } finally {
+      setGeneratingTodos(false)
+    }
+  }, [teamMember?.id, generatingTodos, toast])
+
+  /**
+   * Deep-link support: when an auto-generated To-Do task links the
+   * user here with `?meetingId=`, auto-open the tag dialog as soon as
+   * meetings are loaded. We match against the bigint Zoom id since
+   * that's what the task stores in `source_url`.
+   */
+  useEffect(() => {
+    const target = searchParams?.get("meetingId")
+    if (!target || meetings.length === 0 || tagDialogMeeting) return
+    const match = meetings.find((m) => String(m.id) === target)
+    if (match) {
+      openTagDialog(match)
+      // Don't strip the query string — back-button preserving the
+      // dialog open state matches the rest of the app's URL patterns
+      // and the dialog closing simply unsets local state.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, meetings])
+
   const formatDuration = (minutes: number) => {
     const hours = Math.floor(minutes / 60)
     const mins = minutes % 60
@@ -449,13 +542,35 @@ export function ZoomDashboard() {
             {untaggedPastMeetings.length === 1 ? "" : "s"} need tagging
           </AlertTitle>
           <AlertDescription className="text-amber-800/80 dark:text-amber-300/80">
-            Every Zoom meeting must be linked to a Karbon work item and all
-            applicable clients so it shows up in the right client view. Tap{" "}
-            <span className="inline-flex items-center gap-1 px-1 rounded border align-middle">
-              <Tag className="h-3 w-3" />
-              Tag
-            </span>{" "}
-            on each card below to fix.
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                Every Zoom meeting must be linked to a Karbon work item and all
+                applicable clients so it shows up in the right client view. Tap{" "}
+                <span className="inline-flex items-center gap-1 px-1 rounded border align-middle">
+                  <Tag className="h-3 w-3" />
+                  Tag
+                </span>{" "}
+                on each card below, or send them all to your To-Do list:
+              </span>
+              {/* Manual sweep — populates the user's My Tasks list with
+                  one item per untagged meeting in the last 60 days. The
+                  cron does this hourly, this is the "I want it now"
+                  shortcut. */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleGenerateTodos}
+                disabled={generatingTodos || !teamMember?.id}
+                className="shrink-0"
+              >
+                {generatingTodos ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <ListChecks className="h-4 w-4 mr-2" />
+                )}
+                Send to my To-Do list
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
       )}
@@ -798,35 +913,87 @@ export function ZoomDashboard() {
             </Card>
           ) : (
             <div className="grid gap-4">
-              {filteredRecordings.map((recording) => (
-                <Card key={recording.uuid} className="p-4">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <h3 className="font-semibold mb-2">{recording.topic}</h3>
-                      <div className="space-y-1 text-sm text-muted-foreground">
-                        <div className="flex items-center gap-2">
-                          <Calendar className="h-4 w-4" />
-                          {formatDateTime(recording.start_time)}
+              {filteredRecordings.map((recording) => {
+                // Recordings share their bigint id with the meeting,
+                // so the same tag counts apply. Treat a recording as
+                // "tagged" when its parent meeting has at least one
+                // client OR work item link.
+                const recordingId =
+                  recording.id ?? recording.zoom_meeting_id ?? recording.uuid
+                const tagged = isMeetingTagged(recordingId)
+                return (
+                  <Card key={recording.uuid} className="p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                          <h3 className="font-semibold">{recording.topic}</h3>
+                          {/* Tag status indicator — matches the
+                              Meetings tab so the two tabs feel
+                              consistent. */}
+                          {tagged ? (
+                            <Badge variant="secondary" className="gap-1">
+                              <Tag className="h-3 w-3" />
+                              Tagged
+                            </Badge>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="gap-1 border-amber-500/40 text-amber-700 dark:text-amber-300"
+                            >
+                              <AlertTriangle className="h-3 w-3" />
+                              Untagged
+                            </Badge>
+                          )}
                         </div>
-                        <div className="flex items-center gap-2">
-                          <Clock className="h-4 w-4" />
-                          {recording.duration} minutes
+                        <div className="space-y-1 text-sm text-muted-foreground">
+                          <div className="flex items-center gap-2">
+                            <Calendar className="h-4 w-4" />
+                            {formatDateTime(recording.start_time)}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Clock className="h-4 w-4" />
+                            {recording.duration} minutes
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="flex gap-2">
-                      {recording.recording_files?.map((file: any, index: number) => (
-                        <Button key={index} size="sm" variant="outline" asChild>
-                          <a href={file.download_url} target="_blank" rel="noopener noreferrer">
-                            <Download className="h-4 w-4 mr-2" />
-                            {file.file_type}
-                          </a>
+                      <div className="flex gap-2 flex-wrap justify-end shrink-0">
+                        {/* Tag action — opens the same client + work
+                            item picker the Meetings tab uses. Promoting
+                            this to the recordings tab is the whole
+                            point of this change: recordings should
+                            never sit unlinked. */}
+                        <Button
+                          size="sm"
+                          variant={tagged ? "outline" : "default"}
+                          onClick={() => openTagFromRecording(recording)}
+                        >
+                          <Tag className="h-4 w-4 mr-2" />
+                          {tagged ? "Edit tags" : "Tag"}
                         </Button>
-                      ))}
+                        {recording.recording_files?.map(
+                          (file: any, index: number) => (
+                            <Button
+                              key={index}
+                              size="sm"
+                              variant="outline"
+                              asChild
+                            >
+                              <a
+                                href={file.download_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                <Download className="h-4 w-4 mr-2" />
+                                {file.file_type}
+                              </a>
+                            </Button>
+                          ),
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </Card>
-              ))}
+                  </Card>
+                )
+              })}
             </div>
           )}
         </TabsContent>
