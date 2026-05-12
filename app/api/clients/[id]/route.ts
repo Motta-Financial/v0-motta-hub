@@ -128,6 +128,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       contactOrgsRes,
       ignitionClientsRes,
       intakeSubmissionsRes,
+      ignitionPaymentsRes,
+      pcMappingRes,
     ] = await Promise.all([
       // Work items: filter by karbon_client_key (always populated) — covers both
       // contact and organization clients in one query.
@@ -347,6 +349,38 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         .or(`${idCol}.eq.${entityId}`)
         .order("jotform_created_at", { ascending: false, nullsFirst: false })
         .limit(20),
+
+      // Ignition payments — the source of truth for client payments. Has
+      // both `contact_id` and `organization_id` FKs, so the same FK
+      // pattern used by every other table above applies. We pull the
+      // full set per client (capped at 500 to keep response size sane)
+      // and aggregate server-side. `paid_at` is the user-meaningful
+      // timestamp; created_at can lag.
+      supabase
+        .from("ignition_payments")
+        .select(
+          `ignition_payment_id, ignition_invoice_id, proposal_id,
+           amount, fees, net_amount, currency,
+           payment_method, payment_status,
+           paid_at, refunded_at, refund_amount,
+           stripe_charge_id, stripe_payment_intent_id`,
+        )
+        .or(`${idCol}.eq.${entityId}`)
+        .order("paid_at", { ascending: false, nullsFirst: false })
+        .limit(500),
+
+      // ProConnect link lookup. The `client_mapping` table is the only
+      // place that ties our internal contact/org UUID to a ProConnect
+      // `oiiClientId`. If a row exists here we'll do a second-tier
+      // fetch of the PC client + their returns; if not, the profile
+      // simply omits the Tax card.
+      supabase
+        .from("client_mapping")
+        .select("proconnect_client_id")
+        .eq("internal_client_id", entityId)
+        .not("proconnect_client_id", "is", null)
+        .limit(1)
+        .maybeSingle(),
     ])
 
     const workItems = workItemsRes.data || []
@@ -359,6 +393,199 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const ignitionInvoices = ignitionInvoicesRes.data || []
     const ignitionProposals = ignitionProposalsRes.data || []
     const ignitionClients = ignitionClientsRes.data || []
+    const ignitionPayments = ignitionPaymentsRes.data || []
+    const pcMapping = pcMappingRes.data || null
+
+    // ── ProConnect (second-tier) ─────────────────────────────────────────
+    // The client_mapping lookup above tells us *whether* this client
+    // exists in ProConnect; if it does, we fan out a second round of
+    // queries to pull the PC client record plus every return form. This
+    // adds one DB round-trip but keeps the response shape stable
+    // whether or not PC is linked, and keeps PC-specific logic out of
+    // the hot path for the 99% of clients with no PC link.
+    const proconnectClientId = pcMapping?.proconnect_client_id || null
+    let proconnect: {
+      clientId: string
+      client: any | null
+      returns: Array<{
+        form: "1040" | "1065" | "1120" | "1120S" | "990"
+        taxYear: number | null
+        status: string | null
+        efileStatus: string | null
+        totalRevenue: number | null
+        totalIncome: number | null
+        totalTax: number | null
+        updatedAt: string | null
+      }>
+      returnCount: number
+      latestTaxYear: number | null
+    } | null = null
+
+    if (proconnectClientId) {
+      const [pcClientRes, pc1040, pc1065, pc1120, pc1120s, pc990] = await Promise.all([
+        supabase
+          .from("proconnect_clients")
+          .select("*")
+          .eq("proconnect_client_id", proconnectClientId)
+          .maybeSingle(),
+        supabase
+          .from("proconnect_1040_returns")
+          .select(
+            "tax_year, return_status, efile_status, wages_salaries_tips, adjusted_gross_income, total_tax, updated_at",
+          )
+          .eq("proconnect_client_id", proconnectClientId),
+        supabase
+          .from("proconnect_1065_returns")
+          .select(
+            "tax_year, return_status, efile_status, gross_receipts_less_returns, ordinary_business_income_loss, updated_at",
+          )
+          .eq("proconnect_client_id", proconnectClientId),
+        supabase
+          .from("proconnect_1120_returns")
+          .select(
+            "tax_year, return_status, efile_status, gross_receipts_less_returns, taxable_income, total_tax, updated_at",
+          )
+          .eq("proconnect_client_id", proconnectClientId),
+        supabase
+          .from("proconnect_1120s_returns")
+          .select(
+            "tax_year, return_status, efile_status, gross_receipts_less_returns, ordinary_business_income_loss, updated_at",
+          )
+          .eq("proconnect_client_id", proconnectClientId),
+        supabase
+          .from("proconnect_990_returns")
+          .select(
+            "tax_year, return_status, efile_status, total_revenue, revenue_less_expenses, pf_tax_due, updated_at",
+          )
+          .eq("proconnect_client_id", proconnectClientId),
+      ])
+
+      // Normalize all five form-specific schemas into one row shape so
+      // the UI can render a single table without knowing which fields
+      // exist on which form. The form-native numeric semantics are
+      // collapsed into "revenue / income / tax" buckets that mean the
+      // same thing for billing & analytics.
+      const returns = [
+        ...(pc1040.data || []).map((r: any) => ({
+          form: "1040" as const,
+          taxYear: r.tax_year ?? null,
+          status: r.return_status ?? null,
+          efileStatus: r.efile_status ?? null,
+          totalRevenue: r.wages_salaries_tips ?? null,
+          totalIncome: r.adjusted_gross_income ?? null,
+          totalTax: r.total_tax ?? null,
+          updatedAt: r.updated_at ?? null,
+        })),
+        ...(pc1065.data || []).map((r: any) => ({
+          form: "1065" as const,
+          taxYear: r.tax_year ?? null,
+          status: r.return_status ?? null,
+          efileStatus: r.efile_status ?? null,
+          totalRevenue: r.gross_receipts_less_returns ?? null,
+          totalIncome: r.ordinary_business_income_loss ?? null,
+          totalTax: null,
+          updatedAt: r.updated_at ?? null,
+        })),
+        ...(pc1120.data || []).map((r: any) => ({
+          form: "1120" as const,
+          taxYear: r.tax_year ?? null,
+          status: r.return_status ?? null,
+          efileStatus: r.efile_status ?? null,
+          totalRevenue: r.gross_receipts_less_returns ?? null,
+          totalIncome: r.taxable_income ?? null,
+          totalTax: r.total_tax ?? null,
+          updatedAt: r.updated_at ?? null,
+        })),
+        ...(pc1120s.data || []).map((r: any) => ({
+          form: "1120S" as const,
+          taxYear: r.tax_year ?? null,
+          status: r.return_status ?? null,
+          efileStatus: r.efile_status ?? null,
+          totalRevenue: r.gross_receipts_less_returns ?? null,
+          totalIncome: r.ordinary_business_income_loss ?? null,
+          totalTax: null,
+          updatedAt: r.updated_at ?? null,
+        })),
+        ...(pc990.data || []).map((r: any) => ({
+          form: "990" as const,
+          taxYear: r.tax_year ?? null,
+          status: r.return_status ?? null,
+          efileStatus: r.efile_status ?? null,
+          totalRevenue: r.total_revenue ?? null,
+          totalIncome: r.revenue_less_expenses ?? null,
+          totalTax: r.pf_tax_due ?? null,
+          updatedAt: r.updated_at ?? null,
+        })),
+      ].sort((a, b) => (b.taxYear ?? 0) - (a.taxYear ?? 0))
+
+      proconnect = {
+        clientId: proconnectClientId,
+        client: pcClientRes.data || null,
+        returns,
+        returnCount: returns.length,
+        latestTaxYear: returns.reduce<number | null>(
+          (max, r) => (r.taxYear != null && (max == null || r.taxYear > max) ? r.taxYear : max),
+          null,
+        ),
+      }
+    }
+
+    // ── Payments Summary ─────────────────────────────────────────────────
+    // Roll up the raw payment rows into a single object. We count only
+    // "collected" payments toward the totals (refunded payments are
+    // counted separately) because the user-facing "total payments"
+    // figure should match what actually hit the firm's bank.
+    const paymentsSummary = (() => {
+      const collected = ignitionPayments.filter(
+        (p: any) => (p.payment_status || "").toLowerCase() === "collected",
+      )
+      const totalAmount = collected.reduce(
+        (sum: number, p: any) => sum + (Number(p.amount) || 0),
+        0,
+      )
+      const totalFees = collected.reduce(
+        (sum: number, p: any) => sum + (Number(p.fees) || 0),
+        0,
+      )
+      const totalNet = collected.reduce(
+        (sum: number, p: any) => sum + (Number(p.net_amount) || 0),
+        0,
+      )
+      const totalRefunded = ignitionPayments.reduce(
+        (sum: number, p: any) => sum + (Number(p.refund_amount) || 0),
+        0,
+      )
+      // The currency we report is whichever currency the majority of
+      // payments are in. In practice this is always "USD" for this
+      // firm; we still derive it from the data to remain correct if
+      // multi-currency clients show up later.
+      const byCurrency = new Map<string, number>()
+      for (const p of collected) {
+        const c = (p.currency || "USD").toUpperCase()
+        byCurrency.set(c, (byCurrency.get(c) || 0) + (Number(p.amount) || 0))
+      }
+      const currency =
+        [...byCurrency.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "USD"
+
+      const mostRecentPaidAt = collected.reduce<string | null>(
+        (latest, p) =>
+          p.paid_at && (!latest || new Date(p.paid_at) > new Date(latest))
+            ? p.paid_at
+            : latest,
+        null,
+      )
+
+      return {
+        totalAmount,
+        totalFees,
+        totalNet,
+        totalRefunded,
+        currency,
+        paymentCount: collected.length,
+        refundCount: ignitionPayments.filter((p: any) => p.refunded_at).length,
+        mostRecentPaidAt,
+      }
+    })()
 
     // ── Unified Invoices ─────────────────────────────────────────────────
     // Normalizes Karbon and Ignition (incl. legacy HubSpot) invoices into a
@@ -744,6 +971,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       clientGroups,
       relatedContacts,
       relatedOrganizations,
+      ignitionPayments,
+      paymentsSummary,
+      proconnect,
     })
   } catch (error) {
     console.error("[v0] Error fetching client detail:", error)

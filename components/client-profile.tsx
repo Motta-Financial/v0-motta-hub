@@ -24,10 +24,13 @@ import {
   Clock,
   DollarSign,
   ExternalLink,
+  Facebook,
   FileText,
   Flame,
   Globe,
   Inbox,
+  Landmark,
+  Linkedin,
   Mail,
   MapPin,
   MessageSquare,
@@ -35,8 +38,10 @@ import {
   RefreshCw,
   StickyNote,
   TrendingUp,
+  Twitter,
   User,
   Users,
+  Wallet,
 } from "lucide-react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -88,6 +93,8 @@ interface ClientBundle {
       mailingAddress: string | null
       website: string | null
       linkedin: string | null
+      twitter: string | null
+      facebook: string | null
     }
     identity: Record<string, unknown> | null
     business: Record<string, unknown> | null
@@ -402,6 +409,60 @@ interface ClientBundle {
     acceptedProposals: number
     totalProposalValue: number
   }
+  /**
+   * Every `payment_status='collected'` payment we have for this
+   * client, sorted newest first. Rolled-up totals live on
+   * `paymentsSummary` below — use that for the KPI strip, this
+   * array for the Payments tab table.
+   */
+  ignitionPayments: Array<{
+    ignition_payment_id: string
+    ignition_invoice_id: string | null
+    proposal_id: string | null
+    amount: number | null
+    fees: number | null
+    net_amount: number | null
+    currency: string | null
+    payment_method: string | null
+    payment_status: string | null
+    paid_at: string | null
+    refunded_at: string | null
+    refund_amount: number | null
+    stripe_charge_id: string | null
+    stripe_payment_intent_id: string | null
+  }>
+  /** Aggregate roll-up of ignitionPayments. */
+  paymentsSummary: {
+    totalAmount: number
+    totalFees: number
+    totalNet: number
+    totalRefunded: number
+    currency: string
+    paymentCount: number
+    refundCount: number
+    mostRecentPaidAt: string | null
+  }
+  /**
+   * ProConnect data, present only when this client is linked in
+   * `client_mapping`. `returns` collapses all five form-specific
+   * schemas into one normalized row shape for table rendering.
+   */
+  proconnect: {
+    clientId: string
+    client: Record<string, unknown> | null
+    returns: Array<{
+      form: "1040" | "1065" | "1120" | "1120S" | "990"
+      taxYear: number | null
+      status: string | null
+      efileStatus: string | null
+      totalRevenue: number | null
+      totalIncome: number | null
+      totalTax: number | null
+      updatedAt: string | null
+    }>
+    returnCount: number
+    latestTaxYear: number | null
+  } | null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -676,7 +737,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         <AlfredErrorCard
           title={
             isNotFound
-              ? "ALFRED here — I couldn't find that client in our records."
+              ? "ALFRED here �� I couldn't find that client in our records."
               : "ALFRED here — I couldn't pull up that client just now."
           }
           message={
@@ -719,6 +780,9 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     relatedContacts = [],
     relatedOrganizations = [],
     stats,
+    ignitionPayments = [],
+    paymentsSummary,
+    proconnect,
   } = data
   // Use the server-merged unified list when present. Older API responses
   // didn't include it — in that case we synthesize the same shape from
@@ -845,7 +909,10 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
       </Card>
 
       {/* ═════ Stats row ═════ */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+      {/* Eight cards on lg+ so Total Paid sits next to Unpaid for an
+          at-a-glance money-in / money-owed pairing. On md we keep the
+          original 4-per-row layout and let the row wrap. */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
         <StatCard icon={Briefcase} label="Active Work" value={stats.activeWorkItems} sub={`${stats.totalWorkItems} total`} />
         <StatCard
           icon={ClipboardList}
@@ -863,6 +930,16 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         <StatCard icon={Mail} label="Emails" value={stats.totalEmails} />
         <StatCard icon={StickyNote} label="Notes" value={stats.totalNotes} />
         <StatCard icon={FileText} label="Documents" value={stats.totalDocuments} />
+        <StatCard
+          icon={Wallet}
+          label="Total Paid"
+          value={formatCurrency(paymentsSummary?.totalAmount ?? 0, paymentsSummary?.currency)}
+          sub={
+            paymentsSummary && paymentsSummary.paymentCount > 0
+              ? `${paymentsSummary.paymentCount} payment${paymentsSummary.paymentCount === 1 ? "" : "s"}`
+              : "no payments yet"
+          }
+        />
         <StatCard
           icon={DollarSign}
           label="Unpaid"
@@ -944,6 +1021,29 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </Badge>
             ) : null}
           </TabsTrigger>
+          {/* Payments tab — only shown when this client has at least
+              one payment on file. Sits next to Invoices because the two
+              tell complementary halves of the billing story: what was
+              billed (Invoices) vs what was collected (Payments). */}
+          {paymentsSummary && paymentsSummary.paymentCount > 0 ? (
+            <TabsTrigger value="payments">
+              Payments
+              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
+                {paymentsSummary.paymentCount}
+              </Badge>
+            </TabsTrigger>
+          ) : null}
+          {/* Tax tab — only shown when this client is linked in
+              ProConnect. The badge counts returns across all five
+              form types (1040/1065/1120/1120S/990). */}
+          {proconnect && proconnect.returnCount > 0 ? (
+            <TabsTrigger value="tax">
+              Tax
+              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
+                {proconnect.returnCount}
+              </Badge>
+            </TabsTrigger>
+          ) : null}
           <TabsTrigger value="documents">
             Documents
             {stats.totalDocuments > 0 ? (
@@ -976,6 +1076,40 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                   <InfoRow icon={MapPin} label="Mailing Address" value={client.contactInfo.mailingAddress} />
                 ) : null}
                 <InfoRow icon={Globe} label="Website" value={client.contactInfo.website} href={client.contactInfo.website} />
+                {/* Social rows — Karbon syncs these as part of the
+                    contact / organization record. We render each only
+                    when populated so the card stays tight on clients
+                    without a digital presence. Twitter handles are
+                    stored as the bare handle (e.g. "@motta"); we
+                    rebuild the canonical URL on the fly. */}
+                {client.contactInfo.linkedin ? (
+                  <InfoRow
+                    icon={Linkedin}
+                    label="LinkedIn"
+                    value={client.contactInfo.linkedin}
+                    href={client.contactInfo.linkedin}
+                  />
+                ) : null}
+                {client.contactInfo.twitter ? (
+                  <InfoRow
+                    icon={Twitter}
+                    label="Twitter / X"
+                    value={client.contactInfo.twitter}
+                    href={
+                      client.contactInfo.twitter.startsWith("http")
+                        ? client.contactInfo.twitter
+                        : `https://twitter.com/${client.contactInfo.twitter.replace(/^@/, "")}`
+                    }
+                  />
+                ) : null}
+                {client.contactInfo.facebook ? (
+                  <InfoRow
+                    icon={Facebook}
+                    label="Facebook"
+                    value={client.contactInfo.facebook}
+                    href={client.contactInfo.facebook}
+                  />
+                ) : null}
               </CardContent>
             </Card>
 
@@ -2171,6 +2305,219 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* ── Payments ──────────────────────────────────────────────────── */}
+        {/* All payments rendered as one table sorted newest first. The
+            top strip restates the totals from the StatCard above so the
+            tab is self-contained when a user lands here from search. */}
+        {paymentsSummary && paymentsSummary.paymentCount > 0 ? (
+          <TabsContent value="payments" className="mt-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              <StatCard
+                icon={Wallet}
+                label="Total Collected"
+                value={formatCurrency(paymentsSummary.totalAmount, paymentsSummary.currency)}
+                sub={`${paymentsSummary.paymentCount} payment${
+                  paymentsSummary.paymentCount === 1 ? "" : "s"
+                }`}
+              />
+              <StatCard
+                icon={DollarSign}
+                label="Net to Firm"
+                value={formatCurrency(paymentsSummary.totalNet, paymentsSummary.currency)}
+                sub={
+                  paymentsSummary.totalFees > 0
+                    ? `after ${formatCurrency(
+                        paymentsSummary.totalFees,
+                        paymentsSummary.currency,
+                      )} fees`
+                    : undefined
+                }
+              />
+              <StatCard
+                icon={TrendingUp}
+                label="Refunded"
+                value={formatCurrency(paymentsSummary.totalRefunded, paymentsSummary.currency)}
+                sub={
+                  paymentsSummary.refundCount > 0
+                    ? `${paymentsSummary.refundCount} refund${
+                        paymentsSummary.refundCount === 1 ? "" : "s"
+                      }`
+                    : "none"
+                }
+              />
+              <StatCard
+                icon={Calendar}
+                label="Most Recent"
+                value={
+                  paymentsSummary.mostRecentPaidAt
+                    ? formatDate(paymentsSummary.mostRecentPaidAt) || "—"
+                    : "—"
+                }
+                sub={
+                  paymentsSummary.mostRecentPaidAt
+                    ? relativeTime(paymentsSummary.mostRecentPaidAt) || undefined
+                    : undefined
+                }
+              />
+            </div>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Wallet className="h-4 w-4" />
+                  Payment History
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40">
+                      <tr className="text-left text-xs text-muted-foreground border-b">
+                        <th className="px-4 py-2 font-medium">Date</th>
+                        <th className="px-4 py-2 font-medium">Status</th>
+                        <th className="px-4 py-2 font-medium">Method</th>
+                        <th className="px-4 py-2 font-medium text-right">Amount</th>
+                        <th className="px-4 py-2 font-medium text-right">Fees</th>
+                        <th className="px-4 py-2 font-medium text-right">Net</th>
+                        <th className="px-4 py-2 font-medium">Invoice</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ignitionPayments.map((p) => {
+                        const isRefunded = !!p.refunded_at
+                        return (
+                          <tr
+                            key={p.ignition_payment_id}
+                            className="border-b last:border-0 hover:bg-muted/20"
+                          >
+                            <td className="px-4 py-2 whitespace-nowrap">
+                              {p.paid_at ? formatDate(p.paid_at) : "—"}
+                            </td>
+                            <td className="px-4 py-2">
+                              <Badge
+                                variant={
+                                  isRefunded
+                                    ? "destructive"
+                                    : p.payment_status === "collected"
+                                    ? "default"
+                                    : "secondary"
+                                }
+                                className="text-xs capitalize"
+                              >
+                                {isRefunded ? "refunded" : p.payment_status || "—"}
+                              </Badge>
+                            </td>
+                            <td className="px-4 py-2 capitalize text-muted-foreground">
+                              {p.payment_method || "—"}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums font-medium">
+                              {formatCurrency(Number(p.amount) || 0, p.currency || "USD")}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
+                              {p.fees != null
+                                ? formatCurrency(Number(p.fees), p.currency || "USD")
+                                : "—"}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums">
+                              {p.net_amount != null
+                                ? formatCurrency(Number(p.net_amount), p.currency || "USD")
+                                : "—"}
+                            </td>
+                            <td className="px-4 py-2 text-xs text-muted-foreground font-mono">
+                              {p.ignition_invoice_id || "—"}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
+
+        {/* ── Tax (ProConnect) ──────────────────────────────────────────── */}
+        {/* Only rendered when the client is linked in ProConnect. The
+            normalized `returns` shape lets us render every form type in
+            one table without form-specific conditionals. */}
+        {proconnect && proconnect.returnCount > 0 ? (
+          <TabsContent value="tax" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Landmark className="h-4 w-4" />
+                  ProConnect Tax Returns
+                  <Badge variant="secondary" className="ml-auto text-xs font-normal">
+                    {proconnect.returnCount} return
+                    {proconnect.returnCount === 1 ? "" : "s"}
+                    {proconnect.latestTaxYear ? ` • latest ${proconnect.latestTaxYear}` : ""}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40">
+                      <tr className="text-left text-xs text-muted-foreground border-b">
+                        <th className="px-4 py-2 font-medium">Form</th>
+                        <th className="px-4 py-2 font-medium">Tax Year</th>
+                        <th className="px-4 py-2 font-medium">Status</th>
+                        <th className="px-4 py-2 font-medium">E-file</th>
+                        <th className="px-4 py-2 font-medium text-right">Revenue / AGI</th>
+                        <th className="px-4 py-2 font-medium text-right">Income</th>
+                        <th className="px-4 py-2 font-medium text-right">Tax</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {proconnect.returns.map((r, idx) => (
+                        <tr
+                          key={`${r.form}-${r.taxYear}-${idx}`}
+                          className="border-b last:border-0 hover:bg-muted/20"
+                        >
+                          <td className="px-4 py-2">
+                            <Badge variant="outline" className="font-mono text-xs">
+                              {r.form}
+                            </Badge>
+                          </td>
+                          <td className="px-4 py-2 tabular-nums">{r.taxYear ?? "—"}</td>
+                          <td className="px-4 py-2 capitalize text-muted-foreground">
+                            {r.status || "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            {r.efileStatus ? (
+                              <Badge
+                                variant={
+                                  r.efileStatus.toLowerCase().includes("accepted")
+                                    ? "default"
+                                    : "secondary"
+                                }
+                                className="text-xs capitalize"
+                              >
+                                {r.efileStatus.replace(/_/g, " ")}
+                              </Badge>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2 text-right tabular-nums">
+                            {r.totalRevenue != null ? formatCurrency(r.totalRevenue) : "—"}
+                          </td>
+                          <td className="px-4 py-2 text-right tabular-nums">
+                            {r.totalIncome != null ? formatCurrency(r.totalIncome) : "—"}
+                          </td>
+                          <td className="px-4 py-2 text-right tabular-nums">
+                            {r.totalTax != null ? formatCurrency(r.totalTax) : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
 
         {/* ── Documents ─────────────────────────────────────────────────── */}
         <TabsContent value="documents" className="mt-4">
