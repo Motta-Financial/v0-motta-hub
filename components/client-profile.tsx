@@ -58,6 +58,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { summarizePayments, isPaid } from "@/lib/ignition/payments"
 import { cn } from "@/lib/utils"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
 import { AlfredErrorCard } from "@/components/alfred-error"
@@ -2767,38 +2768,16 @@ function PaymentsTab({
     })
   }, [payments, range])
 
-  const filteredSummary = useMemo(() => {
-    // Mirrors the server-side aggregation in /api/clients/[id]: only
-    // payments with `payment_status='collected'` count toward the
-    // money totals; refunds get their own tally.
-    const collected = filteredPayments.filter(
-      (p) => (p.payment_status || "").toLowerCase() === "collected",
-    )
-    const totalAmount = collected.reduce((s, p) => s + (Number(p.amount) || 0), 0)
-    const totalFees = collected.reduce((s, p) => s + (Number(p.fees) || 0), 0)
-    const totalNet = collected.reduce((s, p) => s + (Number(p.net_amount) || 0), 0)
-    const totalRefunded = filteredPayments.reduce(
-      (s, p) => s + (Number(p.refund_amount) || 0),
-      0,
-    )
-    const refundCount = filteredPayments.filter((p) => p.refunded_at).length
-    const mostRecentPaidAt = collected.reduce<string | null>(
-      (latest, p) =>
-        p.paid_at && (!latest || new Date(p.paid_at) > new Date(latest))
-          ? p.paid_at
-          : latest,
-      null,
-    )
-    return {
-      totalAmount,
-      totalFees,
-      totalNet,
-      totalRefunded,
-      refundCount,
-      paymentCount: collected.length,
-      mostRecentPaidAt,
-    }
-  }, [filteredPayments])
+  // Re-summarise on the client using the same helper the server
+  // route uses, so the in-tab KPI strip stays in lockstep with the
+  // top-of-page "Total Paid" card. `summarizePayments` correctly
+  // counts both `collected` (in-transit) and `disbursed` (settled)
+  // rows as paid — see `lib/ignition/payments.ts` for the full
+  // lifecycle rationale.
+  const filteredSummary = useMemo(
+    () => summarizePayments(filteredPayments),
+    [filteredPayments],
+  )
 
   const currency = lifetimeSummary.currency
   const isFiltered = preset !== "all_time"
@@ -2981,11 +2960,18 @@ function PaymentsTab({
                           {p.paid_at ? formatDate(p.paid_at) : "—"}
                         </td>
                         <td className="px-4 py-2">
+                          {/* Treat both `collected` (just charged,
+                              funds in transit) and `disbursed`
+                              (settled to firm) as the same "paid"
+                              state for badge styling — they're
+                              consecutive lifecycle stages of a
+                              successful payment, not distinct
+                              outcomes. */}
                           <Badge
                             variant={
                               isRefunded
                                 ? "destructive"
-                                : p.payment_status === "collected"
+                                : isPaid(p)
                                   ? "default"
                                   : "secondary"
                             }

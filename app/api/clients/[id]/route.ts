@@ -14,6 +14,7 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { getClientType } from "@/lib/client-type"
+import { summarizePayments } from "@/lib/ignition/payments"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -531,61 +532,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     }
 
     // ── Payments Summary ─────────────────────────────────────────────────
-    // Roll up the raw payment rows into a single object. We count only
-    // "collected" payments toward the totals (refunded payments are
-    // counted separately) because the user-facing "total payments"
-    // figure should match what actually hit the firm's bank.
-    const paymentsSummary = (() => {
-      const collected = ignitionPayments.filter(
-        (p: any) => (p.payment_status || "").toLowerCase() === "collected",
-      )
-      const totalAmount = collected.reduce(
-        (sum: number, p: any) => sum + (Number(p.amount) || 0),
-        0,
-      )
-      const totalFees = collected.reduce(
-        (sum: number, p: any) => sum + (Number(p.fees) || 0),
-        0,
-      )
-      const totalNet = collected.reduce(
-        (sum: number, p: any) => sum + (Number(p.net_amount) || 0),
-        0,
-      )
-      const totalRefunded = ignitionPayments.reduce(
-        (sum: number, p: any) => sum + (Number(p.refund_amount) || 0),
-        0,
-      )
-      // The currency we report is whichever currency the majority of
-      // payments are in. In practice this is always "USD" for this
-      // firm; we still derive it from the data to remain correct if
-      // multi-currency clients show up later.
-      const byCurrency = new Map<string, number>()
-      for (const p of collected) {
-        const c = (p.currency || "USD").toUpperCase()
-        byCurrency.set(c, (byCurrency.get(c) || 0) + (Number(p.amount) || 0))
-      }
-      const currency =
-        [...byCurrency.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "USD"
-
-      const mostRecentPaidAt = collected.reduce<string | null>(
-        (latest, p) =>
-          p.paid_at && (!latest || new Date(p.paid_at) > new Date(latest))
-            ? p.paid_at
-            : latest,
-        null,
-      )
-
-      return {
-        totalAmount,
-        totalFees,
-        totalNet,
-        totalRefunded,
-        currency,
-        paymentCount: collected.length,
-        refundCount: ignitionPayments.filter((p: any) => p.refunded_at).length,
-        mostRecentPaidAt,
-      }
-    })()
+    // Roll up the raw payment rows into a single object using the
+    // shared `summarizePayments` helper so server and client agree on
+    // exactly what counts as a paid payment. See
+    // `lib/ignition/payments.ts` for the rationale on
+    // `collected | disbursed` being the union of "real" paid states.
+    const paymentsSummary = summarizePayments(ignitionPayments)
 
     // ── Unified Invoices ─────────────────────────────────────────────────
     // Normalizes Karbon and Ignition (incl. legacy HubSpot) invoices into a
