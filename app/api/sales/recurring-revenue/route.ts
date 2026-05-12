@@ -90,6 +90,11 @@ interface ServiceRow {
   unit_price: number | string | null
   quantity: number | string | null
   status: string | null
+  // raw_payload carries Ignition's `billing_events` count, which we need
+  // to derive the true per-cycle rate (total_amount / billing_events)
+  // for discounted recurring engagements. See `servicePeriodRate` for
+  // the full rationale.
+  raw_payload: Record<string, unknown> | null
 }
 
 interface DepartmentRoll {
@@ -179,7 +184,7 @@ export async function GET() {
     const { data, error } = await supabase
       .from("ignition_proposal_services")
       .select(
-        "proposal_id, service_name, billing_frequency, billing_type, total_amount, unit_price, quantity, status",
+        "proposal_id, service_name, billing_frequency, billing_type, total_amount, unit_price, quantity, status, raw_payload",
       )
       .in("proposal_id", slice)
     if (error) {
