@@ -1,8 +1,7 @@
-import { NextResponse } from "next/server"
+import { NextResponse, type NextRequest } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
 import {
-  ACTIVE_PROPOSAL_STATUSES,
   classifyService,
   effectiveBillingFrequency,
   extractPayloadServices,
@@ -10,6 +9,24 @@ import {
   type Department,
   type IgnitionBillingFrequency,
 } from "@/lib/sales/ignition-recurring"
+
+/**
+ * Lifecycle filter — mirrors the Sales Dashboard's status grouping so the
+ * two surfaces stay consistent.
+ *
+ *   accepted  — won deals currently producing revenue (default; what we
+ *               consider "the live recurring book")
+ *   pipeline  — sent / awaiting_acceptance / draft proposals that haven't
+ *               closed yet. MRR here represents what MAY come in.
+ *   lost      — declined deals (status=lost OR lost_at populated). MRR
+ *               here represents recurring revenue we missed out on.
+ *   all       — every non-archived proposal regardless of state.
+ */
+type Lifecycle = "accepted" | "pipeline" | "lost" | "all"
+const VALID_LIFECYCLES: Lifecycle[] = ["accepted", "pipeline", "lost", "all"]
+
+const PIPELINE_STATUSES = ["sent", "awaiting_acceptance", "draft"]
+const ACCEPTED_STATUSES = ["accepted", "completed"]
 
 /**
  * Sales > Recurring Revenue (live from Ignition)
@@ -51,10 +68,18 @@ export const revalidate = 60
 interface ProposalRow {
   proposal_id: string
   proposal_number: string | null
+  status: string | null
   client_name: string | null
   organization_id: string | null
   contact_id: string | null
   accepted_at: string | null
+  sent_at: string | null
+  lost_at: string | null
+  lost_reason: string | null
+  created_at: string | null
+  total_value: number | null
+  recurring_total: number | null
+  one_time_total: number | null
   payload: Record<string, unknown> | null
   organizations: { id: string; name: string | null } | null
 }
@@ -122,32 +147,64 @@ function annualContribution(
   return 0
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  // Lifecycle param — defaults to "accepted" so the page behaves
+  // identically to before unless a user explicitly switches tabs.
+  const lifecycleParam = req.nextUrl.searchParams.get("lifecycle") ?? "accepted"
+  const lifecycle: Lifecycle = VALID_LIFECYCLES.includes(
+    lifecycleParam as Lifecycle,
+  )
+    ? (lifecycleParam as Lifecycle)
+    : "accepted"
+
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false } },
   )
 
-  // ── 1. Pull every active proposal with its full payload ──────────────
-  // Paginate to safely walk past the PostgREST 1000-row cap.
+  // ── 1. Pull every proposal matching the lifecycle filter ─────────────
+  // Paginate to safely walk past the PostgREST 1000-row cap. We always
+  // exclude `archived_at` rows — archived proposals are tombstones,
+  // never useful for any view. Other filters are applied per lifecycle.
   const proposals: ProposalRow[] = []
   {
     const PAGE = 500
     for (let offset = 0; ; offset += PAGE) {
-      const { data, error } = await supabase
+      // Each iteration must build its own query — PostgREST builders are
+      // mutable and we'd accumulate filters across pages otherwise.
+      let query = supabase
         .from("ignition_proposals")
         .select(
-          `proposal_id, proposal_number, client_name, organization_id, contact_id,
-           accepted_at, payload,
+          `proposal_id, proposal_number, status, client_name, organization_id, contact_id,
+           accepted_at, sent_at, lost_at, lost_reason, created_at, total_value, recurring_total,
+           one_time_total, payload,
            organizations(id, name)`,
         )
-        .not("accepted_at", "is", null)
-        .is("revoked_at", null)
-        .is("lost_at", null)
         .is("archived_at", null)
-        .in("status", ACTIVE_PROPOSAL_STATUSES as unknown as string[])
         .range(offset, offset + PAGE - 1)
+
+      if (lifecycle === "accepted") {
+        // Live recurring book: won and still in force.
+        query = query
+          .not("accepted_at", "is", null)
+          .is("revoked_at", null)
+          .is("lost_at", null)
+          .in("status", ACCEPTED_STATUSES)
+      } else if (lifecycle === "pipeline") {
+        // In-flight: not yet accepted, not lost.
+        query = query
+          .is("accepted_at", null)
+          .is("lost_at", null)
+          .in("status", PIPELINE_STATUSES)
+      } else if (lifecycle === "lost") {
+        // Decided-and-lost. `lost_at` is the canonical signal — status
+        // can lag behind on Ignition's side.
+        query = query.not("lost_at", "is", null)
+      }
+      // lifecycle === "all" → no additional filters (just archived_at null).
+
+      const { data, error } = await query
       if (error) {
         console.error("[sales/recurring-revenue] proposals query failed:", error)
         return NextResponse.json({ error: error.message }, { status: 500 })
@@ -289,12 +346,18 @@ export async function GET() {
       if (m > 0 || a > 0) cRoll.department = dept
       if (freq === "monthly") cRoll.cadences.add("Monthly")
       if (freq === "quarterly") cRoll.cadences.add("Quarterly")
+      // Effective lifecycle date for the client roll-up. Prefer
+      // accepted_at; fall back through lost_at → sent_at → created_at so
+      // the column is still meaningful in the Pipeline / Lost / All
+      // tabs (those rows may not have an accepted_at).
+      const effectiveDate =
+        p.accepted_at ?? p.lost_at ?? p.sent_at ?? p.created_at ?? null
       if (
-        p.accepted_at &&
+        effectiveDate &&
         (!cRoll.earliest_accepted_at ||
-          p.accepted_at < cRoll.earliest_accepted_at)
+          effectiveDate < cRoll.earliest_accepted_at)
       ) {
-        cRoll.earliest_accepted_at = p.accepted_at
+        cRoll.earliest_accepted_at = effectiveDate
       }
       byClient.set(clientKey, cRoll)
 
@@ -391,6 +454,12 @@ export async function GET() {
   // the firm's records and is treated as a reference list here, not as
   // an authoritative MRR source (those numbers can drift from the live
   // Ignition picture).
+  //
+  // Only run this for the "accepted" lifecycle — the curated CSV
+  // represents the firm's live recurring book, so it only makes sense
+  // to reconcile it against the accepted proposal set. In Pipeline /
+  // Lost / All views, surfacing a "Not in Ignition yet" callout would
+  // be confusing (those proposals aren't representing today's revenue).
   let notInIgnition: Array<{
     department: Department
     client_name: string
@@ -398,7 +467,7 @@ export async function GET() {
     service_types: string[]
     mrr: number
   }> = []
-  {
+  if (lifecycle === "accepted") {
     const ignitionKeys = new Set<string>()
     for (const c of clients) {
       if (c.normalized_name) ignitionKeys.add(c.normalized_name)
@@ -435,8 +504,50 @@ export async function GET() {
       }))
   }
 
+  // ── 6. Lifecycle counts — used by the tab badges in the UI ───────────
+  // Cheap to compute (one count query per bucket) and gives the user
+  // the same "what's in each tab" affordance the Sales Dashboard has.
+  // Errors here are non-fatal; if any of these counts fail we just
+  // return null and the UI hides the badge.
+  const baseCountQuery = () =>
+    supabase
+      .from("ignition_proposals")
+      .select("proposal_id", { count: "exact", head: true })
+      .is("archived_at", null)
+  let lifecycleCounts: {
+    accepted: number | null
+    pipeline: number | null
+    lost: number | null
+    all: number | null
+  } = { accepted: null, pipeline: null, lost: null, all: null }
+  try {
+    const [acceptedRes, pipelineRes, lostRes, allRes] = await Promise.all([
+      baseCountQuery()
+        .not("accepted_at", "is", null)
+        .is("revoked_at", null)
+        .is("lost_at", null)
+        .in("status", ACCEPTED_STATUSES),
+      baseCountQuery()
+        .is("accepted_at", null)
+        .is("lost_at", null)
+        .in("status", PIPELINE_STATUSES),
+      baseCountQuery().not("lost_at", "is", null),
+      baseCountQuery(),
+    ])
+    lifecycleCounts = {
+      accepted: acceptedRes.count ?? null,
+      pipeline: pipelineRes.count ?? null,
+      lost: lostRes.count ?? null,
+      all: allRes.count ?? null,
+    }
+  } catch (err) {
+    console.error("[sales/recurring-revenue] lifecycle counts failed:", err)
+  }
+
   return NextResponse.json({
     source: "ignition" as const,
+    lifecycle,
+    lifecycleCounts,
     lastSyncedAt,
     totals: {
       mrr: round2(totalMrr),
