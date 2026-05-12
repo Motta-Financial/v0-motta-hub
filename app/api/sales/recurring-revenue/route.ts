@@ -9,6 +9,7 @@ import {
   type Department,
   type IgnitionBillingFrequency,
 } from "@/lib/sales/ignition-recurring"
+import { normalizeState } from "@/lib/sales/us-geo"
 
 /**
  * Lifecycle filter — mirrors the Sales Dashboard's status grouping so the
@@ -70,8 +71,12 @@ interface ProposalRow {
   proposal_number: string | null
   status: string | null
   client_name: string | null
+  client_partner: string | null
+  client_manager: string | null
+  proposal_sent_by: string | null
   organization_id: string | null
   contact_id: string | null
+  ignition_client_id: string | null
   accepted_at: string | null
   sent_at: string | null
   lost_at: string | null
@@ -112,14 +117,21 @@ interface ClientAgg {
   normalized_name: string
   organization_id: string | null
   contact_id: string | null
+  ignition_client_id: string | null
   mrr: number
   arr: number
   one_time_total: number
   onboarding_total: number
   service_lines: number
   proposals: Set<string>
+  proposal_numbers: Set<string>
   service_types: Set<string>
   cadences: Set<string>
+  partners: Set<string>
+  managers: Set<string>
+  sent_by: Set<string>
+  /** Resolved geographic state via org → contact → ignition_client. */
+  state: string | null
   earliest_accepted_at: string | null
 }
 
@@ -176,7 +188,9 @@ export async function GET(req: NextRequest) {
       let query = supabase
         .from("ignition_proposals")
         .select(
-          `proposal_id, proposal_number, status, client_name, organization_id, contact_id,
+          `proposal_id, proposal_number, status, client_name,
+           client_partner, client_manager, proposal_sent_by,
+           organization_id, contact_id, ignition_client_id,
            accepted_at, sent_at, lost_at, lost_reason, created_at, total_value, recurring_total,
            one_time_total, payload,
            organizations(id, name)`,
@@ -214,6 +228,58 @@ export async function GET(req: NextRequest) {
       if (chunk.length < PAGE) break
       if (offset >= 20_000) break
     }
+  }
+
+  // ── 1b. Resolve geographic state via org → contact → ignition_client ──
+  // Mirrors the resolution chain used by /api/sales/proposals so filters
+  // on the two pages line up. State is per-proposal, then collapsed to
+  // the client roll-up below (first non-null wins).
+  const orgIds = new Set<string>()
+  const contactIds = new Set<string>()
+  const igcIds = new Set<string>()
+  for (const p of proposals) {
+    if (p.organization_id) orgIds.add(p.organization_id)
+    if (p.contact_id) contactIds.add(p.contact_id)
+    if (p.ignition_client_id) igcIds.add(p.ignition_client_id)
+  }
+  const orgState = new Map<string, string | null>()
+  const contactState = new Map<string, string | null>()
+  const igcState = new Map<string, string | null>()
+  if (orgIds.size) {
+    const { data: orgs } = await supabase
+      .from("organizations")
+      .select("id, state")
+      .in("id", Array.from(orgIds))
+    for (const o of orgs ?? []) orgState.set(o.id, normalizeState(o.state))
+  }
+  if (contactIds.size) {
+    const { data: cts } = await supabase
+      .from("contacts")
+      .select("id, state, mailing_state")
+      .in("id", Array.from(contactIds))
+    for (const c of cts ?? []) {
+      contactState.set(
+        c.id,
+        normalizeState(c.state) ?? normalizeState(c.mailing_state),
+      )
+    }
+  }
+  if (igcIds.size) {
+    const { data: igcs } = await supabase
+      .from("ignition_clients")
+      .select("ignition_client_id, state")
+      .in("ignition_client_id", Array.from(igcIds))
+    for (const ig of igcs ?? []) {
+      igcState.set(ig.ignition_client_id, normalizeState(ig.state))
+    }
+  }
+  function resolveState(p: ProposalRow): string | null {
+    return (
+      (p.organization_id ? orgState.get(p.organization_id) : null) ??
+      (p.contact_id ? contactState.get(p.contact_id) : null) ??
+      (p.ignition_client_id ? igcState.get(p.ignition_client_id) : null) ??
+      null
+    )
   }
 
   // ── 2. Aggregate every service line in every proposal ────────────────
@@ -323,14 +389,20 @@ export async function GET(req: NextRequest) {
         normalized_name: normalized,
         organization_id: p.organization_id,
         contact_id: p.contact_id,
+        ignition_client_id: p.ignition_client_id,
         mrr: 0,
         arr: 0,
         one_time_total: 0,
         onboarding_total: 0,
         service_lines: 0,
         proposals: new Set<string>(),
+        proposal_numbers: new Set<string>(),
         service_types: new Set<string>(),
         cadences: new Set<string>(),
+        partners: new Set<string>(),
+        managers: new Set<string>(),
+        sent_by: new Set<string>(),
+        state: null as string | null,
         earliest_accepted_at: null as string | null,
       }
       cRoll.mrr += m
@@ -339,6 +411,17 @@ export async function GET(req: NextRequest) {
       cRoll.onboarding_total += onboarding
       cRoll.service_lines += 1
       cRoll.proposals.add(p.proposal_id)
+      if (p.proposal_number) cRoll.proposal_numbers.add(p.proposal_number)
+      if (p.client_partner) cRoll.partners.add(p.client_partner)
+      if (p.client_manager) cRoll.managers.add(p.client_manager)
+      if (p.proposal_sent_by) cRoll.sent_by.add(p.proposal_sent_by)
+      // First non-null state wins — clients rarely span multiple states
+      // and when they do, the org-level state is the most authoritative
+      // (the resolution chain already prefers it).
+      if (!cRoll.state) {
+        const s = resolveState(p)
+        if (s) cRoll.state = s
+      }
       if (serviceType) cRoll.service_types.add(serviceType)
       // Promote dept if any line on this client is Accounting (some
       // clients have mixed Tax + Accounting proposals — the page tabs
@@ -414,6 +497,11 @@ export async function GET(req: NextRequest) {
       contact_id: c.contact_id,
       service_types: Array.from(c.service_types).sort(),
       cadences: Array.from(c.cadences).sort(),
+      partners: Array.from(c.partners).sort(),
+      managers: Array.from(c.managers).sort(),
+      sent_by: Array.from(c.sent_by).sort(),
+      proposal_numbers: Array.from(c.proposal_numbers).sort(),
+      state: c.state,
       mrr: round2(c.mrr),
       arr: round2(c.arr),
       one_time_total: round2(c.one_time_total),
@@ -423,6 +511,25 @@ export async function GET(req: NextRequest) {
       effective_start_date: c.earliest_accepted_at,
     }))
     .sort((a, b) => b.mrr - a.mrr)
+
+  // ── Filter dimensions ────────────────────────────────────────────────
+  // Distinct values across the filtered client set, used to populate the
+  // MultiSelect filter chips in the UI. "(unknown)" sentinel is appended
+  // for state so users can find clients that have no state on file.
+  const uniqueSorted = (arr: (string | null | undefined)[]) =>
+    Array.from(
+      new Set(arr.filter((s): s is string => !!s && s.trim().length > 0)),
+    ).sort()
+  const hasUnknownState = clients.some((c) => !c.state)
+  const dimensions = {
+    partners: uniqueSorted(clients.flatMap((c) => c.partners)),
+    managers: uniqueSorted(clients.flatMap((c) => c.managers)),
+    sentBy: uniqueSorted(clients.flatMap((c) => c.sent_by)),
+    states: [
+      ...uniqueSorted(clients.map((c) => c.state)),
+      ...(hasUnknownState ? ["(unknown)"] : []),
+    ],
+  }
 
   let totalMrr = 0
   let totalArr = 0
@@ -563,6 +670,7 @@ export async function GET(req: NextRequest) {
     departments,
     serviceBreakdown,
     clients,
+    dimensions,
     rows: rawRows,
     not_in_ignition: notInIgnition,
   })
