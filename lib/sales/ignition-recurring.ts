@@ -208,6 +208,37 @@ export function normalizeBillingFrequency(
 }
 
 /**
+ * Policy-aware billing frequency.
+ *
+ * Ignition's `billing_frequency` field is frequently miscoded for Tax
+ * services — partners enter "Monthly" when collecting in installments
+ * for a return that is still fundamentally a one-time engagement
+ * (e.g. "Tax Preparation: S-Corp (1120s)" marked Monthly @ $2,550,
+ * "Tax | Quarterly Tax Estimates" marked Monthly @ $1,800, "Schedule C"
+ * marked Monthly, etc.). Those line items roll into recurring revenue
+ * at the data layer if we trust the raw field, which inflates MRR and
+ * misrepresents the firm's true recurring book.
+ *
+ * Firm policy: TAX IS NEVER RECURRING. Quarterly estimates, returns of
+ * any form (1040 / 1120 / 1120S / 1065 / 990 / 706 / 1041), Schedule
+ * add-ons, amendments, planning, and advisory all bill as one-time
+ * regardless of how Ignition records the cadence. Only Accounting
+ * services (Bookkeeping, Payroll, CFO, Controller, FP&A, etc.) can be
+ * monthly or quarterly recurring.
+ *
+ * This function is the single source of truth for that policy — every
+ * downstream aggregation (MRR, ARR, cadences, recurring rows) must use
+ * the effective frequency rather than the raw one.
+ */
+export function effectiveBillingFrequency(
+  rawFreq: string | null | undefined,
+  department: Department,
+): IgnitionBillingFrequency {
+  if (department === "Tax") return "one-time"
+  return normalizeBillingFrequency(rawFreq)
+}
+
+/**
  * Monthly recurring contribution of a single service line:
  *   monthly        → full amount
  *   quarterly      → amount ÷ 3
