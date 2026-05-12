@@ -98,12 +98,20 @@ const navigation = [
       // components/triage-feed.tsx and components/dashboard-home.tsx.
       // The legacy /triage route still exists but redirects to /, so we
       // omit it from the sidebar to avoid a duplicate nav entry.
-      { name: "Work Items", href: "/work-items", icon: CheckSquare },
-      // Projects group recurring Karbon work items (e.g. 12 monthly bookkeeping
-      // items / year) into one engagement record. Sits next to Work Items
-      // because they're the same flow seen at two different zoom levels:
-      // Work Items = task-level queue, Projects = engagement-level overview.
-      { name: "Projects", href: "/projects", icon: FolderKanban },
+      // Projects is the engagement-level view (e.g. "Acme Corp — Monthly
+      // Bookkeeping" rolls up 12 monthly Karbon work items). Work Items is
+      // the task-level queue underneath — same data, different zoom level —
+      // so it now lives as a child of Projects rather than as a sibling.
+      // Both routes stay flat (/projects and /work-items) to preserve every
+      // existing deep link, bookmark, and share-view URL.
+      {
+        name: "Projects",
+        href: "/projects",
+        icon: FolderKanban,
+        children: [
+          { name: "Work Items", href: "/work-items", icon: CheckSquare },
+        ],
+      },
       { name: "Clients", href: "/clients", icon: Users },
       {
         // Calendly used to live as a child here ("Calendly Admin").
