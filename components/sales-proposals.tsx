@@ -31,13 +31,34 @@ import {
   Pencil,
   MapPin,
   FileText,
+  TrendingUp,
+  CheckCircle2,
+  Clock,
+  XCircle,
+  PieChart as PieChartIcon,
+  Users,
+  Target,
 } from "lucide-react"
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts"
 import { ProposalEditSheet } from "@/components/sales/proposal-edit-sheet"
 import { IgnitionLiveBadge } from "@/components/sales/ignition-live-badge"
 import {
   MultiSelectChip,
   RangeChip,
   DateRangeChip,
+  DateRangePresets,
   type DateFieldOption,
 } from "@/components/sales/filter-chips"
 
@@ -97,6 +118,51 @@ interface ProposalsResponse {
   pageSize: number
   total: number
   totalUnfiltered: number
+  /** Aggregate KPIs computed over the *filtered* set so they reflect
+   *  whatever the user is currently looking at (YTD by default). */
+  stats: {
+    total: number
+    totalValue: number
+    byStatus: Record<string, number>
+    valueByStatus: Record<string, number>
+    acceptedCount: number
+    acceptedValue: number
+    openCount: number
+    openValue: number
+    lostCount: number
+    lostValue: number
+    /** count-based: accepted / (accepted + lost). */
+    winRate: number
+    /** dollar-weighted: same idea but on value. Tends to be more
+     *  flattering when small losses outnumber large wins, and more
+     *  honest when a single huge loss skews the count rate. */
+    valueWinRate: number
+    /** acceptedValue / acceptedCount. */
+    avgDealSize: number
+    /** Median days from sent_at → accepted_at, integer. Null when the
+     *  filtered window has no won proposals with both timestamps. */
+    medianDaysToAccept: number | null
+  }
+  /** Last 12 months bucketed by primary status-event date. Pre-seeded
+   *  with all 12 months so the chart axis stays stable on tight
+   *  filters. */
+  trend: Array<{
+    month: string // "YYYY-MM"
+    accepted: number
+    lost: number
+    open: number
+    acceptedValue: number
+    lostValue: number
+    openValue: number
+  }>
+  /** Top 10 clients by accepted value within the filtered window. */
+  topClients: Array<{
+    key: string
+    name: string
+    orgId: string | null
+    count: number
+    acceptedValue: number
+  }>
   dimensions: {
     statuses: string[]
     partners: string[]
@@ -144,6 +210,20 @@ function fmtMoney(n: number | null | undefined, currency = "USD") {
   } catch {
     return `$${v.toLocaleString()}`
   }
+}
+// Compact-money formatter for chart axes and dense lists: $1.2k, $25k,
+// $1.4M. Keeps the y-axis readable when value bars span $1k–$200k.
+function fmtMoneyCompact(n: number | null | undefined): string {
+  const v = Number(n) || 0
+  if (!Number.isFinite(v)) return "—"
+  const abs = Math.abs(v)
+  if (abs >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
+  if (abs >= 1_000) return `$${Math.round(v / 1_000)}k`
+  return `$${Math.round(v)}`
+}
+function fmtPct(n: number, digits = 0): string {
+  if (!Number.isFinite(n)) return "—"
+  return `${(n * 100).toFixed(digits)}%`
 }
 function fmtDate(s: string | null | undefined) {
   if (!s) return "—"
@@ -302,7 +382,91 @@ export function SalesProposals() {
             ? ` matching ${activeFilterCount} filter${activeFilterCount > 1 ? "s" : ""} (of ${data.totalUnfiltered.toLocaleString()})`
             : ""}
         </p>
+        {/* Quick-pick range presets. The default view is YTD on
+            accepted_at; partners who want a tighter (MTD/QTD) or wider
+            (Last 12mo / All time) framing can flip it with a single
+            click. The active preset stays highlighted so the page
+            always shows "what window am I looking at" without having
+            to inspect the Date chip. */}
+        <DateRangePresets
+          from={dateFrom}
+          to={dateTo}
+          onChange={({ from, to }) =>
+            updateParams({
+              dateFrom: from || null,
+              dateTo: to || null,
+            })
+          }
+        />
       </div>
+
+      {/* KPI Strip — aggregate metrics over the filtered set. Stays in
+          sync with whatever date range / status / partner filters are
+          active, so the four cards always describe the same slice the
+          table is showing. */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <KpiCard
+          label="Pipeline Value"
+          value={data ? fmtMoney(data.stats.totalValue) : "—"}
+          subtitle={
+            data
+              ? `${data.stats.total.toLocaleString()} proposal${data.stats.total === 1 ? "" : "s"}${
+                  data.stats.medianDaysToAccept != null
+                    ? ` · ${data.stats.medianDaysToAccept}d median to accept`
+                    : ""
+                }`
+              : ""
+          }
+          icon={Target}
+          tone="stone"
+        />
+        <KpiCard
+          label="Won"
+          value={data ? fmtMoney(data.stats.acceptedValue) : "—"}
+          subtitle={
+            data
+              ? // Show count-based win rate as the lead metric — it's
+                // the rate partners quote in conversation. The
+                // dollar-weighted rate is in the trend chart legend.
+                `${data.stats.acceptedCount.toLocaleString()} accepted · ${
+                  data.stats.acceptedCount + data.stats.lostCount > 0
+                    ? `${fmtPct(data.stats.winRate)} win rate`
+                    : "no decisions yet"
+                }`
+              : ""
+          }
+          icon={CheckCircle2}
+          tone="emerald"
+        />
+        <KpiCard
+          label="In Progress"
+          value={data ? fmtMoney(data.stats.openValue) : "—"}
+          subtitle={
+            data
+              ? `${data.stats.openCount.toLocaleString()} awaiting decision`
+              : ""
+          }
+          icon={Clock}
+          tone="amber"
+        />
+        <KpiCard
+          label="Lost"
+          value={data ? fmtMoney(data.stats.lostValue) : "—"}
+          subtitle={
+            data
+              ? data.stats.acceptedCount > 0
+                ? `${data.stats.lostCount.toLocaleString()} declined · avg deal ${fmtMoneyCompact(data.stats.avgDealSize)}`
+                : `${data.stats.lostCount.toLocaleString()} declined`
+              : ""
+          }
+          icon={XCircle}
+          tone="rose"
+        />
+      </div>
+
+      {/* Charts Strip — monthly trend, status mix, top clients. Reads
+          the same filtered set as the KPIs above. */}
+      <ProposalsCharts data={data} isLoading={isLoading} />
 
       {/* Filter bar */}
       <Card>
@@ -703,6 +867,332 @@ export function SalesProposals() {
       ) : null}
     </div>
   )
+}
+
+// ── KPI card ─────────────────────────────────────────────────────────────
+// Single-purpose card for the four-up dashboard strip. Mirrors the look
+// used on the Invoices and Payments pages so the three sibling surfaces
+// feel like one product.
+function KpiCard({
+  label,
+  value,
+  subtitle,
+  icon: Icon,
+  tone,
+}: {
+  label: string
+  value: string
+  subtitle?: string
+  icon: any
+  tone: "stone" | "emerald" | "amber" | "rose" | "blue"
+}) {
+  const toneStyles: Record<string, string> = {
+    stone: "text-stone-900 bg-stone-100",
+    emerald: "text-emerald-900 bg-emerald-100",
+    amber: "text-amber-900 bg-amber-100",
+    rose: "text-rose-900 bg-rose-100",
+    blue: "text-blue-900 bg-blue-100",
+  }
+  return (
+    <Card>
+      <CardContent className="p-4 flex items-start gap-3">
+        <div className={cn("p-2 rounded-md", toneStyles[tone])}>
+          <Icon className="h-4 w-4" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+            {label}
+          </div>
+          <div className="text-xl font-semibold tabular-nums truncate">{value}</div>
+          {subtitle ? (
+            <div className="text-xs text-muted-foreground truncate">{subtitle}</div>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── Charts strip ─────────────────────────────────────────────────────────
+// Three-panel analytics row: monthly trend (won vs lost vs in-progress
+// value), status mix donut, and top clients by accepted value. All
+// three read the same `data.trend`, `data.stats.byStatus`, and
+// `data.topClients` that the API computed against the *currently
+// filtered* set, so the charts and the table below always describe the
+// same slice.
+function ProposalsCharts({
+  data,
+  isLoading,
+}: {
+  data: ProposalsResponse | undefined
+  isLoading: boolean
+}) {
+  if (isLoading && !data) {
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <Skeleton className="h-[260px] lg:col-span-2" />
+        <Skeleton className="h-[260px]" />
+        <Skeleton className="h-[200px] lg:col-span-3" />
+      </div>
+    )
+  }
+  if (!data) return null
+
+  const trendData = data.trend.map((t) => ({
+    ...t,
+    label: monthLabel(t.month),
+  }))
+  const trendIsEmpty = trendData.every(
+    (t) => t.acceptedValue === 0 && t.lostValue === 0 && t.openValue === 0,
+  )
+
+  // Sort status entries by count so legend colour order stays stable
+  // across renders.
+  const statusEntries = Object.entries(data.stats.byStatus)
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        {/* Monthly trend */}
+        <Card className="lg:col-span-2">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <TrendingUp className="h-4 w-4 text-stone-500" />
+              <h3 className="text-sm font-semibold text-stone-900">
+                Last 12 months · pipeline value
+              </h3>
+              <span className="ml-auto text-xs text-muted-foreground">
+                {data.stats.valueWinRate > 0
+                  ? `${fmtPct(data.stats.valueWinRate)} dollar win rate`
+                  : "won / open / lost stacked"}
+              </span>
+            </div>
+            {trendIsEmpty ? (
+              <EmptyChartFallback message="No proposal activity in the last 12 months" />
+            ) : (
+              <div className="h-[220px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={trendData}
+                    margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
+                  >
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      stroke="#E7E5E4"
+                      vertical={false}
+                    />
+                    <XAxis
+                      dataKey="label"
+                      tick={{ fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tickFormatter={(v) => fmtMoneyCompact(v as number)}
+                      tick={{ fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={48}
+                    />
+                    <Tooltip
+                      formatter={(v: number) => fmtMoney(v)}
+                      labelClassName="text-xs"
+                      contentStyle={{
+                        borderRadius: 6,
+                        fontSize: 12,
+                        border: "1px solid #E7E5E4",
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" />
+                    {/* Stack accepted + open + lost so total bar height
+                        reads as "all proposals in this month" and the
+                        three-colour split tells the won/working/lost
+                        story at a glance. */}
+                    <Bar
+                      dataKey="acceptedValue"
+                      name="Won"
+                      stackId="amt"
+                      fill="#059669"
+                      radius={[0, 0, 0, 0]}
+                    />
+                    <Bar
+                      dataKey="openValue"
+                      name="In progress"
+                      stackId="amt"
+                      fill="#F59E0B"
+                      radius={[0, 0, 0, 0]}
+                    />
+                    <Bar
+                      dataKey="lostValue"
+                      name="Lost"
+                      stackId="amt"
+                      fill="#E11D48"
+                      radius={[3, 3, 0, 0]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Status mix donut */}
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <PieChartIcon className="h-4 w-4 text-stone-500" />
+              <h3 className="text-sm font-semibold text-stone-900">Status mix</h3>
+            </div>
+            {statusEntries.length === 0 ? (
+              <EmptyChartFallback message="No proposals yet" />
+            ) : (
+              <div className="h-[220px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={statusEntries.map(([k, v]) => ({
+                        name: titleCase(k),
+                        key: k,
+                        value: v,
+                      }))}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={50}
+                      outerRadius={80}
+                      paddingAngle={2}
+                      stroke="#fff"
+                    >
+                      {statusEntries.map(([k]) => (
+                        <Cell key={k} fill={proposalStatusColor(k)} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      formatter={(v: number, _name, item: any) => [
+                        `${v} proposal${v === 1 ? "" : "s"}`,
+                        item?.payload?.name,
+                      ]}
+                      contentStyle={{
+                        borderRadius: 6,
+                        fontSize: 12,
+                        border: "1px solid #E7E5E4",
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Top clients by accepted value — list view (no chart) keeps
+          long client names readable. */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Users className="h-4 w-4 text-stone-500" />
+            <h3 className="text-sm font-semibold text-stone-900">
+              Top clients by won value
+            </h3>
+            <span className="ml-auto text-xs text-muted-foreground">
+              {data.topClients.length === 0
+                ? ""
+                : `top ${data.topClients.length} by accepted value`}
+            </span>
+          </div>
+          {data.topClients.length === 0 ? (
+            <EmptyChartFallback message="No accepted proposals in the active window" />
+          ) : (
+            <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
+              {data.topClients.map((c) => {
+                const href = c.orgId ? `/clients/${c.orgId}` : null
+                return (
+                  <li
+                    key={c.key}
+                    className="flex items-center gap-2 py-1.5 text-sm border-b border-stone-100 last:border-b-0 md:[&:nth-last-child(2)]:border-b-0"
+                  >
+                    <div className="flex-1 min-w-0">
+                      {href ? (
+                        <Link
+                          href={href}
+                          className="font-medium text-stone-900 hover:underline truncate block"
+                          title={c.name}
+                        >
+                          {c.name}
+                        </Link>
+                      ) : (
+                        <span
+                          className="font-medium text-stone-700 truncate block"
+                          title={c.name}
+                        >
+                          {c.name}
+                        </span>
+                      )}
+                      <span className="text-xs text-muted-foreground">
+                        {c.count} accepted proposal{c.count === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="tabular-nums text-emerald-700 font-semibold text-sm">
+                      {fmtMoneyCompact(c.acceptedValue)}
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function EmptyChartFallback({ message }: { message: string }) {
+  return (
+    <div className="h-[200px] flex items-center justify-center text-sm text-muted-foreground">
+      {message}
+    </div>
+  )
+}
+
+// Map "YYYY-MM" → short axis label. Includes a 2-digit year suffix on
+// January so the axis doesn't say "Jan…Dec…Jan" without context across
+// a year boundary.
+function monthLabel(yyyymm: string): string {
+  const [y, m] = yyyymm.split("-").map(Number)
+  if (!y || !m) return yyyymm
+  const d = new Date(y, m - 1, 1)
+  const short = d.toLocaleDateString("en-US", { month: "short" })
+  return m === 1 ? `${short} ${String(y).slice(-2)}` : short
+}
+
+// Pie-slice palette aligned to the STATUS_TONE badge classes so the
+// chart and the table reinforce the same colour vocabulary. Won is
+// emerald, in-flight is blue/amber, lost is rose, archived/revoked
+// dimmer.
+function proposalStatusColor(status: string): string {
+  switch (status) {
+    case "accepted":
+    case "completed":
+      return "#059669" // emerald — revenue won
+    case "awaiting_acceptance":
+      return "#3B82F6" // blue — out for signature
+    case "sent":
+      return "#60A5FA" // softer blue
+    case "draft":
+      return "#A8A29E" // stone — not yet sent
+    case "revoked":
+      return "#F59E0B" // amber — pulled back
+    case "lost":
+    case "declined":
+      return "#E11D48" // rose — opportunity gone
+    case "archived":
+      return "#D6D3D1" // very light stone
+    default:
+      return "#A8A29E"
+  }
 }
 
 function SortableHeader({

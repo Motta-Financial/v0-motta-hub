@@ -440,6 +440,188 @@ export async function GET(req: Request) {
       return sortDir === "asc" ? av - bv : bv - av
     })
 
+    // ── Analytics computed on the *filtered* set ─────────────────────────
+    // KPIs and charts read this block. Same pattern as the invoices /
+    // payments endpoints: stats reflect the active filter so when the
+    // user is on YTD the dashboard tells the YTD story, not all-time.
+    // The trend buckets each proposal on its primary status-event date
+    // (accepted/lost/sent/created in priority order) so a proposal sent
+    // in January but won in March shows up as a March win — which is
+    // how partners actually narrate revenue.
+    const acceptedStatuses = new Set(["accepted", "completed"])
+    const lostStatuses = new Set(["lost", "declined"])
+    const openStatuses = new Set(["awaiting_acceptance", "draft", "sent", "revoked"])
+
+    type Stats = {
+      total: number
+      totalValue: number
+      byStatus: Record<string, number>
+      valueByStatus: Record<string, number>
+      acceptedCount: number
+      acceptedValue: number
+      openCount: number
+      openValue: number
+      lostCount: number
+      lostValue: number
+      winRate: number
+      valueWinRate: number
+      avgDealSize: number
+      medianDaysToAccept: number | null
+    }
+    const stats: Stats = {
+      total: filtered.length,
+      totalValue: 0,
+      byStatus: {},
+      valueByStatus: {},
+      acceptedCount: 0,
+      acceptedValue: 0,
+      openCount: 0,
+      openValue: 0,
+      lostCount: 0,
+      lostValue: 0,
+      winRate: 0,
+      valueWinRate: 0,
+      avgDealSize: 0,
+      medianDaysToAccept: null,
+    }
+
+    const daysToAccept: number[] = []
+    for (const p of filtered) {
+      const v = Number(p.total_value) || 0
+      const s = p.status || "(none)"
+      stats.totalValue += v
+      stats.byStatus[s] = (stats.byStatus[s] || 0) + 1
+      stats.valueByStatus[s] = (stats.valueByStatus[s] || 0) + v
+      if (acceptedStatuses.has(s)) {
+        stats.acceptedCount += 1
+        stats.acceptedValue += v
+      } else if (lostStatuses.has(s)) {
+        stats.lostCount += 1
+        stats.lostValue += v
+      } else if (openStatuses.has(s)) {
+        stats.openCount += 1
+        stats.openValue += v
+      }
+      if (p.accepted_at && p.sent_at) {
+        const d =
+          (new Date(p.accepted_at).getTime() -
+            new Date(p.sent_at).getTime()) /
+          (1000 * 60 * 60 * 24)
+        if (Number.isFinite(d) && d >= 0) daysToAccept.push(d)
+      }
+    }
+    const decisions = stats.acceptedCount + stats.lostCount
+    stats.winRate = decisions > 0 ? stats.acceptedCount / decisions : 0
+    const decisionValue = stats.acceptedValue + stats.lostValue
+    stats.valueWinRate =
+      decisionValue > 0 ? stats.acceptedValue / decisionValue : 0
+    stats.avgDealSize =
+      stats.acceptedCount > 0 ? stats.acceptedValue / stats.acceptedCount : 0
+    if (daysToAccept.length) {
+      daysToAccept.sort((a, b) => a - b)
+      stats.medianDaysToAccept = Math.round(
+        daysToAccept[Math.floor(daysToAccept.length / 2)],
+      )
+    }
+
+    // Monthly trend over the past 12 months. We pre-seed all 12 buckets
+    // so the x-axis stays stable even when a tight filter window
+    // produces empty months; missing months just render as zero bars.
+    const today = new Date()
+    const trendMonths: string[] = []
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(today.getFullYear(), today.getMonth() - i, 1)
+      trendMonths.push(
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      )
+    }
+    const trendMap = new Map(
+      trendMonths.map((m) => [
+        m,
+        {
+          month: m,
+          accepted: 0,
+          lost: 0,
+          open: 0,
+          acceptedValue: 0,
+          lostValue: 0,
+          openValue: 0,
+        },
+      ]),
+    )
+    for (const p of filtered) {
+      const s = p.status || "(none)"
+      // Bucket each proposal on the date that matches its current
+      // status: when it was won / lost / sent. Falls back to created_at
+      // so every proposal lands somewhere even if upstream dates are
+      // empty.
+      let eventDate: string | null = null
+      if (acceptedStatuses.has(s))
+        eventDate = p.accepted_at ?? p.sent_at ?? p.created_at
+      else if (lostStatuses.has(s))
+        eventDate = p.lost_at ?? p.sent_at ?? p.created_at
+      else eventDate = p.sent_at ?? p.created_at
+      if (!eventDate) continue
+      const m = eventDate.slice(0, 7)
+      const bucket = trendMap.get(m)
+      if (!bucket) continue // outside the 12-month window
+      const v = Number(p.total_value) || 0
+      if (acceptedStatuses.has(s)) {
+        bucket.accepted += 1
+        bucket.acceptedValue += v
+      } else if (lostStatuses.has(s)) {
+        bucket.lost += 1
+        bucket.lostValue += v
+      } else {
+        bucket.open += 1
+        bucket.openValue += v
+      }
+    }
+    const trend = Array.from(trendMap.values()).map((b) => ({
+      ...b,
+      acceptedValue: Math.round(b.acceptedValue * 100) / 100,
+      lostValue: Math.round(b.lostValue * 100) / 100,
+      openValue: Math.round(b.openValue * 100) / 100,
+    }))
+
+    // Top clients by *accepted* value within the filtered window. We
+    // group on the resolved organization_id when present and fall back
+    // to client_name so unlinked rows still aggregate cleanly.
+    type TopClientBucket = {
+      key: string
+      name: string
+      orgId: string | null
+      count: number
+      acceptedValue: number
+    }
+    const topMap = new Map<string, TopClientBucket>()
+    for (const p of filtered) {
+      const s = p.status || "(none)"
+      if (!acceptedStatuses.has(s)) continue
+      const key = p.organization_id || p.client_name || "(unknown)"
+      const v = Number(p.total_value) || 0
+      const existing = topMap.get(key)
+      if (existing) {
+        existing.count += 1
+        existing.acceptedValue += v
+      } else {
+        topMap.set(key, {
+          key,
+          name: p.organizations?.name || p.client_name || "Unknown client",
+          orgId: p.organization_id || null,
+          count: 1,
+          acceptedValue: v,
+        })
+      }
+    }
+    const topClients = Array.from(topMap.values())
+      .sort((a, b) => b.acceptedValue - a.acceptedValue)
+      .slice(0, 10)
+      .map((b) => ({
+        ...b,
+        acceptedValue: Math.round(b.acceptedValue * 100) / 100,
+      }))
+
     const total = filtered.length
     const from = (page - 1) * pageSize
     const paged = filtered.slice(from, from + pageSize)
@@ -450,6 +632,9 @@ export async function GET(req: Request) {
       pageSize,
       total,
       totalUnfiltered: enriched.length,
+      stats,
+      trend,
+      topClients,
       dimensions,
     })
   } catch (error) {
