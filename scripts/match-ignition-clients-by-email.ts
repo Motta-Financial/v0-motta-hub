@@ -189,30 +189,40 @@ async function main(): Promise<void> {
       // 3. master mapping upsert. client_mapping has no enforced unique
       //    constraint on ignition_client_id, so we DIY the upsert via an
       //    explicit existence check inside the same txn.
+      //
+      // NOTE: client_mapping.client_type has a CHECK constraint that
+      // only allows 'PERSON' or 'ORGANIZATION' (uppercase). Our internal
+      // match_kind is 'contact' | 'organization' so we translate here.
+      // Getting this wrong silently rolls back the whole transaction,
+      // which is exactly how we caught it the first time.
+      const mappingClientType =
+        m.match_kind === "contact" ? "PERSON" : "ORGANIZATION"
       const existing = await client.query(
         `select id from public.client_mapping where ignition_client_id = $1 limit 1`,
         [m.ignition_client_id],
       )
+      // source_system has a CHECK constraint too: only uppercase
+      // 'PROCONNECT' | 'KARBON' | 'IGNITION' | 'MANUAL' are accepted.
       if (existing.rowCount === 0) {
         await client.query(
           `
           insert into public.client_mapping
             (internal_client_id, ignition_client_id, source_system, client_type, created_at, updated_at)
-          values ($1::uuid, $2, 'ignition', $3, now(), now())
+          values ($1::uuid, $2, 'IGNITION', $3, now(), now())
           `,
-          [m.matched_id, m.ignition_client_id, m.match_kind],
+          [m.matched_id, m.ignition_client_id, mappingClientType],
         )
       } else {
         await client.query(
           `
           update public.client_mapping
           set internal_client_id = $1::uuid,
-              source_system      = 'ignition',
+              source_system      = 'IGNITION',
               client_type        = $2,
               updated_at         = now()
           where ignition_client_id = $3
           `,
-          [m.matched_id, m.match_kind, m.ignition_client_id],
+          [m.matched_id, mappingClientType, m.ignition_client_id],
         )
       }
       mappingUpserts++
