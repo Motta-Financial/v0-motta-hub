@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import useSWR from "swr"
+import useSWR, { useSWRConfig } from "swr"
 import {
   AlertCircle,
   CheckCircle2,
@@ -167,6 +167,39 @@ export default function IgnitionAdminPage() {
 
   const [disconnecting, setDisconnecting] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  // Separate from `refreshing` (which guards the OAuth token refresh) —
+  // this guards the page-level "re-pull every Ignition SWR key" button
+  // in the header so it can show a spinner + disabled state while the
+  // fan-out fetches are in flight.
+  const [refreshingAll, setRefreshingAll] = useState(false)
+  const { mutate: globalMutate } = useSWRConfig()
+
+  // Re-fetches every SWR key on the page that points at /api/ignition/*.
+  // Before this we only invalidated stats + unmatched, which left the
+  // Connection card timestamps, the Reporting Data tab, and the backfill
+  // log table (all owned by child components with their own useSWR calls)
+  // showing stale data after a click. The header copy promises that
+  // "Refresh" surfaces the latest state of the integration, so the
+  // button needs to invalidate everything Ignition-prefixed in one shot.
+  async function handleRefreshAll() {
+    setRefreshingAll(true)
+    try {
+      await globalMutate(
+        (key) => typeof key === "string" && key.startsWith("/api/ignition/"),
+        undefined,
+        { revalidate: true },
+      )
+      toast({ title: "Refreshed", description: "Latest Ignition data loaded." })
+    } catch (e) {
+      toast({
+        title: "Refresh failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      })
+    } finally {
+      setRefreshingAll(false)
+    }
+  }
 
   async function handleDisconnect() {
     if (!confirm("Disconnect Ignition? Existing synced data is preserved.")) return
@@ -241,14 +274,13 @@ export default function IgnitionAdminPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              refetchStats()
-              refetchUnmatched()
-              toast({ title: "Refreshed" })
-            }}
+            onClick={handleRefreshAll}
+            disabled={refreshingAll}
           >
-            <RefreshCw className="mr-2 h-4 w-4" />
-            Refresh
+            <RefreshCw
+              className={`mr-2 h-4 w-4 ${refreshingAll ? "animate-spin" : ""}`}
+            />
+            {refreshingAll ? "Refreshing…" : "Refresh"}
           </Button>
         </div>
 
