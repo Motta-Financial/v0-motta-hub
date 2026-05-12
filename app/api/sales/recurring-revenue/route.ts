@@ -3,11 +3,12 @@ import { createClient } from "@supabase/supabase-js"
 
 import {
   ACTIVE_PROPOSAL_STATUSES,
-  annualContribution,
   classifyService,
   effectiveBillingFrequency,
-  monthlyContribution,
   normalizeClientName,
+  serviceAnnual,
+  serviceMonthly,
+  servicePeriodRate,
   type Department,
   type IgnitionBillingFrequency,
 } from "@/lib/sales/ignition-recurring"
@@ -208,7 +209,12 @@ export async function GET() {
     const proposal = svc.proposal_id ? proposalById.get(svc.proposal_id) : null
     if (!proposal) continue // belongs to a non-active proposal; skip
 
-    const amount = Number(svc.total_amount) || 0
+    // `total_amount` is the MULTI-PERIOD contract total in Ignition, not
+    // a monthly fee. Use it for the one-time / onboarding buckets (those
+    // ARE total billings), but compute MRR/ARR from `unit_price × qty`
+    // via `serviceMonthly` / `serviceAnnual` — see the helper docs in
+    // `lib/sales/ignition-recurring.ts` for the full rationale.
+    const totalAmount = Number(svc.total_amount) || 0
     const cls = classifyService(svc.service_name)
     const dept = cls.department
     // Use the POLICY-AWARE frequency, not the raw Ignition field.
@@ -218,15 +224,18 @@ export async function GET() {
     // excluding things like quarterly tax estimates and S-corp returns
     // that bill in installments but aren't truly recurring engagements.
     const freq = effectiveBillingFrequency(svc.billing_frequency, dept)
-    const m = monthlyContribution(amount, freq)
-    const a = annualContribution(amount, freq)
-    // "one_time_total" counts every non-recurring line; "onboarding_total"
-    // is the subset of that bucket flagged by `detectOnboarding`. Partners
-    // see both — onboarding is the bundled fee, one-time is everything
-    // else (extra returns, ad-hoc work bolted onto a recurring deal).
+    const periodRate = servicePeriodRate(svc)
+    const m = serviceMonthly(svc, freq)
+    const a = serviceAnnual(svc, freq)
+    // A service line is "one-time" for revenue purposes whenever it
+    // contributes nothing to MRR — either the frequency is one-time/other,
+    // or the unit_price is zero. For those rows we report the FULL
+    // contract total (`total_amount`) as the one-time charge.
+    //   "one_time_total" counts every non-recurring line; "onboarding_total"
+    //   is the subset of that bucket flagged by `detectOnboarding`.
     const isOneTime = m === 0
-    const oneTime = isOneTime ? amount : 0
-    const onboarding = isOneTime && cls.is_onboarding ? amount : 0
+    const oneTime = isOneTime ? totalAmount : 0
+    const onboarding = isOneTime && cls.is_onboarding ? totalAmount : 0
 
     // Client identity: organization_id wins, contact_id is a fallback for
     // unincorporated individual engagements, and the normalized name is
@@ -307,6 +316,8 @@ export async function GET() {
 
     // Only emit recurring lines into rawRows (the per-client expand view
     // on the page only ever rendered monthly/quarterly rows historically).
+    // `service_fee` is the PER-PERIOD rate (e.g. $2,000/mo or $750/qtr),
+    // not the multi-period contract total — matches how the page labels it.
     if (m > 0) {
       rawRows.push({
         id: `${svc.proposal_id ?? "x"}::${rawRows.length}`,
@@ -314,7 +325,7 @@ export async function GET() {
         service_type: cls.service_type,
         client_name: clientName,
         cadence: freq === "quarterly" ? "Quarterly" : "Monthly",
-        service_fee: amount,
+        service_fee: periodRate,
         one_time_fee: 0,
         is_onboarding: false,
       })

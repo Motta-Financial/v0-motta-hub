@@ -239,12 +239,90 @@ export function effectiveBillingFrequency(
 }
 
 /**
- * Monthly recurring contribution of a single service line:
- *   monthly        → full amount
- *   quarterly      → amount ÷ 3
- *   weekly         → amount × 4.333  (avg weeks/month)
- *   annually       → amount ÷ 12
- *   one-time/other → 0  (no recurring contribution)
+ * Per-period rate for a service line, used as the basis for MRR/ARR math.
+ *
+ * Ignition stores three relevant numeric fields per service:
+ *   • `unit_price`   — the per-period rate (e.g. $2,000/month for rent)
+ *   • `quantity`     — multiplier, almost always 1 in practice
+ *   • `total_amount` — the CONTRACT TOTAL across the full billing period,
+ *                      i.e. `unit_price × quantity × periods_in_contract`
+ *
+ * The original implementation fed `total_amount` straight into the
+ * monthly bucket, which silently multiplied every recurring engagement
+ * by its number of billing periods. Example: Michael Hilborn's $2,000/mo
+ * rent proposal with ~18.5 months remaining showed up as $37,000 MRR
+ * (the contract total) instead of $2,000 MRR. This helper enforces the
+ * correct interpretation: `unit_price × quantity` is the per-period rate.
+ *
+ * If `unit_price` is missing or zero we return 0 rather than falling
+ * back to `total_amount`. A zero-rate Ignition line is intentional
+ * (free clean-up, bundled add-on, courtesy line) and should not inflate
+ * MRR by reinterpreting the contract total as a monthly fee.
+ */
+export type ServiceRateInput = {
+  unit_price?: number | string | null
+  quantity?: number | string | null
+}
+
+export function servicePeriodRate(svc: ServiceRateInput): number {
+  const unit = Number(svc.unit_price) || 0
+  const qty = Number(svc.quantity) || 1
+  return unit * qty
+}
+
+/**
+ * Monthly recurring contribution of a single service line, given its
+ * policy-aware billing frequency. Recurring frequencies use the
+ * per-period rate from `servicePeriodRate`; non-recurring frequencies
+ * contribute 0.
+ *
+ *   monthly        → rate
+ *   quarterly      → rate ÷ 3
+ *   weekly         → rate × 4.333  (avg weeks/month)
+ *   annually       → rate ÷ 12
+ *   one-time/other → 0
+ */
+export function serviceMonthly(
+  svc: ServiceRateInput,
+  freq: IgnitionBillingFrequency,
+): number {
+  const rate = servicePeriodRate(svc)
+  if (rate <= 0) return 0
+  switch (freq) {
+    case "monthly":   return rate
+    case "quarterly": return rate / 3
+    case "weekly":    return rate * (52 / 12)
+    case "annually":  return rate / 12
+    default:          return 0
+  }
+}
+
+/**
+ * Annualized contribution. Mirrors `serviceMonthly` but multiplied for
+ * full-year roll-ups. Computed independently (rather than monthly × 12)
+ * to avoid floating-point drift on quarterly and weekly cadences.
+ */
+export function serviceAnnual(
+  svc: ServiceRateInput,
+  freq: IgnitionBillingFrequency,
+): number {
+  const rate = servicePeriodRate(svc)
+  if (rate <= 0) return 0
+  switch (freq) {
+    case "monthly":   return rate * 12
+    case "quarterly": return rate * 4
+    case "weekly":    return rate * 52
+    case "annually":  return rate
+    default:          return 0
+  }
+}
+
+/**
+ * @deprecated Original amount-based helpers. They treat `amount` as the
+ * monthly rate, which is wrong for Ignition's `total_amount` field
+ * (that's the multi-period contract total). New code must use
+ * `serviceMonthly` / `serviceAnnual` with the full service row instead.
+ * Kept here so any older imports keep compiling — eventually remove.
  */
 export function monthlyContribution(amount: number, freq: IgnitionBillingFrequency): number {
   switch (freq) {
@@ -256,11 +334,7 @@ export function monthlyContribution(amount: number, freq: IgnitionBillingFrequen
   }
 }
 
-/**
- * Annualized contribution. Mirrors `monthlyContribution` but multiplied
- * for full-year roll-ups. Kept separate (rather than `monthly × 12`) to
- * avoid floating-point drift on quarterly and weekly cadences.
- */
+/** @deprecated See `monthlyContribution`. Use `serviceAnnual` instead. */
 export function annualContribution(amount: number, freq: IgnitionBillingFrequency): number {
   switch (freq) {
     case "monthly":   return amount * 12
