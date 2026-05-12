@@ -4,62 +4,54 @@ import { createClient } from "@supabase/supabase-js"
 import {
   ACTIVE_PROPOSAL_STATUSES,
   classifyService,
-  effectiveBillingFrequency,
+  extractPayloadServices,
   normalizeClientName,
-  serviceAnnual,
-  serviceMonthly,
-  servicePeriodRate,
   type Department,
   type IgnitionBillingFrequency,
+  type PayloadService,
 } from "@/lib/sales/ignition-recurring"
 
 /**
  * Sales > Recurring Revenue (LIVE from Ignition)
  * ────────────────────────────────────────────────────────────────────────
- * This endpoint replaces the previous CSV-driven curated source. Every
- * tick, it aggregates `ignition_proposal_services` joined to
- * `ignition_proposals` to produce live MRR / ARR roll-ups for Accounting
- * and Tax.
+ * This endpoint aggregates services straight from Ignition's authoritative
+ * JSON payload (`ignition_proposals.payload.services`) for every active
+ * proposal, then rolls them up by department / service type / client.
  *
- * Design notes:
- *   1. We aggregate at the SERVICE LINE level, NOT proposal totals. The
- *      proposal-level `recurring_total` / `one_time_total` columns are
- *      null on 463 of the firm's `completed` proposals, so they cannot be
- *      trusted as a primary signal. Service rows always have a
- *      `billing_frequency` and `total_amount` we can sum.
+ * Why JSON, not the normalized `ignition_proposal_services` table?
+ *   • PROP-3021 (Synergy Rehab Scottsbluff) and ~460 other ACTIVE
+ *     proposals have zero rows in `ignition_proposal_services` because
+ *     the sync that populates it doesn't always run on every proposal.
+ *   • The Ignition payload JSON ALWAYS contains the full services array
+ *     — it's the same data Ignition's UI renders from.
+ *   • Reading the payload directly removes our dependency on a fragile
+ *     normalization step. If sync ever lags or skips a proposal, the
+ *     numbers still match what partners see in Ignition.
  *
- *   2. Active engagements are proposals where:
- *        accepted_at IS NOT NULL
- *        AND revoked_at IS NULL
- *        AND lost_at IS NULL
- *        AND archived_at IS NULL
- *        AND status IN ('accepted','completed')
- *      ("completed" means the proposal flow finished — the recurring
- *      services on those proposals are still earning.)
+ * Active engagements are proposals where:
+ *     accepted_at IS NOT NULL
+ *     AND revoked_at IS NULL
+ *     AND lost_at IS NULL
+ *     AND archived_at IS NULL
+ *     AND status IN ('accepted','completed')
  *
- *   3. Monthly recurring contribution rules:
- *        monthly  → +amount
- *        quarterly→ +amount/3
- *        weekly   → +amount × (52/12)
- *        annually → +amount/12
- *        one-time → 0
- *      "Onboarding & Optimization" one-time services are bucketed into
- *      `onboarding_total` instead of generic `one_time_total`.
+ * For each service inside the proposal's payload:
+ *   • `frequency` is derived from Ignition's `billing.is_recurring` flag
+ *     plus the cadence string ("every month" / "every quarter" / etc.).
+ *     Tax services are POLICY-FORCED to "one-time" regardless of cadence,
+ *     because Ignition lets partners enter a monthly schedule for an
+ *     installment-billed tax return that is still fundamentally one-time.
+ *   • `period_rate` is `pricing.minimum_period_value.amount × quantity`
+ *     — the per-cycle billed amount, which already reflects partner
+ *     discounts. MRR contribution: monthly → rate, quarterly → rate/3,
+ *     weekly → rate × 52/12, annually → rate / 12, one-time → 0.
+ *   • For one-time services we report `pricing.minimum_contract_value`
+ *     as the billed amount (covers deposit-style multi-invoice cases).
+ *     Onboarding & Optimization fees are sub-bucketed via the classifier
+ *     so partners can read them as a dedicated column.
  *
- *   4. Client grouping uses `organization_id` when present, falls back to
- *      a normalized form of `client_name`. The normalized form matches
- *      the generated column on `motta_recurring_revenue` so partners can
- *      cross-reference with the curated CSV list (which we still surface
- *      as a "Not in Ignition yet" gap diagnostic).
- *
- *   5. The response shape is backward-compatible with the previous
- *      curated-CSV version, with three additive fields:
- *        - lastSyncedAt: ISO of the most recent Ignition sync
- *        - source: "ignition"
- *        - per-client `onboarding_total`, `proposal_count`
- *        - top-level `not_in_ignition`: curated clients with no Ignition
- *          proposal yet — useful for spotting gaps without breaking
- *          render logic.
+ * The response shape is unchanged so the existing page renders without
+ * modification.
  */
 
 export const dynamic = "force-dynamic"
@@ -79,22 +71,7 @@ interface ProposalRow {
   effective_start_date: string | null
   billing_starts_on: string | null
   accepted_at: string | null
-}
-
-interface ServiceRow {
-  proposal_id: string | null
-  service_name: string | null
-  billing_frequency: string | null
-  billing_type: string | null
-  total_amount: number | string | null
-  unit_price: number | string | null
-  quantity: number | string | null
-  status: string | null
-  // raw_payload carries Ignition's `billing_events` count, which we need
-  // to derive the true per-cycle rate (total_amount / billing_events)
-  // for discounted recurring engagements. See `servicePeriodRate` for
-  // the full rationale.
-  raw_payload: Record<string, unknown> | null
+  payload: Record<string, unknown> | null
 }
 
 interface DepartmentRoll {
@@ -135,6 +112,30 @@ interface ClientRoll {
   effective_start_date: string | null
 }
 
+/**
+ * Compute monthly + annual contribution from a normalized payload service.
+ * Pulled out of the loop so the policy (tax→one-time, cadence rules) is
+ * exercised by a single code path that's easy to reason about.
+ */
+function contributions(svc: PayloadService, dept: Department): { m: number; a: number } {
+  // Tax is never recurring (firm policy) — overrides whatever Ignition
+  // says about cadence. See `effectiveBillingFrequency` in the lib for
+  // the full rationale.
+  const effFreq: IgnitionBillingFrequency =
+    dept === "Tax" ? "one-time" : svc.frequency
+
+  const rate = svc.period_rate
+  if (rate <= 0) return { m: 0, a: 0 }
+
+  switch (effFreq) {
+    case "monthly":   return { m: rate,              a: rate * 12 }
+    case "quarterly": return { m: rate / 3,          a: rate * 4 }
+    case "weekly":    return { m: rate * (52 / 12),  a: rate * 52 }
+    case "annually":  return { m: rate / 12,         a: rate }
+    default:          return { m: 0,                 a: 0 }
+  }
+}
+
 export async function GET() {
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -142,15 +143,15 @@ export async function GET() {
     { auth: { persistSession: false } },
   )
 
-  // ── 1. Active proposals ──────────────────────────────────────────────
-  // Pull the proposal context we'll need for grouping/labeling. We do this
-  // separately from the services query so we can keep a tight predicate
-  // on `accepted_at IS NOT NULL AND status IN (...)` without joining on a
-  // subquery in PostgREST.
+  // ── 1. Active proposals (with payload JSON for service extraction) ───
+  // We pull `payload` here because it carries the services array we'll
+  // aggregate over. This is the single source of truth — Ignition's own
+  // representation of the proposal — and replaces the broken
+  // `ignition_proposal_services` join used previously.
   const { data: proposalsData, error: proposalsErr } = await supabase
     .from("ignition_proposals")
     .select(
-      "proposal_id, status, recurring_frequency, client_name, organization_id, contact_id, effective_start_date, billing_starts_on, accepted_at, revoked_at, lost_at, archived_at",
+      "proposal_id, status, recurring_frequency, client_name, organization_id, contact_id, effective_start_date, billing_starts_on, accepted_at, revoked_at, lost_at, archived_at, payload",
     )
     .not("accepted_at", "is", null)
     .is("revoked_at", null)
@@ -164,41 +165,12 @@ export async function GET() {
   }
 
   const proposals = (proposalsData ?? []) as ProposalRow[]
-  const proposalById = new Map<string, ProposalRow>()
-  for (const p of proposals) {
-    if (p.proposal_id) proposalById.set(p.proposal_id, p)
-  }
-  const activeProposalIds = Array.from(proposalById.keys())
 
-  // ── 2. Services for those proposals ──────────────────────────────────
-  // We pull every service line for every active proposal in one shot.
-  // PostgREST caps `.in()` at ~1000 ids by default; we paginate to stay
-  // safe in case the firm's proposal count grows past that. The firm
-  // currently has ~200 active proposals so a single batch is fine, but
-  // the loop makes the code future-proof.
-  const services: ServiceRow[] = []
-  const BATCH = 500
-  for (let i = 0; i < activeProposalIds.length; i += BATCH) {
-    const slice = activeProposalIds.slice(i, i + BATCH)
-    if (slice.length === 0) break
-    const { data, error } = await supabase
-      .from("ignition_proposal_services")
-      .select(
-        "proposal_id, service_name, billing_frequency, billing_type, total_amount, unit_price, quantity, status, raw_payload",
-      )
-      .in("proposal_id", slice)
-    if (error) {
-      console.error("[sales/recurring-revenue] services query failed:", error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-    services.push(...((data ?? []) as ServiceRow[]))
-  }
-
-  // ── 3. Roll up by department / service_type / client ─────────────────
+  // ── 2. Roll up by department / service_type / client ─────────────────
   const byDepartment = new Map<Department, DepartmentRoll>()
   const byService = new Map<string, ServiceRoll>()
   const byClient = new Map<string, ClientRoll>()
-  // Raw service-line rows for the (optional) per-client expand view.
+  // Raw service-line rows for the per-client expand view.
   const rawRows: Array<{
     id: string
     department: Department
@@ -210,37 +182,15 @@ export async function GET() {
     is_onboarding: boolean
   }> = []
 
-  for (const svc of services) {
-    const proposal = svc.proposal_id ? proposalById.get(svc.proposal_id) : null
-    if (!proposal) continue // belongs to a non-active proposal; skip
+  let totalServiceLines = 0
 
-    // `total_amount` is the MULTI-PERIOD contract total in Ignition, not
-    // a monthly fee. Use it for the one-time / onboarding buckets (those
-    // ARE total billings), but compute MRR/ARR from `unit_price × qty`
-    // via `serviceMonthly` / `serviceAnnual` — see the helper docs in
-    // `lib/sales/ignition-recurring.ts` for the full rationale.
-    const totalAmount = Number(svc.total_amount) || 0
-    const cls = classifyService(svc.service_name)
-    const dept = cls.department
-    // Use the POLICY-AWARE frequency, not the raw Ignition field.
-    // Tax services collapse to "one-time" here even when Ignition has
-    // them coded Monthly / Quarterly — see `effectiveBillingFrequency`
-    // for the firm policy rationale. This keeps MRR / ARR honest by
-    // excluding things like quarterly tax estimates and S-corp returns
-    // that bill in installments but aren't truly recurring engagements.
-    const freq = effectiveBillingFrequency(svc.billing_frequency, dept)
-    const periodRate = servicePeriodRate(svc)
-    const m = serviceMonthly(svc, freq)
-    const a = serviceAnnual(svc, freq)
-    // A service line is "one-time" for revenue purposes whenever it
-    // contributes nothing to MRR — either the frequency is one-time/other,
-    // or the unit_price is zero. For those rows we report the FULL
-    // contract total (`total_amount`) as the one-time charge.
-    //   "one_time_total" counts every non-recurring line; "onboarding_total"
-    //   is the subset of that bucket flagged by `detectOnboarding`.
-    const isOneTime = m === 0
-    const oneTime = isOneTime ? totalAmount : 0
-    const onboarding = isOneTime && cls.is_onboarding ? totalAmount : 0
+  for (const proposal of proposals) {
+    // Extract services straight from the Ignition JSON payload. If a
+    // proposal has no payload or no services array (rare, malformed
+    // imports), we skip it silently — it'll be visible in the overall
+    // proposal count diagnostic.
+    const services = extractPayloadServices(proposal.payload)
+    if (services.length === 0) continue
 
     // Client identity: organization_id wins, contact_id is a fallback for
     // unincorporated individual engagements, and the normalized name is
@@ -252,92 +202,114 @@ export async function GET() {
       proposal.contact_id ??
       `name::${normalized || clientName}`
 
-    // Department roll-up
-    const deptRoll = byDepartment.get(dept) ?? {
-      department: dept,
-      mrr: 0,
-      arr: 0,
-      one_time_total: 0,
-      onboarding_total: 0,
-      service_lines: 0,
-      clients: new Set<string>(),
-    }
-    deptRoll.mrr += m
-    deptRoll.arr += a
-    deptRoll.one_time_total += oneTime
-    deptRoll.onboarding_total += onboarding
-    deptRoll.service_lines += 1
-    deptRoll.clients.add(clientKey)
-    byDepartment.set(dept, deptRoll)
+    for (const svc of services) {
+      totalServiceLines += 1
 
-    // Service-type roll-up
-    const sKey = `${dept}::${cls.service_type}`
-    const sRoll = byService.get(sKey) ?? {
-      department: dept,
-      service_type: cls.service_type,
-      mrr: 0,
-      arr: 0,
-      one_time_total: 0,
-      onboarding_total: 0,
-      service_lines: 0,
-      clients: new Set<string>(),
-    }
-    sRoll.mrr += m
-    sRoll.arr += a
-    sRoll.one_time_total += oneTime
-    sRoll.onboarding_total += onboarding
-    sRoll.service_lines += 1
-    sRoll.clients.add(clientKey)
-    byService.set(sKey, sRoll)
+      const cls = classifyService(svc.name)
+      const dept = cls.department
+      const { m, a } = contributions(svc, dept)
 
-    // Client roll-up (per department so a client with both Tax and Accounting
-    // service lines shows up twice in the table — matches the CSV behavior).
-    const cKey = `${dept}::${clientKey}`
-    const cRoll = byClient.get(cKey) ?? {
-      department: dept,
-      client_name: clientName,
-      normalized_name: normalized,
-      organization_id: proposal.organization_id ?? null,
-      contact_id: proposal.contact_id ?? null,
-      service_types: new Set<string>(),
-      cadences: new Set<IgnitionBillingFrequency>(),
-      mrr: 0,
-      arr: 0,
-      one_time_total: 0,
-      onboarding_total: 0,
-      service_lines: 0,
-      proposal_ids: new Set<string>(),
-      effective_start_date: proposal.effective_start_date ?? proposal.billing_starts_on ?? null,
-    }
-    cRoll.service_types.add(cls.service_type)
-    cRoll.cadences.add(freq)
-    cRoll.mrr += m
-    cRoll.arr += a
-    cRoll.one_time_total += oneTime
-    cRoll.onboarding_total += onboarding
-    cRoll.service_lines += 1
-    if (svc.proposal_id) cRoll.proposal_ids.add(svc.proposal_id)
-    byClient.set(cKey, cRoll)
+      // The "billed amount" for one-time services is the contract total,
+      // since Ignition models deposit-style fees as a single contract
+      // value spread across multiple invoice events. For PROP-3021's
+      // billed-on-acceptance line, period_rate === contract_amount === $300.
+      const isOneTime = m === 0
+      const oneTime = isOneTime ? svc.contract_amount || svc.period_rate : 0
+      const onboarding = isOneTime && cls.is_onboarding ? oneTime : 0
 
-    // Only emit recurring lines into rawRows (the per-client expand view
-    // on the page only ever rendered monthly/quarterly rows historically).
-    // `service_fee` is the PER-PERIOD rate (e.g. $2,000/mo or $750/qtr),
-    // not the multi-period contract total — matches how the page labels it.
-    if (m > 0) {
-      rawRows.push({
-        id: `${svc.proposal_id ?? "x"}::${rawRows.length}`,
+      // Effective frequency we display / store on the roll-up (Tax forced
+      // to one-time, recurring services keep their cadence).
+      const displayFreq: IgnitionBillingFrequency =
+        dept === "Tax" ? "one-time" : svc.frequency
+
+      // Department roll-up
+      const deptRoll = byDepartment.get(dept) ?? {
+        department: dept,
+        mrr: 0,
+        arr: 0,
+        one_time_total: 0,
+        onboarding_total: 0,
+        service_lines: 0,
+        clients: new Set<string>(),
+      }
+      deptRoll.mrr += m
+      deptRoll.arr += a
+      deptRoll.one_time_total += oneTime
+      deptRoll.onboarding_total += onboarding
+      deptRoll.service_lines += 1
+      deptRoll.clients.add(clientKey)
+      byDepartment.set(dept, deptRoll)
+
+      // Service-type roll-up
+      const sKey = `${dept}::${cls.service_type}`
+      const sRoll = byService.get(sKey) ?? {
         department: dept,
         service_type: cls.service_type,
+        mrr: 0,
+        arr: 0,
+        one_time_total: 0,
+        onboarding_total: 0,
+        service_lines: 0,
+        clients: new Set<string>(),
+      }
+      sRoll.mrr += m
+      sRoll.arr += a
+      sRoll.one_time_total += oneTime
+      sRoll.onboarding_total += onboarding
+      sRoll.service_lines += 1
+      sRoll.clients.add(clientKey)
+      byService.set(sKey, sRoll)
+
+      // Client roll-up (per department so a client with both Tax and
+      // Accounting service lines shows up twice in the table).
+      const cKey = `${dept}::${clientKey}`
+      const cRoll = byClient.get(cKey) ?? {
+        department: dept,
         client_name: clientName,
-        cadence: freq === "quarterly" ? "Quarterly" : "Monthly",
-        service_fee: periodRate,
-        one_time_fee: 0,
-        is_onboarding: false,
-      })
+        normalized_name: normalized,
+        organization_id: proposal.organization_id ?? null,
+        contact_id: proposal.contact_id ?? null,
+        service_types: new Set<string>(),
+        cadences: new Set<IgnitionBillingFrequency>(),
+        mrr: 0,
+        arr: 0,
+        one_time_total: 0,
+        onboarding_total: 0,
+        service_lines: 0,
+        proposal_ids: new Set<string>(),
+        effective_start_date:
+          proposal.effective_start_date ?? proposal.billing_starts_on ?? null,
+      }
+      cRoll.service_types.add(cls.service_type)
+      cRoll.cadences.add(displayFreq)
+      cRoll.mrr += m
+      cRoll.arr += a
+      cRoll.one_time_total += oneTime
+      cRoll.onboarding_total += onboarding
+      cRoll.service_lines += 1
+      if (proposal.proposal_id) cRoll.proposal_ids.add(proposal.proposal_id)
+      byClient.set(cKey, cRoll)
+
+      // Only emit recurring lines into rawRows (the per-client expand view
+      // on the page only renders monthly/quarterly rows historically).
+      // `service_fee` is the PER-PERIOD rate (e.g. $300/mo or $750/qtr),
+      // not the multi-period contract total — matches how the page labels it.
+      if (m > 0) {
+        rawRows.push({
+          id: `${proposal.proposal_id ?? "x"}::${rawRows.length}`,
+          department: dept,
+          service_type: cls.service_type,
+          client_name: clientName,
+          cadence: displayFreq === "quarterly" ? "Quarterly" : "Monthly",
+          service_fee: svc.period_rate,
+          one_time_fee: 0,
+          is_onboarding: false,
+        })
+      }
     }
   }
 
-  // ── 4. Serialize ─────────────────────────────────────────────────────
+  // ── 3. Serialize ─────────────────────────────────────────────────────
   const round2 = (n: number) => Math.round(n * 100) / 100
 
   const departments = Array.from(byDepartment.values())
@@ -374,7 +346,9 @@ export async function GET() {
       contact_id: c.contact_id,
       service_types: Array.from(c.service_types).sort(),
       cadences: Array.from(c.cadences)
-        .map((cad) => (cad === "monthly" ? "Monthly" : cad === "quarterly" ? "Quarterly" : cad))
+        .map((cad) =>
+          cad === "monthly" ? "Monthly" : cad === "quarterly" ? "Quarterly" : cad,
+        )
         .sort(),
       mrr: round2(c.mrr),
       arr: round2(c.arr),
@@ -390,9 +364,11 @@ export async function GET() {
   const totalArr = departments.reduce((s, d) => s + d.arr, 0)
   const totalOneTime = departments.reduce((s, d) => s + d.one_time_total, 0)
   const totalOnboarding = departments.reduce((s, d) => s + d.onboarding_total, 0)
-  const distinctClients = new Set(clients.map((c) => c.normalized_name || c.client_name)).size
+  const distinctClients = new Set(
+    clients.map((c) => c.normalized_name || c.client_name),
+  ).size
 
-  // ── 5. Freshness metadata ────────────────────────────────────────────
+  // ── 4. Freshness metadata ────────────────────────────────────────────
   // Show the most recent Ignition connection sync so users know how
   // current the data is. Falls back to null if no connection is active
   // (which surfaces a "Connect Ignition" callout client-side rather than
@@ -408,7 +384,7 @@ export async function GET() {
     lastSyncedAt = conn?.last_synced_at ?? null
   }
 
-  // ── 6. Gap diagnostic: curated clients NOT in Ignition yet ───────────
+  // ── 5. Gap diagnostic: curated clients NOT in Ignition yet ───────────
   // Partners want to spot recurring relationships that exist in the firm
   // (and therefore appear in `motta_recurring_revenue`) but haven't yet
   // been converted to an Ignition proposal. We surface those as a small
@@ -426,7 +402,9 @@ export async function GET() {
       .from("motta_recurring_revenue_by_client")
       .select("department, client_name, normalized_name, service_types, mrr")
       .order("mrr", { ascending: false })
-    const ignitionKeys = new Set(clients.map((c) => c.normalized_name).filter(Boolean))
+    const ignitionKeys = new Set(
+      clients.map((c) => c.normalized_name).filter(Boolean),
+    )
     notInIgnition = (curated ?? [])
       .filter((c) => c.normalized_name && !ignitionKeys.has(c.normalized_name))
       .map((c) => ({
@@ -450,8 +428,9 @@ export async function GET() {
       one_time_total: round2(totalOneTime),
       onboarding_total: round2(totalOnboarding),
       distinct_clients: distinctClients,
-      service_lines: services.length,
-      avg_mrr_per_client: distinctClients > 0 ? round2(totalMrr / distinctClients) : 0,
+      service_lines: totalServiceLines,
+      avg_mrr_per_client:
+        distinctClients > 0 ? round2(totalMrr / distinctClients) : 0,
       active_proposals: proposals.length,
     },
     departments,
