@@ -61,6 +61,100 @@ import { MultiSelectChip, RangeChip } from "@/components/sales/filter-chips"
 import { X } from "lucide-react"
 
 type DepartmentKey = "All" | "Accounting" | "Tax"
+type Lifecycle = "accepted" | "pipeline" | "lost" | "all"
+
+/**
+ * Per-lifecycle copy. Centralized so the page header, KPIs, tooltips
+ * and the headline number all stay aligned when users swap tabs.
+ *
+ *   accepted — the live recurring book; what's currently producing
+ *              revenue. This is the default and matches the dashboard's
+ *              historical behavior.
+ *   pipeline — proposals out in the world that haven't closed yet.
+ *              MRR here is "what we could see if these are accepted".
+ *   lost     — declined deals. MRR here is "recurring revenue we
+ *              missed out on".
+ *   all      — every non-archived proposal, regardless of state.
+ */
+const LIFECYCLE_META: Record<
+  Lifecycle,
+  {
+    label: string
+    pageTitle: string
+    description: string
+    mrrLabel: (dept: DepartmentKey) => string
+    arrLabel: string
+    clientsLabel: string
+    onboardingLabel: string
+    headlineTotalLabel: string
+    headlineSubtitle: (arr: string) => string
+    badgeTone: string
+    showGapDiagnostic: boolean
+    showLiveBadge: boolean
+  }
+> = {
+  accepted: {
+    label: "Accepted",
+    pageTitle: "Recurring Revenue",
+    description:
+      "Live MRR / ARR across Accounting and Tax, aggregated from accepted Ignition proposals at the service-line level. Monthly fees roll into MRR; quarterly fees contribute fee ÷ 3.",
+    mrrLabel: (dept) => (dept === "All" ? "Combined MRR" : `${dept} MRR`),
+    arrLabel: "Annualized (ARR)",
+    clientsLabel: "Recurring Clients",
+    onboardingLabel: "Onboarding & Optimization",
+    headlineTotalLabel: "Total MRR",
+    headlineSubtitle: (arr) => `${arr} annualized`,
+    badgeTone: "bg-emerald-50 border-emerald-200 text-emerald-900",
+    showGapDiagnostic: true,
+    showLiveBadge: true,
+  },
+  pipeline: {
+    label: "Pipeline",
+    pageTitle: "Pipeline Recurring Revenue",
+    description:
+      "Potential MRR / ARR from proposals currently in flight (sent, awaiting acceptance, or draft). These numbers represent what could come into the recurring book if every open proposal closes — useful for sales forecasting.",
+    mrrLabel: (dept) =>
+      dept === "All" ? "Potential MRR" : `${dept} Potential MRR`,
+    arrLabel: "Potential ARR",
+    clientsLabel: "Prospective Clients",
+    onboardingLabel: "Potential Onboarding",
+    headlineTotalLabel: "Potential MRR",
+    headlineSubtitle: (arr) => `${arr} potential annualized`,
+    badgeTone: "bg-amber-50 border-amber-200 text-amber-900",
+    showGapDiagnostic: false,
+    showLiveBadge: false,
+  },
+  lost: {
+    label: "Lost",
+    pageTitle: "Lost Recurring Revenue",
+    description:
+      "MRR / ARR on proposals that were lost. This is recurring revenue the firm did NOT capture — useful for analyzing which engagements are slipping through and at what value.",
+    mrrLabel: (dept) => (dept === "All" ? "Lost MRR" : `${dept} Lost MRR`),
+    arrLabel: "Lost ARR",
+    clientsLabel: "Lost Clients",
+    onboardingLabel: "Lost Onboarding",
+    headlineTotalLabel: "Lost MRR",
+    headlineSubtitle: (arr) => `${arr} annualized lost`,
+    badgeTone: "bg-rose-50 border-rose-200 text-rose-900",
+    showGapDiagnostic: false,
+    showLiveBadge: false,
+  },
+  all: {
+    label: "All",
+    pageTitle: "All Proposals · Recurring View",
+    description:
+      "Recurring revenue rolled up across every non-archived proposal regardless of state. Combines accepted, pipeline, and lost into a single view so you can see the whole book of potential and realized recurring revenue.",
+    mrrLabel: (dept) => (dept === "All" ? "All MRR" : `${dept} MRR (All)`),
+    arrLabel: "All ARR",
+    clientsLabel: "All Clients",
+    onboardingLabel: "All Onboarding",
+    headlineTotalLabel: "Combined MRR",
+    headlineSubtitle: (arr) => `${arr} combined annualized`,
+    badgeTone: "bg-stone-100 border-stone-300 text-stone-800",
+    showGapDiagnostic: false,
+    showLiveBadge: false,
+  },
+}
 
 interface RecurringRow {
   id: string
@@ -74,6 +168,13 @@ interface RecurringRow {
 
 interface RecurringResponse {
   source?: "ignition" | "curated"
+  lifecycle?: Lifecycle
+  lifecycleCounts?: {
+    accepted: number | null
+    pipeline: number | null
+    lost: number | null
+    all: number | null
+  }
   lastSyncedAt?: string | null
   totals: {
     mrr: number
@@ -155,11 +256,19 @@ const DEPT_BADGE: Record<string, string> = {
 }
 
 export function SalesRecurringRevenue() {
+  // Lifecycle: which slice of the proposal pipeline this view is
+  // showing. Defaults to "accepted" so the page opens to the live
+  // recurring book — matches what users expect from the dashboard's
+  // original behavior. Local state is fine here; the dropdown context
+  // is per-session, not something users typically share via URL.
+  const [lifecycle, setLifecycle] = useState<Lifecycle>("accepted")
+  const meta = LIFECYCLE_META[lifecycle]
+
   // Auto-revalidate every minute so the page reflects new Ignition data
   // without forcing a hard reload. Combined with the 60s `revalidate` on
   // the API route, this gives a max ~2 minute staleness in the worst case.
   const { data, isLoading, mutate } = useSWR<RecurringResponse>(
-    "/api/sales/recurring-revenue",
+    `/api/sales/recurring-revenue?lifecycle=${lifecycle}`,
     fetcher,
     { refreshInterval: 60_000, revalidateOnFocus: true },
   )
@@ -363,34 +472,38 @@ export function SalesRecurringRevenue() {
           <div className="flex flex-col gap-2 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-2xl font-semibold text-stone-900">
-                Recurring Revenue
+                {meta.pageTitle}
               </h1>
-              {/* Live-source pill. Always rendered (even while loading) so
-                  the page reads "live from Ignition" the moment it mounts.
-                  The pulsing green dot signals real-time freshness; the
-                  timestamp tells you exactly when the last Ignition sync
-                  landed. */}
-              <Badge
-                variant="outline"
-                className="gap-1.5 bg-emerald-50 border-emerald-200 text-emerald-900 font-normal h-6"
-              >
-                <span className="relative flex h-1.5 w-1.5">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                </span>
-                Live from Ignition
-              </Badge>
+              {/* Lifecycle pill. For the Accepted view we show the pulsing
+                  "Live from Ignition" badge that signals real-time data
+                  freshness; for Pipeline / Lost / All we show a static
+                  pill in the lifecycle's tone so the view is clearly
+                  labeled as a different slice. */}
+              {meta.showLiveBadge ? (
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "gap-1.5 font-normal h-6",
+                    meta.badgeTone,
+                  )}
+                >
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  </span>
+                  Live from Ignition
+                </Badge>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className={cn("font-normal h-6", meta.badgeTone)}
+                >
+                  {meta.label} view
+                </Badge>
+              )}
             </div>
             <p className="text-sm text-muted-foreground max-w-3xl">
-              Live MRR / ARR across Accounting and Tax, aggregated from active
-              Ignition proposals at the service-line level. Monthly fees roll
-              into MRR; quarterly fees contribute fee ÷ 3. The
-              <span className="font-medium text-stone-900">
-                {" "}
-                Onboarding &amp; Optimization{" "}
-              </span>
-              column captures one-time setup fees billed alongside recurring
-              engagements.
+              {meta.description}
             </p>
             <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
               {data?.lastSyncedAt ? (
@@ -431,13 +544,13 @@ export function SalesRecurringRevenue() {
           {data && (
             <div className="flex flex-col items-end gap-0.5">
               <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                Total MRR
+                {meta.headlineTotalLabel}
               </div>
               <div className="text-3xl font-semibold tabular-nums text-stone-900">
                 {fmt(data.totals.mrr)}
               </div>
               <div className="text-xs text-muted-foreground">
-                {fmt(data.totals.arr)} annualized
+                {meta.headlineSubtitle(fmt(data.totals.arr))}
               </div>
               {(data.totals.onboarding_total ?? 0) > 0 ? (
                 <div className="text-xs text-muted-foreground tabular-nums">
@@ -449,10 +562,57 @@ export function SalesRecurringRevenue() {
         </div>
       </div>
 
-      {/* Headline KPIs */}
+      {/* Lifecycle tabs — mirrors the Sales Dashboard's status grouping
+          so the two surfaces feel like the same product. Accepted is the
+          default (live recurring book); Pipeline shows what's in flight,
+          Lost shows what we missed, and All combines everything for a
+          full-funnel recurring view. */}
+      <Tabs
+        value={lifecycle}
+        onValueChange={(v) => setLifecycle(v as Lifecycle)}
+      >
+        <TabsList>
+          <TabsTrigger value="accepted" className="gap-2">
+            Accepted
+            {data?.lifecycleCounts?.accepted != null && (
+              <Badge variant="outline" className="font-normal">
+                {data.lifecycleCounts.accepted}
+              </Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="pipeline" className="gap-2">
+            Pipeline
+            {data?.lifecycleCounts?.pipeline != null && (
+              <Badge variant="outline" className="font-normal">
+                {data.lifecycleCounts.pipeline}
+              </Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="lost" className="gap-2">
+            Lost
+            {data?.lifecycleCounts?.lost != null && (
+              <Badge variant="outline" className="font-normal">
+                {data.lifecycleCounts.lost}
+              </Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="all" className="gap-2">
+            All
+            {data?.lifecycleCounts?.all != null && (
+              <Badge variant="outline" className="font-normal">
+                {data.lifecycleCounts.all}
+              </Badge>
+            )}
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {/* Headline KPIs — labels swap to lifecycle-appropriate copy so a
+          partner viewing the Pipeline tab sees "Potential MRR" rather
+          than the live-book "Combined MRR" framing. */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <KpiCard
-          label={dept === "All" ? "Combined MRR" : `${dept} MRR`}
+          label={meta.mrrLabel(dept)}
           value={visibleTotals ? fmt(visibleTotals.mrr) : null}
           subtitle={
             visibleTotals
@@ -460,17 +620,23 @@ export function SalesRecurringRevenue() {
               : undefined
           }
           icon={Repeat}
-          tone="emerald"
+          tone={
+            lifecycle === "lost"
+              ? "rose"
+              : lifecycle === "pipeline"
+                ? "amber"
+                : "emerald"
+          }
         />
         <KpiCard
-          label="Annualized (ARR)"
+          label={meta.arrLabel}
           value={visibleTotals ? fmt(visibleTotals.arr) : null}
           subtitle="MRR × 12 + Quarterly × 4"
           icon={TrendingUp}
           tone="blue"
         />
         <KpiCard
-          label="Recurring Clients"
+          label={meta.clientsLabel}
           value={
             visibleTotals
               ? visibleTotals.distinct_clients.toLocaleString()
@@ -485,7 +651,7 @@ export function SalesRecurringRevenue() {
           tone="stone"
         />
         <KpiCard
-          label="Onboarding & Optimization"
+          label={meta.onboardingLabel}
           value={
             data
               ? fmt(
@@ -857,8 +1023,13 @@ export function SalesRecurringRevenue() {
               consider on a recurring engagement. Some haven't been
               proposed through Ignition yet — those don't show in the
               live totals above but are visible here so the team can
-              close the gap. Filtered to the active department tab. */}
-          {data?.not_in_ignition && data.not_in_ignition.length > 0 ? (
+              close the gap. Filtered to the active department tab.
+              Only shown in the Accepted view — the curated CSV is a
+              proxy for the live recurring book, so it doesn't apply to
+              Pipeline / Lost / All views. */}
+          {meta.showGapDiagnostic &&
+          data?.not_in_ignition &&
+          data.not_in_ignition.length > 0 ? (
             <Card className="border-amber-200 bg-amber-50/40">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base flex items-center gap-2">
@@ -1000,13 +1171,14 @@ function KpiCard({
   value: string | null
   subtitle?: string
   icon: any
-  tone: "stone" | "emerald" | "amber" | "blue"
+  tone: "stone" | "emerald" | "amber" | "blue" | "rose"
 }) {
   const toneStyles: Record<string, string> = {
     stone: "text-stone-900 bg-stone-100",
     emerald: "text-emerald-900 bg-emerald-100",
     amber: "text-amber-900 bg-amber-100",
     blue: "text-blue-900 bg-blue-100",
+    rose: "text-rose-900 bg-rose-100",
   }
   return (
     <Card>
