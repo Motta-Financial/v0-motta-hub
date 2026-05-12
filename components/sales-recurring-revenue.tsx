@@ -3,21 +3,23 @@
 /**
  * Sales > Recurring Revenue
  * ────────────────────────────────────────────────────────────────────────
- * MRR / ARR view for Accounting and Tax, sourced from the partner-
- * maintained CSV (`motta_recurring_revenue` table) — the authoritative
- * list of clients on real recurring engagements. The API at
- * `/api/sales/recurring-revenue` aggregates the CSV by department,
- * service type, and client.
+ * Live MRR / ARR view for Accounting and Tax sourced directly from the
+ * Ignition feed via the raw `payload.services` JSON on `ignition_proposals`
+ * — not the normalized `ignition_proposal_services` table, which is
+ * populated by an incomplete sync and drops services for ~460 of the
+ * firm's active proposals. Reading from the payload guarantees the page
+ * shows the same line items partners see inside Ignition.
  *
- * Why CSV instead of Ignition? Ignition lets partners enter monthly
- * billing schedules on what are really one-time engagements, and many
- * clients on real recurring engagements aren't on Ignition yet. The CSV
- * is what the partners use to run the business, so it's what we display.
+ * The classification + frequency policy lives in
+ * `lib/sales/ignition-recurring.ts`. Tax engagements are treated as
+ * one-time regardless of how Ignition records the cadence (installment-
+ * billed returns are common). Numbers refresh whenever an Ignition sync
+ * runs (cron every 15 min, plus a manual "Sync now" button in the header).
  *
- * Ignition is still consulted (informationally) for:
- *   • A freshness pill showing the most recent Ignition sync time.
- *   • A "Not in Ignition yet" gap callout — curated clients with no
- *     active Ignition proposal — so the partners can close the gap.
+ * The partner-maintained `motta_recurring_revenue` CSV is still queried
+ * by the API for a "Not in Ignition yet" gap callout — clients the team
+ * tracks as recurring but who haven't been moved onto Ignition yet. The
+ * CSV is reference data, not the source of truth for MRR.
  */
 
 import { useMemo, useState } from "react"
@@ -363,31 +365,38 @@ export function SalesRecurringRevenue() {
               <h1 className="text-2xl font-semibold text-stone-900">
                 Recurring Revenue
               </h1>
-              {/* Source pill. The page is now driven by the partner-
-                  maintained CSV rather than the Ignition feed, so the
-                  label calls that out explicitly. The "Not in Ignition
-                  yet" callout below shows which curated clients still
-                  need a proposal sent through Ignition. */}
+              {/* Live-source pill. Always rendered (even while loading) so
+                  the page reads "live from Ignition" the moment it mounts.
+                  The pulsing green dot signals real-time freshness; the
+                  timestamp tells you exactly when the last Ignition sync
+                  landed. */}
               <Badge
                 variant="outline"
-                className="gap-1.5 bg-blue-50 border-blue-200 text-blue-900 font-normal h-6"
+                className="gap-1.5 bg-emerald-50 border-emerald-200 text-emerald-900 font-normal h-6"
               >
-                <Sparkles className="h-3 w-3" />
-                Curated CSV
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                </span>
+                Live from Ignition
               </Badge>
             </div>
             <p className="text-sm text-muted-foreground max-w-3xl">
-              MRR / ARR across Accounting and Tax, sourced from the partner-
-              maintained CSV — the authoritative list of clients on real
-              recurring engagements. Monthly fees roll into MRR; quarterly
-              fees contribute fee ÷ 3. The Ignition feed below highlights
-              curated clients that still need a proposal sent.
+              Live MRR / ARR across Accounting and Tax, aggregated from active
+              Ignition proposals at the service-line level. Monthly fees roll
+              into MRR; quarterly fees contribute fee ÷ 3. The
+              <span className="font-medium text-stone-900">
+                {" "}
+                Onboarding &amp; Optimization{" "}
+              </span>
+              column captures one-time setup fees billed alongside recurring
+              engagements.
             </p>
             <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
               {data?.lastSyncedAt ? (
                 <span className="inline-flex items-center gap-1.5">
                   <RefreshCw className="h-3 w-3" />
-                  Ignition last synced {formatDistanceToNow(new Date(data.lastSyncedAt), { addSuffix: true })}
+                  Synced {formatDistanceToNow(new Date(data.lastSyncedAt), { addSuffix: true })}
                 </span>
               ) : data ? (
                 <span className="inline-flex items-center gap-1.5 text-amber-700">
