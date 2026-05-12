@@ -489,6 +489,160 @@ function titleCase(s: string): string {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * DateRangePresets — visible quick-pick buttons for YTD / MTD / QTD / etc.
+ *
+ * The full DateRangeChip above is great for arbitrary ranges, but ~95% of
+ * how partners actually read the sales surfaces is "this year so far" or
+ * "this month" — frames they'd otherwise have to dig into a popover to
+ * select. This row of pill buttons keeps the most common framings one
+ * click away AND, critically, shows the user *which* framing the page is
+ * currently using. The active preset stays highlighted whether the URL
+ * has explicit dateFrom/dateTo or the page is sitting on its YTD default.
+ *
+ * Emits the same `{ from, to }` shape the rest of the filter system uses,
+ * so callers can route it straight back through `updateParams`.
+ * ────────────────────────────────────────────────────────────────────────*/
+
+export type DateRangePresetKey =
+  | "ytd"
+  | "mtd"
+  | "qtd"
+  | "last12"
+  | "all"
+  | "custom"
+
+export interface DateRangePresetsProps {
+  /** Current "yyyy-MM-dd" range — used to detect the active preset. */
+  from: string
+  to: string
+  /** Called with the new range when a preset is picked. */
+  onChange: (next: { from: string; to: string }) => void
+  /**
+   * Optional override of which presets are shown. Defaults to the full
+   * set; callers can trim it down to fit narrow toolbars.
+   */
+  presets?: Exclude<DateRangePresetKey, "custom">[]
+  /** Optional label rendered to the left of the buttons. */
+  label?: string
+}
+
+export function DateRangePresets({
+  from,
+  to,
+  onChange,
+  presets = ["ytd", "mtd", "qtd", "last12", "all"],
+  label = "Range",
+}: DateRangePresetsProps) {
+  // Compute the canonical from/to for each preset relative to "now" so
+  // the buttons keep working as the calendar advances (no stale Jan-1
+  // strings hard-coded at module load).
+  const ranges = useMemo(() => computePresetRanges(), [])
+  // Re-derive every render off the URL-truth `from` / `to` so the
+  // highlighted preset always matches what the rest of the page is
+  // showing. The match is exact-string on the canonical preset range.
+  const activeKey: DateRangePresetKey = detectActivePreset(from, to, ranges)
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {label ? (
+        <span className="text-[11px] font-medium uppercase tracking-wide text-stone-500 mr-1">
+          {label}
+        </span>
+      ) : null}
+      {presets.map((key) => {
+        const range = ranges[key]
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onChange({ from: range.from, to: range.to })}
+            aria-pressed={activeKey === key}
+            className={cn(
+              "inline-flex items-center h-7 px-2.5 rounded-md border text-xs font-medium transition-colors",
+              activeKey === key
+                ? "bg-stone-900 text-white border-stone-900"
+                : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50 hover:text-stone-900",
+            )}
+          >
+            {PRESET_LABELS[key]}
+          </button>
+        )
+      })}
+      {activeKey === "custom" ? (
+        <span className="inline-flex items-center h-7 px-2.5 rounded-md border bg-stone-50 text-stone-700 border-stone-200 text-xs font-medium">
+          {PRESET_LABELS.custom}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+const PRESET_LABELS: Record<DateRangePresetKey, string> = {
+  ytd: "YTD",
+  mtd: "MTD",
+  qtd: "QTD",
+  last12: "Last 12 mo",
+  all: "All time",
+  custom: "Custom",
+}
+
+/**
+ * Returns the canonical { from, to } strings for each preset.
+ * - `from` is always an inclusive lower bound at midnight.
+ * - `to` is `""` (empty) when the upper bound is "today / now" so the
+ *   server's default of "up to now" applies (otherwise rows dated later
+ *   today would be excluded). This matches how the DateRangeChip
+ *   behaves when only `from` is set.
+ */
+function computePresetRanges(): Record<
+  Exclude<DateRangePresetKey, "custom">,
+  { from: string; to: string }
+> {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = now.getMonth()
+  const quarterStartMonth = Math.floor(m / 3) * 3
+
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate(),
+    ).padStart(2, "0")}`
+
+  const ytd = { from: `${y}-01-01`, to: "" }
+  const mtd = { from: fmt(new Date(y, m, 1)), to: "" }
+  const qtd = { from: fmt(new Date(y, quarterStartMonth, 1)), to: "" }
+  const last12 = {
+    // 12 months ago, same calendar day. Using `setMonth` rather than
+    // subtracting raw ms so day boundaries land correctly across DST.
+    from: (() => {
+      const d = new Date(now)
+      d.setMonth(d.getMonth() - 12)
+      return fmt(d)
+    })(),
+    to: "",
+  }
+  const all = { from: "", to: "" }
+  return { ytd, mtd, qtd, last12, all }
+}
+
+function detectActivePreset(
+  from: string,
+  to: string,
+  ranges: ReturnType<typeof computePresetRanges>,
+): DateRangePresetKey {
+  // Empty `to` is normalised to "" before comparison so the YTD default
+  // (which has no explicit dateTo in the URL) matches the preset.
+  const norm = (s: string) => s || ""
+  const fNorm = norm(from)
+  const tNorm = norm(to)
+  for (const key of ["all", "ytd", "mtd", "qtd", "last12"] as const) {
+    const r = ranges[key]
+    if (fNorm === r.from && tNorm === r.to) return key
+  }
+  return "custom"
+}
+
 /** Compact pill for a numeric range, e.g. "$1k–$10k", "≥ $5k", "≤ $1k". */
 function formatRangeBadge(min: string, max: string, prefix: string): string {
   const fmt = (n: number) => {

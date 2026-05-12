@@ -301,49 +301,150 @@ export async function GET(req: Request) {
       stats.byStatus[key] = (stats.byStatus[key] || 0) + 1
     }
 
-    // ── 5) Apply filters ─────────────────────────────────────────────────
-    const filtered = enriched.filter((p) => {
-      if (statusFilter.length && !statusFilter.includes(p.payment_status || "(none)")) {
-        return false
+    // ── 4b) Analytics computed on the *currently filtered window* ────────
+    // Charts should reflect the user's active filters (especially the
+    // date range) — partners reading the page on YTD want to see the YTD
+    // trend / top clients, not all-time. The KPI strip above stays
+    // stable because it's intentionally roll-up-of-everything. We do
+    // these calcs after applying the same predicate as the main filter
+    // step (factored out so we don't duplicate the logic).
+    const matchesFilters = buildMatcher({
+      statusFilter,
+      stateFilter,
+      minAmount,
+      maxAmount,
+      dateField,
+      dateFrom,
+      dateTo,
+      search,
+    })
+    const inWindow = enriched.filter(matchesFilters)
+
+    // Monthly trend over the past 12 calendar months (paid_at). Even when
+    // a tighter date filter is applied we still synthesize all 12 month
+    // buckets so the chart x-axis stays stable; months outside the
+    // filtered window simply roll up as zero. This mirrors how the
+    // invoices route handles trend.
+    const today = new Date()
+    const trendMonths: string[] = []
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(today.getFullYear(), today.getMonth() - i, 1)
+      trendMonths.push(
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      )
+    }
+    const trendMap = new Map(
+      trendMonths.map((m) => [
+        m,
+        { month: m, count: 0, gross: 0, net: 0, fees: 0 },
+      ]),
+    )
+    for (const p of inWindow) {
+      if (!p.paid_at) continue
+      const m = p.paid_at.slice(0, 7)
+      const bucket = trendMap.get(m)
+      if (!bucket) continue // outside the 12-month window
+      bucket.count += 1
+      bucket.gross += p.amount ?? 0
+      bucket.net += p.net_amount ?? 0
+      bucket.fees += p.fees ?? 0
+    }
+    const trend = Array.from(trendMap.values()).map((b) => ({
+      ...b,
+      gross: Math.round(b.gross * 100) / 100,
+      net: Math.round(b.net * 100) / 100,
+      fees: Math.round(b.fees * 100) / 100,
+    }))
+
+    // Top-N collected clients within the filtered window. We group on
+    // the resolved org_id || contact_id || client_name so we treat the
+    // three resolution paths as one logical "relationship". Sorting by
+    // gross collected matches how partners scan this strip — "who paid
+    // us the most in the active window".
+    type TopClientBucket = {
+      key: string
+      name: string
+      orgId: string | null
+      contactId: string | null
+      count: number
+      gross: number
+      net: number
+    }
+    const topMap = new Map<string, TopClientBucket>()
+    for (const p of inWindow) {
+      const key =
+        p.organization_id || p.contact_id || p.client_name || "(unknown)"
+      const existing = topMap.get(key)
+      if (existing) {
+        existing.count += 1
+        existing.gross += p.amount ?? 0
+        existing.net += p.net_amount ?? 0
+      } else {
+        topMap.set(key, {
+          key,
+          name:
+            p.organization?.name ||
+            p.contact?.full_name ||
+            p.client_name ||
+            "Unknown client",
+          orgId: p.organization_id || null,
+          contactId: p.contact_id || null,
+          count: 1,
+          gross: p.amount ?? 0,
+          net: p.net_amount ?? 0,
+        })
       }
-      if (stateFilter.length) {
-        const s = p.state || "(unknown)"
-        if (!stateFilter.includes(s)) return false
-      }
-      if (minAmount != null && (p.amount ?? 0) < minAmount) return false
-      if (maxAmount != null && (p.amount ?? 0) > maxAmount) return false
-      if (dateFrom || dateTo) {
-        // Field is hard-coded to paid_at for now (see comment above) —
-        // payments with no paid_at fall out of any date filter window.
-        const raw = p[dateField]
-        if (!raw) return false
-        const d = new Date(raw).getTime()
-        if (dateFrom && d < new Date(dateFrom).getTime()) return false
-        // Use end-of-day for the upper bound so 'today' is inclusive.
-        if (dateTo) {
-          const upper = new Date(dateTo)
-          upper.setHours(23, 59, 59, 999)
-          if (d > upper.getTime()) return false
+    }
+    const topClients = Array.from(topMap.values())
+      .sort((a, b) => b.gross - a.gross)
+      .slice(0, 10)
+      .map((b) => ({
+        ...b,
+        gross: Math.round(b.gross * 100) / 100,
+        net: Math.round(b.net * 100) / 100,
+      }))
+
+    // Median days from invoice issuance → payment. Useful as a single
+    // "how fast do we get paid?" KPI. Only counts rows with both an
+    // invoice link and a paid_at; falls back to null when the window is
+    // empty so the UI can hide the tile rather than show 0.
+    const daysToCollect: number[] = []
+    const invoiceDateMap = new Map<string, string>()
+    // Reuse the invoiceInfo we already fetched — it has the invoice
+    // numbers but not the invoice_date, so we need one more lookup.
+    if (invoiceIds.length) {
+      for (let offset = 0; offset < invoiceIds.length; offset += 200) {
+        const chunk = invoiceIds.slice(offset, offset + 200)
+        const { data } = await supabase
+          .from("ignition_invoices")
+          .select("ignition_invoice_id, invoice_date")
+          .in("ignition_invoice_id", chunk)
+        for (const inv of data ?? []) {
+          if (inv.invoice_date) {
+            invoiceDateMap.set(inv.ignition_invoice_id, inv.invoice_date)
+          }
         }
       }
-      if (search) {
-        const haystack = [
-          p.ignition_payment_id,
-          p.invoice_number,
-          p.proposal_id,
-          p.stripe_charge_id,
-          p.stripe_payment_intent_id,
-          p.client_name,
-          p.organization?.name,
-          p.contact?.full_name,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase()
-        if (!haystack.includes(search)) return false
-      }
-      return true
-    })
+    }
+    for (const p of inWindow) {
+      if (!p.paid_at || !p.ignition_invoice_id) continue
+      const issued = invoiceDateMap.get(p.ignition_invoice_id)
+      if (!issued) continue
+      const days =
+        (new Date(p.paid_at).getTime() - new Date(issued).getTime()) /
+        (1000 * 60 * 60 * 24)
+      if (Number.isFinite(days) && days >= 0) daysToCollect.push(days)
+    }
+    daysToCollect.sort((a, b) => a - b)
+    const medianDaysToCollect =
+      daysToCollect.length === 0
+        ? null
+        : Math.round(daysToCollect[Math.floor(daysToCollect.length / 2)])
+
+    // ── 5) Apply filters ─────────────────────────────────────────────────
+    // Same predicate the analytics block above used — keeps "what the
+    // chart shows" and "what the table shows" exactly in sync.
+    const filtered = enriched.filter(matchesFilters)
 
     // ── 6) Sort ──────────────────────────────────────────────────────────
     const sorted = filtered.slice().sort((a, b) => {
@@ -385,6 +486,11 @@ export async function GET(req: Request) {
       total,
       totalUnfiltered,
       stats,
+      analytics: {
+        trend,
+        topClients,
+        medianDaysToCollect,
+      },
       dimensions: {
         statuses: Array.from(statusSet).sort(),
         states: Array.from(stateSet).sort(),
@@ -396,5 +502,78 @@ export async function GET(req: Request) {
       { error: err?.message || "unexpected_error" },
       { status: 500 },
     )
+  }
+}
+
+/**
+ * Builds the row-level predicate used by both the analytics window and
+ * the main table filter. Factored out so the chart strip and the table
+ * never drift apart — when partners say "the chart shows different
+ * numbers from the table" it's almost always because the predicates
+ * weren't identical.
+ */
+function buildMatcher(opts: {
+  statusFilter: string[]
+  stateFilter: string[]
+  minAmount: number | null
+  maxAmount: number | null
+  dateField: "paid_at"
+  dateFrom: string
+  dateTo: string
+  search: string
+}) {
+  const {
+    statusFilter,
+    stateFilter,
+    minAmount,
+    maxAmount,
+    dateField,
+    dateFrom,
+    dateTo,
+    search,
+  } = opts
+  return function matchesFilters(p: any): boolean {
+    if (
+      statusFilter.length &&
+      !statusFilter.includes(p.payment_status || "(none)")
+    ) {
+      return false
+    }
+    if (stateFilter.length) {
+      const s = p.state || "(unknown)"
+      if (!stateFilter.includes(s)) return false
+    }
+    if (minAmount != null && (p.amount ?? 0) < minAmount) return false
+    if (maxAmount != null && (p.amount ?? 0) > maxAmount) return false
+    if (dateFrom || dateTo) {
+      // Field is hard-coded to paid_at for now — payments with no
+      // paid_at fall out of any date filter window.
+      const raw = p[dateField]
+      if (!raw) return false
+      const d = new Date(raw).getTime()
+      if (dateFrom && d < new Date(dateFrom).getTime()) return false
+      if (dateTo) {
+        const upper = new Date(dateTo)
+        upper.setHours(23, 59, 59, 999)
+        if (d > upper.getTime()) return false
+      }
+    }
+    if (search) {
+      const haystack = [
+        p.ignition_payment_id,
+        p.invoice_number,
+        p.proposal_id,
+        p.stripe_charge_id,
+        p.stripe_payment_intent_id,
+        p.client_name,
+        p.organization?.name,
+        p.contact?.full_name,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+      if (!haystack.includes(search)) return false
+    }
+    return true
   }
 }
