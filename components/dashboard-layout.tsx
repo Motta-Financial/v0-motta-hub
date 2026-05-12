@@ -59,6 +59,7 @@ import {
   BookOpen,
   Palette,
   Wallet,
+  Webhook,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -99,13 +100,15 @@ const navigation = [
       { name: "Work Items", href: "/work-items", icon: CheckSquare },
       { name: "Clients", href: "/clients", icon: Users },
       {
+        // Calendly used to live as a child here ("Calendly Admin").
+        // It moved to /settings/calendly so it sits alongside the
+        // other per-user OAuth connections (and the old /calendly
+        // URL now server-redirects there). Zoom stays since it's a
+        // shared meeting room view, not a per-user setup screen.
         name: "Calendar",
         href: "/calendar",
         icon: Calendar,
-        children: [
-          { name: "Calendly Admin", href: "/calendly", icon: Settings },
-          { name: "Zoom", href: "/zoom", icon: Video },
-        ],
+        children: [{ name: "Zoom", href: "/zoom", icon: Video }],
       },
       {
         // "New Debrief" used to live as a child here, but the form is now
@@ -233,8 +236,14 @@ const navigation = [
       },
     ],
   },
-  // Settings absorbed Karbon Data and the Admin sub-tree — non-admins
-  // shouldn't have those at top level.
+  // Settings is the personal hub for the signed-in user. The
+  // sub-tree mirrors the /settings page's section order:
+  //   - Account: Profile, Notifications
+  //   - Connections: Calendly (per-user OAuth + setup)
+  //   - Workspace: Users, Work Statuses
+  //   - Admin: firm-wide data/integration tooling, nested under
+  //     /settings/admin so it stays grouped without polluting the
+  //     top-level Settings list.
   {
     name: "Settings",
     href: "/settings",
@@ -242,14 +251,13 @@ const navigation = [
     children: [
       { name: "Profile", href: "/settings/profile", icon: UserCircle },
       { name: "Notifications", href: "/settings/notifications", icon: Bell },
+      { name: "Calendly", href: "/settings/calendly", icon: Calendar },
       { name: "Users", href: "/settings/users", icon: ShieldCheck },
       { name: "Work Statuses", href: "/settings/work-statuses", icon: ListChecks },
-      { name: "Migration", href: "/settings/migration", icon: ArrowRightLeft },
-      { name: "Webhooks", href: "/settings/webhooks", icon: ArrowRightLeft },
       { name: "Karbon Data", href: "/karbon-data", icon: Database },
       {
         name: "Admin",
-        href: "/admin/karbon-sync",
+        href: "/settings/admin",
         icon: ShieldCheck,
         children: [
           { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
@@ -262,6 +270,8 @@ const navigation = [
           { name: "Broadcast", href: "/admin/broadcast", icon: Radio },
           { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
           { name: "Work Statuses", href: "/admin/work-statuses", icon: ListChecks },
+          { name: "Migration", href: "/settings/migration", icon: ArrowRightLeft },
+          { name: "Webhooks", href: "/settings/webhooks", icon: Webhook },
         ],
       },
     ],
