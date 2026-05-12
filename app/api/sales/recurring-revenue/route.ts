@@ -5,8 +5,8 @@ import {
   ACTIVE_PROPOSAL_STATUSES,
   annualContribution,
   classifyService,
+  effectiveBillingFrequency,
   monthlyContribution,
-  normalizeBillingFrequency,
   normalizeClientName,
   type Department,
   type IgnitionBillingFrequency,
@@ -209,9 +209,15 @@ export async function GET() {
     if (!proposal) continue // belongs to a non-active proposal; skip
 
     const amount = Number(svc.total_amount) || 0
-    const freq = normalizeBillingFrequency(svc.billing_frequency)
     const cls = classifyService(svc.service_name)
     const dept = cls.department
+    // Use the POLICY-AWARE frequency, not the raw Ignition field.
+    // Tax services collapse to "one-time" here even when Ignition has
+    // them coded Monthly / Quarterly — see `effectiveBillingFrequency`
+    // for the firm policy rationale. This keeps MRR / ARR honest by
+    // excluding things like quarterly tax estimates and S-corp returns
+    // that bill in installments but aren't truly recurring engagements.
+    const freq = effectiveBillingFrequency(svc.billing_frequency, dept)
     const m = monthlyContribution(amount, freq)
     const a = annualContribution(amount, freq)
     // "one_time_total" counts every non-recurring line; "onboarding_total"
