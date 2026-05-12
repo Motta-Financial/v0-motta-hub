@@ -44,11 +44,32 @@ export function mapNotificationTypeToCategory(notificationType?: string | null):
   return "general"
 }
 
+/**
+ * Shape of an email attachment we hand off to Resend. Mirrors Resend's
+ * own `Attachment` type but typed loosely here so callers don't need to
+ * import from `resend` directly. Two delivery modes:
+ *   - `path`    — a public URL (e.g. a Vercel Blob URL). Resend fetches
+ *                 the file and inlines it. Preferred for our flow because
+ *                 the file already lives in Blob storage by the time we
+ *                 send the email.
+ *   - `content` — raw bytes (Buffer / base64 string). Used only when we
+ *                 have the file in-memory and can't expose a public URL.
+ */
+export interface EmailAttachment {
+  filename: string
+  /** Public URL Resend will fetch (preferred). */
+  path?: string
+  /** Inline bytes for files that aren't hosted anywhere. */
+  content?: Buffer | string
+  contentType?: string
+}
+
 interface SendEmailParams {
   to: string | string[]
   subject: string
   html: string
   replyTo?: string
+  attachments?: EmailAttachment[]
 }
 
 async function getResendClient() {
@@ -62,7 +83,13 @@ async function getResendClient() {
   }
 }
 
-export async function sendEmail({ to, subject, html, replyTo }: SendEmailParams) {
+export async function sendEmail({
+  to,
+  subject,
+  html,
+  replyTo,
+  attachments,
+}: SendEmailParams) {
   const resend = await getResendClient()
   if (!resend) {
     console.warn("[email] Email service not configured -- skipping email send")
@@ -76,6 +103,10 @@ export async function sendEmail({ to, subject, html, replyTo }: SendEmailParams)
       subject,
       html,
       replyTo,
+      // Resend expects `attachments` only when there's at least one. Pass
+      // through verbatim — caller is responsible for sizing (Resend caps
+      // the entire payload around 40MB combined).
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
     })
 
     if (error) {
@@ -103,11 +134,54 @@ const BRAND = {
   border: "#D8D3CB",
 }
 
+/**
+ * Format a free-form notes string for safe rendering inside an email
+ * body. The two jobs here:
+ *
+ *   1. Escape HTML so anything a teammate types (especially "<", ">",
+ *      "&", or stray quotes from copy-pasted snippets) renders as literal
+ *      text instead of corrupting the email markup.
+ *   2. Translate plain-text whitespace into HTML breaks. Email clients
+ *      mostly ignore `white-space: pre-wrap` (Outlook in particular), so
+ *      we emit explicit `<br>` tags instead:
+ *        - Two or more consecutive newlines become a paragraph break
+ *          (`<br><br>`), giving real visual spacing between paragraphs.
+ *        - A single newline becomes one `<br>` so soft-wrapped lines from
+ *          the meeting notes still break in the same places the author
+ *          intended.
+ *
+ * Returns "" when input is falsy/whitespace so callers can guard with a
+ * truthy check before rendering the surrounding container.
+ */
+export function formatNotesForEmail(notes?: string | null): string {
+  if (!notes) return ""
+  const trimmed = notes.replace(/\r\n?/g, "\n").trim()
+  if (!trimmed) return ""
+
+  const escapeHtml = (s: string) =>
+    s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;")
+
+  // Split into paragraphs at runs of 2+ newlines, then turn single
+  // newlines within each paragraph into <br>. Joining paragraphs with
+  // `<br><br>` keeps the markup flat (no nested <p> blocks fighting with
+  // <table> layout inside Outlook).
+  return trimmed
+    .split(/\n{2,}/)
+    .map((p) => escapeHtml(p).replace(/\n/g, "<br>"))
+    .join("<br><br>")
+}
+
 // Debrief notification email template
 // Debrief notification email template - organized into clear sections:
 // 1. Project Details (submitter, date, work item, clients, service lines)
 // 2. Meeting Notes (notes, related services, action items, research topics)
 // 3. Project Finance (pricing adjustments, payment structure)
+// 4. Attachments (Vercel Blob URLs uploaded with the debrief)
 export function buildDebriefEmailHtml({
   authorName,
   clientName,
@@ -123,6 +197,7 @@ export function buildDebriefEmailHtml({
   primaryContact,
   relatedClients,
   relatedWorkItems,
+  attachments,
   debriefUrl,
   logoUrl,
 }: {
@@ -159,6 +234,18 @@ export function buildDebriefEmailHtml({
     title: string
     workType?: string | null
     karbonUrl?: string | null
+  }>
+  /**
+   * Files uploaded with the debrief. Rendered as a labeled list with
+   * download links (the same Vercel Blob URLs we persisted on the
+   * debrief row). Files themselves are also attached to the email via
+   * Resend's `attachments` API on the send call.
+   */
+  attachments?: Array<{
+    name: string
+    url: string
+    size_bytes?: number | null
+    content_type?: string | null
   }>
   debriefUrl: string
   logoUrl?: string
@@ -285,12 +372,16 @@ export function buildDebriefEmailHtml({
   // ========================================
   const meetingNotesSections: string[] = []
 
-  // Notes
-  if (notes) {
+  // Notes — formatted with explicit <br> paragraph breaks because most
+  // email clients (Outlook especially) ignore CSS `white-space: pre-wrap`.
+  // formatNotesForEmail() also HTML-escapes the input so anything the
+  // teammate typed renders as text instead of corrupting markup.
+  const notesHtml = formatNotesForEmail(notes)
+  if (notesHtml) {
     meetingNotesSections.push(`
       <div style="margin-bottom: 16px;">
         <h3 style="color: #666; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Notes</h3>
-        <div style="background: #f9fafb; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #333; white-space: pre-wrap; line-height: 1.5;">${notes}</div>
+        <div style="background: #f9fafb; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #333; line-height: 1.55;">${notesHtml}</div>
       </div>
     `)
   }
@@ -339,12 +430,14 @@ export function buildDebriefEmailHtml({
     meetingNotesSections.push(actionItemsTableHtml)
   }
 
-  // Research Topics
-  if (researchTopics) {
+  // Research Topics — same paragraph-aware formatter so multi-paragraph
+  // research notes don't collapse into a single wall of text.
+  const researchTopicsHtml = formatNotesForEmail(researchTopics)
+  if (researchTopicsHtml) {
     meetingNotesSections.push(`
       <div style="margin-bottom: 16px;">
         <h3 style="color: #666; font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Research Topics</h3>
-        <div style="background: #fef3c7; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #92400e; white-space: pre-wrap;">${researchTopics}</div>
+        <div style="background: #fef3c7; border-radius: 6px; padding: 12px 16px; font-size: 14px; color: #92400e; line-height: 1.55;">${researchTopicsHtml}</div>
       </div>
     `)
   }
@@ -378,6 +471,47 @@ export function buildDebriefEmailHtml({
     </div>
   `
     : ""
+
+  // ========================================
+  // SECTION 4: Attachments
+  // ========================================
+  // Two-purpose render: clickable filename list inside the email body
+  // (so a teammate can re-download even after Resend strips the binary
+  // attachments from the archive copy) plus a one-line size suffix so the
+  // recipient knows what they're clicking before fetching from Blob.
+  // The actual files are also passed to Resend as `attachments` on the
+  // send call so they arrive as real mail attachments, not just links.
+  const visibleAttachments = (attachments || []).filter((a) => a?.name && a?.url)
+  const formatBytes = (n?: number | null): string => {
+    if (!n || n <= 0) return ""
+    if (n < 1024) return `${n} B`
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  }
+  const attachmentsHtml =
+    visibleAttachments.length > 0
+      ? `
+    <div style="margin-bottom: 24px;">
+      <h2 style="color: ${BRAND.textPrimary}; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid ${BRAND.border};">Attachments</h2>
+      <ul style="list-style: none; padding: 0; margin: 0;">
+        ${visibleAttachments
+          .map((a) => {
+            const size = formatBytes(a.size_bytes)
+            return `
+              <li style="padding: 10px 12px; background: #f9fafb; border-radius: 6px; margin-bottom: 6px; font-size: 14px;">
+                <a href="${a.url}" style="color: #2563eb; text-decoration: underline; font-weight: 500;">${a.name}</a>
+                ${size ? `<span style="color: ${BRAND.textMuted}; font-size: 12px; margin-left: 8px;">${size}</span>` : ""}
+              </li>
+            `
+          })
+          .join("")}
+      </ul>
+      <p style="font-size: 11px; color: ${BRAND.textMuted}; margin: 8px 0 0;">
+        Files are also attached to this email.
+      </p>
+    </div>
+  `
+      : ""
 
   return `
 <!DOCTYPE html>
@@ -422,6 +556,7 @@ export function buildDebriefEmailHtml({
         ${projectDetailsHtml}
         ${meetingNotesHtml}
         ${projectFinanceHtml}
+        ${attachmentsHtml}
 
         <!-- CTA -->
         <div style="margin-top: 32px; text-align: center;">

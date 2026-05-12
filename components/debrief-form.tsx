@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -32,6 +32,7 @@ import {
   Lightbulb,
   Bell,
   Star,
+  Paperclip,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { MentionTextarea } from "@/components/mentions/mention-textarea"
@@ -100,6 +101,33 @@ interface ResearchTopic {
   topic: string
   notes: string
   priority: "low" | "medium" | "high"
+}
+
+// 25 MB ceiling matches /api/debriefs/attachments. Surfaced in the UI
+// copy so the partner sees the limit before trying.
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+interface QueuedAttachment {
+  /** UI-only id for keying the list before upload finishes. */
+  tempId: string
+  file: File
+  status: "queued" | "uploading" | "uploaded" | "error"
+  error?: string
+  /** Blob metadata, populated when status === "uploaded". */
+  url?: string
+  pathname?: string
+  name?: string
+  content_type?: string
+  size_bytes?: number
+  uploaded_at?: string
+}
+
+/** Compact "12.3 MB" style formatter. Empty string for 0/null. */
+function formatBytes(n?: number | null): string {
+  if (!n || n <= 0) return ""
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 // Updated FormData type
@@ -189,6 +217,15 @@ export function DebriefForm() {
   const [servicePopoverOpen, setServicePopoverOpen] = useState(false)
   const [datePopoverOpen, setDatePopoverOpen] = useState(false)
   const [followUpPopoverOpen, setFollowUpPopoverOpen] = useState(false)
+
+  // Attachments — uploaded to Vercel Blob the moment the partner picks
+  // them, so by submit time the form already holds permanent URLs. The
+  // submit handler reads `attachments` and ships them inside the
+  // debrief payload. Files that fail to upload stay in the list as
+  // `status: "error"` so the partner sees what went wrong; they're
+  // filtered out at submit.
+  const [attachments, setAttachments] = useState<QueuedAttachment[]>([])
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const fetchClients = useCallback(async (search: string) => {
     if (!search || search.length < 2) {
@@ -583,6 +620,113 @@ export function DebriefForm() {
     )
   }
 
+  // ── Attachment handlers ────────────────────────────────────────────
+  // Upload starts the moment files are picked / dropped. We update each
+  // row's status in place as it transitions queued → uploading →
+  // uploaded (or error). The submit handler only ships rows in the
+  // "uploaded" state.
+  const uploadAttachment = useCallback(async (tempId: string, file: File) => {
+    try {
+      const form = new FormData()
+      form.append("file", file)
+      const res = await fetch("/api/debriefs/attachments", {
+        method: "POST",
+        body: form,
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        throw new Error(json?.error || `Upload failed (${res.status})`)
+      }
+      const a = json.attachment as {
+        url: string
+        pathname: string
+        name: string
+        content_type: string
+        size_bytes: number
+        uploaded_at: string
+      }
+      setAttachments((prev) =>
+        prev.map((row) =>
+          row.tempId === tempId
+            ? {
+                ...row,
+                status: "uploaded",
+                url: a.url,
+                pathname: a.pathname,
+                name: a.name,
+                content_type: a.content_type,
+                size_bytes: a.size_bytes,
+                uploaded_at: a.uploaded_at,
+              }
+            : row,
+        ),
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed"
+      setAttachments((prev) =>
+        prev.map((row) =>
+          row.tempId === tempId
+            ? { ...row, status: "error", error: message }
+            : row,
+        ),
+      )
+    }
+  }, [])
+
+  const onPickFiles = useCallback(
+    (files: FileList | null) => {
+      if (!files || files.length === 0) return
+      const incoming: QueuedAttachment[] = []
+      for (const f of Array.from(files)) {
+        if (f.size > MAX_ATTACHMENT_BYTES) {
+          // Reject oversize files up front rather than letting them
+          // round-trip to the server and bounce — friendlier UX and
+          // saves bandwidth.
+          incoming.push({
+            tempId: crypto.randomUUID(),
+            file: f,
+            status: "error",
+            error: `Larger than ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB limit`,
+          })
+          continue
+        }
+        incoming.push({
+          tempId: crypto.randomUUID(),
+          file: f,
+          status: "uploading",
+        })
+      }
+      setAttachments((prev) => [...prev, ...incoming])
+      // Kick off uploads in parallel. The small typical count (1-3) and
+      // independent failure handling per row makes serialization
+      // unnecessary.
+      for (const row of incoming) {
+        if (row.status === "uploading") {
+          void uploadAttachment(row.tempId, row.file)
+        }
+      }
+    },
+    [uploadAttachment],
+  )
+
+  const removeAttachment = useCallback((tempId: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.tempId === tempId)
+      // Fire-and-forget Blob cleanup for already-uploaded files so we
+      // don't leak orphans into the Blob store when the partner
+      // changes their mind before submitting. Errors here are
+      // intentionally swallowed — the row is already gone from the UI
+      // and a stale blob will be cleaned up by future GC sweeps.
+      if (target?.status === "uploaded" && target.url) {
+        const qs = new URLSearchParams({ url: target.url })
+        void fetch(`/api/debriefs/attachments?${qs.toString()}`, {
+          method: "DELETE",
+        }).catch(() => {})
+      }
+      return prev.filter((a) => a.tempId !== tempId)
+    })
+  }, [])
+
   // Submit form
   const handleSubmit = async () => {
     if (!formData.meeting_date || !formData.team_member_id) {
@@ -646,6 +790,19 @@ export function DebriefForm() {
           research_topics: formData.research_topics, // Changed from research_topics array to string
           notify_team: formData.notify_team,
           notification_recipients: formData.notification_recipients,
+          // Only ship attachments that finished uploading. Anything in
+          // "uploading"/"error"/"queued" is intentionally dropped — the
+          // partner sees the row state in the UI and can retry or remove.
+          attachments: attachments
+            .filter((a) => a.status === "uploaded" && a.url)
+            .map((a) => ({
+              url: a.url!,
+              pathname: a.pathname,
+              name: a.name || a.file.name,
+              content_type: a.content_type,
+              size_bytes: a.size_bytes,
+              uploaded_at: a.uploaded_at,
+            })),
         }),
       })
 
@@ -699,11 +856,15 @@ export function DebriefForm() {
         fee_adjustment: "",
         fee_adjustment_reason: "",
         research_topics: "",
-        notify_team: true,
-        follow_up_date: null,
-        notification_recipients: [],
-      })
-    } catch (error) {
+  notify_team: true,
+  follow_up_date: null,
+  notification_recipients: [],
+  })
+      // Clear queued attachments too — the previous batch is now
+      // attached to the freshly-created debrief; the form is ready for
+      // a new entry.
+      setAttachments([])
+  } catch (error) {
       console.error("Error creating debrief:", error)
       alert(error instanceof Error ? error.message : "Failed to create debrief")
     } finally {
@@ -715,6 +876,12 @@ export function DebriefForm() {
     ? teamMembers.filter((m) => m.full_name.toLowerCase().includes(teamMemberSearch.toLowerCase()))
     : teamMembers
 
+  // Disable submit while any attachment is still being uploaded so the
+  // partner doesn't accidentally ship the debrief without the files
+  // they just dropped in.
+  const uploadInProgress = attachments.some((a) => a.status === "uploading")
+  const submitDisabled = submitting || uploadInProgress
+
   // Filtered services to use services state
   const filteredServices = services
 
@@ -725,11 +892,16 @@ export function DebriefForm() {
           <h1 className="text-2xl font-bold text-foreground">Meeting Debrief</h1>
           <p className="text-muted-foreground">Document meeting notes and follow-up items</p>
         </div>
-        <Button onClick={handleSubmit} disabled={submitting} size="lg">
+        <Button onClick={handleSubmit} disabled={submitDisabled} size="lg">
           {submitting ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Saving...
+            </>
+          ) : uploadInProgress ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Uploading…
             </>
           ) : (
             <>
@@ -1420,6 +1592,101 @@ export function DebriefForm() {
         </CardContent>
       </Card>
 
+      {/* Attachments — uploaded to Vercel Blob on pick. By the time
+          the partner submits, every "uploaded" row already holds a
+          permanent URL we can ship with the debrief. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Paperclip className="h-5 w-5" />
+            Attachments
+          </CardTitle>
+          <CardDescription>
+            Optional — screenshots, photos of business cards, PDFs, or any
+            files referenced in the notes. Up to 25 MB per file.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                fileInputRef.current?.click()
+              }
+            }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault()
+              onPickFiles(e.dataTransfer.files)
+            }}
+            className="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-md border border-dashed bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground transition-colors hover:bg-muted/50"
+          >
+            <Paperclip className="h-5 w-5" />
+            <p>
+              <span className="font-medium text-foreground">Click to upload</span> or drag &amp; drop
+            </p>
+            <p className="text-xs">PNG, JPG, PDF, screenshots, etc.</p>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              onPickFiles(e.target.files)
+              // Reset so picking the same file twice in a row still
+              // triggers `onChange`.
+              e.target.value = ""
+            }}
+          />
+
+          {attachments.length > 0 && (
+            <ul className="space-y-2">
+              {attachments.map((a) => (
+                <li
+                  key={a.tempId}
+                  className={cn(
+                    "flex items-center justify-between gap-3 rounded-md border bg-card px-3 py-2 text-sm",
+                    a.status === "error" && "border-destructive/40 bg-destructive/5",
+                  )}
+                >
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    {a.status === "uploading" ? (
+                      <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                    ) : a.status === "error" ? (
+                      <X className="h-4 w-4 shrink-0 text-destructive" />
+                    ) : (
+                      <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium text-foreground">{a.file.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {formatBytes(a.file.size)}
+                        {a.status === "uploading" ? " · Uploading…" : null}
+                        {a.status === "uploaded" ? " · Ready" : null}
+                        {a.status === "error" && a.error ? ` · ${a.error}` : null}
+                      </div>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeAttachment(a.tempId)}
+                    aria-label="Remove attachment"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Notifications */}
       <Card>
         <CardHeader>
@@ -1474,11 +1741,16 @@ export function DebriefForm() {
         <Button variant="outline" onClick={() => window.history.back()}>
           Cancel
         </Button>
-        <Button onClick={handleSubmit} disabled={submitting} size="lg">
+        <Button onClick={handleSubmit} disabled={submitDisabled} size="lg">
           {submitting ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Saving...
+            </>
+          ) : uploadInProgress ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Uploading…
             </>
           ) : (
             <>

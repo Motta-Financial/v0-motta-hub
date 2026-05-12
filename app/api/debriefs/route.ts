@@ -193,6 +193,22 @@ export async function POST(request: NextRequest) {
       notify_team: body.notify_team || false,
       notification_recipients: body.notification_recipients || [],
       team_member_name: body.team_member || null,
+      // Files uploaded with the debrief — each is a Vercel Blob URL plus
+      // metadata produced by POST /api/debriefs/attachments. We keep them
+      // on the JSONB blob (rather than a dedicated column) to avoid a
+      // schema migration; the debrief detail view and edit sheet read
+      // from the same shape. Limited to 10 to bound payload size on the
+      // re-render path.
+      attachments: Array.isArray(body.attachments)
+        ? body.attachments.slice(0, 10).map((a: any) => ({
+            url: a?.url ?? null,
+            pathname: a?.pathname ?? null,
+            name: a?.name ?? "attachment",
+            content_type: a?.content_type ?? null,
+            size_bytes: typeof a?.size_bytes === "number" ? a.size_bytes : null,
+            uploaded_at: a?.uploaded_at ?? new Date().toISOString(),
+          }))
+        : [],
 }
   
   const { data, error } = await supabase.from("debriefs").insert(debriefData).select()
@@ -389,6 +405,32 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
             })
           : undefined
 
+        // Files uploaded with this debrief. Persisted on the action_items
+        // JSONB blob by the POST handler above, but we also have them on
+        // the inbound `body` for the very first send. Filter to entries
+        // that actually have a URL — defensive against partial payloads
+        // from older clients.
+        const persistedAttachments = Array.isArray(
+          debrief.action_items?.attachments,
+        )
+          ? debrief.action_items.attachments
+          : []
+        const attachmentsForEmail = (
+          persistedAttachments.length > 0
+            ? persistedAttachments
+            : Array.isArray(body?.attachments)
+              ? body.attachments
+              : []
+        )
+          .filter((a: any) => a?.url && a?.name)
+          .map((a: any) => ({
+            name: a.name as string,
+            url: a.url as string,
+            size_bytes:
+              typeof a.size_bytes === "number" ? (a.size_bytes as number) : null,
+            content_type: (a.content_type as string | null) ?? null,
+          }))
+
         const html = buildDebriefEmailHtml({
           authorName: authorName || "A team member",
           clientName,
@@ -404,16 +446,36 @@ async function createDebriefNotifications(debrief: any, authorName: string, body
           primaryContact: primaryContactForEmail,
           relatedClients: relatedClientsForEmail,
           relatedWorkItems: relatedWorkItemsForEmail,
+          attachments: attachmentsForEmail,
           debriefUrl,
         })
 
         const subjectName = workItemTitle || clientName
         const subject = `DEBRIEF: ${subjectName}`
 
+        // Resend-side attachments — these become real mail attachments on
+        // delivery. The body of the email ALSO renders a clickable list
+        // (above) so the recipient can re-download from Blob if their
+        // client strips binaries (some corporate filters do). Resend
+        // fetches each `path` URL, so the file has to be public-readable
+        // (our Blob store is) and reachable from Resend's egress.
+        const resendAttachments = attachmentsForEmail.map(
+          (a: {
+            name: string
+            url: string
+            content_type: string | null
+          }) => ({
+            filename: a.name,
+            path: a.url,
+            contentType: a.content_type || undefined,
+          }),
+        )
+
         const emailResult = await sendEmail({
           to: recipientEmails,
           subject,
           html,
+          attachments: resendAttachments,
         })
 
         if (!emailResult.success) {
