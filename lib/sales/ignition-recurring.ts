@@ -345,6 +345,117 @@ export function serviceAnnual(
 }
 
 /**
+ * Normalized shape extracted from a single Ignition payload service.
+ *
+ * Why this exists: `ignition_proposal_services` (the normalized table)
+ * is populated by a sync that drops rows for ~460 of the firm's active
+ * proposals — including PROP-3021 (Synergy Rehab Scottsbluff), which
+ * shows correctly in Ignition as "$300 billed on acceptance + $300/mo
+ * recurring" but has zero rows in our normalized services table. The
+ * Ignition payload JSON on `ignition_proposals.payload.services` always
+ * has the data, so we read it directly and stop trusting the sync.
+ *
+ * Field mapping (Ignition JSON → normalized):
+ *   • `name`             ← `svc.name`
+ *   • `frequency`        ← derived from `svc.billing.is_recurring` +
+ *                          `svc.billing.schedules[0].cadence`
+ *                          ("every month" → monthly, etc.)
+ *   • `period_rate`      ← `pricing.minimum_period_value.amount × quantity`
+ *                          (the per-cycle billed amount — already
+ *                          captures partner discounts because Ignition
+ *                          updates `minimum_period_value` when partners
+ *                          override the list price)
+ *   • `contract_amount`  ← `pricing.minimum_contract_value.amount`
+ *                          (total dollar value of the service over the
+ *                          full proposal term, used for the one-time /
+ *                          onboarding bucket on the page)
+ */
+export interface PayloadService {
+  name: string | null
+  frequency: IgnitionBillingFrequency
+  period_rate: number
+  contract_amount: number
+  raw_cadence: string | null
+  is_recurring: boolean
+}
+
+interface IgnitionRawSchedule {
+  cadence?: string | null
+  recurrence?: string | null
+}
+interface IgnitionRawPricing {
+  quantity?: number | string | null
+  minimum_period_value?: { amount?: number | string | null } | null
+  minimum_contract_value?: { amount?: number | string | null } | null
+}
+interface IgnitionRawBilling {
+  mode?: string | null
+  is_recurring?: boolean | null
+  schedules?: IgnitionRawSchedule[] | null
+}
+interface IgnitionRawService {
+  name?: string | null
+  billing?: IgnitionRawBilling | null
+  pricing?: IgnitionRawPricing | null
+}
+
+/**
+ * Convert one Ignition payload service into our normalized shape. Tolerant
+ * of partial / malformed payloads — anything missing falls back to
+ * "one-time @ $0" so a single bad row never breaks the aggregation.
+ */
+export function parsePayloadService(raw: unknown): PayloadService {
+  if (!raw || typeof raw !== "object") {
+    return {
+      name: null,
+      frequency: "one-time",
+      period_rate: 0,
+      contract_amount: 0,
+      raw_cadence: null,
+      is_recurring: false,
+    }
+  }
+  const svc = raw as IgnitionRawService
+  const name = typeof svc.name === "string" ? svc.name : null
+  const isRecurring = !!svc.billing?.is_recurring
+  const cadence = svc.billing?.schedules?.[0]?.cadence ?? null
+  const qty = Number(svc.pricing?.quantity) || 1
+  const periodAmount = Number(svc.pricing?.minimum_period_value?.amount) || 0
+  const contractAmount = Number(svc.pricing?.minimum_contract_value?.amount) || 0
+
+  // Translate Ignition's free-form cadence into our enum. We trust the
+  // `is_recurring` flag as the gate — even if `cadence` says "every
+  // month", if `is_recurring: false` it's a single deposit billing, not
+  // an ongoing engagement (rare but it happens).
+  let frequency: IgnitionBillingFrequency = "one-time"
+  if (isRecurring) {
+    frequency = normalizeBillingFrequency(cadence)
+  }
+
+  return {
+    name,
+    frequency,
+    period_rate: periodAmount * qty,
+    contract_amount: contractAmount,
+    raw_cadence: cadence,
+    is_recurring: isRecurring,
+  }
+}
+
+/**
+ * Extract all services from a proposal's raw Ignition payload JSON. Safe
+ * to call with `null` / undefined / non-object payloads — returns `[]`.
+ */
+export function extractPayloadServices(
+  payload: unknown,
+): PayloadService[] {
+  if (!payload || typeof payload !== "object") return []
+  const services = (payload as { services?: unknown }).services
+  if (!Array.isArray(services)) return []
+  return services.map(parsePayloadService)
+}
+
+/**
  * @deprecated Original amount-based helpers. They treat `amount` as the
  * monthly rate, which is wrong for Ignition's `total_amount` field
  * (that's the multi-period contract total). New code must use
