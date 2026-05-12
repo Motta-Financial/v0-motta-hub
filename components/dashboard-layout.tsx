@@ -60,6 +60,7 @@ import {
   Palette,
   Wallet,
   Webhook,
+  FolderKanban,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -98,6 +99,11 @@ const navigation = [
       // The legacy /triage route still exists but redirects to /, so we
       // omit it from the sidebar to avoid a duplicate nav entry.
       { name: "Work Items", href: "/work-items", icon: CheckSquare },
+      // Projects group recurring Karbon work items (e.g. 12 monthly bookkeeping
+      // items / year) into one engagement record. Sits next to Work Items
+      // because they're the same flow seen at two different zoom levels:
+      // Work Items = task-level queue, Projects = engagement-level overview.
+      { name: "Projects", href: "/projects", icon: FolderKanban },
       { name: "Clients", href: "/clients", icon: Users },
       {
         // Calendly used to live as a child here ("Calendly Admin").
