@@ -48,7 +48,15 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
@@ -930,13 +938,21 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         <StatCard icon={Mail} label="Emails" value={stats.totalEmails} />
         <StatCard icon={StickyNote} label="Notes" value={stats.totalNotes} />
         <StatCard icon={FileText} label="Documents" value={stats.totalDocuments} />
+        {/*
+         * Lifetime net paid — the firm's actual cash-in-the-door from
+         * this client, after Ignition/Stripe fees, across all time. We
+         * deliberately use `totalNet` rather than `totalAmount` so this
+         * always reflects what hit the bank, and we leave it as a
+         * lifetime figure (not filtered by the Payments tab date range
+         * below) so it stays a stable "client value" headline number.
+         */}
         <StatCard
           icon={Wallet}
           label="Total Paid"
-          value={formatCurrency(paymentsSummary?.totalAmount ?? 0, paymentsSummary?.currency)}
+          value={formatCurrency(paymentsSummary?.totalNet ?? 0, paymentsSummary?.currency)}
           sub={
             paymentsSummary && paymentsSummary.paymentCount > 0
-              ? `${paymentsSummary.paymentCount} payment${paymentsSummary.paymentCount === 1 ? "" : "s"}`
+              ? `${paymentsSummary.paymentCount} payment${paymentsSummary.paymentCount === 1 ? "" : "s"} · lifetime net`
               : "no payments yet"
           }
         />
@@ -1478,7 +1494,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
           </Card>
         </TabsContent>
 
-        {/* ── Tasks ─────────────────────────────────────────────────────── */}
+        {/* ── Tasks ────────────────────────���────────────────────────────── */}
         <TabsContent value="tasks" className="mt-4">
           <Card>
             <CardHeader>
@@ -2307,133 +2323,17 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         </TabsContent>
 
         {/* ── Payments ──────────────────────────────────────────────────── */}
-        {/* All payments rendered as one table sorted newest first. The
-            top strip restates the totals from the StatCard above so the
-            tab is self-contained when a user lands here from search. */}
+        {/* Default view is Year-to-Date. The PaymentsTab component owns
+            the date-range state (preset + custom range) and recomputes
+            its KPI strip and table whenever the range changes. The
+            lifetime context line keeps the bigger picture visible
+            when a narrow window is selected. */}
         {paymentsSummary && paymentsSummary.paymentCount > 0 ? (
           <TabsContent value="payments" className="mt-4">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-              <StatCard
-                icon={Wallet}
-                label="Total Collected"
-                value={formatCurrency(paymentsSummary.totalAmount, paymentsSummary.currency)}
-                sub={`${paymentsSummary.paymentCount} payment${
-                  paymentsSummary.paymentCount === 1 ? "" : "s"
-                }`}
-              />
-              <StatCard
-                icon={DollarSign}
-                label="Net to Firm"
-                value={formatCurrency(paymentsSummary.totalNet, paymentsSummary.currency)}
-                sub={
-                  paymentsSummary.totalFees > 0
-                    ? `after ${formatCurrency(
-                        paymentsSummary.totalFees,
-                        paymentsSummary.currency,
-                      )} fees`
-                    : undefined
-                }
-              />
-              <StatCard
-                icon={TrendingUp}
-                label="Refunded"
-                value={formatCurrency(paymentsSummary.totalRefunded, paymentsSummary.currency)}
-                sub={
-                  paymentsSummary.refundCount > 0
-                    ? `${paymentsSummary.refundCount} refund${
-                        paymentsSummary.refundCount === 1 ? "" : "s"
-                      }`
-                    : "none"
-                }
-              />
-              <StatCard
-                icon={Calendar}
-                label="Most Recent"
-                value={
-                  paymentsSummary.mostRecentPaidAt
-                    ? formatDate(paymentsSummary.mostRecentPaidAt) || "—"
-                    : "—"
-                }
-                sub={
-                  paymentsSummary.mostRecentPaidAt
-                    ? relativeTime(paymentsSummary.mostRecentPaidAt) || undefined
-                    : undefined
-                }
-              />
-            </div>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Wallet className="h-4 w-4" />
-                  Payment History
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40">
-                      <tr className="text-left text-xs text-muted-foreground border-b">
-                        <th className="px-4 py-2 font-medium">Date</th>
-                        <th className="px-4 py-2 font-medium">Status</th>
-                        <th className="px-4 py-2 font-medium">Method</th>
-                        <th className="px-4 py-2 font-medium text-right">Amount</th>
-                        <th className="px-4 py-2 font-medium text-right">Fees</th>
-                        <th className="px-4 py-2 font-medium text-right">Net</th>
-                        <th className="px-4 py-2 font-medium">Invoice</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ignitionPayments.map((p) => {
-                        const isRefunded = !!p.refunded_at
-                        return (
-                          <tr
-                            key={p.ignition_payment_id}
-                            className="border-b last:border-0 hover:bg-muted/20"
-                          >
-                            <td className="px-4 py-2 whitespace-nowrap">
-                              {p.paid_at ? formatDate(p.paid_at) : "—"}
-                            </td>
-                            <td className="px-4 py-2">
-                              <Badge
-                                variant={
-                                  isRefunded
-                                    ? "destructive"
-                                    : p.payment_status === "collected"
-                                    ? "default"
-                                    : "secondary"
-                                }
-                                className="text-xs capitalize"
-                              >
-                                {isRefunded ? "refunded" : p.payment_status || "—"}
-                              </Badge>
-                            </td>
-                            <td className="px-4 py-2 capitalize text-muted-foreground">
-                              {p.payment_method || "—"}
-                            </td>
-                            <td className="px-4 py-2 text-right tabular-nums font-medium">
-                              {formatCurrency(Number(p.amount) || 0, p.currency || "USD")}
-                            </td>
-                            <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                              {p.fees != null
-                                ? formatCurrency(Number(p.fees), p.currency || "USD")
-                                : "—"}
-                            </td>
-                            <td className="px-4 py-2 text-right tabular-nums">
-                              {p.net_amount != null
-                                ? formatCurrency(Number(p.net_amount), p.currency || "USD")
-                                : "—"}
-                            </td>
-                            <td className="px-4 py-2 text-xs text-muted-foreground font-mono">
-                              {p.ignition_invoice_id || "—"}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
+            <PaymentsTab
+              payments={ignitionPayments}
+              lifetimeSummary={paymentsSummary}
+            />
           </TabsContent>
         ) : null}
 
@@ -2735,6 +2635,407 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
 // ───────────────────────────────────────────────────���─────────────────────────
 // Sub-components
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payments tab
+//
+// The payments tab is the only one of the in-tab views with substantive
+// client-side logic (date filtering + on-the-fly summary recomputation),
+// so it's extracted from the main JSX tree to keep the parent function
+// readable. It still lives in this file because it leans on several
+// private helpers (`StatCard`, `formatCurrency`, `formatDate`,
+// `relativeTime`) defined above; exporting them just to import them in
+// a sibling file would be net-noise.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type DateRangePreset =
+  | "ytd"
+  | "last_30"
+  | "last_90"
+  | "last_12_months"
+  | "previous_year"
+  | "all_time"
+  | "custom"
+
+const DATE_RANGE_LABELS: Record<DateRangePreset, string> = {
+  ytd: "Year to date",
+  last_30: "Last 30 days",
+  last_90: "Last 90 days",
+  last_12_months: "Last 12 months",
+  previous_year: "Previous year",
+  all_time: "All time",
+  custom: "Custom range",
+}
+
+/**
+ * Resolve a preset key + optional custom inputs to a concrete
+ * [start, end] window. `null` on either side means open-ended on that
+ * side ("since beginning of time" / "up to right now"). The custom
+ * inputs use the `Input type="date"` value format (`YYYY-MM-DD`) and
+ * are interpreted in the user's local timezone, matching how the
+ * native picker presents them.
+ */
+function resolveDateRange(
+  preset: DateRangePreset,
+  customStart: string,
+  customEnd: string,
+): { start: Date | null; end: Date | null } {
+  const now = new Date()
+  switch (preset) {
+    case "ytd":
+      return { start: new Date(now.getFullYear(), 0, 1), end: null }
+    case "last_30": {
+      const d = new Date(now)
+      d.setDate(d.getDate() - 30)
+      return { start: d, end: null }
+    }
+    case "last_90": {
+      const d = new Date(now)
+      d.setDate(d.getDate() - 90)
+      return { start: d, end: null }
+    }
+    case "last_12_months": {
+      const d = new Date(now)
+      d.setMonth(d.getMonth() - 12)
+      return { start: d, end: null }
+    }
+    case "previous_year":
+      return {
+        start: new Date(now.getFullYear() - 1, 0, 1),
+        end: new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999),
+      }
+    case "all_time":
+      return { start: null, end: null }
+    case "custom":
+      return {
+        // Append explicit times so `new Date("2024-01-01")` doesn't
+        // get parsed as UTC midnight and shift a day in negative-UTC
+        // timezones.
+        start: customStart ? new Date(`${customStart}T00:00:00`) : null,
+        end: customEnd ? new Date(`${customEnd}T23:59:59.999`) : null,
+      }
+  }
+}
+
+function PaymentsTab({
+  payments,
+  lifetimeSummary,
+}: {
+  payments: Array<{
+    ignition_payment_id: string
+    ignition_invoice_id: string | null
+    amount: number | null
+    fees: number | null
+    net_amount: number | null
+    currency: string | null
+    payment_method: string | null
+    payment_status: string | null
+    paid_at: string | null
+    refunded_at: string | null
+    refund_amount: number | null
+  }>
+  lifetimeSummary: {
+    totalNet: number
+    paymentCount: number
+    currency: string
+    mostRecentPaidAt: string | null
+  }
+}) {
+  // Default to YTD per product spec. The custom inputs are kept in
+  // state independently of the preset so switching back from "custom"
+  // to e.g. "ytd" doesn't blow them away — useful when an admin is
+  // toggling between a saved custom window and a quick comparison.
+  const [preset, setPreset] = useState<DateRangePreset>("ytd")
+  const [customStart, setCustomStart] = useState("")
+  const [customEnd, setCustomEnd] = useState("")
+
+  const range = useMemo(
+    () => resolveDateRange(preset, customStart, customEnd),
+    [preset, customStart, customEnd],
+  )
+
+  const filteredPayments = useMemo(() => {
+    // Open-ended on both sides → no filtering. Saves a pass over the
+    // (potentially long) payments array on the "All time" preset.
+    if (!range.start && !range.end) return payments
+    return payments.filter((p) => {
+      if (!p.paid_at) return false
+      const t = new Date(p.paid_at).getTime()
+      if (range.start && t < range.start.getTime()) return false
+      if (range.end && t > range.end.getTime()) return false
+      return true
+    })
+  }, [payments, range])
+
+  const filteredSummary = useMemo(() => {
+    // Mirrors the server-side aggregation in /api/clients/[id]: only
+    // payments with `payment_status='collected'` count toward the
+    // money totals; refunds get their own tally.
+    const collected = filteredPayments.filter(
+      (p) => (p.payment_status || "").toLowerCase() === "collected",
+    )
+    const totalAmount = collected.reduce((s, p) => s + (Number(p.amount) || 0), 0)
+    const totalFees = collected.reduce((s, p) => s + (Number(p.fees) || 0), 0)
+    const totalNet = collected.reduce((s, p) => s + (Number(p.net_amount) || 0), 0)
+    const totalRefunded = filteredPayments.reduce(
+      (s, p) => s + (Number(p.refund_amount) || 0),
+      0,
+    )
+    const refundCount = filteredPayments.filter((p) => p.refunded_at).length
+    const mostRecentPaidAt = collected.reduce<string | null>(
+      (latest, p) =>
+        p.paid_at && (!latest || new Date(p.paid_at) > new Date(latest))
+          ? p.paid_at
+          : latest,
+      null,
+    )
+    return {
+      totalAmount,
+      totalFees,
+      totalNet,
+      totalRefunded,
+      refundCount,
+      paymentCount: collected.length,
+      mostRecentPaidAt,
+    }
+  }, [filteredPayments])
+
+  const currency = lifetimeSummary.currency
+  const isFiltered = preset !== "all_time"
+
+  // Format the actual resolved range for the "Showing" label so the
+  // user can see exactly what window they're looking at, not just the
+  // preset name (which is meaningful but ambiguous for things like
+  // "last 90 days" if you forgot the current date).
+  const showingLabel = (() => {
+    if (preset === "all_time") return "All payments on file"
+    const startStr = range.start ? format(range.start, "MMM d, yyyy") : "—"
+    const endStr = range.end ? format(range.end, "MMM d, yyyy") : "today"
+    return `${startStr} → ${endStr}`
+  })()
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* ── Filter bar ─────────────────────────────────────────────── */}
+      <Card>
+        <CardContent className="pt-4 pb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xs font-medium text-muted-foreground">
+              Showing
+            </span>
+            <span className="text-sm font-semibold tabular-nums">
+              {showingLabel}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={preset}
+              onValueChange={(v) => setPreset(v as DateRangePreset)}
+            >
+              <SelectTrigger className="w-[180px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(DATE_RANGE_LABELS) as DateRangePreset[]).map(
+                  (k) => (
+                    <SelectItem key={k} value={k}>
+                      {DATE_RANGE_LABELS[k]}
+                    </SelectItem>
+                  ),
+                )}
+              </SelectContent>
+            </Select>
+            {preset === "custom" ? (
+              <>
+                <Input
+                  type="date"
+                  value={customStart}
+                  onChange={(e) => setCustomStart(e.target.value)}
+                  className="w-[160px]"
+                  aria-label="Start date"
+                />
+                <span className="text-xs text-muted-foreground">to</span>
+                <Input
+                  type="date"
+                  value={customEnd}
+                  onChange={(e) => setCustomEnd(e.target.value)}
+                  className="w-[160px]"
+                  aria-label="End date"
+                />
+              </>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── KPI strip (reflects the filtered range) ────────────────── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard
+          icon={Wallet}
+          label="Total Collected"
+          value={formatCurrency(filteredSummary.totalAmount, currency)}
+          sub={`${filteredSummary.paymentCount} payment${
+            filteredSummary.paymentCount === 1 ? "" : "s"
+          }`}
+        />
+        <StatCard
+          icon={DollarSign}
+          label="Net to Firm"
+          value={formatCurrency(filteredSummary.totalNet, currency)}
+          sub={
+            filteredSummary.totalFees > 0
+              ? `after ${formatCurrency(
+                  filteredSummary.totalFees,
+                  currency,
+                )} fees`
+              : undefined
+          }
+        />
+        <StatCard
+          icon={TrendingUp}
+          label="Refunded"
+          value={formatCurrency(filteredSummary.totalRefunded, currency)}
+          sub={
+            filteredSummary.refundCount > 0
+              ? `${filteredSummary.refundCount} refund${
+                  filteredSummary.refundCount === 1 ? "" : "s"
+                }`
+              : "none"
+          }
+        />
+        <StatCard
+          icon={Calendar}
+          label="Most Recent"
+          value={
+            filteredSummary.mostRecentPaidAt
+              ? formatDate(filteredSummary.mostRecentPaidAt) || "—"
+              : "—"
+          }
+          sub={
+            filteredSummary.mostRecentPaidAt
+              ? relativeTime(filteredSummary.mostRecentPaidAt) || undefined
+              : undefined
+          }
+        />
+      </div>
+
+      {/* Lifetime context line — only when filtering, so the user
+          always knows what the cumulative picture looks like even
+          when they've narrowed to a tight window. */}
+      {isFiltered ? (
+        <p className="text-xs text-muted-foreground px-1">
+          Lifetime:{" "}
+          <span className="font-medium text-foreground">
+            {formatCurrency(lifetimeSummary.totalNet, currency)}
+          </span>{" "}
+          net across {lifetimeSummary.paymentCount} payment
+          {lifetimeSummary.paymentCount === 1 ? "" : "s"}
+          {lifetimeSummary.mostRecentPaidAt
+            ? `, most recent ${
+                formatDate(lifetimeSummary.mostRecentPaidAt) || "—"
+              }`
+            : ""}
+          .
+        </p>
+      ) : null}
+
+      {/* ── Payments table ─────────────────────────────────────────── */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Wallet className="h-4 w-4" />
+            Payment History
+          </CardTitle>
+          <Badge variant="outline" className="text-xs font-normal">
+            {filteredPayments.length} of {payments.length}
+          </Badge>
+        </CardHeader>
+        <CardContent className="p-0">
+          {filteredPayments.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+              No payments in this range.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs text-muted-foreground border-b">
+                    <th className="px-4 py-2 font-medium">Date</th>
+                    <th className="px-4 py-2 font-medium">Status</th>
+                    <th className="px-4 py-2 font-medium">Method</th>
+                    <th className="px-4 py-2 font-medium text-right">Amount</th>
+                    <th className="px-4 py-2 font-medium text-right">Fees</th>
+                    <th className="px-4 py-2 font-medium text-right">Net</th>
+                    <th className="px-4 py-2 font-medium">Invoice</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPayments.map((p) => {
+                    const isRefunded = !!p.refunded_at
+                    return (
+                      <tr
+                        key={p.ignition_payment_id}
+                        className="border-b last:border-0 hover:bg-muted/20"
+                      >
+                        <td className="px-4 py-2 whitespace-nowrap">
+                          {p.paid_at ? formatDate(p.paid_at) : "—"}
+                        </td>
+                        <td className="px-4 py-2">
+                          <Badge
+                            variant={
+                              isRefunded
+                                ? "destructive"
+                                : p.payment_status === "collected"
+                                  ? "default"
+                                  : "secondary"
+                            }
+                            className="text-xs capitalize"
+                          >
+                            {isRefunded
+                              ? "refunded"
+                              : p.payment_status || "—"}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-2 capitalize text-muted-foreground">
+                          {p.payment_method || "—"}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums font-medium">
+                          {formatCurrency(
+                            Number(p.amount) || 0,
+                            p.currency || "USD",
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
+                          {p.fees != null
+                            ? formatCurrency(
+                                Number(p.fees),
+                                p.currency || "USD",
+                              )
+                            : "—"}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums">
+                          {p.net_amount != null
+                            ? formatCurrency(
+                                Number(p.net_amount),
+                                p.currency || "USD",
+                              )
+                            : "—"}
+                        </td>
+                        <td className="px-4 py-2 text-xs text-muted-foreground font-mono">
+                          {p.ignition_invoice_id || "—"}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
 
 function StatCard({
   icon: Icon,
