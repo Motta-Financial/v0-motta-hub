@@ -39,10 +39,10 @@ import {
   Bell,
   Radio,
   RefreshCw,
-  FileSpreadsheet,
-  AlertTriangle,
   TrendingUp,
   Lightbulb,
+  Building2,
+  Landmark,
   UserPlus,
   NotebookPen,
   Receipt,
@@ -148,11 +148,21 @@ const navigation = [
         href: "/tax",
         icon: FileText,
         children: [
-          { name: "Busy Season", href: "/tax/busy-season", icon: FileText },
-          { name: "Tax Planning", href: "/tax/planning", icon: Lightbulb },
-          { name: "Estimates", href: "/tax/estimates", icon: FileSpreadsheet },
-          { name: "IRS Notices", href: "/tax/irs-notices", icon: AlertTriangle },
-          { name: "Advisory", href: "/tax/advisory", icon: TrendingUp },
+          // ── ProConnect-backed Tax surfaces ───────────────────────────
+          // Ordered from "all returns at a glance" down to "single
+          // client roster". The four return-form pages (Individual,
+          // Business, Nonprofit) each drill into one or more PC tables;
+          // Returns is the unified browser; Clients is the PC roster
+          // joined onto the master_client_mapping view.
+          { name: "Returns", href: "/tax/returns", icon: FileText },
+          { name: "Individual (1040)", href: "/tax/individual", icon: Users },
+          {
+            name: "Business (1065/1120/1120S)",
+            href: "/tax/business",
+            icon: Building2,
+          },
+          { name: "Nonprofit (990)", href: "/tax/nonprofit", icon: Landmark },
+          { name: "Clients", href: "/tax/clients", icon: UserCircle },
         ],
       },
       { name: "Special Teams", href: "/special-teams", icon: Flame },
