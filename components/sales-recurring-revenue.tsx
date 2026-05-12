@@ -22,8 +22,9 @@
  * CSV is reference data, not the source of truth for MRR.
  */
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import {
   TrendingUp,
@@ -43,6 +44,7 @@ import {
   Sparkles,
 } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
+import { US_STATE_NAMES } from "@/lib/sales/us-geo"
 
 import {
   Card,
@@ -57,7 +59,11 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { MultiSelectChip, RangeChip } from "@/components/sales/filter-chips"
+import {
+  DateRangeChip,
+  MultiSelectChip,
+  RangeChip,
+} from "@/components/sales/filter-chips"
 import { X } from "lucide-react"
 
 type DepartmentKey = "All" | "Accounting" | "Tax"
@@ -213,6 +219,11 @@ interface RecurringResponse {
     contact_id?: string | null
     service_types: string[]
     cadences: string[]
+    partners?: string[]
+    managers?: string[]
+    sent_by?: string[]
+    proposal_numbers?: string[]
+    state?: string | null
     mrr: number
     arr: number
     one_time_total: number
@@ -221,6 +232,12 @@ interface RecurringResponse {
     proposal_count?: number
     effective_start_date?: string | null
   }>
+  dimensions?: {
+    partners: string[]
+    managers: string[]
+    sentBy: string[]
+    states: string[]
+  }
   rows: RecurringRow[]
   not_in_ignition?: Array<{
     department: "Accounting" | "Tax"
@@ -256,13 +273,36 @@ const DEPT_BADGE: Record<string, string> = {
 }
 
 export function SalesRecurringRevenue() {
+  // ── URL-driven filter state ───────────────────────────────────────────
+  // Every filter on this page is reflected in the query string so the
+  // view is shareable / refresh-safe / browser-back-button friendly.
+  // Same pattern as `/sales/proposals`. Local React state is reserved for
+  // ephemeral UI (the search input draft, sync flags, etc).
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+
   // Lifecycle: which slice of the proposal pipeline this view is
   // showing. Defaults to "accepted" so the page opens to the live
   // recurring book — matches what users expect from the dashboard's
-  // original behavior. Local state is fine here; the dropdown context
-  // is per-session, not something users typically share via URL.
-  const [lifecycle, setLifecycle] = useState<Lifecycle>("accepted")
+  // original behavior.
+  const lifecycleParam = (searchParams.get("lifecycle") ?? "accepted") as Lifecycle
+  const lifecycle: Lifecycle = (["accepted", "pipeline", "lost", "all"] as const).includes(
+    lifecycleParam,
+  )
+    ? lifecycleParam
+    : "accepted"
   const meta = LIFECYCLE_META[lifecycle]
+
+  function updateParams(next: Record<string, string | null>) {
+    const sp = new URLSearchParams(searchParams.toString())
+    for (const [k, v] of Object.entries(next)) {
+      if (v === null || v === "") sp.delete(k)
+      else sp.set(k, v)
+    }
+    // `replace` instead of `push` so chip toggles don't pollute history.
+    router.replace(`${pathname}?${sp.toString()}`, { scroll: false })
+  }
 
   // Auto-revalidate every minute so the page reflects new Ignition data
   // without forcing a hard reload. Combined with the 60s `revalidate` on
@@ -302,21 +342,57 @@ export function SalesRecurringRevenue() {
     }
   }
 
-  const [dept, setDept] = useState<DepartmentKey>("All")
-  const [search, setSearch] = useState("")
-  const [sortBy, setSortBy] = useState<
-    "client_name" | "mrr" | "arr" | "service_lines"
-  >("mrr")
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
-  // Cadence / service-type / MRR-range filters live in local state (not the
-  // URL) because this surface is a focused drilldown — users are typically
-  // filtering ad-hoc rather than sharing links. Keep it simple.
-  const [cadence, setCadence] = useState<string[]>([])
-  const [serviceType, setServiceType] = useState<string[]>([])
-  // MRR range mirrors RangeChip's contract — strings ("" means "no
-  // bound"). We coerce to numbers at filter-time.
-  const [mrrMin, setMrrMin] = useState("")
-  const [mrrMax, setMrrMax] = useState("")
+  // Department + sort + every filter live in the URL. Sensible defaults:
+  //   - dept   = "All"
+  //   - sortBy = "mrr" desc (biggest book at the top)
+  //   - hideZero = "1" (hide $0 MRR rows, since this surface is for the
+  //     live recurring book — users almost never want to see rows that
+  //     contribute zero to the headline number; they can toggle it off
+  //     when needed)
+  const dept = (searchParams.get("dept") ?? "All") as DepartmentKey
+  const searchUrl = searchParams.get("q") ?? ""
+  const sortBy = (searchParams.get("sortBy") ?? "mrr") as
+    | "client_name"
+    | "mrr"
+    | "arr"
+    | "service_lines"
+  const sortDir = (searchParams.get("sortDir") ?? "desc") as "asc" | "desc"
+
+  const cadence = (searchParams.get("cadence") ?? "").split(",").filter(Boolean)
+  const serviceType = (searchParams.get("serviceType") ?? "")
+    .split(",")
+    .filter(Boolean)
+  const partner = (searchParams.get("partner") ?? "").split(",").filter(Boolean)
+  const manager = (searchParams.get("manager") ?? "").split(",").filter(Boolean)
+  const sentBy = (searchParams.get("sentBy") ?? "").split(",").filter(Boolean)
+  const stateF = (searchParams.get("state") ?? "").split(",").filter(Boolean)
+
+  const mrrMin = searchParams.get("mrrMin") ?? ""
+  const mrrMax = searchParams.get("mrrMax") ?? ""
+  const arrMin = searchParams.get("arrMin") ?? ""
+  const arrMax = searchParams.get("arrMax") ?? ""
+
+  const onboardingOnly = searchParams.get("hasOnboarding") === "1"
+  const otherOneTimeOnly = searchParams.get("hasOther1x") === "1"
+
+  // Accepted-date range filter. Empty by default; uses the client
+  // roll-up's `effective_start_date` (earliest accepted_at across the
+  // client's accepted proposals). The DateRangeChip's `field` prop is
+  // hard-wired to "effective_start_date" since there's only one date on
+  // the client roll-up — no field-selector needed.
+  const dateFrom = searchParams.get("dateFrom") ?? ""
+  const dateTo = searchParams.get("dateTo") ?? ""
+
+  // Default ON — users opening the page expect to see the live recurring
+  // book, not $0 placeholders. The URL only tracks the OFF state so
+  // first-load is clean. Set "hideZero=0" to disable.
+  const hideZero = searchParams.get("hideZero") !== "0"
+
+  // Local draft state for the freeform search box so users can type
+  // freely; the URL only updates on Enter or blur to avoid thrashing
+  // the router on every keystroke.
+  const [searchDraft, setSearchDraft] = useState(searchUrl)
+  useEffect(() => setSearchDraft(searchUrl), [searchUrl])
 
   // Cadence/service-type option lists derived from the loaded rows so the
   // dropdown only shows values that exist in the data after the
@@ -341,32 +417,86 @@ export function SalesRecurringRevenue() {
     return [...set].sort()
   }, [data, dept])
 
+  // Partner/manager/sent-by/state options also derived from the loaded
+  // data so the dropdowns only show values that actually appear in the
+  // current lifecycle slice. Falls back to the API-side `dimensions`
+  // block when the data hasn't filtered yet.
+  const partnerOptions = useMemo(
+    () => data?.dimensions?.partners ?? [],
+    [data],
+  )
+  const managerOptions = useMemo(
+    () => data?.dimensions?.managers ?? [],
+    [data],
+  )
+  const sentByOptions = useMemo(() => data?.dimensions?.sentBy ?? [], [data])
+  const stateOptions = useMemo(() => data?.dimensions?.states ?? [], [data])
+
   const activeFilterCount =
-    (search ? 1 : 0) +
+    (searchUrl ? 1 : 0) +
     cadence.length +
     serviceType.length +
+    partner.length +
+    manager.length +
+    sentBy.length +
+    stateF.length +
     (mrrMin ? 1 : 0) +
-    (mrrMax ? 1 : 0)
+    (mrrMax ? 1 : 0) +
+    (arrMin ? 1 : 0) +
+    (arrMax ? 1 : 0) +
+    (onboardingOnly ? 1 : 0) +
+    (otherOneTimeOnly ? 1 : 0) +
+    (dateFrom ? 1 : 0) +
+    (dateTo ? 1 : 0) +
+    // hideZero is on by default, so it only counts as "active" when the
+    // user has explicitly turned it OFF (which surfaces $0 rows).
+    (hideZero ? 0 : 1)
 
   function clearAllFilters() {
-    setSearch("")
-    setCadence([])
-    setServiceType([])
-    setMrrMin("")
-    setMrrMax("")
+    updateParams({
+      q: null,
+      cadence: null,
+      serviceType: null,
+      partner: null,
+      manager: null,
+      sentBy: null,
+      state: null,
+      mrrMin: null,
+      mrrMax: null,
+      arrMin: null,
+      arrMax: null,
+      hasOnboarding: null,
+      hasOther1x: null,
+      dateFrom: null,
+      dateTo: null,
+      hideZero: null,
+    })
   }
 
   const filteredClients = useMemo(() => {
     if (!data) return []
-    const q = search.trim().toLowerCase()
+    const q = searchUrl.trim().toLowerCase()
     let list = data.clients
     if (dept !== "All") list = list.filter((c) => c.department === dept)
+    // Broadened freeform match: client name, service-line chips, partner,
+    // manager, sent-by, organization id, and proposal numbers. Lets users
+    // type a partner's name or a proposal # straight into the search box.
     if (q)
-      list = list.filter(
-        (c) =>
-          c.client_name.toLowerCase().includes(q) ||
-          c.service_types.some((s) => s.toLowerCase().includes(q)),
-      )
+      list = list.filter((c) => {
+        const hay = [
+          c.client_name,
+          c.normalized_name,
+          ...(c.service_types ?? []),
+          ...(c.partners ?? []),
+          ...(c.managers ?? []),
+          ...(c.sent_by ?? []),
+          ...(c.proposal_numbers ?? []),
+          c.state ?? "",
+        ]
+          .join(" ")
+          .toLowerCase()
+        return hay.includes(q)
+      })
     // Cadence: at least one of the client's cadences is selected.
     if (cadence.length) {
       list = list.filter((c) =>
@@ -379,6 +509,32 @@ export function SalesRecurringRevenue() {
         c.service_types.some((st) => serviceType.includes(st)),
       )
     }
+    // Partner / Manager / Sent-by: at least one selected value appears in
+    // the client's roll-up. Clients with mixed engagements (rare) match
+    // if any of their proposals were touched by the chosen person.
+    if (partner.length) {
+      list = list.filter((c) =>
+        (c.partners ?? []).some((p) => partner.includes(p)),
+      )
+    }
+    if (manager.length) {
+      list = list.filter((c) =>
+        (c.managers ?? []).some((m) => manager.includes(m)),
+      )
+    }
+    if (sentBy.length) {
+      list = list.filter((c) =>
+        (c.sent_by ?? []).some((s) => sentBy.includes(s)),
+      )
+    }
+    // State: "(unknown)" matches clients with no resolved state, mirroring
+    // the proposals page's sentinel value.
+    if (stateF.length) {
+      list = list.filter((c) => {
+        const s = c.state ?? "(unknown)"
+        return stateF.includes(s)
+      })
+    }
     // MRR range: inclusive on both ends so $0 as a min still includes
     // legitimate $0 cases (rare but possible). Empty string means "no
     // bound". `Number("")` is 0, so we test the raw string first.
@@ -389,6 +545,49 @@ export function SalesRecurringRevenue() {
     if (mrrMax !== "") {
       const hi = Number(mrrMax)
       if (!Number.isNaN(hi)) list = list.filter((c) => c.mrr <= hi)
+    }
+    // ARR range — same shape as MRR.
+    if (arrMin !== "") {
+      const lo = Number(arrMin)
+      if (!Number.isNaN(lo)) list = list.filter((c) => c.arr >= lo)
+    }
+    if (arrMax !== "") {
+      const hi = Number(arrMax)
+      if (!Number.isNaN(hi)) list = list.filter((c) => c.arr <= hi)
+    }
+    // "Has onboarding fee" / "Has other one-time" quick toggles. Onboarding
+    // is a subset of one_time_total, so "Other 1x" must back-out the
+    // onboarding portion to avoid double-counting.
+    if (onboardingOnly) {
+      list = list.filter((c) => (c.onboarding_total ?? 0) > 0)
+    }
+    if (otherOneTimeOnly) {
+      list = list.filter(
+        (c) => c.one_time_total - (c.onboarding_total ?? 0) > 0,
+      )
+    }
+    // Accepted-date range. Compares the client roll-up's
+    // `effective_start_date` (earliest accepted_at across all of the
+    // client's accepted proposals) against the URL ISO dates. Both ends
+    // are inclusive.
+    if (dateFrom) {
+      list = list.filter(
+        (c) => !!c.effective_start_date && c.effective_start_date >= dateFrom,
+      )
+    }
+    if (dateTo) {
+      // Pad the upper bound to end-of-day so "2024-12-31" includes
+      // any timestamp on that day, not just midnight.
+      const toCutoff = `${dateTo}T23:59:59.999Z`
+      list = list.filter(
+        (c) => !!c.effective_start_date && c.effective_start_date <= toCutoff,
+      )
+    }
+    // Hide $0 MRR rows by default — matches the page's purpose (it's a
+    // recurring-revenue surface, not a proposal log). Users can flip it
+    // off via the chip.
+    if (hideZero) {
+      list = list.filter((c) => c.mrr > 0)
     }
     list = [...list].sort((a, b) => {
       const dir = sortDir === "asc" ? 1 : -1
@@ -405,7 +604,28 @@ export function SalesRecurringRevenue() {
       }
     })
     return list
-  }, [data, dept, search, sortBy, sortDir, cadence, serviceType, mrrMin, mrrMax])
+  }, [
+    data,
+    dept,
+    searchUrl,
+    sortBy,
+    sortDir,
+    cadence,
+    serviceType,
+    partner,
+    manager,
+    sentBy,
+    stateF,
+    mrrMin,
+    mrrMax,
+    arrMin,
+    arrMax,
+    onboardingOnly,
+    otherOneTimeOnly,
+    dateFrom,
+    dateTo,
+    hideZero,
+  ])
 
   const filteredService = useMemo(() => {
     if (!data) return []
@@ -450,10 +670,12 @@ export function SalesRecurringRevenue() {
 
   const handleSort = (col: typeof sortBy) => {
     if (sortBy === col) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+      updateParams({ sortDir: sortDir === "asc" ? "desc" : "asc" })
     } else {
-      setSortBy(col)
-      setSortDir(col === "client_name" ? "asc" : "desc")
+      updateParams({
+        sortBy: col,
+        sortDir: col === "client_name" ? "asc" : "desc",
+      })
     }
   }
 
@@ -569,7 +791,11 @@ export function SalesRecurringRevenue() {
           full-funnel recurring view. */}
       <Tabs
         value={lifecycle}
-        onValueChange={(v) => setLifecycle(v as Lifecycle)}
+        onValueChange={(v) =>
+          // Default lifecycle ("accepted") drops out of the URL to keep
+          // the canonical link clean.
+          updateParams({ lifecycle: v === "accepted" ? null : v })
+        }
       >
         <TabsList>
           <TabsTrigger value="accepted" className="gap-2">
@@ -673,7 +899,10 @@ export function SalesRecurringRevenue() {
       </div>
 
       {/* Department tabs */}
-      <Tabs value={dept} onValueChange={(v) => setDept(v as DepartmentKey)}>
+      <Tabs
+        value={dept}
+        onValueChange={(v) => updateParams({ dept: v === "All" ? null : v })}
+      >
         <TabsList>
           <TabsTrigger value="All" className="gap-2">
             All
@@ -793,36 +1022,174 @@ export function SalesRecurringRevenue() {
                 <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/4 h-4 w-4 text-muted-foreground" />
                 <Input
                   type="search"
-                  placeholder="Search clients or service types…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  // Broadened to match client name, service-line chips,
+                  // partner, manager, sent-by, proposal numbers, and
+                  // state. Same search box as before — just smarter.
+                  placeholder="Search client, partner, manager, proposal #, state…"
+                  value={searchDraft}
+                  onChange={(e) => setSearchDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      updateParams({ q: searchDraft.trim() || null })
+                    }
+                  }}
+                  onBlur={() => {
+                    // Commit draft on blur too, so users who tab away
+                    // don't lose what they typed.
+                    if (searchDraft !== searchUrl) {
+                      updateParams({ q: searchDraft.trim() || null })
+                    }
+                  }}
                   className="pl-9 h-9"
                 />
               </div>
-              {/* Filter chip rail. Shows the same MultiSelect/Range chips
-                  used elsewhere on Sales so the experience is consistent. */}
+              {/* Filter chip rail. Same MultiSelect/Range chips used
+                  elsewhere on Sales so the experience is consistent. All
+                  state is persisted to the URL for shareable / refresh-
+                  safe views. */}
               <div className="flex flex-wrap items-center gap-2 pt-2">
                 <MultiSelectChip
                   label="Cadence"
                   options={cadenceOptions}
                   value={cadence}
-                  onChange={setCadence}
+                  onChange={(v) =>
+                    updateParams({ cadence: v.length ? v.join(",") : null })
+                  }
                 />
                 <MultiSelectChip
                   label="Service type"
                   options={serviceTypeOptions}
                   value={serviceType}
-                  onChange={setServiceType}
+                  onChange={(v) =>
+                    updateParams({
+                      serviceType: v.length ? v.join(",") : null,
+                    })
+                  }
+                />
+                <MultiSelectChip
+                  label="Partner"
+                  options={partnerOptions}
+                  value={partner}
+                  onChange={(v) =>
+                    updateParams({ partner: v.length ? v.join(",") : null })
+                  }
+                />
+                <MultiSelectChip
+                  label="Manager"
+                  options={managerOptions}
+                  value={manager}
+                  onChange={(v) =>
+                    updateParams({ manager: v.length ? v.join(",") : null })
+                  }
+                />
+                <MultiSelectChip
+                  label="Sent by"
+                  options={sentByOptions}
+                  value={sentBy}
+                  onChange={(v) =>
+                    updateParams({ sentBy: v.length ? v.join(",") : null })
+                  }
+                />
+                <MultiSelectChip
+                  label="State"
+                  options={stateOptions}
+                  value={stateF}
+                  // Show the full state name in the picker but keep the
+                  // 2-letter abbr in the URL — matches the proposals page.
+                  formatLabel={(v) =>
+                    v === "(unknown)"
+                      ? "(no state on file)"
+                      : US_STATE_NAMES[v] || v
+                  }
+                  onChange={(v) =>
+                    updateParams({ state: v.length ? v.join(",") : null })
+                  }
                 />
                 <RangeChip
                   label="MRR"
                   min={mrrMin}
                   max={mrrMax}
-                  onChange={({ min, max }) => {
-                    setMrrMin(min)
-                    setMrrMax(max)
-                  }}
+                  onChange={({ min, max }) =>
+                    updateParams({
+                      mrrMin: min || null,
+                      mrrMax: max || null,
+                    })
+                  }
                 />
+                <RangeChip
+                  label="ARR"
+                  min={arrMin}
+                  max={arrMax}
+                  step={1000}
+                  onChange={({ min, max }) =>
+                    updateParams({
+                      arrMin: min || null,
+                      arrMax: max || null,
+                    })
+                  }
+                />
+                <DateRangeChip
+                  label="Accepted"
+                  from={dateFrom}
+                  to={dateTo}
+                  field="effective_start_date"
+                  onChange={({ from, to }) =>
+                    updateParams({
+                      dateFrom: from || null,
+                      dateTo: to || null,
+                    })
+                  }
+                />
+                {/* Quick boolean toggles — implemented as buttons rather
+                    than chips so the active-state is visually obvious
+                    at a glance. */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    updateParams({ hasOnboarding: onboardingOnly ? null : "1" })
+                  }
+                  className={cn(
+                    "h-9 gap-1",
+                    onboardingOnly ? "border-stone-900 bg-stone-50" : "",
+                  )}
+                >
+                  Has onboarding
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    updateParams({ hasOther1x: otherOneTimeOnly ? null : "1" })
+                  }
+                  className={cn(
+                    "h-9 gap-1",
+                    otherOneTimeOnly ? "border-stone-900 bg-stone-50" : "",
+                  )}
+                >
+                  Has other 1x
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    // hideZero defaults to ON — clicking flips it OFF (and
+                    // we set `hideZero=0` explicitly so the default doesn't
+                    // re-apply on refresh).
+                    updateParams({ hideZero: hideZero ? "0" : null })
+                  }
+                  className={cn(
+                    "h-9 gap-1",
+                    !hideZero ? "border-stone-900 bg-stone-50" : "",
+                  )}
+                  title={
+                    hideZero
+                      ? "Currently hiding $0 MRR rows. Click to show them."
+                      : "Currently showing $0 MRR rows. Click to hide them."
+                  }
+                >
+                  {hideZero ? "Hiding $0 MRR" : "Showing $0 MRR"}
+                </Button>
                 {activeFilterCount > 0 ? (
                   <Button
                     variant="ghost"
@@ -830,10 +1197,150 @@ export function SalesRecurringRevenue() {
                     onClick={clearAllFilters}
                     className="h-9"
                   >
-                    <X className="h-3.5 w-3.5 mr-1" /> Clear ({activeFilterCount})
+                    <X className="h-3.5 w-3.5 mr-1" /> Clear (
+                    {activeFilterCount})
                   </Button>
                 ) : null}
               </div>
+              {/* Active-filter pill bar. Surfaces every selected value as
+                  a removable pill so users can see (and undo) individual
+                  filters without re-opening each chip popover. Hidden
+                  when nothing is active. */}
+              {activeFilterCount > 0 ? (
+                <ActiveFilterBar
+                  pills={[
+                    ...(searchUrl
+                      ? [
+                          {
+                            key: `q:${searchUrl}`,
+                            label: `Search: "${searchUrl}"`,
+                            onRemove: () => updateParams({ q: null }),
+                          },
+                        ]
+                      : []),
+                    ...cadence.map((v) => ({
+                      key: `cadence:${v}`,
+                      label: `Cadence: ${v}`,
+                      onRemove: () =>
+                        updateParams({
+                          cadence:
+                            cadence.filter((x) => x !== v).join(",") || null,
+                        }),
+                    })),
+                    ...serviceType.map((v) => ({
+                      key: `serviceType:${v}`,
+                      label: `Service: ${v}`,
+                      onRemove: () =>
+                        updateParams({
+                          serviceType:
+                            serviceType.filter((x) => x !== v).join(",") ||
+                            null,
+                        }),
+                    })),
+                    ...partner.map((v) => ({
+                      key: `partner:${v}`,
+                      label: `Partner: ${v}`,
+                      onRemove: () =>
+                        updateParams({
+                          partner:
+                            partner.filter((x) => x !== v).join(",") || null,
+                        }),
+                    })),
+                    ...manager.map((v) => ({
+                      key: `manager:${v}`,
+                      label: `Manager: ${v}`,
+                      onRemove: () =>
+                        updateParams({
+                          manager:
+                            manager.filter((x) => x !== v).join(",") || null,
+                        }),
+                    })),
+                    ...sentBy.map((v) => ({
+                      key: `sentBy:${v}`,
+                      label: `Sent by: ${v}`,
+                      onRemove: () =>
+                        updateParams({
+                          sentBy:
+                            sentBy.filter((x) => x !== v).join(",") || null,
+                        }),
+                    })),
+                    ...stateF.map((v) => ({
+                      key: `state:${v}`,
+                      label: `State: ${
+                        v === "(unknown)"
+                          ? "Unknown"
+                          : US_STATE_NAMES[v] || v
+                      }`,
+                      onRemove: () =>
+                        updateParams({
+                          state:
+                            stateF.filter((x) => x !== v).join(",") || null,
+                        }),
+                    })),
+                    ...(mrrMin || mrrMax
+                      ? [
+                          {
+                            key: "mrrRange",
+                            label: `MRR: ${formatRange(mrrMin, mrrMax, "$")}`,
+                            onRemove: () =>
+                              updateParams({ mrrMin: null, mrrMax: null }),
+                          },
+                        ]
+                      : []),
+                    ...(arrMin || arrMax
+                      ? [
+                          {
+                            key: "arrRange",
+                            label: `ARR: ${formatRange(arrMin, arrMax, "$")}`,
+                            onRemove: () =>
+                              updateParams({ arrMin: null, arrMax: null }),
+                          },
+                        ]
+                      : []),
+                    ...(onboardingOnly
+                      ? [
+                          {
+                            key: "hasOnboarding",
+                            label: "Has onboarding",
+                            onRemove: () =>
+                              updateParams({ hasOnboarding: null }),
+                          },
+                        ]
+                      : []),
+                    ...(otherOneTimeOnly
+                      ? [
+                          {
+                            key: "hasOther1x",
+                            label: "Has other 1x",
+                            onRemove: () => updateParams({ hasOther1x: null }),
+                          },
+                        ]
+                      : []),
+                    ...(dateFrom || dateTo
+                      ? [
+                          {
+                            key: "dateRange",
+                            label: `Accepted: ${dateFrom || "…"} → ${dateTo || "…"}`,
+                            onRemove: () =>
+                              updateParams({
+                                dateFrom: null,
+                                dateTo: null,
+                              }),
+                          },
+                        ]
+                      : []),
+                    ...(!hideZero
+                      ? [
+                          {
+                            key: "showZero",
+                            label: "Showing $0 MRR",
+                            onRemove: () => updateParams({ hideZero: null }),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+              ) : null}
             </CardHeader>
             <CardContent className="px-0">
               <div className="overflow-x-auto">
@@ -1158,6 +1665,50 @@ function SortableTh({
       </span>
     </th>
   )
+}
+
+/**
+ * ActiveFilterBar — horizontal row of removable filter pills.
+ *
+ * One pill per selected filter value (every entry in a multiselect gets
+ * its own pill so individual values can be dropped without re-opening
+ * the chip). The bar is intentionally lightweight — no popovers, no
+ * dropdowns; the user just clicks the × on a pill to remove that single
+ * value. Wrapping is allowed so a long list flows onto multiple rows
+ * rather than overflowing.
+ */
+function ActiveFilterBar({
+  pills,
+}: {
+  pills: { key: string; label: string; onRemove: () => void }[]
+}) {
+  if (pills.length === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 pt-2">
+      <span className="text-[11px] font-medium uppercase tracking-wide text-stone-500 mr-1">
+        Active
+      </span>
+      {pills.map((pill) => (
+        <button
+          key={pill.key}
+          type="button"
+          onClick={pill.onRemove}
+          className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-stone-300 bg-stone-50 text-stone-800 text-xs hover:bg-stone-100 hover:border-stone-400 transition-colors"
+        >
+          <span className="truncate max-w-[16rem]">{pill.label}</span>
+          <X className="h-3 w-3 text-stone-500" />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Format a numeric min/max range as a compact pill label. */
+function formatRange(min: string, max: string, prefix = "") {
+  if (min && max) return `${prefix}${min} – ${prefix}${max}`
+  if (min) return `≥ ${prefix}${min}`
+  if (max) return `≤ ${prefix}${max}`
+  return "—"
 }
 
 function KpiCard({
