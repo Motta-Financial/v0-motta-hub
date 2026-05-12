@@ -3,10 +3,21 @@
 /**
  * Sales > Recurring Revenue
  * ────────────────────────────────────────────────────────────────────────
- * Curated MRR / ARR view for Accounting and Tax. Sourced from
- * `motta_recurring_revenue`, which is the partner-maintained authoritative
- * list (CSV-seeded). Ignition data is intentionally not used here because
- * many one-time engagements show up there with monthly billing schedules.
+ * Live MRR / ARR view for Accounting and Tax sourced directly from the
+ * Ignition feed (`ignition_proposals` + `ignition_proposal_services`),
+ * scoped to accepted, non-revoked engagements. The classification logic
+ * lives in `lib/sales/ignition-recurring.ts`.
+ *
+ * Numbers refresh whenever an Ignition sync runs (cron every 15 min, plus
+ * a manual "Sync now" button in the header). Onboarding & Optimization
+ * one-time fees are bucketed separately from generic one-time work so
+ * partners can read them off the table at a glance.
+ *
+ * The previous CSV-seeded `motta_recurring_revenue` table is still queried
+ * by the API for a "Not in Ignition yet" gap callout — clients that the
+ * partners know are on recurring engagements but haven't been proposed
+ * through Ignition yet. This keeps the live total honest while preserving
+ * the institutional knowledge captured in the curated CSV.
  */
 
 import { useMemo, useState } from "react"
@@ -24,7 +35,12 @@ import {
   Calculator,
   Briefcase,
   ArrowLeft,
+  RefreshCw,
+  Zap,
+  AlertCircle,
+  Sparkles,
 } from "lucide-react"
+import { formatDistanceToNow } from "date-fns"
 
 import {
   Card,
@@ -55,19 +71,24 @@ interface RecurringRow {
 }
 
 interface RecurringResponse {
+  source?: "ignition" | "curated"
+  lastSyncedAt?: string | null
   totals: {
     mrr: number
     arr: number
     one_time_total: number
+    onboarding_total?: number
     distinct_clients: number
     service_lines: number
     avg_mrr_per_client: number
+    active_proposals?: number
   }
   departments: Array<{
     department: "Accounting" | "Tax"
     mrr: number
     arr: number
     one_time_total: number
+    onboarding_total?: number
     service_lines: number
     client_count: number
   }>
@@ -77,6 +98,7 @@ interface RecurringResponse {
     mrr: number
     arr: number
     one_time_total: number
+    onboarding_total?: number
     service_lines: number
     client_count: number
   }>
@@ -84,14 +106,26 @@ interface RecurringResponse {
     department: "Accounting" | "Tax"
     client_name: string
     normalized_name: string
+    organization_id?: string | null
+    contact_id?: string | null
     service_types: string[]
     cadences: string[]
     mrr: number
     arr: number
     one_time_total: number
+    onboarding_total?: number
     service_lines: number
+    proposal_count?: number
+    effective_start_date?: string | null
   }>
   rows: RecurringRow[]
+  not_in_ignition?: Array<{
+    department: "Accounting" | "Tax"
+    client_name: string
+    normalized_name: string
+    service_types: string[]
+    mrr: number
+  }>
 }
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
@@ -119,10 +153,43 @@ const DEPT_BADGE: Record<string, string> = {
 }
 
 export function SalesRecurringRevenue() {
-  const { data, isLoading } = useSWR<RecurringResponse>(
+  // Auto-revalidate every minute so the page reflects new Ignition data
+  // without forcing a hard reload. Combined with the 60s `revalidate` on
+  // the API route, this gives a max ~2 minute staleness in the worst case.
+  const { data, isLoading, mutate } = useSWR<RecurringResponse>(
     "/api/sales/recurring-revenue",
     fetcher,
+    { refreshInterval: 60_000, revalidateOnFocus: true },
   )
+
+  // Manual "Sync from Ignition" button — POST to /api/ignition/sync which
+  // triggers a full backfill, then we revalidate the SWR cache so the
+  // new numbers pop into the page without a navigation.
+  const [syncing, setSyncing] = useState(false)
+  const [syncError, setSyncError] = useState<string | null>(null)
+  async function triggerSync() {
+    if (syncing) return
+    setSyncing(true)
+    setSyncError(null)
+    try {
+      const res = await fetch("/api/ignition/sync", { method: "POST" })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body?.error ?? `Sync failed (${res.status})`)
+      }
+      // Give Ignition's reporting API a beat to surface the changes
+      // before we re-pull the aggregate. The cron usually finishes in
+      // under 30s but we don't wait the full duration — `mutate` will
+      // fetch the latest state regardless.
+      await new Promise((r) => setTimeout(r, 1500))
+      await mutate()
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : "Sync failed")
+      console.error("[sales/recurring-revenue] manual sync failed:", err)
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const [dept, setDept] = useState<DepartmentKey>("All")
   const [search, setSearch] = useState("")
@@ -291,15 +358,73 @@ export function SalesRecurringRevenue() {
           Back to Sales
         </Link>
         <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="text-2xl font-semibold text-stone-900">
-              Recurring Revenue
-            </h1>
-            <p className="text-sm text-muted-foreground max-w-3xl mt-1">
-              Authoritative monthly recurring revenue across Accounting and Tax
-              service lines. Sourced from the partner-maintained CSV — Ignition
-              one-time engagements are excluded.
+          <div className="flex flex-col gap-2 min-w-0">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="text-2xl font-semibold text-stone-900">
+                Recurring Revenue
+              </h1>
+              {/* Live-source pill. Always rendered (even while loading) so
+                  the page reads "live from Ignition" the moment it mounts.
+                  The pulsing green dot signals real-time freshness; the
+                  timestamp tells you exactly when the last Ignition sync
+                  landed. */}
+              <Badge
+                variant="outline"
+                className="gap-1.5 bg-emerald-50 border-emerald-200 text-emerald-900 font-normal h-6"
+              >
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                </span>
+                Live from Ignition
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground max-w-3xl">
+              Live MRR / ARR across Accounting and Tax, aggregated from active
+              Ignition proposals at the service-line level. Monthly fees roll
+              into MRR; quarterly fees contribute fee ÷ 3. The
+              <span className="font-medium text-stone-900">
+                {" "}
+                Onboarding &amp; Optimization{" "}
+              </span>
+              column captures one-time setup fees billed alongside recurring
+              engagements.
             </p>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+              {data?.lastSyncedAt ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <RefreshCw className="h-3 w-3" />
+                  Synced {formatDistanceToNow(new Date(data.lastSyncedAt), { addSuffix: true })}
+                </span>
+              ) : data ? (
+                <span className="inline-flex items-center gap-1.5 text-amber-700">
+                  <AlertCircle className="h-3 w-3" />
+                  No Ignition connection synced yet
+                </span>
+              ) : null}
+              {data?.totals.active_proposals ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <Zap className="h-3 w-3" />
+                  {data.totals.active_proposals} active proposals
+                </span>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 text-xs"
+                onClick={triggerSync}
+                disabled={syncing}
+              >
+                <RefreshCw className={cn("h-3 w-3", syncing && "animate-spin")} />
+                {syncing ? "Syncing…" : "Sync from Ignition"}
+              </Button>
+            </div>
+            {syncError ? (
+              <p className="text-xs text-rose-700 flex items-center gap-1.5">
+                <AlertCircle className="h-3 w-3" />
+                {syncError}
+              </p>
+            ) : null}
           </div>
           {data && (
             <div className="flex flex-col items-end gap-0.5">
@@ -312,6 +437,11 @@ export function SalesRecurringRevenue() {
               <div className="text-xs text-muted-foreground">
                 {fmt(data.totals.arr)} annualized
               </div>
+              {(data.totals.onboarding_total ?? 0) > 0 ? (
+                <div className="text-xs text-muted-foreground tabular-nums">
+                  {fmt(data.totals.onboarding_total ?? 0)} onboarding fees
+                </div>
+              ) : null}
             </div>
           )}
         </div>
@@ -353,13 +483,20 @@ export function SalesRecurringRevenue() {
           tone="stone"
         />
         <KpiCard
-          label="Avg MRR / Client"
+          label="Onboarding & Optimization"
           value={
-            visibleTotals ? fmt(visibleTotals.avg_mrr_per_client) : null
+            data
+              ? fmt(
+                  dept === "All"
+                    ? data.totals.onboarding_total ?? 0
+                    : data.departments.find((d) => d.department === dept)
+                        ?.onboarding_total ?? 0,
+                )
+              : null
           }
           subtitle={
-            visibleTotals && visibleTotals.one_time_total > 0
-              ? `${fmt(visibleTotals.one_time_total)} one-time`
+            visibleTotals
+              ? `${fmt(visibleTotals.avg_mrr_per_client)} avg MRR / client`
               : undefined
           }
           icon={CircleDollarSign}
@@ -569,8 +706,17 @@ export function SalesRecurringRevenue() {
                       >
                         ARR
                       </SortableTh>
-                      <th className="text-right font-medium px-3 py-2 pr-4">
-                        One-time
+                      <th
+                        className="text-right font-medium px-3 py-2"
+                        title="One-time setup / clean-up / optimization fees billed alongside the recurring engagement"
+                      >
+                        Onboarding
+                      </th>
+                      <th
+                        className="text-right font-medium px-3 py-2 pr-4"
+                        title="Other one-time line items on the same Ignition proposals"
+                      >
+                        Other 1x
                       </th>
                     </tr>
                   </thead>
@@ -578,7 +724,7 @@ export function SalesRecurringRevenue() {
                     {isLoading || !data ? (
                       Array.from({ length: 6 }).map((_, i) => (
                         <tr key={i} className="border-b border-stone-100">
-                          <td colSpan={7} className="px-4 py-3">
+                          <td colSpan={8} className="px-4 py-3">
                             <Skeleton className="h-5" />
                           </td>
                         </tr>
@@ -586,7 +732,7 @@ export function SalesRecurringRevenue() {
                     ) : filteredClients.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={7}
+                          colSpan={8}
                           className="px-4 py-12 text-center text-muted-foreground"
                         >
                           No clients match your filters.
@@ -631,8 +777,29 @@ export function SalesRecurringRevenue() {
                           <td className="px-3 py-2.5 text-right tabular-nums text-stone-700">
                             {fmt(c.arr)}
                           </td>
+                          {/* Onboarding & Optimization fees, separate from
+                              the catch-all one-time bucket. Highlighted in
+                              amber when present so partners can scan for
+                              recently onboarded engagements. */}
+                          <td
+                            className={cn(
+                              "px-3 py-2.5 text-right tabular-nums",
+                              (c.onboarding_total ?? 0) > 0
+                                ? "text-amber-900 font-medium"
+                                : "text-muted-foreground",
+                            )}
+                          >
+                            {(c.onboarding_total ?? 0) > 0
+                              ? fmt(c.onboarding_total ?? 0)
+                              : "—"}
+                          </td>
+                          {/* "Other 1x" = total one-time MINUS onboarding.
+                              Avoids double-counting because onboarding is a
+                              subset of one_time_total on the server side. */}
                           <td className="px-3 py-2.5 pr-4 text-right tabular-nums text-muted-foreground">
-                            {c.one_time_total > 0 ? fmt(c.one_time_total) : "—"}
+                            {c.one_time_total - (c.onboarding_total ?? 0) > 0
+                              ? fmt(c.one_time_total - (c.onboarding_total ?? 0))
+                              : "—"}
                           </td>
                         </tr>
                       ))
@@ -658,10 +825,19 @@ export function SalesRecurringRevenue() {
                             filteredClients.reduce((s, c) => s + c.arr, 0),
                           )}
                         </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-amber-900">
+                          {fmt(
+                            filteredClients.reduce(
+                              (s, c) => s + (c.onboarding_total ?? 0),
+                              0,
+                            ),
+                          )}
+                        </td>
                         <td className="px-3 py-2.5 pr-4 text-right tabular-nums">
                           {fmt(
                             filteredClients.reduce(
-                              (s, c) => s + c.one_time_total,
+                              (s, c) =>
+                                s + (c.one_time_total - (c.onboarding_total ?? 0)),
                               0,
                             ),
                           )}
@@ -673,6 +849,92 @@ export function SalesRecurringRevenue() {
               </div>
             </CardContent>
           </Card>
+
+          {/* ── Gap diagnostic: curated clients NOT in Ignition yet ──────
+              The partner team maintains a CSV list of every client they
+              consider on a recurring engagement. Some haven't been
+              proposed through Ignition yet — those don't show in the
+              live totals above but are visible here so the team can
+              close the gap. Filtered to the active department tab. */}
+          {data?.not_in_ignition && data.not_in_ignition.length > 0 ? (
+            <Card className="border-amber-200 bg-amber-50/40">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-amber-700" />
+                  Not in Ignition yet
+                </CardTitle>
+                <CardDescription>
+                  Clients on the curated CSV list with no active Ignition
+                  proposal. Send a proposal through Ignition to bring them
+                  into the live totals above.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="px-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-amber-100/40 border-y border-amber-200 text-xs uppercase tracking-wide text-amber-900">
+                      <tr>
+                        <th className="text-left font-medium px-4 py-2">
+                          Client
+                        </th>
+                        <th className="text-left font-medium px-3 py-2">
+                          Dept
+                        </th>
+                        <th className="text-left font-medium px-3 py-2">
+                          Service Lines
+                        </th>
+                        <th className="text-right font-medium px-3 py-2 pr-4">
+                          Curated MRR
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.not_in_ignition
+                        .filter((c) => dept === "All" || c.department === dept)
+                        .slice(0, 25)
+                        .map((c) => (
+                          <tr
+                            key={`gap-${c.normalized_name}-${c.department}`}
+                            className="border-b border-amber-100 hover:bg-amber-50/60"
+                          >
+                            <td className="px-4 py-2 font-medium text-stone-900">
+                              {c.client_name}
+                            </td>
+                            <td className="px-3 py-2">
+                              <Badge
+                                variant="outline"
+                                className={cn(DEPT_BADGE[c.department])}
+                              >
+                                {c.department}
+                              </Badge>
+                            </td>
+                            <td className="px-3 py-2 text-xs text-muted-foreground">
+                              {c.service_types.join(", ") || "—"}
+                            </td>
+                            <td className="px-3 py-2 pr-4 text-right tabular-nums text-stone-700">
+                              {fmt(c.mrr)}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+                {data.not_in_ignition.filter(
+                  (c) => dept === "All" || c.department === dept,
+                ).length > 25 ? (
+                  <p className="text-xs text-muted-foreground px-4 pt-2">
+                    Showing 25 of{" "}
+                    {
+                      data.not_in_ignition.filter(
+                        (c) => dept === "All" || c.department === dept,
+                      ).length
+                    }{" "}
+                    gap clients.
+                  </p>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
         </TabsContent>
       </Tabs>
     </div>

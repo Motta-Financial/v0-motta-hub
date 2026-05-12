@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useCallback } from "react"
+import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useKarbonWorkItems } from "@/contexts/karbon-work-items-context"
 import { Badge } from "@/components/ui/badge"
@@ -19,6 +20,11 @@ import {
   ChevronDown,
   X,
   Database,
+  Cloud,
+  Link2,
+  Check,
+  LayoutGrid,
+  Table as TableIcon,
 } from "lucide-react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getServiceLineColor, type ServiceLine } from "@/lib/service-lines"
@@ -38,6 +44,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import {
+  WorkItemsDashboardPanel,
+  type WorkItemsKpiKey,
+} from "@/components/work-items/dashboard-panel"
+import { WorkItemsTable } from "@/components/work-items/work-items-table"
 
 interface WorkItem {
   WorkKey: string
@@ -89,6 +100,55 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
   const [selectedPriorities, setSelectedPriorities] = useState<string[]>(["all"])
   const [selectedWorkTypes, setSelectedWorkTypes] = useState<string[]>(["all"])
   const [dateRange, setDateRange] = useState<{ start?: string; end?: string }>({})
+
+  // ── New: view mode (cards vs table), virtual "attention" KPI tile filter,
+  // Karbon sync button state, and copy-link confirmation. The KPI tile is a
+  // virtual filter that composes with the regular filters — e.g. "Overdue +
+  // Tax" works as you'd expect.
+  const [viewMode, setViewMode] = useState<"cards" | "table">("table")
+  const [activeKpi, setActiveKpi] = useState<WorkItemsKpiKey | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
+  const [linkCopied, setLinkCopied] = useState(false)
+
+  // ── URL → state hydration. Runs once on mount so a shared "Copy view link"
+  // URL fully restores the recipient's view (filters, tab, KPI tile, view
+  // mode). We deliberately don't write back to the URL on every state change
+  // — that would create a noisy router history. The user opts into a URL
+  // snapshot by clicking "Copy link".
+  const searchParams = useSearchParams()
+  useEffect(() => {
+    if (!searchParams) return
+    const csv = (k: string) => {
+      const v = searchParams.get(k)
+      return v ? v.split(",").map((s) => s.trim()).filter(Boolean) : null
+    }
+    const q = searchParams.get("q")
+    if (q != null) setSearchQuery(q)
+    const status = searchParams.get("status")
+    if (status) setActiveTab(status)
+    const services = csv("services")
+    if (services) setSelectedServiceLines(services.length ? services : ["all"])
+    const workTypes = csv("workType")
+    if (workTypes) setSelectedWorkTypes(workTypes.length ? workTypes : ["all"])
+    const priorities = csv("priority")
+    if (priorities) setSelectedPriorities(priorities.length ? priorities : ["all"])
+    const fy = searchParams.get("fy")
+    if (fy) setSelectedFiscalYear(fy)
+    const dueFrom = searchParams.get("dueFrom")
+    const dueTo = searchParams.get("dueTo")
+    if (dueFrom || dueTo) setDateRange({ start: dueFrom || undefined, end: dueTo || undefined })
+    const assignee = searchParams.get("assignee")
+    if (assignee) setCurrentUserEmail(assignee)
+    if (searchParams.get("assignedToMe") === "1") setShowAssignedToMe(true)
+    const kpi = searchParams.get("kpi") as WorkItemsKpiKey | null
+    if (kpi && ["overdue", "dueWeek", "unassigned", "stale"].includes(kpi)) {
+      setActiveKpi(kpi)
+    }
+    const view = searchParams.get("view")
+    if (view === "cards" || view === "table") setViewMode(view)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const [karbonData, setKarbonData] = useState<{
     workTypes: Record<string, number>
@@ -294,6 +354,115 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
       .sort((a, b) => a.name.localeCompare(b.name))
   }
 
+  // ── Virtual-filter predicates for the KPI tiles in the dashboard panel.
+  // Kept inline here so they consult the same "active" notion as the rest
+  // of this component (rather than dashboard-panel.tsx's local copy).
+  const today = useMemo(() => {
+    const d = new Date()
+    d.setHours(0, 0, 0, 0)
+    return d
+  }, [])
+  const weekEnd = useMemo(() => {
+    const d = new Date(today)
+    d.setDate(d.getDate() + 7)
+    return d
+  }, [today])
+
+  const isItemOverdue = useCallback(
+    (item: WorkItem) =>
+      !!item.DueDate && determineStatus(item) === "active" && new Date(item.DueDate) < today,
+    [today],
+  )
+  const isItemDueThisWeek = useCallback(
+    (item: WorkItem) => {
+      if (!item.DueDate || determineStatus(item) !== "active") return false
+      const d = new Date(item.DueDate)
+      return d >= today && d <= weekEnd
+    },
+    [today, weekEnd],
+  )
+  const isItemUnassigned = useCallback(
+    (item: WorkItem) =>
+      determineStatus(item) === "active" && normalizeAssignedTo(item.AssignedTo).length === 0,
+    [],
+  )
+  const isItemStale = useCallback(
+    (item: WorkItem) => {
+      if (determineStatus(item) !== "active") return false
+      // The Supabase mapper preserves karbon_modified_at — but the legacy
+      // WorkItem interface in this file doesn't surface it. Fall back to
+      // StartDate so we never falsely register everything as stale.
+      const ref =
+        (item as any).LastModifiedDateTime ||
+        (item as any).karbon_modified_at ||
+        item.StartDate
+      if (!ref) return false
+      const days = Math.floor((today.getTime() - new Date(ref).getTime()) / (1000 * 60 * 60 * 24))
+      return days >= 30
+    },
+    [today],
+  )
+
+  /** Trigger a manual Karbon → Supabase resync, then refresh the SWR cache. */
+  const triggerKarbonSync = async () => {
+    setSyncing(true)
+    setSyncMessage(null)
+    try {
+      const res = await fetch("/api/karbon/sync?source=manual&entities=work-items")
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data?.error || `Sync failed (HTTP ${res.status})`)
+      }
+      setSyncMessage("Synced from Karbon")
+      // Pull the freshly-synced rows into the UI without a hard reload.
+      refresh()
+    } catch (err) {
+      console.error("[v0] Karbon sync failed:", err)
+      setSyncMessage(err instanceof Error ? err.message : "Sync failed")
+    } finally {
+      setSyncing(false)
+      // Auto-clear the toast-style message after a few seconds.
+      setTimeout(() => setSyncMessage(null), 4000)
+    }
+  }
+
+  /**
+   * Serialize the current filter state into a shareable URL. The receiving
+   * client re-hydrates this in the URL-params useEffect above so the recipient
+   * sees the exact same filtered view. Empty/default values are intentionally
+   * omitted to keep the URL short.
+   */
+  const buildShareLink = () => {
+    const params = new URLSearchParams()
+    if (searchQuery.trim()) params.set("q", searchQuery.trim())
+    if (activeTab && activeTab !== "active") params.set("status", activeTab)
+    if (!selectedServiceLines.includes("all")) params.set("services", selectedServiceLines.join(","))
+    if (!selectedWorkTypes.includes("all")) params.set("workType", selectedWorkTypes.join(","))
+    if (!selectedPriorities.includes("all")) params.set("priority", selectedPriorities.join(","))
+    if (selectedFiscalYear !== "all") params.set("fy", selectedFiscalYear)
+    if (dateRange.start) params.set("dueFrom", dateRange.start)
+    if (dateRange.end) params.set("dueTo", dateRange.end)
+    if (currentUserEmail) params.set("assignee", currentUserEmail)
+    if (showAssignedToMe) params.set("assignedToMe", "1")
+    if (activeKpi) params.set("kpi", activeKpi)
+    if (viewMode !== "table") params.set("view", viewMode)
+    const base = typeof window !== "undefined" ? window.location.origin : ""
+    const qs = params.toString()
+    return `${base}/work-items${qs ? `?${qs}` : ""}`
+  }
+
+  /** Copy the current shareable URL to the clipboard and flash a confirmation. */
+  const copyShareLink = async () => {
+    const link = buildShareLink()
+    try {
+      await navigator.clipboard.writeText(link)
+      setLinkCopied(true)
+      setTimeout(() => setLinkCopied(false), 2000)
+    } catch (err) {
+      console.error("[v0] Copy failed:", err)
+    }
+  }
+
   const filterWorkItems = (items: WorkItem[], filter: string) => {
     let filtered = items
 
@@ -338,6 +507,13 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
         return true
       })
     }
+
+    // KPI tile virtual filter — applies AFTER the explicit filters so it
+    // composes with them. Skipped when no tile is active.
+    if (activeKpi === "overdue") filtered = filtered.filter(isItemOverdue)
+    else if (activeKpi === "dueWeek") filtered = filtered.filter(isItemDueThisWeek)
+    else if (activeKpi === "unassigned") filtered = filtered.filter(isItemUnassigned)
+    else if (activeKpi === "stale") filtered = filtered.filter(isItemStale)
 
     switch (filter) {
       case "active":
@@ -415,6 +591,13 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
     if (view.filters.priority) setSelectedPriorities(view.filters.priority)
     if (view.filters.workType) setSelectedWorkTypes(view.filters.workType)
     if (view.filters.dateRange) setDateRange(view.filters.dateRange)
+    // KPI / viewMode are stored alongside the canonical fields when present.
+    const extras = view.filters as typeof view.filters & {
+      kpi?: WorkItemsKpiKey | null
+      viewMode?: "cards" | "table"
+    }
+    if (extras.kpi !== undefined) setActiveKpi(extras.kpi)
+    if (extras.viewMode) setViewMode(extras.viewMode)
   }
 
   const getCurrentFilters = () => ({
@@ -427,6 +610,11 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
     priority: selectedPriorities,
     workType: selectedWorkTypes,
     dateRange,
+    // KPI tile + view mode persist as extra filter fields. They live outside
+    // the canonical FilterView['filters'] shape but are forwards-compatible
+    // because the API stores `filters` as a JSON blob.
+    kpi: activeKpi,
+    viewMode,
   })
 
   const getActiveFilterCount = () => {
@@ -438,6 +626,7 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
     if (dateRange.start || dateRange.end) count++
     if (showAssignedToMe) count++
     if (searchQuery.trim()) count++
+    if (activeKpi) count++
     return count
   }
 
@@ -450,6 +639,7 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
     setShowAssignedToMe(false)
     setSearchQuery("")
     setCurrentUserEmail("")
+    setActiveKpi(null)
   }
 
   if (error) {
@@ -627,12 +817,49 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
             </DialogContent>
           </Dialog>
           <ViewManager type="workItems" currentFilters={getCurrentFilters()} onLoadView={handleLoadView} />
+          {/* ── Copy a shareable link that encodes the current filters,
+              tab, KPI tile, and view mode. Recipients land on the same
+              view without anyone having to save a named view first. */}
+          <Button
+            onClick={copyShareLink}
+            variant="outline"
+            size="sm"
+            title="Copy a shareable link to this filtered view"
+          >
+            {linkCopied ? (
+              <Check className="h-4 w-4 mr-2 text-emerald-600" />
+            ) : (
+              <Link2 className="h-4 w-4 mr-2" />
+            )}
+            {linkCopied ? "Link copied" : "Copy link"}
+          </Button>
+          {/* ── Manually trigger the Karbon → Supabase work-items resync.
+              Webhooks + the 15-min cron normally handle this in the
+              background; this button is for "I made a change in Karbon
+              right now and want it reflected immediately." */}
+          <Button
+            onClick={triggerKarbonSync}
+            disabled={syncing}
+            variant="outline"
+            size="sm"
+            title="Pull the latest work items from Karbon"
+          >
+            <Cloud className={`h-4 w-4 mr-2 ${syncing ? "animate-pulse" : ""}`} />
+            {syncing ? "Syncing…" : "Sync from Karbon"}
+          </Button>
           <Button onClick={fetchWorkItems} disabled={loading} variant="outline" size="sm">
             <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </Button>
         </div>
       </div>
+
+      {/* Sync result toast — quietly confirms the sync finished. */}
+      {syncMessage && (
+        <div className="rounded-md border bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground">
+          {syncMessage}
+        </div>
+      )}
 
       <div className="grid gap-3 md:grid-cols-4">
         <Card
@@ -705,6 +932,41 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
           </CardContent>
         </Card>
       </div>
+
+      {/* ── Enriched dashboard panel ────────────────────────────────────
+          Surfaces "attention" KPIs (Overdue / Due This Week / Unassigned /
+          Stale) plus the firm's workload mix (top work types, statuses,
+          assignees). Tile clicks compose with the regular filters via the
+          activeKpi virtual filter; chip clicks in the distribution lists
+          set the matching explicit filter — for example, clicking "TAX"
+          in Top Work Types sets selectedWorkTypes to ["TAX"]. */}
+      <WorkItemsDashboardPanel
+        allItems={workItems as any}
+        filteredItems={filteredItems as any}
+        loading={loading}
+        activeKpi={activeKpi}
+        onKpiClick={(key) => setActiveKpi((prev) => (prev === key ? null : key))}
+        onWorkTypeClick={(wt) => setSelectedWorkTypes([wt])}
+        onStatusClick={(status) => {
+          // Status comes from item.WorkStatus; we don't have a dedicated
+          // explicit filter for that, so we set the search query to it.
+          // This narrows the list and remains clear to the user since the
+          // query echoes in the search input.
+          setSearchQuery(status)
+        }}
+        onAssigneeClick={(name) => {
+          // Look up the assignee's email so the existing assignee filter
+          // takes effect (matches by email).
+          const match = getAllAssignees().find((a) => a.name === name)
+          if (match) {
+            setCurrentUserEmail(match.email)
+          } else {
+            // Fall back to free-text search when we can't resolve the email
+            // (e.g. legacy items where AssignedTo only stored a name).
+            setSearchQuery(name)
+          }
+        }}
+      />
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="h-8">
@@ -1000,6 +1262,41 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
 
               {/* Results Count */}
               <span className="text-xs text-muted-foreground ml-auto">{filteredItems.length} results</span>
+
+              {/* ── Cards / Table view toggle. Segmented control instead of
+                  two separate buttons so the active state reads at a glance.
+                  Table is the default — it's denser and easier to scan when
+                  the user has a long filtered list. */}
+              <div className="inline-flex h-8 items-center rounded-md border bg-muted/40 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setViewMode("table")}
+                  className={`inline-flex h-7 items-center gap-1 rounded px-2 text-xs transition-colors ${
+                    viewMode === "table"
+                      ? "bg-background shadow-sm text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  aria-pressed={viewMode === "table"}
+                  aria-label="Table view"
+                >
+                  <TableIcon className="h-3.5 w-3.5" />
+                  Table
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode("cards")}
+                  className={`inline-flex h-7 items-center gap-1 rounded px-2 text-xs transition-colors ${
+                    viewMode === "cards"
+                      ? "bg-background shadow-sm text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  aria-pressed={viewMode === "cards"}
+                  aria-label="Card view"
+                >
+                  <LayoutGrid className="h-3.5 w-3.5" />
+                  Cards
+                </button>
+              </div>
             </div>
           )}
 
@@ -1026,6 +1323,9 @@ export function WorkItemsView({ initialSearch }: { initialSearch?: string } = {}
                 </p>
               </CardContent>
             </Card>
+          ) : viewMode === "table" ? (
+            // Sortable, denser table — easier to scan than the card list.
+            <WorkItemsTable items={filteredItems as any} loading={false} />
           ) : (
             <div className="space-y-2">
               {filteredItems.map((item) => (
