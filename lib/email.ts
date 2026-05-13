@@ -20,6 +20,11 @@ export const EMAIL_CATEGORIES = {
   // don't miss prospect intros, but appears under the same email
   // preferences UI so anyone can opt out.
   intake: { label: "New Intake Submissions", description: "ALFRED Ai alert when a prospect submits an intake form" },
+  // ALFRED-authored alert when a new edition of the Motta Alliance comic
+  // book series is issued through the in-app uploader. Defaults to ON so
+  // every teammate sees new lore drops, but lives under the standard
+  // email preferences UI for anyone who'd rather opt out.
+  motta_alliance: { label: "Motta Alliance Editions", description: "ALFRED Ai announcement when a new edition of the Motta Alliance comic series is published" },
   broadcast: { label: "Firm Announcements", description: "Custom announcement emails sent by partners or admins" },
   general: { label: "General Notifications", description: "Other in-app notifications not in a more specific category" },
 } as const
@@ -41,6 +46,7 @@ export function mapNotificationTypeToCategory(notificationType?: string | null):
   if (t.includes("meeting") || t.includes("calendly") || t.includes("zoom")) return "meeting_summary"
   if (t.includes("broadcast") || t.includes("announcement")) return "broadcast"
   if (t.includes("intake") || t.includes("jotform_intake") || t.includes("prospect")) return "intake"
+  if (t.includes("motta_alliance") || t.includes("alliance_issue")) return "motta_alliance"
   return "general"
 }
 
@@ -1502,6 +1508,102 @@ function escapeBriefingText(value: string): string {
   // literally and look broken.
   const cleaned = value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(^|\s)\*([^*]+)\*/g, "$1$2")
   return escapeHtml(cleaned)
+}
+
+/**
+ * Motta Alliance — new-edition announcement email.
+ *
+ * Sent by ALFRED Ai when a teammate uploads a new issue of the in-house
+ * comic-book series via the Motta Alliance page. Visually matches the
+ * Tommy Recap and Daily Briefing emails (same shared wrapper, same
+ * "From ALFRED Ai" callout banner) so the firm's broadcast emails read
+ * as one consistent voice. The actual PDF is delivered as a real Resend
+ * attachment by the caller — this template just builds the HTML body.
+ *
+ * Inputs:
+ *   - issueLabel:   "Issue 3", "Vol. 2", etc. Shown as a small eyebrow.
+ *   - title / arc:  Headline + optional arc subtitle (e.g. "Taxverse 2026").
+ *   - tagline:      The comic's own one-liner from the cover.
+ *   - characters:   Featured cast — rendered as chips under the summary.
+ *   - aiSummary:    Claude's plain-text story-arc preview. Rendered with
+ *                   paragraph-aware <br>'s so multi-paragraph narration
+ *                   doesn't collapse into a single wall of text in Outlook.
+ *   - submittedBy:  Display name of the teammate who shipped the issue.
+ *   - galleryUrl:   Deep link back to the Motta Alliance page.
+ *   - pdfUrl:       Public Blob URL — used for the "Read in browser" CTA
+ *                   when the recipient prefers viewing in a tab over the
+ *                   attached PDF.
+ *   - pdfFilename:  Visible filename of the attachment (e.g.
+ *                   "Motta-Alliance--issue-3-foo.pdf") — used in the
+ *                   "Attached:" footer so the email body and the actual
+ *                   Resend attachment line up.
+ */
+export function buildMottaAllianceIssueHtml(opts: {
+  issueLabel: string
+  title: string
+  arc?: string | null
+  tagline?: string | null
+  characters?: string[]
+  aiSummary: string
+  submittedBy?: string | null
+  galleryUrl: string
+  pdfUrl: string
+  pdfFilename: string
+}) {
+  const summaryHtml = formatNotesForEmail(opts.aiSummary)
+  const characterChips =
+    (opts.characters || []).length > 0
+      ? `<div style="margin:18px 0 0;">
+          ${(opts.characters || [])
+            .map(
+              (c) =>
+                `<span style="display:inline-block;background:${BRAND.background};color:${BRAND.textPrimary};font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;margin:0 6px 6px 0;border:1px solid ${BRAND.border};">${c}</span>`,
+            )
+            .join("")}
+        </div>`
+      : ""
+
+  const body = `
+    <p style="margin:0 0 8px;color:${BRAND.textMuted};font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">
+      ${opts.issueLabel}${opts.arc ? ` &middot; ${opts.arc}` : ""}
+    </p>
+    <h2 style="margin:0 0 8px;font-size:22px;color:${BRAND.textPrimary};line-height:1.25;">${opts.title}</h2>
+    ${
+      opts.tagline
+        ? `<p style="margin:0 0 22px;font-size:14px;font-style:italic;color:${BRAND.textMuted};line-height:1.5;">&ldquo;${opts.tagline}&rdquo;</p>`
+        : `<div style="height:18px;"></div>`
+    }
+
+    <div style="background:${BRAND.background};border-left:4px solid ${BRAND.primary};padding:18px 20px;border-radius:6px;margin:0 0 24px;">
+      <div style="font-size:12px;font-weight:600;color:${BRAND.primary};text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;">
+        From ALFRED Ai &middot; Story Preview
+      </div>
+      <div style="font-size:15px;color:${BRAND.textPrimary};line-height:1.7;">${summaryHtml}</div>
+      ${characterChips}
+    </div>
+
+    <div style="text-align:center;margin:28px 0 8px;">
+      <a href="${opts.pdfUrl}"
+         style="display:inline-block;background:${BRAND.primary};color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;letter-spacing:0.02em;margin:0 4px 8px;">
+        Read the Full Issue
+      </a>
+      <a href="${opts.galleryUrl}"
+         style="display:inline-block;background:#fff;color:${BRAND.primary};padding:11px 27px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;letter-spacing:0.02em;border:1px solid ${BRAND.primary};margin:0 4px 8px;">
+        Open the Gallery
+      </a>
+    </div>
+
+    <p style="margin:18px 0 0;color:${BRAND.textMuted};font-size:12px;text-align:center;line-height:1.6;">
+      Attached: <strong style="color:${BRAND.textPrimary};">${opts.pdfFilename}</strong>
+      ${opts.submittedBy ? `<br>Issued by ${opts.submittedBy}.` : ""}
+    </p>
+  `
+
+  return baseEmailWrapper(
+    `${opts.issueLabel}: ${opts.title}`,
+    body,
+    "A new edition of the Motta Alliance — sent by ALFRED Ai via MOTTA HUB.",
+  )
 }
 
 /**

@@ -1,11 +1,20 @@
 "use client"
 
-import { useState } from "react"
-import { BookOpen, Download, ExternalLink, Sparkles, Users } from "lucide-react"
+import { useMemo, useState } from "react"
+import useSWR from "swr"
+import {
+  BookOpen,
+  Download,
+  ExternalLink,
+  Plus,
+  Sparkles,
+  Users,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { IssueNewEditionDialog } from "@/components/motta-alliance/issue-new-edition-dialog"
 
 // ─────────────────────────────────────────────────────────────────────
 // MOTTA ALLIANCE — internal comic book series
@@ -58,6 +67,17 @@ type Issue = {
   // palette (olive / dark olive / cream / beige / amber-gold) so the
   // gallery reads as a series rather than a soup of one-offs.
   variant: CoverVariant
+  // Claude-generated story preview, only set for DB-backed editions
+  // uploaded through the "Issue New Edition" dialog. When present, the
+  // gallery shows it underneath the meta strip so readers can decide
+  // whether to open the PDF before clicking through.
+  aiSummary?: string | null
+  // Issuer display name — only set for DB-backed editions. Used in the
+  // "Issued by ..." byline that appears under the AI preview.
+  issuedBy?: string | null
+  // Publish date — only set for DB-backed editions. Shown as a relative
+  // "3 days ago"-style label so newer drops surface visually.
+  publishedAt?: string | null
 }
 
 // Team-wide ensemble issues — the main numbered series.
@@ -321,6 +341,38 @@ function IssueCover({ issue }: { issue: Issue }) {
           </div>
         </div>
 
+        {/* AI-generated preview + issuance byline (only present on DB-
+            backed editions uploaded through the new-edition dialog).
+            Line-clamped to 4 lines so the gallery card stays uniform
+            in height — readers can hover to see the full text. */}
+        {issue.aiSummary && (
+          <div
+            className="rounded-md border border-dashed bg-muted/40 px-3 py-2"
+            title={issue.aiSummary}
+          >
+            <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <Sparkles className="h-2.5 w-2.5" />
+              ALFRED Preview
+            </div>
+            <p className="mt-1 line-clamp-4 text-xs leading-relaxed text-stone-700">
+              {issue.aiSummary}
+            </p>
+            {(issue.issuedBy || issue.publishedAt) && (
+              <p className="mt-1.5 text-[10px] text-muted-foreground">
+                {issue.issuedBy ? `Issued by ${issue.issuedBy}` : ""}
+                {issue.issuedBy && issue.publishedAt ? " · " : ""}
+                {issue.publishedAt
+                  ? new Date(issue.publishedAt).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })
+                  : ""}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Actions */}
         <div className="flex gap-2">
           <Button
@@ -368,7 +420,88 @@ function IssueGrid({ issues }: { issues: Issue[] }) {
   )
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+ * DB-backed editions
+ * ─────────────────────────────────────────────────────────────────────
+ * Editions uploaded through the in-app "Issue New Edition" dialog live
+ * in the `motta_alliance_issues` table. We fetch them with SWR and
+ * merge into the gallery as a "Latest Editions" section that sits
+ * ABOVE the seeded Team Issues block — newest content surfaces first
+ * without burying the original lore.
+ */
+
+interface DbIssueRow {
+  id: string
+  slug: string
+  series: string
+  issue_number: string
+  title: string
+  arc: string | null
+  tagline: string | null
+  characters: string[] | null
+  pdf_url: string
+  variant: string | null
+  ai_summary: string | null
+  created_by_name: string | null
+  published_at: string | null
+}
+
+const KNOWN_VARIANTS: CoverVariant[] = [
+  "olive",
+  "sunset",
+  "taxverse",
+  "cream-olive",
+  "amber",
+]
+
+function isKnownVariant(v: string | null | undefined): v is CoverVariant {
+  return !!v && (KNOWN_VARIANTS as string[]).includes(v)
+}
+
+/** Convert a DB row into the same Issue shape the seeded constants use,
+ *  so the existing IssueCover / IssueGrid components render it as-is.
+ *  Unknown variants fall back to the default olive look. */
+function dbRowToIssue(row: DbIssueRow): Issue {
+  return {
+    slug: row.slug,
+    series: row.series || "Motta Alliance",
+    number: row.issue_number,
+    title: row.title,
+    arc: row.arc ?? undefined,
+    tagline: row.tagline ?? "",
+    characters: row.characters ?? [],
+    pdfUrl: row.pdf_url,
+    variant: isKnownVariant(row.variant) ? row.variant : "olive",
+    aiSummary: row.ai_summary,
+    issuedBy: row.created_by_name,
+    publishedAt: row.published_at,
+  }
+}
+
+const fetcher = async (url: string) => {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
+  return res.json() as Promise<{ issues: DbIssueRow[] }>
+}
+
 export function MottaAlliance() {
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const { data, mutate, isLoading } = useSWR(
+    "/api/motta-alliance/issues",
+    fetcher,
+    {
+      // Editions are append-only and rare; no need to poll. Just
+      // refresh after a successful publish via the dialog's onIssued
+      // callback below.
+      revalidateOnFocus: false,
+    },
+  )
+
+  const dbIssues = useMemo<Issue[]>(
+    () => (data?.issues ?? []).map(dbRowToIssue),
+    [data?.issues],
+  )
+
   return (
     <div className="mx-auto max-w-6xl space-y-10 px-4 py-8 md:px-6 md:py-10">
       {/* Hero — sets the in-universe tone with the team's lore tagline,
@@ -385,27 +518,66 @@ export function MottaAlliance() {
               "radial-gradient(circle at 90% 0%, rgba(107,116,93,0.10), transparent 55%), radial-gradient(circle at 0% 100%, rgba(200,155,92,0.10), transparent 55%)",
           }}
         />
-        <div className="relative z-10 max-w-2xl">
-          <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border bg-background px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            <Sparkles className="h-3 w-3" />
-            Internal Lore
+        <div className="relative z-10 flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
+          <div className="max-w-2xl">
+            <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border bg-background px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              <Sparkles className="h-3 w-3" />
+              Internal Lore
+            </div>
+            <h1 className="font-sans text-3xl font-black uppercase tracking-tight text-foreground text-balance md:text-4xl">
+              The Motta Alliance
+            </h1>
+            <p className="mt-2 text-sm font-medium uppercase tracking-[0.15em] text-muted-foreground">
+              One team. One mission. Protect the future.
+            </p>
+            <p className="mt-4 text-sm leading-relaxed text-muted-foreground text-pretty">
+              A comic-book series chronicling the heroes of Motta Financial —
+              the advisors, accountants, and operators fighting for financial
+              clarity across the Taxverse. Click any cover to read in a new
+              tab, or download a copy to keep on your device.
+            </p>
           </div>
-          <h1 className="font-sans text-3xl font-black uppercase tracking-tight text-foreground text-balance md:text-4xl">
-            The Motta Alliance
-          </h1>
-          <p className="mt-2 text-sm font-medium uppercase tracking-[0.15em] text-muted-foreground">
-            One team. One mission. Protect the future.
-          </p>
-          <p className="mt-4 text-sm leading-relaxed text-muted-foreground text-pretty">
-            A comic-book series chronicling the heroes of Motta Financial — the
-            advisors, accountants, and operators fighting for financial clarity
-            across the Taxverse. Click any cover to read in a new tab, or
-            download a copy to keep on your device.
-          </p>
+
+          {/* Primary action — opens the new-edition dialog. Lives in
+              the hero so anyone with a finished PDF can ship it without
+              hunting for the button. */}
+          <div className="shrink-0">
+            <Button
+              size="lg"
+              onClick={() => setDialogOpen(true)}
+              className="w-full md:w-auto"
+            >
+              <Plus className="mr-1.5 h-4 w-4" />
+              Issue New Edition
+            </Button>
+          </div>
         </div>
       </header>
 
-      {/* Team Issues */}
+      {/* Latest Editions — DB-backed uploads. Hidden when none exist so
+          the page doesn't show an empty section on first load. */}
+      {dbIssues.length > 0 && (
+        <section className="space-y-4">
+          <div className="flex items-end justify-between gap-4 border-b pb-3">
+            <div>
+              <h2 className="flex items-center gap-2 text-xl font-bold tracking-tight text-foreground">
+                <Sparkles className="h-4 w-4 text-amber-600" />
+                Latest Editions
+              </h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Newly issued via the Hub — each one announced to the team
+                by ALFRED Ai with a story preview.
+              </p>
+            </div>
+            <span className="rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              {dbIssues.length} {dbIssues.length === 1 ? "Edition" : "Editions"}
+            </span>
+          </div>
+          <IssueGrid issues={dbIssues} />
+        </section>
+      )}
+
+      {/* Team Issues — seeded constants. */}
       <section className="space-y-4">
         <div className="flex items-end justify-between gap-4 border-b pb-3">
           <div>
@@ -427,7 +599,7 @@ export function MottaAlliance() {
         <IssueGrid issues={TEAM_ISSUES} />
       </section>
 
-      {/* Hero Volumes */}
+      {/* Hero Volumes — seeded constants. */}
       <section className="space-y-4">
         <div className="flex items-end justify-between gap-4 border-b pb-3">
           <div>
@@ -448,11 +620,22 @@ export function MottaAlliance() {
       {/* Footer note */}
       <footer className="rounded-xl border bg-muted/30 p-4 text-center">
         <p className="text-xs text-muted-foreground text-pretty">
-          New issues drop periodically. Have an idea for a story arc or want to
-          nominate a teammate for their own Hero Volume? Mention it in your
-          next debrief or drop a note in the team channel.
+          {isLoading
+            ? "Loading the latest editions…"
+            : "Have an idea for a story arc or want to nominate a teammate for their own Hero Volume? Use the Issue New Edition button above, or mention it in your next debrief."}
         </p>
       </footer>
+
+      {/* Issue New Edition dialog. SWR's `mutate` revalidates the
+          editions list after a successful publish so the new cover
+          appears at the top without a manual refresh. */}
+      <IssueNewEditionDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onIssued={() => {
+          void mutate()
+        }}
+      />
     </div>
   )
 }
