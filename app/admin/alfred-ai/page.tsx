@@ -189,7 +189,12 @@ function ConfigurationTab() {
   const { data, isLoading, mutate } = useSWR<{
     configs: AIConfig[]
     models: ModelOption[]
-  }>("/api/admin/ai/config", fetcher, { refreshInterval: 30_000 })
+  }>("/api/admin/ai/config", fetcher, {
+    // Was 30s — bumped to 2min. AI config is admin-edited; nobody
+    // else is mutating it, and the editor refetches imperatively
+    // after saves anyway.
+    refreshInterval: 120_000,
+  })
 
   const configs = data?.configs ?? []
   const models = data?.models ?? []

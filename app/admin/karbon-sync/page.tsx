@@ -55,13 +55,23 @@ export default function KarbonSyncAdminPage() {
   const { data: webhookData, mutate: mutateWebhooks, isLoading: webhooksLoading } = useSWR<{
     subscriptions: Subscription[]
     recent_events: WebhookEvent[]
-  }>("/api/karbon/webhooks", fetcher, { refreshInterval: 30_000 })
+  }>("/api/karbon/webhooks", fetcher, {
+    // Was 30s — bumped to 2min to reduce middleware auth-request load.
+    // Webhook subscription state changes infrequently and Realtime
+    // already pushes event updates into mutateWebhooks() instantly, so
+    // the poll is just a safety net.
+    refreshInterval: 120_000,
+  })
 
   // Sync log + watchdog summary from the cron's GET handler.
   const { data: syncData, mutate: mutateSync } = useSWR<{
     recent: any[]
     summary: { ok: boolean; reasons: string[] }
-  }>("/api/cron/karbon-sync", fetcher, { refreshInterval: 30_000 })
+  }>("/api/cron/karbon-sync", fetcher, {
+    // Was 30s — bumped to 2min. Cron status only ticks on the cron
+    // schedule itself, so polling more often than that is pure waste.
+    refreshInterval: 120_000,
+  })
 
   const [busy, setBusy] = useState<string | null>(null)
   const [flash, setFlash] = useState<{ kind: "ok" | "err"; msg: string } | null>(null)
