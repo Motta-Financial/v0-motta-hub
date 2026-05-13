@@ -5,6 +5,7 @@ import { buildDailyBriefingHtml, sendCategoryEmail } from "@/lib/email"
 import { fetchNewsCategory, type NewsItem } from "@/lib/news-feed"
 import { getRemindersForRange } from "@/lib/team-reminders"
 import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
+import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 /**
  * ALFRED Ai's weekday morning briefing.
@@ -657,15 +658,39 @@ Rules:
 - Keep it tight: under 90 words total.
 - One light British flourish ("one observes...", "rather", "indeed", "if I may") is plenty; don't overdo it.`
 
-    const { text } = await generateText({
-      model: EMAIL_PROSE_MODEL,
-      prompt,
+    // Fetch AI config for model override from the admin panel
+    const aiConfig = await getAIConfig("daily_briefing")
+    const startTime = Date.now()
+
+    const { text, usage } = await generateText({
+      model: aiConfig.model,
+      prompt: aiConfig.systemPrompt ? `${aiConfig.systemPrompt}\n\n${prompt}` : prompt,
       maxOutputTokens: 280,
     })
+
+    // Log usage for the admin stats dashboard
+    // AI SDK 6 uses inputTokens/outputTokens; we map to our DB schema names
+    logAIUsage({
+      useCase: "daily_briefing",
+      model: aiConfig.model,
+      promptTokens: usage?.inputTokens,
+      completionTokens: usage?.outputTokens,
+      totalTokens: usage?.totalTokens,
+      latencyMs: Date.now() - startTime,
+      success: true,
+    })
+
     const trimmed = text.trim()
     return trimmed.length > 0 ? trimmed : fallback
   } catch (err) {
     console.warn("[cron/daily-briefing] AI summary failed, using fallback:", err)
+    // Log failed attempt
+    logAIUsage({
+      useCase: "daily_briefing",
+      model: EMAIL_PROSE_MODEL, // fallback to default since config may have failed
+      success: false,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    })
     return fallback
   }
 }

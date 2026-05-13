@@ -285,6 +285,7 @@ const navigation = [
         href: "/settings/admin",
         icon: ShieldCheck,
         children: [
+          { name: "ALFRED AI", href: "/admin/alfred-ai", icon: Sparkles },
           { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
           {
             name: "Master Client Mapping",
