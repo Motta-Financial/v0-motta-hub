@@ -22,17 +22,17 @@
  */
 import { generateText } from "ai"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { RESEARCH_SUMMARY_MODEL } from "@/lib/ai/models"
+import { LEAD_ENRICHMENT_MODEL } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 /** Hard cap on the upstream research call so the webhook stays snappy. */
 const RESEARCH_TIMEOUT_MS = 12_000
 /** Hard cap on the summarization call. */
 const SUMMARY_TIMEOUT_MS = 12_000
-/** Default model for summarization. Cheap + fast; we don't need a top-tier
- *  reasoning model to summarize 5 web snippets. Routed through the
- *  central registry so it stays in sync with the question-research pass. */
-const SUMMARY_MODEL = RESEARCH_SUMMARY_MODEL
+/** Default model for lead enrichment summarization. Claude Haiku is
+ *  cheap + fast; we don't need flagship reasoning to summarize 5 web
+ *  snippets about a prospect's business. */
+const SUMMARY_MODEL = LEAD_ENRICHMENT_MODEL
 
 const PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1beta/search"
 

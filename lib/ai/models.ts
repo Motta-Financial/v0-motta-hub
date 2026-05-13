@@ -65,23 +65,33 @@ export const OPENAI_GPT_5_MINI = "openai/gpt-5-mini" as const
 // These bind a workload to a specific model. To migrate a workload to
 // a different model (e.g. flip ALFRED to Claude Sonnet) change the
 // constant on the right-hand side here — every call site picks it up.
+//
+// The firm prefers Claude models across the board.
 
 /** ALFRED conversational chat with tool-use. Long context window + many
- *  parallel tool calls per turn, so we stay on a top-tier reasoning
- *  model. Keep on OpenAI for now — switching providers mid-stream is a
- *  separate decision from the registry refactor. */
-export const ALFRED_CHAT_MODEL = OPENAI_GPT_4O
+ *  parallel tool calls per turn, so we use Sonnet — strong reasoning +
+ *  excellent tool-use without the latency hit of Opus. */
+export const ALFRED_CHAT_MODEL = CLAUDE_SONNET
 
 /** Short, formulaic British-butler prose for transactional emails
  *  (daily briefing intro, weekly Tommy recap). Capped at a few hundred
- *  tokens; doesn't need flagship reasoning. */
-export const EMAIL_PROSE_MODEL = OPENAI_GPT_4O
+ *  tokens; doesn't need flagship reasoning. Haiku is 10x cheaper and
+ *  faster with no quality loss for this task. */
+export const EMAIL_PROSE_MODEL = CLAUDE_HAIKU
 
-/** Jotform intake research summaries — both the "what does this
- *  company do" enrichment and the "answer the prospect's question"
- *  research pass. We deliberately use a small/fast model with a short
- *  timeout so a slow LLM never blocks the intake email. */
-export const RESEARCH_SUMMARY_MODEL = OPENAI_GPT_5_MINI
+/** Jotform intake lead enrichment — "what does this company do".
+ *  Straightforward summarization with a tight timeout so the intake
+ *  email isn't blocked. Haiku's fast inference fits the constraint. */
+export const LEAD_ENRICHMENT_MODEL = CLAUDE_HAIKU
+
+/** Jotform question research — drafts partner-ready responses to
+ *  prospect tax/accounting questions. Client-facing copy that needs
+ *  accurate technical reasoning, so we use Sonnet over Haiku. */
+export const QUESTION_RESEARCH_MODEL = CLAUDE_SONNET
+
+// Legacy alias — kept for backward compatibility during migration.
+// New code should use LEAD_ENRICHMENT_MODEL or QUESTION_RESEARCH_MODEL.
+export const RESEARCH_SUMMARY_MODEL = LEAD_ENRICHMENT_MODEL
 
 // ─── UI surfaces ─────────────────────────────────────────────────────
 

@@ -20,12 +20,12 @@
  * cite sources so the partner can verify before forwarding.
  */
 import { generateText } from "ai"
-import { RESEARCH_SUMMARY_MODEL } from "@/lib/ai/models"
+import { QUESTION_RESEARCH_MODEL } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 const RESEARCH_TIMEOUT_MS = 12_000
 const SUMMARY_TIMEOUT_MS = 12_000
-const SUMMARY_MODEL = RESEARCH_SUMMARY_MODEL
+const SUMMARY_MODEL = QUESTION_RESEARCH_MODEL
 const PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1beta/search"
 
 interface ParallelResult {

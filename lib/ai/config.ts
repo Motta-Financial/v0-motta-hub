@@ -15,7 +15,8 @@ import { createAdminClient } from "@/lib/supabase/server"
 import {
   ALFRED_CHAT_MODEL,
   EMAIL_PROSE_MODEL,
-  RESEARCH_SUMMARY_MODEL,
+  LEAD_ENRICHMENT_MODEL,
+  QUESTION_RESEARCH_MODEL,
   CLAUDE_DEFAULT,
   OPENAI_GPT_4O,
   OPENAI_GPT_5,
@@ -73,12 +74,12 @@ export interface AIUsageLogEntry {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_MODELS: Record<AIUseCase, string> = {
-  alfred_chat: ALFRED_CHAT_MODEL,
-  daily_briefing: EMAIL_PROSE_MODEL,
-  tommy_recap: EMAIL_PROSE_MODEL,
-  jotform_enrichment: RESEARCH_SUMMARY_MODEL,
-  question_research: RESEARCH_SUMMARY_MODEL,
-  claude_playground: CLAUDE_DEFAULT,
+  alfred_chat: ALFRED_CHAT_MODEL,           // Claude Sonnet — tool-use + reasoning
+  daily_briefing: EMAIL_PROSE_MODEL,         // Claude Haiku — fast prose generation
+  tommy_recap: EMAIL_PROSE_MODEL,            // Claude Haiku — fast prose generation
+  jotform_enrichment: LEAD_ENRICHMENT_MODEL, // Claude Haiku — fast summarization
+  question_research: QUESTION_RESEARCH_MODEL, // Claude Sonnet — accurate technical answers
+  claude_playground: CLAUDE_DEFAULT,         // Claude Sonnet — general playground
 }
 
 const DEFAULT_DISPLAY_NAMES: Record<AIUseCase, string> = {
