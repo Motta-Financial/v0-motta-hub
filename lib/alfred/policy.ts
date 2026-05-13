@@ -84,6 +84,7 @@ const STAFF_TOOL_NAMES: readonly string[] = [
   "getTommyAwardsLeaderboard",
   "getServices",
   "getFinancialSummary",
+  "findPerson",
   "webSearch",
   "browsePage",
   // Per-request user-scoped tools (constructed inside POST)
