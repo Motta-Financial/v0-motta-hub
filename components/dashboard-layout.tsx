@@ -248,6 +248,17 @@ const navigation = [
         href: "/motta-alliance",
         icon: BookOpen,
       },
+      {
+        // Training Library — Loom videos recorded by the team for
+        // onboarding, SOPs, deep dives, and culture. Lives under Talent
+        // because it's a people-development artifact (knowledge transfer
+        // and ramp-up), not an operational pipeline page. The library
+        // itself uses Loom's public oEmbed for inline playback; videos
+        // are added manually (single URL) or via the bulk-paste tool.
+        name: "Training",
+        href: "/training",
+        icon: Video,
+      },
     ],
   },
   // Settings is the personal hub for the signed-in user. The
