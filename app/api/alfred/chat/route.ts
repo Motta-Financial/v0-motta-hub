@@ -33,6 +33,22 @@ interface CurrentUser {
 
 export const maxDuration = 60
 
+/**
+ * Escape user-supplied text before splicing it into a PostgREST `.or()`
+ * ilike filter. PostgREST uses `,` to separate filter clauses, `.` to
+ * separate operator/value, and `%` for SQL wildcards. A raw `,` from a
+ * user query like "Smith, John" turns into a malformed clause and
+ * causes a 400 instead of a search hit. We collapse the dangerous
+ * characters into safe equivalents:
+ *   - `,` and `.` → space (separators)
+ *   - `%`         → space (wildcard, we wrap the term in `%...%` ourselves)
+ *   - `*`         → space (PostgREST treats `*` as wildcard in some
+ *                   filter contexts; safer to drop it)
+ */
+function sanitizeIlikeTerm(input: string): string {
+  return input.replace(/[%,.*]/g, " ").trim()
+}
+
 // Define all the tools ALFRED has access to
 const alfredTools = {
   // Query any Supabase table
@@ -160,12 +176,27 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ searchTerm, tables }) => {
       const supabase = createAdminClient()
       const results: Record<string, any[]> = {}
+      // PostgREST `.or()` treats `,` as a separator between filters and
+      // `%` as the SQL wildcard. A raw user term with either character
+      // turns into a malformed filter and the whole call returns 400.
+      // Escape both before interpolation.
+      const safe = sanitizeIlikeTerm(searchTerm)
 
       for (const table of tables) {
         try {
-          const orConditions = table.searchColumns.map((col) => `${col}.ilike.%${searchTerm}%`).join(",")
+          if (!isAllowedTable(table.name)) {
+            results[table.name] = []
+            continue
+          }
+          const orConditions = table.searchColumns
+            .map((col) => `${col}.ilike.%${safe}%`)
+            .join(",")
 
-          const { data, error } = await supabase.from(table.name).select("*").or(orConditions).limit(10)
+          const { data, error } = await supabase
+            .from(table.name)
+            .select("*")
+            .or(orConditions)
+            .limit(10)
 
           if (!error && data) {
             results[table.name] = data
@@ -283,25 +314,26 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ searchTerm, includeWorkItems = true, includeContacts = true }) => {
       try {
         const supabase = createAdminClient()
+        const safe = sanitizeIlikeTerm(searchTerm)
         // Search client groups
         const { data: clientGroups } = await supabase
           .from("client_groups")
           .select("*")
-          .ilike("name", `%${searchTerm}%`)
+          .ilike("name", `%${safe}%`)
           .limit(5)
 
         // Search organizations
         const { data: organizations } = await supabase
           .from("organizations")
           .select("*")
-          .ilike("name", `%${searchTerm}%`)
+          .ilike("name", `%${safe}%`)
           .limit(5)
 
         // Search contacts
         const { data: contacts } = await supabase
           .from("contacts")
           .select("*")
-          .or(`full_name.ilike.%${searchTerm}%,primary_email.ilike.%${searchTerm}%`)
+          .or(`full_name.ilike.%${safe}%,primary_email.ilike.%${safe}%`)
           .limit(5)
 
         let workItems: any[] = []
@@ -309,7 +341,7 @@ Use this to answer questions about clients, work items, team members, finances, 
           const { data: items } = await supabase
             .from("work_items")
             .select("*")
-            .ilike("client_group_name", `%${searchTerm}%`)
+            .ilike("client_group_name", `%${safe}%`)
             .limit(20)
           workItems = items || []
         }
@@ -539,7 +571,9 @@ Use this to answer questions about clients, work items, team members, finances, 
     }),
     execute: async ({ query, includeInactive = true }) => {
       const supabase = createAdminClient()
-      const pattern = `%${query.trim()}%`
+      // PostgREST `.or()` chokes on `,` `.` `%` in user input -- escape
+      // before splicing into the ilike pattern.
+      const pattern = `%${sanitizeIlikeTerm(query)}%`
       const results: {
         team_members: any[]
         contacts: any[]
