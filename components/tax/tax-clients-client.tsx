@@ -37,10 +37,13 @@ import { cn } from "@/lib/utils"
 type ClientRow = {
   id: string
   proconnect_client_id: string | null
+  proconnect_entity_id: string | null
+  top_level_entity_id: string | null
   client_type: string | null
   client_state: string | null
   display_name: string | null
   business_name: string | null
+  name_for_matching: string | null
   first_name: string | null
   last_name: string | null
   email: string | null
@@ -49,18 +52,29 @@ type ClientRow = {
   state: string | null
   zip: string | null
   tax_id: string | null
+  created_at: string | null
+  updated_at: string | null
   return_count: number
+  amended_count: number
+  // Most recent updated_at across this client's returns. Used as a
+  // "last activity in ProConnect" column so we can surface stale
+  // clients quickly.
+  last_activity_at: string | null
+  preparers: string[]
   return_forms: Array<{
     form: string
     count: number
     latestYear: number | null
     latestStatus: string | null
     latestEfile: string | null
+    latestPreparer: string | null
+    latestUpdatedAt: string | null
   }>
   mapping: {
     internal_client_id: string
     karbon_client_id: string | null
     ignition_client_id: string | null
+    karbon_url: string | null
     linked_systems: string[]
     link_count: number
   } | null
@@ -77,6 +91,8 @@ const fetcher = (u: string) =>
         organizations: number
         withReturns: number
         withoutReturns: number
+        totalReturns: number
+        totalAmended: number
         linkedToKarbon: number
         linkedToIgnition: number
         unmappedToHub: number
@@ -137,7 +153,13 @@ export function TaxClientsClient() {
           label="With Returns On File"
           value={data ? fmtNumber(data.stats.withReturns) : "—"}
           subtitle={
-            data ? `${data.stats.withoutReturns} clients without returns` : ""
+            data
+              ? `${fmtNumber(data.stats.totalReturns)} returns total${
+                  data.stats.totalAmended > 0
+                    ? ` · ${data.stats.totalAmended} amended`
+                    : ""
+                }`
+              : ""
           }
           icon={FileText}
           tone="emerald"
@@ -220,6 +242,8 @@ export function TaxClientsClient() {
                     <TableHead>Contact</TableHead>
                     <TableHead>Location</TableHead>
                     <TableHead>Returns on file</TableHead>
+                    <TableHead className="w-[130px]">Preparer(s)</TableHead>
+                    <TableHead className="w-[110px]">Last activity</TableHead>
                     <TableHead>Hub linkage</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -287,7 +311,7 @@ export function TaxClientsClient() {
                               <div
                                 key={f.form}
                                 className="flex items-center gap-1"
-                                title={`${f.count} ${f.form} return${f.count === 1 ? "" : "s"} · latest ${f.latestYear ?? ""}`}
+                                title={`${f.count} ${f.form} return${f.count === 1 ? "" : "s"} · latest ${f.latestYear ?? ""}${f.latestPreparer ? ` · ${f.latestPreparer}` : ""}`}
                               >
                                 <FormBadge form={f.form} />
                                 {f.count > 1 ? (
@@ -297,7 +321,46 @@ export function TaxClientsClient() {
                                 ) : null}
                               </div>
                             ))}
+                            {c.amended_count > 0 ? (
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] bg-amber-50 text-amber-900 border-amber-200"
+                              >
+                                {c.amended_count} amended
+                              </Badge>
+                            ) : null}
                           </div>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {c.preparers.length === 0 ? (
+                          <span className="text-xs text-stone-400">—</span>
+                        ) : c.preparers.length === 1 ? (
+                          <span className="text-xs text-stone-700">
+                            {c.preparers[0]}
+                          </span>
+                        ) : (
+                          <span
+                            className="text-xs text-stone-700"
+                            title={c.preparers.join(", ")}
+                          >
+                            {c.preparers[0]}{" "}
+                            <span className="text-muted-foreground">
+                              +{c.preparers.length - 1}
+                            </span>
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {c.last_activity_at ? (
+                          <span
+                            className="text-xs text-stone-600 tabular-nums"
+                            title={new Date(c.last_activity_at).toLocaleString()}
+                          >
+                            {new Date(c.last_activity_at).toLocaleDateString()}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-stone-400">—</span>
                         )}
                       </TableCell>
                       <TableCell>
