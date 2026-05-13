@@ -48,6 +48,7 @@ type NonprofitReturn = {
   tax_year: number | null
   efile_status: string | null
   amended: boolean | null
+  preparer: string | null
   revenue: number | null // total_revenue
   income: number | null // revenue_less_expenses (operating surplus)
   tax: number | null // pf_tax_due (PF only)
@@ -58,8 +59,11 @@ type NonprofitReturn = {
     total_assets_end?: number | string | null
     total_liabilities_end?: number | string | null
     net_assets_end?: number | string | null
+    ez_contributions?: number | string | null
+    ez_investment_income?: number | string | null
     ez_total_revenue?: number | string | null
     ez_total_expenses?: number | string | null
+    ez_excess_deficit?: number | string | null
     ez_net_assets_end?: number | string | null
     pf_net_assets_end?: number | string | null
   }
@@ -262,6 +266,7 @@ export function TaxNonprofitClient() {
                     <TableHead className="w-[100px]">Subtype</TableHead>
                     <TableHead className="w-[80px]">Year</TableHead>
                     <TableHead className="w-[120px]">E-file</TableHead>
+                    <TableHead className="w-[110px]">Preparer</TableHead>
                     <TableHead className="text-right">Revenue</TableHead>
                     <TableHead className="text-right">Expenses</TableHead>
                     <TableHead className="text-right">Surplus</TableHead>
@@ -307,6 +312,9 @@ export function TaxNonprofitClient() {
                         </TableCell>
                         <TableCell>
                           <EfileBadge status={r.efile_status} />
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {r.preparer || "—"}
                         </TableCell>
                         <TableCell className="text-right tabular-nums">
                           {fmtMoneyCompact(r.revenue)}

@@ -56,6 +56,7 @@ type IndividualReturn = {
   tax_year: number | null
   efile_status: string | null
   amended: boolean | null
+  preparer: string | null
   revenue: number | null // wages_salaries_tips
   income: number | null // AGI
   tax: number | null // total_tax
@@ -370,6 +371,7 @@ export function TaxIndividualClient() {
                     <TableHead className="w-[80px]">Year</TableHead>
                     <TableHead>Filing status</TableHead>
                     <TableHead className="w-[120px]">E-file</TableHead>
+                    <TableHead className="w-[110px]">Preparer</TableHead>
                     <TableHead className="text-right">Wages</TableHead>
                     <TableHead className="text-right">AGI</TableHead>
                     <TableHead className="text-right">Tax</TableHead>
@@ -404,6 +406,9 @@ export function TaxIndividualClient() {
                         </TableCell>
                         <TableCell>
                           <EfileBadge status={r.efile_status} />
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {r.preparer || "—"}
                         </TableCell>
                         <TableCell className="text-right tabular-nums">
                           {fmtMoneyCompact(r.revenue)}

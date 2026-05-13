@@ -59,11 +59,13 @@ type UnifiedReturn = {
   return_status: string | null
   efile_status: string | null
   amended: boolean | null
+  preparer: string | null
   revenue: number | null
   income: number | null
   tax: number | null
   refund: number | null
   amount_owed: number | null
+  created_at: string | null
   updated_at: string | null
 }
 
@@ -76,9 +78,11 @@ type ReturnsResponse = {
     totalTax: number
     totalRefunds: number
     totalOwed: number
+    amendedCount: number
     byForm: Record<string, { count: number; revenue: number; income: number }>
     byYear: Record<string, number>
     byEfileStatus: Record<string, number>
+    byPreparer: Record<string, number>
   }
 }
 
@@ -102,6 +106,7 @@ const FORM_COLOR: Record<string, string> = {
 export function TaxReturnsClient() {
   const [form, setForm] = useState<(typeof FORM_OPTIONS)[number]>("all")
   const [taxYear, setTaxYear] = useState<string>("all")
+  const [preparer, setPreparer] = useState<string>("all")
   const [search, setSearch] = useState("")
 
   const params = new URLSearchParams()
@@ -113,21 +118,30 @@ export function TaxReturnsClient() {
     fetcher,
   )
 
-  // Client-side text filter — server already paginates, this just
-  // narrows by name/PC id/form/status without a round trip.
+  // Client-side text + preparer filter — server already paginates,
+  // this just narrows by name/PC id/form/status/preparer without a
+  // round trip.
   const filtered = useMemo(() => {
     if (!data?.returns) return []
     const q = search.trim().toLowerCase()
-    if (!q) return data.returns
     return data.returns.filter((r) => {
+      if (preparer !== "all") {
+        if (preparer === "(unassigned)") {
+          if (r.preparer) return false
+        } else if (r.preparer !== preparer) {
+          return false
+        }
+      }
+      if (!q) return true
       return (
         r.client_name?.toLowerCase().includes(q) ||
         r.proconnect_client_id?.toLowerCase().includes(q) ||
         r.form.toLowerCase().includes(q) ||
-        r.efile_status?.toLowerCase().includes(q)
+        r.efile_status?.toLowerCase().includes(q) ||
+        r.preparer?.toLowerCase().includes(q)
       )
     })
-  }, [data, search])
+  }, [data, search, preparer])
 
   // Available years for the year filter chip — derived from the data
   // so we don't hardcode a year list that drifts as PC adds rows.
@@ -136,6 +150,18 @@ export function TaxReturnsClient() {
     return Object.keys(data.stats.byYear)
       .filter((y) => y !== "(unknown)")
       .sort((a, b) => Number(b) - Number(a))
+  }, [data])
+
+  // Top preparers — chip list sorted by volume so the busiest
+  // preparer is leftmost. We cap the chips at 6 to keep the filter
+  // row from wrapping into 3+ lines; less-active preparers can
+  // still be selected by typing their name in the search box.
+  const topPreparers = useMemo(() => {
+    if (!data?.stats?.byPreparer) return [] as Array<{ name: string; count: number }>
+    return Object.entries(data.stats.byPreparer)
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6)
   }, [data])
 
   return (
@@ -161,6 +187,10 @@ export function TaxReturnsClient() {
             data
               ? `${Object.keys(data.stats.byForm).length} form type${
                   Object.keys(data.stats.byForm).length === 1 ? "" : "s"
+                }${
+                  data.stats.amendedCount > 0
+                    ? ` · ${data.stats.amendedCount} amended`
+                    : ""
                 }`
               : ""
           }
@@ -360,10 +390,40 @@ export function TaxReturnsClient() {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by client, ID, or status…"
+              placeholder="Search by client, ID, status, or preparer…"
               className="h-8 pl-8 text-sm"
             />
           </div>
+          {topPreparers.length > 0 ? (
+            <div className="basis-full flex flex-wrap items-center gap-1 pt-1">
+              <span className="text-[11px] uppercase tracking-wide text-muted-foreground mr-1">
+                Preparer
+              </span>
+              <Button
+                size="sm"
+                variant={preparer === "all" ? "default" : "outline"}
+                onClick={() => setPreparer("all")}
+                className="h-7 px-2 text-xs"
+              >
+                All
+              </Button>
+              {topPreparers.map((p) => (
+                <Button
+                  key={p.name}
+                  size="sm"
+                  variant={preparer === p.name ? "default" : "outline"}
+                  onClick={() => setPreparer(p.name)}
+                  className="h-7 px-2 text-xs"
+                  title={`${p.count} return${p.count === 1 ? "" : "s"}`}
+                >
+                  {p.name}
+                  <span className="ml-1 text-muted-foreground">
+                    {p.count}
+                  </span>
+                </Button>
+              ))}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -393,6 +453,7 @@ export function TaxReturnsClient() {
                     <TableHead>Client</TableHead>
                     <TableHead className="w-[80px]">Year</TableHead>
                     <TableHead className="w-[130px]">E-file</TableHead>
+                    <TableHead className="w-[120px]">Preparer</TableHead>
                     <TableHead className="text-right">Revenue</TableHead>
                     <TableHead className="text-right">Income</TableHead>
                     <TableHead className="text-right">Tax</TableHead>
@@ -431,6 +492,9 @@ export function TaxReturnsClient() {
                       </TableCell>
                       <TableCell>
                         <EfileBadge status={r.efile_status} />
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {r.preparer || "—"}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {fmtMoneyCompact(r.revenue)}

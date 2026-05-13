@@ -464,9 +464,14 @@ interface ClientBundle {
       taxYear: number | null
       status: string | null
       efileStatus: string | null
+      amended: boolean | null
+      preparer: string | null
       totalRevenue: number | null
       totalIncome: number | null
       totalTax: number | null
+      refund: number | null
+      amountOwed: number | null
+      raw: Record<string, unknown>
       updatedAt: string | null
     }>
     returnCount: number
@@ -2365,9 +2370,12 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                         <th className="px-4 py-2 font-medium">Tax Year</th>
                         <th className="px-4 py-2 font-medium">Status</th>
                         <th className="px-4 py-2 font-medium">E-file</th>
+                        <th className="px-4 py-2 font-medium">Preparer</th>
                         <th className="px-4 py-2 font-medium text-right">Revenue / AGI</th>
                         <th className="px-4 py-2 font-medium text-right">Income</th>
                         <th className="px-4 py-2 font-medium text-right">Tax</th>
+                        <th className="px-4 py-2 font-medium text-right">Refund</th>
+                        <th className="px-4 py-2 font-medium text-right">Owed</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2377,9 +2385,19 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                           className="border-b last:border-0 hover:bg-muted/20"
                         >
                           <td className="px-4 py-2">
-                            <Badge variant="outline" className="font-mono text-xs">
-                              {r.form}
-                            </Badge>
+                            <div className="flex items-center gap-1">
+                              <Badge variant="outline" className="font-mono text-xs">
+                                {r.form}
+                              </Badge>
+                              {r.amended ? (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] bg-amber-50 text-amber-900 border-amber-200"
+                                >
+                                  amended
+                                </Badge>
+                              ) : null}
+                            </div>
                           </td>
                           <td className="px-4 py-2 tabular-nums">{r.taxYear ?? "—"}</td>
                           <td className="px-4 py-2 capitalize text-muted-foreground">
@@ -2401,6 +2419,9 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                               <span className="text-muted-foreground">—</span>
                             )}
                           </td>
+                          <td className="px-4 py-2 text-xs text-muted-foreground">
+                            {r.preparer || "—"}
+                          </td>
                           <td className="px-4 py-2 text-right tabular-nums">
                             {r.totalRevenue != null ? formatCurrency(r.totalRevenue) : "—"}
                           </td>
@@ -2409,6 +2430,12 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                           </td>
                           <td className="px-4 py-2 text-right tabular-nums">
                             {r.totalTax != null ? formatCurrency(r.totalTax) : "—"}
+                          </td>
+                          <td className="px-4 py-2 text-right tabular-nums text-emerald-700">
+                            {r.refund != null ? formatCurrency(r.refund) : "—"}
+                          </td>
+                          <td className="px-4 py-2 text-right tabular-nums text-rose-700">
+                            {r.amountOwed != null ? formatCurrency(r.amountOwed) : "—"}
                           </td>
                         </tr>
                       ))}

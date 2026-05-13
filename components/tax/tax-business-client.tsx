@@ -57,6 +57,7 @@ type BusinessReturn = {
   form: string
   efile_status: string | null
   amended: boolean | null
+  preparer: string | null
   revenue: number | null
   income: number | null
   tax: number | null
@@ -73,6 +74,7 @@ type BusinessReturn = {
     partners_ending_capital?: number | string | null
     officer_compensation?: number | string | null
     compensation_of_officers?: number | string | null
+    ending_assets?: number | string | null
     is_domestic_llc?: boolean | null
     is_domestic_general_partnership?: boolean | null
     is_domestic_limited_partnership?: boolean | null
@@ -366,7 +368,9 @@ export function TaxBusinessClient() {
                     <TableHead>Type</TableHead>
                     <TableHead className="w-[100px]">NAICS</TableHead>
                     <TableHead className="w-[120px]">E-file</TableHead>
+                    <TableHead className="w-[110px]">Preparer</TableHead>
                     <TableHead className="text-right">Gross receipts</TableHead>
+                    <TableHead className="text-right">Gross profit</TableHead>
                     <TableHead className="text-right">Ord. income</TableHead>
                     <TableHead className="text-right">Tax</TableHead>
                     <TableHead className="text-right">Distributions</TableHead>
@@ -399,8 +403,16 @@ export function TaxBusinessClient() {
                       <TableCell>
                         <EfileBadge status={r.efile_status} />
                       </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {r.preparer || "—"}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {fmtMoneyCompact(r.revenue)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {r.raw.gross_profit != null
+                          ? fmtMoneyCompact(Number(r.raw.gross_profit))
+                          : "—"}
                       </TableCell>
                       <TableCell
                         className={cn(
