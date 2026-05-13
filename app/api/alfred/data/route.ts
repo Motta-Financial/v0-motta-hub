@@ -125,22 +125,85 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Get searchable columns for each table
+// Get searchable columns for each table.
+//
+// IMPORTANT: every column listed here MUST exist in the live Supabase
+// schema. PostgREST builds the search filter as
+// `col1.ilike.%X%,col2.ilike.%X%,...` and a single bad column name
+// causes the entire query to fail with `column "X" does not exist`,
+// not just the bad clause. The previous version of this map shipped
+// `debriefs.team_member` (no such column) and broke debrief search
+// outright.
 function getSearchColumns(table: AllowedTable): string[] {
   const searchColumnsMap: Record<string, string[]> = {
     contacts: ["full_name", "first_name", "last_name", "primary_email", "employer"],
     organizations: ["name", "legal_name", "trading_name", "industry"],
-    work_items: ["title", "description", "client_group_name", "assignee_name", "work_type"],
+    work_items: [
+      "title",
+      "description",
+      "client_name",
+      "client_group_name",
+      "assignee_name",
+      "work_type",
+    ],
+    work_items_enriched: [
+      "title",
+      "client_name",
+      "assignee_full_name",
+      "owner_full_name",
+      "manager_full_name",
+      "contact_full_name",
+      "org_name",
+    ],
     team_members: ["full_name", "first_name", "last_name", "email", "role", "department"],
-    debriefs: ["team_member", "organization_name", "notes", "debrief_type"],
-    tasks: ["title", "description"],
+    debriefs: [
+      "notes",
+      "debrief_type",
+      "organization_name",
+      "client_manager_name",
+      "client_owner_name",
+    ],
+    debriefs_full: [
+      "notes",
+      "debrief_type",
+      "organization_display_name",
+      "contact_full_name",
+      "team_member_full_name",
+      "work_item_title",
+    ],
+    tasks: ["title", "description", "notes"],
     karbon_tasks: ["title", "description", "assignee_name"],
-    karbon_notes: ["subject", "body", "author_name", "contact_name"],
-    invoices: ["invoice_number", "notes"],
+    karbon_notes: ["subject", "body", "author_name", "contact_name", "work_item_title"],
+    karbon_timesheets: ["description", "user_name", "work_item_title", "client_name"],
+    invoices: ["invoice_number", "notes", "internal_notes"],
     services: ["name", "description", "category"],
-    client_groups: ["name", "description"],
-    leads: ["first_name", "last_name", "email", "company_name"],
-    tommy_award_ballots: ["voter_name", "first_place_name", "second_place_name"],
+    service_lines: ["name", "code", "description", "category"],
+    service_agreements: ["name", "notes"],
+    client_groups: ["name", "description", "primary_contact_name"],
+    clients_unified: ["name", "primary_email"],
+    master_client_mapping: ["display_name", "primary_email"],
+    leads: ["first_name", "last_name", "email", "company_name", "notes"],
+    messages: ["content", "author_name"],
+    message_comments: ["content", "author_name"],
+    emails: ["subject", "from_email", "from_name", "body_text"],
+    notes: ["title", "content"],
+    documents: ["name", "description"],
+    motta_recurring_revenue: ["client_name", "normalized_name", "service_type", "department"],
+    motta_recurring_revenue_by_client: [
+      "client_name",
+      "normalized_name",
+      "department",
+      "service_types",
+    ],
+    ignition_proposals: ["client_name", "client_email", "title", "proposal_sent_by"],
+    tommy_award_ballots: [
+      "voter_name",
+      "first_place_name",
+      "second_place_name",
+      "third_place_name",
+      "honorable_mention_name",
+      "partner_vote_name",
+    ],
     tommy_award_points: ["team_member_name"],
     tommy_award_yearly_totals: ["team_member_name"],
   }

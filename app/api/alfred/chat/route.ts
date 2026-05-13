@@ -19,6 +19,7 @@ import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
+import { ALFRED_CHAT_MODEL } from "@/lib/ai/models"
 
 // Shape of the requesting user, sent from the client transport body.
 // See components/alfred-chat.tsx for the producer side.
@@ -32,6 +33,22 @@ interface CurrentUser {
 }
 
 export const maxDuration = 60
+
+/**
+ * Escape user-supplied text before splicing it into a PostgREST `.or()`
+ * ilike filter. PostgREST uses `,` to separate filter clauses, `.` to
+ * separate operator/value, and `%` for SQL wildcards. A raw `,` from a
+ * user query like "Smith, John" turns into a malformed clause and
+ * causes a 400 instead of a search hit. We collapse the dangerous
+ * characters into safe equivalents:
+ *   - `,` and `.` → space (separators)
+ *   - `%`         → space (wildcard, we wrap the term in `%...%` ourselves)
+ *   - `*`         → space (PostgREST treats `*` as wildcard in some
+ *                   filter contexts; safer to drop it)
+ */
+function sanitizeIlikeTerm(input: string): string {
+  return input.replace(/[%,.*]/g, " ").trim()
+}
 
 // Define all the tools ALFRED has access to
 const alfredTools = {
@@ -160,12 +177,27 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ searchTerm, tables }) => {
       const supabase = createAdminClient()
       const results: Record<string, any[]> = {}
+      // PostgREST `.or()` treats `,` as a separator between filters and
+      // `%` as the SQL wildcard. A raw user term with either character
+      // turns into a malformed filter and the whole call returns 400.
+      // Escape both before interpolation.
+      const safe = sanitizeIlikeTerm(searchTerm)
 
       for (const table of tables) {
         try {
-          const orConditions = table.searchColumns.map((col) => `${col}.ilike.%${searchTerm}%`).join(",")
+          if (!isAllowedTable(table.name)) {
+            results[table.name] = []
+            continue
+          }
+          const orConditions = table.searchColumns
+            .map((col) => `${col}.ilike.%${safe}%`)
+            .join(",")
 
-          const { data, error } = await supabase.from(table.name).select("*").or(orConditions).limit(10)
+          const { data, error } = await supabase
+            .from(table.name)
+            .select("*")
+            .or(orConditions)
+            .limit(10)
 
           if (!error && data) {
             results[table.name] = data
@@ -283,25 +315,26 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ searchTerm, includeWorkItems = true, includeContacts = true }) => {
       try {
         const supabase = createAdminClient()
+        const safe = sanitizeIlikeTerm(searchTerm)
         // Search client groups
         const { data: clientGroups } = await supabase
           .from("client_groups")
           .select("*")
-          .ilike("name", `%${searchTerm}%`)
+          .ilike("name", `%${safe}%`)
           .limit(5)
 
         // Search organizations
         const { data: organizations } = await supabase
           .from("organizations")
           .select("*")
-          .ilike("name", `%${searchTerm}%`)
+          .ilike("name", `%${safe}%`)
           .limit(5)
 
         // Search contacts
         const { data: contacts } = await supabase
           .from("contacts")
           .select("*")
-          .or(`full_name.ilike.%${searchTerm}%,primary_email.ilike.%${searchTerm}%`)
+          .or(`full_name.ilike.%${safe}%,primary_email.ilike.%${safe}%`)
           .limit(5)
 
         let workItems: any[] = []
@@ -309,7 +342,7 @@ Use this to answer questions about clients, work items, team members, finances, 
           const { data: items } = await supabase
             .from("work_items")
             .select("*")
-            .ilike("client_group_name", `%${searchTerm}%`)
+            .ilike("client_group_name", `%${safe}%`)
             .limit(20)
           workItems = items || []
         }
@@ -507,6 +540,96 @@ Use this to answer questions about clients, work items, team members, finances, 
     },
   }),
 
+  // ── Person lookup ───────────────────────────────────────────────────────
+  // Dedicated, zero-friction tool for "Who is X?" / "Do we have a contact
+  // named Y?" / "Find me Z's email" questions. The model previously failed
+  // these by either (a) bailing with "I'm afraid I haven't that
+  // information to hand" before calling any tool, or (b) calling
+  // searchAcrossTables with the wrong column list (e.g. searching
+  // `contacts.email` when the actual column is `primary_email`).
+  //
+  // This tool encodes the correct columns per table so the model just
+  // passes a name fragment and gets back a single merged result set
+  // spanning team_members, contacts, and leads. It MUST be the first
+  // thing ALFRED reaches for on identity questions.
+  findPerson: tool({
+    description:
+      "Find a person by name or email across team_members (Motta staff), contacts (clients/individuals), and leads (prospects). " +
+      "Use this FIRST whenever a user asks who someone is, asks for someone's email/role, asks 'do we know X?', or otherwise needs to identify a person. " +
+      "Pass a name fragment, full name, or partial email — matching is case-insensitive across all relevant name and email columns. " +
+      "Do NOT use queryDatabase for person lookups; use this tool.",
+    inputSchema: z.object({
+      query: z
+        .string()
+        .min(1)
+        .describe("A name, partial name, or email fragment. Case-insensitive."),
+      includeInactive: z
+        .boolean()
+        .optional()
+        .describe(
+          "Include inactive team_members (alumni). Defaults to true so 'who was X?' questions still resolve.",
+        ),
+    }),
+    execute: async ({ query, includeInactive = true }) => {
+      const supabase = createAdminClient()
+      // PostgREST `.or()` chokes on `,` `.` `%` in user input -- escape
+      // before splicing into the ilike pattern.
+      const pattern = `%${sanitizeIlikeTerm(query)}%`
+      const results: {
+        team_members: any[]
+        contacts: any[]
+        leads: any[]
+      } = { team_members: [], contacts: [], leads: [] }
+
+      try {
+        // team_members has full_name + email and a boolean is_active.
+        let tmQuery = supabase
+          .from("team_members")
+          .select("id, full_name, email, role, department, is_active")
+          .or(`full_name.ilike.${pattern},email.ilike.${pattern}`)
+          .limit(10)
+        if (!includeInactive) tmQuery = tmQuery.eq("is_active", true)
+        const { data: tm } = await tmQuery
+        results.team_members = tm ?? []
+      } catch (e) {
+        // Swallow per-table errors so a missing column on one table
+        // doesn't kill the whole lookup; the empty array is still useful.
+      }
+
+      try {
+        // contacts uses primary_email, NOT email.
+        const { data: ct } = await supabase
+          .from("contacts")
+          .select("id, full_name, primary_email, contact_type, status")
+          .or(`full_name.ilike.${pattern},primary_email.ilike.${pattern}`)
+          .limit(10)
+        results.contacts = ct ?? []
+      } catch (e) {}
+
+      try {
+        // leads uses first_name/last_name/email.
+        const { data: ld } = await supabase
+          .from("leads")
+          .select("id, first_name, last_name, email, company_name, status, source")
+          .or(
+            `first_name.ilike.${pattern},last_name.ilike.${pattern},email.ilike.${pattern},company_name.ilike.${pattern}`,
+          )
+          .limit(10)
+        results.leads = ld ?? []
+      } catch (e) {}
+
+      const total =
+        results.team_members.length + results.contacts.length + results.leads.length
+
+      return {
+        success: true,
+        query,
+        total,
+        results,
+      }
+    },
+  }),
+
   // ── Web research ────────────────────────────────────────────────────────
   // Two complementary tools for questions that go beyond Motta's internal
   // database. See lib/alfred/tools/{web-search,browse-page}.ts for details.
@@ -546,7 +669,18 @@ const BASE_SYSTEM_PROMPT = `You are ALFRED Ai, the digital butler-in-residence a
 - Light, dry wit is welcome on occasion. Never sarcasm.
 - Never refer to yourself as an "AI", a "language model", a "chatbot", or "the assistant". You are ALFRED, in service to Motta Financial.
 - Open replies with a short statement of fact — never an apology, never "Sure!", never "Great question!".
-- When you do not know something or cannot reach a record: "I'm afraid I haven't that information to hand," then suggest the next step.
+- When you do not know something or cannot reach a record: "I'm afraid I haven't that information to hand," then suggest the next step. This line is reserved for situations where you have ALREADY consulted the relevant tools and come back empty. NEVER use it as a first response to skip looking something up.
+
+## The cardinal rule: search before you apologise
+
+If a user asks about a person, a client, a work item, a deadline, an invoice, a debrief, a meeting, an email, an award, or anything else that could plausibly live in the firm's records, you MUST consult the database BEFORE concluding you don't know.
+
+- For ANY question of the form "Who is X?", "Do we have a contact named X?", "What's X's email/role/department?", "Find X for me" — your FIRST action is \`findPerson({ query: "X" })\`. Do not skip this step. Do not guess from memory. Do not tell the user you have no information without searching first.
+- For "what is X's workload / what work is assigned to X" — call \`findPerson\` first to resolve who X actually is, then \`getTeamWorkload\` or \`queryDatabase\` against \`work_items\` filtered by their team_members.id or assignee_name.
+- For "what's going on with client/company X" — call \`getClientInfo\` first.
+- For "what's due / what's overdue / show me deadlines" — call \`getUpcomingDeadlines\` or \`getMyUpcomingDeadlines\`.
+
+Only after a tool call has actually returned no matches may you say "I'm afraid I haven't that information to hand." A blank apology before tool use is a failure of duty.
 
 ## Workflow — gather privately, present once
 
@@ -923,7 +1057,9 @@ export async function POST(req: Request) {
       ) as typeof mergedTools
 
       const result = streamText({
-        model: "openai/gpt-4o",
+        // Routed through lib/ai/models so a model bump is one edit there,
+        // not a grep-and-replace across every AI surface in the app.
+        model: ALFRED_CHAT_MODEL,
         system: `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`,
         messages: modelMessages,
         tools: filteredTools,

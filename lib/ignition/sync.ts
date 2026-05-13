@@ -145,6 +145,103 @@ function dedupeByKey<T extends Record<string, any>>(rows: T[], key: keyof T): T[
   return Array.from(map.values())
 }
 
+/** Normalize Ignition's free-form `cadence` strings to our internal
+ *  enum. Mirrors `normalizeBillingFrequency` in lib/sales/ignition-recurring
+ *  but kept local here so the sync layer has no React/Sales deps. */
+function normalizeCadence(s: string | null | undefined): string | null {
+  if (!s) return null
+  const v = String(s).toLowerCase()
+  if (/month/.test(v)) return "monthly"
+  if (/quarter/.test(v)) return "quarterly"
+  if (/week/.test(v)) return "weekly"
+  if (/year|annual/.test(v)) return "annually"
+  if (/once|onetime|one-time|one_off/.test(v)) return "one-time"
+  return v
+}
+
+/**
+ * Map a single Ignition payload service into an `ignition_proposal_services`
+ * row. The Ignition shape lives under `proposal.services[]` and looks like:
+ *
+ *   {
+ *     name, slug, service_slug, description, position, is_add_on,
+ *     is_selected_for_acceptance, invoice_strategy,
+ *     billing: {
+ *       mode, summary, is_recurring,
+ *       schedules: [{ cadence, recurrence, currency, invoice_strategy,
+ *                     minimum_period_value: {amount, currency},
+ *                     minimum_contract_value: {amount, currency} }]
+ *     },
+ *     pricing: { currency, quantity, minimum_period_value:{amount},
+ *                minimum_contract_value:{amount} }
+ *   }
+ *
+ * `service_slug` is the catalog id — that's the FK target on our side.
+ * The per-line `slug` is unique-per-line and lives in raw_payload only.
+ *
+ * `knownServiceIds` lets us null `ignition_service_id` for services that
+ * haven't been synced into our catalog yet, mirroring the same defensive
+ * approach used for proposals.ignition_client_id elsewhere in this file.
+ */
+function buildProposalServiceRow(
+  proposalId: string,
+  raw: any,
+  ordinal: number,
+  knownServiceIds: Set<string>,
+): Record<string, any> | null {
+  if (!raw || typeof raw !== "object") return null
+  const serviceSlug = pickStr(raw, "service_slug")
+  const cadence = pickStr(raw, "billing.schedules.0.cadence")
+  const recurrence = pickStr(raw, "billing.schedules.0.recurrence")
+  const isRecurring = pickBool(raw, "billing.is_recurring") === true
+  // Effective billing frequency: prefer cadence; fall back to recurrence
+  // ("once_off" / "monthly" / "yearly"). When the line is flagged as
+  // non-recurring we hard-code "one-time" so downstream MRR aggregations
+  // don't accidentally include deposits.
+  const billingFrequency = isRecurring
+    ? (normalizeCadence(cadence) ?? normalizeCadence(recurrence) ?? "monthly")
+    : "one-time"
+  const periodValue = pickNum(raw, "pricing.minimum_period_value.amount", "billing.schedules.0.minimum_period_value.amount")
+  const contractValue = pickNum(raw, "pricing.minimum_contract_value.amount", "billing.schedules.0.minimum_contract_value.amount")
+  const quantity = pickNum(raw, "pricing.quantity") ?? 1
+  const currency =
+    pickStr(raw, "pricing.currency") ??
+    pickStr(raw, "billing.schedules.0.currency") ??
+    pickStr(raw, "billing.schedules.0.minimum_period_value.currency") ??
+    null
+  // service_name is NOT NULL on the table. A nameless line item is
+  // possible in theory but never in practice — guard with a sentinel so
+  // a malformed payload never poisons the whole batch.
+  const serviceName = pickStr(raw, "name") ?? "(unnamed service)"
+  return {
+    proposal_id: proposalId,
+    ignition_service_id:
+      serviceSlug && knownServiceIds.has(serviceSlug) ? serviceSlug : null,
+    service_name: serviceName,
+    description: pickStr(raw, "description"),
+    quantity,
+    unit_price: periodValue,
+    total_amount: contractValue,
+    currency,
+    billing_frequency: billingFrequency,
+    billing_type: pickStr(raw, "billing.mode"),
+    // Ignition can mark a line as deselected at acceptance (the client
+    // removed it from the package). Surface that in `status` so the
+    // sales views can filter to actually-accepted lines when needed.
+    status:
+      pickBool(raw, "is_selected_for_acceptance") === false
+        ? "deselected"
+        : "active",
+    // Always use the loop index for `ordinal` rather than Ignition's
+    // `position` field — some proposals have duplicate positions across
+    // add-ons (e.g. two add-ons both labelled position=0) which would
+    // collide on the (proposal_id, ignition_service_id, ordinal) unique
+    // index. The loop index is strictly unique within a proposal.
+    ordinal,
+    raw_payload: raw,
+  }
+}
+
 /** Splits a single Ignition `name` ("Smith, John") into first/last as best we
  *  can. Returns nulls when we genuinely can't tell. */
 function splitName(name: string | null): { first: string | null; last: string | null } {
@@ -544,7 +641,14 @@ export async function syncProposals(
   // Some proposals reference clients that don't come back from /reporting/clients
   // (archived/deleted/legacy IDs from the Zapier era). We pre-fetch the known
   // set so we can null those references rather than fail the batch.
-  const knownClientIds = await loadKnownIds(supabase, "ignition_clients", "ignition_client_id")
+  //
+  // ignition_proposal_services.ignition_service_id is a FK into ignition_services.
+  // Same story — we pre-fetch the catalog so any unknown service_slug on a
+  // line item is nulled rather than failing the whole service batch.
+  const [knownClientIds, knownServiceIds] = await Promise.all([
+    loadKnownIds(supabase, "ignition_clients", "ignition_client_id"),
+    loadKnownIds(supabase, "ignition_services", "ignition_service_id"),
+  ])
 
   return runResource(
     "proposals",
@@ -557,6 +661,67 @@ export async function syncProposals(
         .from("ignition_proposals")
         .upsert(rows, { onConflict: "proposal_id", count: "exact" })
       if (error) return { upserted: 0, error: `upsert_failed: ${error.message}` }
+
+      // ── Fan out every proposal's line items into ignition_proposal_services ──
+      // The Reporting API embeds `services[]` on each proposal. Previously
+      // we threw that data away — only ~22% of proposals (198/913) had any
+      // rows in `ignition_proposal_services`, with 2,299 line items missing
+      // firm-wide. Now we delete-and-reinsert the child rows in lockstep
+      // with the parent upsert so the table is always a faithful mirror
+      // of Ignition's current state for every synced proposal.
+      try {
+        const proposalIds = rows
+          .map((r: any) => r.proposal_id)
+          .filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+        if (proposalIds.length > 0) {
+          // Delete first so re-syncs don't leave stale lines behind (e.g.
+          // a partner removed a service from the proposal in Ignition).
+          // Chunk the IN clause to stay under PostgREST's URL length limit.
+          for (const idChunk of chunk(proposalIds, 100)) {
+            const { error: delErr } = await supabase
+              .from("ignition_proposal_services")
+              .delete()
+              .in("proposal_id", idChunk)
+            if (delErr) {
+              console.warn(
+                `[ignition/sync] proposal_services delete failed: ${delErr.message}`,
+              )
+            }
+          }
+
+          const serviceRows: any[] = []
+          for (const row of rows as any[]) {
+            const raw = row?.raw_payload
+            const list = Array.isArray(raw?.services) ? raw.services : []
+            list.forEach((svc: any, idx: number) => {
+              const built = buildProposalServiceRow(
+                row.proposal_id,
+                svc,
+                idx,
+                knownServiceIds,
+              )
+              if (built) serviceRows.push(built)
+            })
+          }
+          if (serviceRows.length > 0) {
+            for (const svcBatch of chunk(serviceRows, BATCH_SIZE)) {
+              const { error: insErr } = await supabase
+                .from("ignition_proposal_services")
+                .insert(svcBatch)
+              if (insErr) {
+                console.warn(
+                  `[ignition/sync] proposal_services insert failed: ${insErr.message}`,
+                )
+              }
+            }
+          }
+        }
+      } catch (svcErr: any) {
+        console.warn(
+          `[ignition/sync] proposal_services fanout exception: ${svcErr?.message || svcErr}`,
+        )
+      }
+
       return { upserted: count ?? rows.length }
     },
     (raw) => {

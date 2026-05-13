@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/server"
 import { buildTommyRecapHtml, sendCategoryEmail } from "@/lib/email"
 import { assignDenseRanks } from "@/lib/tommy-awards-ranking"
 import { generateText } from "ai"
+import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
 
 // AI generation can take 10-30s with a long prompt; bump from the default 10s.
 export const maxDuration = 60
@@ -238,7 +239,7 @@ ${notesText || "(No notes submitted this week.)"}
 Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly cheeky but always professional and uplifting. Celebrate the winners, highlight memorable accomplishments mentioned in the notes, and inject just enough British butler flair (e.g., "One observes...", "Indeed, quite the showing...") to make it fun without being over-the-top. Keep it concise — this is a firm-wide email. Do NOT use markdown formatting or headings — write in plain prose suitable for an HTML email body.`
 
       const { text } = await generateText({
-        model: "openai/gpt-4o",
+        model: EMAIL_PROSE_MODEL,
         prompt,
         // AI SDK 6: token cap parameter is `maxOutputTokens` (renamed from `maxTokens` in v5).
         maxOutputTokens: 600,

@@ -22,14 +22,16 @@
  */
 import { generateText } from "ai"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { RESEARCH_SUMMARY_MODEL } from "@/lib/ai/models"
 
 /** Hard cap on the upstream research call so the webhook stays snappy. */
 const RESEARCH_TIMEOUT_MS = 12_000
 /** Hard cap on the summarization call. */
 const SUMMARY_TIMEOUT_MS = 12_000
 /** Default model for summarization. Cheap + fast; we don't need a top-tier
- *  reasoning model to summarize 5 web snippets. */
-const SUMMARY_MODEL = "openai/gpt-5-mini"
+ *  reasoning model to summarize 5 web snippets. Routed through the
+ *  central registry so it stays in sync with the question-research pass. */
+const SUMMARY_MODEL = RESEARCH_SUMMARY_MODEL
 
 const PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1beta/search"
 
@@ -219,7 +221,11 @@ export async function enrichIntakeSubmission(
   //    return a useful row (URLs + raw snippets) so partners can read
   //    them in the email.
   let summary = ""
-  let usedModel = SUMMARY_MODEL
+  // Widened to `string` rather than the literal model id so the
+  // "fallback" sentinel branch below stays well-typed after the
+  // registry refactor (registry exports use `as const`, so `let` no
+  // longer widens automatically).
+  let usedModel: string = SUMMARY_MODEL
 
   const promptLines = [
     "You are ALFRED Ai, briefing a partner at Motta Financial about a new prospect.",
