@@ -20,6 +20,7 @@ import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
 import { ALFRED_CHAT_MODEL } from "@/lib/ai/models"
+import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 // Shape of the requesting user, sent from the client transport body.
 // See components/alfred-chat.tsx for the producer side.
@@ -1008,7 +1009,7 @@ export async function POST(req: Request) {
   //      message in a single round-trip, AFTER the stream is fully drained
   //      (otherwise we'd race the response).
   const stream = createUIMessageStream<UIMessage>({
-    execute: ({ writer }) => {
+    execute: async ({ writer }) => {
       if (conversationId) {
         writer.write({
           type: "data-conversation",
@@ -1056,17 +1057,43 @@ export async function POST(req: Request) {
         ),
       ) as typeof mergedTools
 
+      // Fetch AI config for model + prompt overrides from the admin panel.
+      // Falls back to hardcoded defaults if the DB isn't available.
+      const aiConfig = await getAIConfig("alfred_chat")
+      const startTime = Date.now()
+
+      // Build the system prompt, using the admin override if set
+      const baseSystemPrompt = aiConfig.systemPrompt
+        ? aiConfig.systemPrompt
+        : `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`
+
       const result = streamText({
-        // Routed through lib/ai/models so a model bump is one edit there,
-        // not a grep-and-replace across every AI surface in the app.
-        model: ALFRED_CHAT_MODEL,
-        system: `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`,
+        // Model can be overridden from the admin panel; falls back to
+        // ALFRED_CHAT_MODEL from lib/ai/models.ts if no override is set.
+        model: aiConfig.model,
+        system: baseSystemPrompt,
         messages: modelMessages,
         tools: filteredTools,
         // 12 steps lets ALFRED chain webSearch → pick a result → browsePage →
         // reply, with a couple DB lookups in the same turn if needed.
         stopWhen: stepCountIs(12),
         abortSignal: req.signal,
+        onFinish: async ({ usage }) => {
+          // Fire-and-forget usage logging for the admin stats dashboard
+          // AI SDK 6 uses inputTokens/outputTokens; we map to our DB schema names
+          logAIUsage({
+            useCase: "alfred_chat",
+            model: aiConfig.model,
+            promptTokens: usage?.inputTokens,
+            completionTokens: usage?.outputTokens,
+            totalTokens: usage?.totalTokens,
+            latencyMs: Date.now() - startTime,
+            success: true,
+            userId: currentUser?.teamMemberId,
+            userEmail: currentUser?.email,
+            metadata: { conversationId },
+          })
+        },
       })
 
       writer.merge(result.toUIMessageStream())

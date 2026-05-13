@@ -23,6 +23,7 @@
 import { generateText } from "ai"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { RESEARCH_SUMMARY_MODEL } from "@/lib/ai/models"
+import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 /** Hard cap on the upstream research call so the webhook stays snappy. */
 const RESEARCH_TIMEOUT_MS = 12_000
@@ -253,19 +254,44 @@ export async function enrichIntakeSubmission(
     .join("\n")
 
   try {
+    // Fetch AI config for model override from the admin panel
+    const aiConfig = await getAIConfig("jotform_enrichment")
+    const startTime = Date.now()
+
     const ai = await withTimeout(
       generateText({
-        model: SUMMARY_MODEL,
-        prompt: promptLines,
+        model: aiConfig.model,
+        prompt: aiConfig.systemPrompt ? `${aiConfig.systemPrompt}\n\n${promptLines}` : promptLines,
       }),
       SUMMARY_TIMEOUT_MS,
       "summary generateText",
     )
     if (ai?.text) {
       summary = ai.text.trim()
+      usedModel = aiConfig.model
+
+      // Log usage for the admin stats dashboard
+      // AI SDK 6 uses inputTokens/outputTokens; we map to our DB schema names
+      logAIUsage({
+        useCase: "jotform_enrichment",
+        model: aiConfig.model,
+        promptTokens: ai.usage?.inputTokens,
+        completionTokens: ai.usage?.outputTokens,
+        totalTokens: ai.usage?.totalTokens,
+        latencyMs: Date.now() - startTime,
+        success: true,
+        metadata: { businessName: input.business_name },
+      })
     }
   } catch (err) {
     console.log("[v0] enrich: generateText error:", (err as Error).message)
+    // Log failed attempt
+    logAIUsage({
+      useCase: "jotform_enrichment",
+      model: SUMMARY_MODEL,
+      success: false,
+      errorMessage: (err as Error).message,
+    })
   }
 
   if (!summary) {
