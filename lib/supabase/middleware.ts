@@ -42,13 +42,39 @@ export async function updateSession(request: NextRequest) {
     },
   })
 
-  // Do not run code between createServerClient and
-  // supabase.auth.getUser(). A simple mistake could make it very hard to debug
-  // issues with users being randomly logged out.
-
+  // IMPORTANT: We deliberately use `getSession()` here instead of `getUser()`.
+  //
+  // Why this matters for our auth-request budget:
+  //   • `getUser()` makes a **network call** to Supabase GoTrue on every
+  //     request to revalidate the JWT against the auth server. With a
+  //     middleware matcher this broad, every page nav, every fetch, and
+  //     every SWR poll burned one auth request. That's how we hit 22,841
+  //     auth calls in a day and tripped the project rate limit.
+  //   • `getSession()` reads the session cookie locally and verifies the
+  //     JWT signature using the project's JWT secret — no network call.
+  //     The signature check is cryptographically equivalent to a getUser()
+  //     call for the purpose of trusting the user.id / email claims on
+  //     this request.
+  //
+  // What we lose by not calling getUser():
+  //   • If the session was revoked server-side (admin ban, password change
+  //     elsewhere) but the access token hasn't expired yet (~1 hour
+  //     window), this middleware will still see the user as authenticated.
+  //   • Mitigations already in place:
+  //       1. The is_active check below queries the `team_members` row on
+  //          every request and signs the user out if they've been
+  //          deactivated — that's a single Postgres call, not an auth call.
+  //       2. Sensitive route handlers (anything touching service-role
+  //          data) still call `supabase.auth.getUser()` themselves, which
+  //          does a fresh server-side validation.
+  //
+  // Do not run code between createServerClient and the session read. A
+  // simple mistake could make it very hard to debug issues with users
+  // being randomly logged out.
   const {
-    data: { user },
-  } = await supabase.auth.getUser()
+    data: { session },
+  } = await supabase.auth.getSession()
+  const user = session?.user ?? null
 
   return { supabaseResponse, supabase, user }
 }

@@ -20,15 +20,18 @@ import {
   AlertCircle,
   Building2,
   Network,
+  Sparkles,
 } from "lucide-react"
 import { ViewManager } from "@/components/view-manager"
 import type { FilterView } from "@/lib/view-types"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { OrgChart } from "@/components/org-chart"
 import { Bot, Lock } from "lucide-react"
 import { isAlfredServiceAccount } from "@/lib/alfred/service-account"
+import { findHeroProfile, type HeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
 interface TeamMember {
   id: string
@@ -72,6 +75,12 @@ export function Teammates() {
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [departmentFilter, setDepartmentFilter] = useState<string>("all")
+  // Active hero profile to render in the modal. `null` when no card has
+  // been clicked. We resolve the comic-book hero from the teammate row
+  // by name + aliases (see lib/motta-alliance/hero-profiles.ts) so
+  // adding a new profile is one entry in that registry — no changes
+  // here.
+  const [activeHero, setActiveHero] = useState<HeroProfile | null>(null)
 
   useEffect(() => {
     fetchUsers()
@@ -302,11 +311,21 @@ export function Teammates() {
                   // see why deactivate-style controls (when they exist) are
                   // disabled on this row.
                   const isAlfred = isAlfredServiceAccount(user)
+                  // Resolve the comic-book hero profile (if any) for this
+                  // teammate. Returns null when the teammate hasn't been
+                  // comic-ified yet — we just skip the action in that case
+                  // so the card stays clean. Matching is by full_name plus
+                  // any aliases registered alongside the hero.
+                  const heroProfile = findHeroProfile(user.full_name)
                   return (
                   <Card
                     key={user.id}
                     className={`hover:shadow-md transition-shadow ${
-                      isAlfred ? "border-primary/40 bg-primary/[0.03]" : ""
+                      isAlfred
+                        ? "border-primary/40 bg-primary/[0.03]"
+                        : heroProfile
+                          ? "border-[#A8C566]/40"
+                          : ""
                     }`}
                   >
                     <CardContent className="p-6">
@@ -384,6 +403,25 @@ export function Teammates() {
                               </div>
                             )}
                           </div>
+                          {/* "View Hero Profile" call-to-action — only
+                              rendered when this teammate has been
+                              comic-ified. Clicking sets `activeHero`,
+                              which opens the full-page profile Dialog
+                              below. We keep the button understated so
+                              it reads as a fun easter egg rather than a
+                              primary action on the directory card. */}
+                          {heroProfile && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="mt-4 w-full border-[#A8C566]/60 text-[#5b7028] hover:bg-[#A8C566]/10 hover:text-[#3f5018] bg-transparent"
+                              onClick={() => setActiveHero(heroProfile)}
+                            >
+                              <Sparkles className="h-3.5 w-3.5 mr-2" />
+                              View Hero Profile
+                            </Button>
+                          )}
                         </div>
                       </div>
                     </CardContent>
@@ -428,6 +466,69 @@ export function Teammates() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Hero Profile Modal
+          ──────────────────────────────────────────────────────────
+          Renders the full comic-book profile PNG for the currently
+          selected hero. Open state is derived from `activeHero` so
+          there's a single source of truth — closing the dialog
+          (Escape / outside-click / close button) clears it.
+
+          Layout notes:
+            • Max-width is generous (4xl) because these images are
+              tall portraits with a lot of detail.
+            • We use `next/image` semantics via plain <img> here
+              because the asset lives on Vercel Blob with arbitrary
+              dimensions — the parent container constrains size and
+              `object-contain` keeps the aspect ratio intact.
+            • `DialogTitle` is visually hidden but kept for a11y; the
+              alias is rendered as a visible heading below the image
+              meta strip. */}
+      <Dialog
+        open={!!activeHero}
+        onOpenChange={(open) => {
+          if (!open) setActiveHero(null)
+        }}
+      >
+        <DialogContent className="max-w-4xl p-0 overflow-hidden bg-zinc-950 border-zinc-800">
+          <DialogTitle className="sr-only">
+            {activeHero ? `${activeHero.name} — ${activeHero.alias}` : "Hero Profile"}
+          </DialogTitle>
+          {activeHero && (
+            <div className="flex flex-col">
+              {/* Meta strip — alias + role + signature quote, sits
+                  above the comic page so the user knows who they're
+                  about to see before the image finishes loading. */}
+              <div className="px-6 pt-6 pb-4 border-b border-zinc-800">
+                <div className="flex items-center gap-2 mb-2">
+                  <Sparkles className="h-4 w-4 text-[#A8C566]" />
+                  <p className="text-xs uppercase tracking-[0.2em] text-[#A8C566] font-semibold">
+                    Motta Alliance · Hero Profile
+                  </p>
+                </div>
+                <h2 className="text-2xl font-bold text-zinc-50 text-balance">
+                  {activeHero.name}
+                </h2>
+                <p className="text-lg text-zinc-300 mt-1">{activeHero.alias}</p>
+                <p className="text-sm text-zinc-400 mt-2">{activeHero.role}</p>
+                <p className="text-sm italic text-zinc-500 mt-3 text-pretty">
+                  &ldquo;{activeHero.quote}&rdquo;
+                </p>
+              </div>
+              {/* The profile page itself. Constrained to ~80vh so it
+                  remains scrollable on shorter viewports without
+                  forcing the modal off-screen. */}
+              <div className="bg-zinc-900 max-h-[80vh] overflow-y-auto">
+                <img
+                  src={activeHero.imageUrl || "/placeholder.svg"}
+                  alt={`${activeHero.name} — ${activeHero.alias} hero profile page`}
+                  className="w-full h-auto object-contain"
+                />
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

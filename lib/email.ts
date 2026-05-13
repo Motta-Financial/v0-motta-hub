@@ -20,6 +20,11 @@ export const EMAIL_CATEGORIES = {
   // don't miss prospect intros, but appears under the same email
   // preferences UI so anyone can opt out.
   intake: { label: "New Intake Submissions", description: "ALFRED Ai alert when a prospect submits an intake form" },
+  // ALFRED-authored alert when a new edition of the Motta Alliance comic
+  // book series is issued through the in-app uploader. Defaults to ON so
+  // every teammate sees new lore drops, but lives under the standard
+  // email preferences UI for anyone who'd rather opt out.
+  motta_alliance: { label: "Motta Alliance Editions", description: "ALFRED Ai announcement when a new edition of the Motta Alliance comic series is published" },
   broadcast: { label: "Firm Announcements", description: "Custom announcement emails sent by partners or admins" },
   general: { label: "General Notifications", description: "Other in-app notifications not in a more specific category" },
 } as const
@@ -41,6 +46,7 @@ export function mapNotificationTypeToCategory(notificationType?: string | null):
   if (t.includes("meeting") || t.includes("calendly") || t.includes("zoom")) return "meeting_summary"
   if (t.includes("broadcast") || t.includes("announcement")) return "broadcast"
   if (t.includes("intake") || t.includes("jotform_intake") || t.includes("prospect")) return "intake"
+  if (t.includes("motta_alliance") || t.includes("alliance_issue")) return "motta_alliance"
   return "general"
 }
 
@@ -1343,7 +1349,7 @@ const newsHtml = `
   </div>
   </div>`
 
-  // ── Section: Hub Updates (Appendix) ────────────────────────────────────
+  // ── Section: Hub Updates (Appendix) ─────���──────────────────────────────
   const hubUpdatesHtml = hubUpdates && hubUpdates.length > 0
     ? `<table style="width:100%;border-collapse:collapse;">
         ${hubUpdates
@@ -1502,6 +1508,168 @@ function escapeBriefingText(value: string): string {
   // literally and look broken.
   const cleaned = value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(^|\s)\*([^*]+)\*/g, "$1$2")
   return escapeHtml(cleaned)
+}
+
+/**
+ * Motta Alliance — new-edition announcement email.
+ *
+ * Sent by ALFRED Ai when a teammate uploads a new issue of the in-house
+ * comic-book series via the Motta Alliance page. Visually matches the
+ * Tommy Recap and Daily Briefing emails (same shared wrapper, same
+ * "From ALFRED Ai" callout banner) so the firm's broadcast emails read
+ * as one consistent voice. The actual PDF is delivered as a real Resend
+ * attachment by the caller — this template just builds the HTML body.
+ *
+ * Inputs:
+ *   - issueLabel:   "Issue 3", "Vol. 2", etc. Shown as a small eyebrow.
+ *   - title / arc:  Headline + optional arc subtitle (e.g. "Taxverse 2026").
+ *   - tagline:      The comic's own one-liner from the cover.
+ *   - characters:   Featured cast — rendered as chips under the summary.
+ *   - aiSummary:    Claude's plain-text story-arc preview. Rendered with
+ *                   paragraph-aware <br>'s so multi-paragraph narration
+ *                   doesn't collapse into a single wall of text in Outlook.
+ *   - submittedBy:  Display name of the teammate who shipped the issue.
+ *   - galleryUrl:   Deep link back to the Motta Alliance page.
+ *   - pdfUrl:       Public Blob URL — used for the "Read in browser" CTA
+ *                   when the recipient prefers viewing in a tab over the
+ *                   attached PDF.
+ *   - pdfFilename:  Visible filename of the attachment (e.g.
+ *                   "Motta-Alliance--issue-3-foo.pdf") — used in the
+ *                   "Attached:" footer so the email body and the actual
+ *                   Resend attachment line up.
+ */
+export function buildMottaAllianceIssueHtml(opts: {
+  issueLabel: string
+  title: string
+  arc?: string | null
+  tagline?: string | null
+  characters?: string[]
+  aiSummary: string
+  submittedBy?: string | null
+  galleryUrl: string
+  pdfUrl: string
+  pdfFilename: string
+}) {
+  // Comic-book palette — matches the in-app /motta-alliance page and
+  // the printed-cover art in /lib/motta-alliance/hero-profiles.ts.
+  // Inlined here (rather than reusing BRAND from the rest of the file)
+  // because this is the ONE email template that has to feel like a
+  // comic-book splash instead of a corporate notification.
+  const COMIC = {
+    inkBlack: "#0A0E08",
+    panelBlack: "#0F140C",
+    panelEdge: "#1F2A1B",
+    cream: "#F4EFE8",
+    paper: "#D5D0C8",
+    mute: "#9B968D",
+    allianceGreen: "#A8C566",
+    allianceGreenDark: "#6B8E3D",
+    amber: "#E6A85C",
+    border: "rgba(168,197,102,0.35)",
+  }
+
+  const summaryHtml = formatNotesForEmail(opts.aiSummary)
+  const characterChips =
+    (opts.characters || []).length > 0
+      ? `<div style="margin:18px 0 0;">
+          ${(opts.characters || [])
+            .map(
+              (c) =>
+                `<span style="display:inline-block;background:rgba(168,197,102,0.10);color:${COMIC.allianceGreen};font-size:11px;font-weight:700;padding:5px 11px;border-radius:3px;margin:0 6px 6px 0;border:1px solid ${COMIC.border};letter-spacing:0.04em;text-transform:uppercase;">${c}</span>`,
+            )
+            .join("")}
+        </div>`
+      : ""
+
+  // Cover splash — the full-bleed banner at the top of the email body
+  // that visually echoes a comic-book splash page. Uses bold uppercase
+  // italic display type with a heavy text-shadow so it survives the
+  // Outlook / Gmail / Apple Mail render path (no @font-face required).
+  const splash = `
+    <div style="position:relative;background:${COMIC.panelBlack};border:1px solid ${COMIC.border};border-radius:10px;overflow:hidden;margin:0 0 28px;">
+      <div style="background:linear-gradient(135deg, rgba(168,197,102,0.18) 0%, transparent 55%), linear-gradient(315deg, rgba(230,168,92,0.10) 0%, transparent 55%);padding:34px 28px;text-align:center;">
+        <div style="display:inline-block;border:1px solid ${COMIC.allianceGreen};color:${COMIC.allianceGreen};font-size:10px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;padding:5px 12px;border-radius:3px;margin-bottom:14px;">
+          Motta Financial Alliance &middot; New Edition
+        </div>
+        <div style="color:${COMIC.paper};font-size:11px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;margin:0 0 8px;">
+          ${opts.issueLabel}${opts.arc ? ` &middot; ${opts.arc}` : ""}
+        </div>
+        <h1 style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:34px;font-weight:900;font-style:italic;line-height:0.95;letter-spacing:-0.01em;color:${COMIC.cream};text-transform:uppercase;text-shadow:0 2px 0 rgba(0,0,0,0.6), 0 0 24px rgba(168,197,102,0.25);">
+          ${opts.title}
+        </h1>
+        ${
+          opts.tagline
+            ? `<p style="margin:14px 0 0;font-size:13px;font-style:italic;color:${COMIC.paper};line-height:1.5;max-width:480px;margin-left:auto;margin-right:auto;">&ldquo;${opts.tagline}&rdquo;</p>`
+            : ""
+        }
+      </div>
+    </div>
+  `
+
+  const body = `
+    ${splash}
+
+    <div style="background:${COMIC.panelBlack};border:1px solid ${COMIC.border};border-left:4px solid ${COMIC.allianceGreen};padding:20px 22px;border-radius:8px;margin:0 0 26px;">
+      <div style="font-size:11px;font-weight:700;color:${COMIC.allianceGreen};text-transform:uppercase;letter-spacing:0.2em;margin-bottom:10px;">
+        From ALFRED Ai &middot; Story Preview
+      </div>
+      <div style="font-size:15px;color:${COMIC.cream};line-height:1.7;">${summaryHtml}</div>
+      ${characterChips}
+    </div>
+
+    <div style="text-align:center;margin:28px 0 8px;">
+      <a href="${opts.pdfUrl}"
+         style="display:inline-block;background:${COMIC.allianceGreen};color:${COMIC.inkBlack};padding:13px 30px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;margin:0 4px 8px;">
+        Read the Full Issue
+      </a>
+      <a href="${opts.galleryUrl}"
+         style="display:inline-block;background:transparent;color:${COMIC.allianceGreen};padding:12px 29px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;border:1px solid ${COMIC.allianceGreen};margin:0 4px 8px;">
+        Open the Vault
+      </a>
+    </div>
+
+    <p style="margin:22px 0 0;color:${COMIC.mute};font-size:12px;text-align:center;line-height:1.6;">
+      Attached: <strong style="color:${COMIC.paper};">${opts.pdfFilename}</strong>
+      ${opts.submittedBy ? `<br>Issued by ${opts.submittedBy}.` : ""}
+    </p>
+  `
+
+  return baseComicEmailWrapper(
+    `${opts.issueLabel}: ${opts.title}`,
+    body,
+    "A new edition of the Motta Alliance — sent by ALFRED Ai via MOTTA HUB.",
+  )
+}
+
+/**
+ * Comic-book-themed variant of the standard email wrapper. Used only
+ * for Motta Alliance edition announcements so the rest of the firm's
+ * transactional email stays clean and professional. Dark ink-black
+ * background, alliance-green header rule, lotus-cream body card.
+ */
+function baseComicEmailWrapper(headerTitle: string, bodyHtml: string, footerNote?: string) {
+  return `<!DOCTYPE html>
+  <html>
+  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+  <body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0A0E08;">
+  <div style="max-width:640px;margin:0 auto;padding:24px;">
+  <div style="background:#0F140C;border-radius:14px;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.6);border:1px solid rgba(168,197,102,0.25);">
+  <div style="background:#0A0E08;padding:24px 32px;border-bottom:2px solid #A8C566;">
+  <div style="color:#A8C566;font-size:10px;font-weight:700;letter-spacing:0.28em;text-transform:uppercase;margin-bottom:8px;">
+  Motta Hub &middot; The Alliance
+  </div>
+  <h1 style="color:#F4EFE8;font-size:22px;margin:0;font-weight:900;font-style:italic;text-transform:uppercase;letter-spacing:-0.005em;line-height:1.1;text-shadow:0 1px 0 rgba(0,0,0,0.6);">${headerTitle}</h1>
+  </div>
+  <div style="padding:32px;color:#F4EFE8;font-size:15px;line-height:1.6;">${bodyHtml}</div>
+  <div style="background:#0A0E08;padding:18px 32px;border-top:1px solid rgba(168,197,102,0.20);">
+  <p style="font-size:11px;color:#9B968D;margin:0;text-align:center;letter-spacing:0.05em;">
+  ${footerNote || "This is an automated notification from MOTTA HUB. Manage your email preferences in settings."}
+  </p>
+  </div>
+  </div>
+  </div>
+  </body>
+  </html>`
 }
 
 /**

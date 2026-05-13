@@ -94,7 +94,10 @@ export default function IgnitionAdminPage() {
   const { data: stats, isLoading: statsLoading, mutate: refetchStats } = useSWR<Stats>(
     "/api/ignition/stats",
     fetcher,
-    { refreshInterval: 30_000 },
+    // Was 30s — bumped to 2min to reduce middleware auth-request load.
+    // SWR's revalidateOnFocus still gives instant freshness when an
+    // admin tabs back in.
+    { refreshInterval: 120_000 },
   )
 
   const {
@@ -104,7 +107,10 @@ export default function IgnitionAdminPage() {
   } = useSWR<{ clients: UnmatchedClient[] }>(
     `/api/ignition/clients/unmatched?search=${encodeURIComponent(search)}&limit=100`,
     fetcher,
-    { refreshInterval: 30_000 },
+    // Was 30s — bumped to 2min. The unmatched list only changes when a
+    // proposal is matched (which already triggers refetchUnmatched()
+    // imperatively) or when a new Ignition webhook lands.
+    { refreshInterval: 120_000 },
   )
 
   const unmatched = unmatchedData?.clients ?? []
