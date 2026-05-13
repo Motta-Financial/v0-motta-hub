@@ -244,6 +244,16 @@ export async function GET(req: Request) {
       is_curated_recurring: boolean
       /** Direct link to the rendered Ignition proposal PDF. */
       signed_url: string | null
+      /** Direct link to the proposal in the Ignition web app. Always
+       *  available for proposals with a modern `prop_xxx` slug; null
+       *  for legacy `PROP-1234`-style rows imported from Zapier. */
+      ignition_url: string | null
+      /** Direct link to the Ignition client page (when known). Lets the
+       *  table render a working "Open in Ignition" client link even when
+       *  we haven't matched the proposal to an internal organization. */
+      ignition_client_url: string | null
+      /** Ignition client slug (the `cli_xxx` id) for matching workflows. */
+      ignition_client_id: string | null
       /** Count of line items on this proposal. */
       service_count: number
       /** Whether ANY line item has billing_frequency != 'one-time'. */
@@ -306,6 +316,34 @@ export async function GET(req: Request) {
         recurring = 0
       }
 
+      // ── Direct links into Ignition ─────────────────────────────────
+      // The Reporting API embeds `link` (the proposal page on
+      // go.ignitionapp.com) and `client_slug` (the `cli_xxx` id) on the
+      // raw payload. Surface both so the table can always render a
+      // jump-to-Ignition button — independent of whether we've matched
+      // the proposal to an internal organization yet (only ~31% are).
+      //
+      // Fallback: synthesize the proposal URL from the slug when
+      // `link` is missing (~20 rows firm-wide), but only for modern
+      // `prop_xxx` ids — legacy `PROP-1234` rows imported from Zapier
+      // don't resolve on go.ignitionapp.com.
+      const payloadLink =
+        typeof p.payload?.link === "string" && p.payload.link.length > 0
+          ? p.payload.link
+          : null
+      const ignitionUrl =
+        payloadLink ??
+        (p.proposal_id?.startsWith("prop_")
+          ? `https://go.ignitionapp.com/proposals/${p.proposal_id}`
+          : null)
+      const igClientSlug =
+        typeof p.payload?.client_slug === "string" && p.payload.client_slug.length > 0
+          ? p.payload.client_slug
+          : p.ignition_client_id
+      const ignitionClientUrl = igClientSlug
+        ? `https://go.ignitionapp.com/clients/${igClientSlug}`
+        : null
+
       return {
         proposal_id: p.proposal_id,
         proposal_number: p.proposal_number,
@@ -337,6 +375,9 @@ export async function GET(req: Request) {
         canonical_services: Array.from(canonicalSet),
         is_curated_recurring: isCurated,
         signed_url: p.signed_url ?? null,
+        ignition_url: ignitionUrl,
+        ignition_client_url: ignitionClientUrl,
+        ignition_client_id: igClientSlug ?? null,
         service_count: serviceCount,
         has_recurring_line: hasRecurringLine,
       }

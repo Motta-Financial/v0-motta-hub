@@ -104,6 +104,14 @@ interface Proposal {
   /** Direct link to the rendered proposal PDF (when Ignition has signed
    *  it). Populated for ~75% of proposals in practice. */
   signed_url: string | null
+  /** Direct link to the proposal in the Ignition web app. ~98% populated. */
+  ignition_url: string | null
+  /** Direct link to the Ignition client page — used as the client-link
+   *  fallback when we haven't matched the proposal to an internal
+   *  organization yet (only ~31% of rows are matched). */
+  ignition_client_url: string | null
+  /** Ignition client slug (`cli_xxx`). */
+  ignition_client_id: string | null
   /** Number of line items on this proposal. */
   service_count: number
   /** Whether ANY line item has a non-"one-time" billing frequency. Used
@@ -688,17 +696,42 @@ export function SalesProposals() {
                 ) : (
                   data?.proposals.map((p) => {
                     const orgName = p.organizations?.name || p.client_name || "—"
-                    const orgHref = p.organization_id ? `/clients/${p.organization_id}` : null
+                    // Internal client profile when we've matched the
+                    // proposal to an organization (~31% of rows). Falls
+                    // through to the Ignition client URL when unmatched
+                    // so EVERY row gets a working client link — partners
+                    // shouldn't have to bounce out to Ignition's UI just
+                    // to find a client we already know about.
+                    const orgHref = p.organization_id
+                      ? `/clients/${p.organization_id}`
+                      : null
+                    const clientHref = orgHref ?? p.ignition_client_url
+                    const clientLinkIsExternal = !orgHref && !!p.ignition_client_url
                     const tone = STATUS_TONE[p.status || ""] || "bg-stone-100 text-stone-700 border-stone-200"
                     return (
                       <tr key={p.proposal_id} className="border-b hover:bg-stone-50/60">
                         <td className="px-3 py-2 font-mono text-xs">{p.proposal_number || p.proposal_id.slice(0, 8)}</td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-2">
-                            {orgHref ? (
-                              <Link href={orgHref} className="hover:underline font-medium">
-                                {orgName}
-                              </Link>
+                            {clientHref ? (
+                              clientLinkIsExternal ? (
+                                // External link to Ignition's client page —
+                                // visually identical so the table reads
+                                // consistently, but opens in a new tab.
+                                <a
+                                  href={clientHref}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="hover:underline font-medium"
+                                  title="Open in Ignition (no internal client match yet)"
+                                >
+                                  {orgName}
+                                </a>
+                              ) : (
+                                <Link href={clientHref} className="hover:underline font-medium">
+                                  {orgName}
+                                </Link>
+                              )
                             ) : (
                               <span className="font-medium">{orgName}</span>
                             )}
@@ -808,14 +841,21 @@ export function SalesProposals() {
                                 <FileText className="h-3.5 w-3.5" />
                               </a>
                             ) : null}
-                            {orgHref ? (
-                              <Link
-                                href={orgHref}
+                            {p.ignition_url ? (
+                              // ~98% of proposals have a direct link to
+                              // the proposal page in Ignition's web app.
+                              // Distinct from `signed_url` (the PDF) —
+                              // this one opens the live editable proposal
+                              // so partners can take action on it.
+                              <a
+                                href={p.ignition_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 className="text-stone-500 hover:text-stone-900 p-1"
-                                title="Open client"
+                                title="Open proposal in Ignition"
                               >
                                 <ExternalLink className="h-3.5 w-3.5" />
-                              </Link>
+                              </a>
                             ) : null}
                           </div>
                         </td>
