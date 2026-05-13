@@ -19,6 +19,7 @@ import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
+import { ALFRED_CHAT_MODEL } from "@/lib/ai/models"
 
 // Shape of the requesting user, sent from the client transport body.
 // See components/alfred-chat.tsx for the producer side.
@@ -1056,7 +1057,9 @@ export async function POST(req: Request) {
       ) as typeof mergedTools
 
       const result = streamText({
-        model: "openai/gpt-4o",
+        // Routed through lib/ai/models so a model bump is one edit there,
+        // not a grep-and-replace across every AI surface in the app.
+        model: ALFRED_CHAT_MODEL,
         system: `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`,
         messages: modelMessages,
         tools: filteredTools,

@@ -8,37 +8,82 @@
  * and locally `pnpm vercel env pull` populates the same token (or you
  * can fall back to a personal `AI_GATEWAY_API_KEY`).
  *
+ * ── Why this file exists ─────────────────────────────────────────────
+ *
  * Hard-coding raw model IDs at every call site has two problems:
  *
  *   1. Models drift fast. Anthropic shipped Sonnet 4 → 4.5 → 4.6 and
- *      Opus 4 → 4.1 → 4.5 → 4.6 → 4.7 within months. Pinning the wrong
- *      one means we either silently sit on stale capabilities or have
- *      to grep-and-replace across the codebase every quarter.
+ *      Opus 4 → 4.1 → 4.5 → 4.6 → 4.7 within months; OpenAI is on
+ *      gpt-5.5 already. Pinning the wrong one means we either silently
+ *      sit on stale capabilities or have to grep-and-replace across
+ *      the codebase every quarter.
  *   2. There's no central audit of which features use which model — a
  *      partner-visible feature might quietly be on a cheap haiku.
  *
- * This file is the single source of truth. Import `CLAUDE_MODELS` for
- * the menu of options, and reference the named exports (`CLAUDE_SONNET`,
- * `CLAUDE_OPUS`, `CLAUDE_HAIKU`) at call sites so a future model bump
- * is one edit here.
+ * ── How to use ───────────────────────────────────────────────────────
+ *
+ * - Reference a NAMED ROLE (`ALFRED_CHAT_MODEL`, `EMAIL_PROSE_MODEL`,
+ *   `RESEARCH_SUMMARY_MODEL`) when you want the project's "current
+ *   choice" for that workload. Bumping the role rebinds every call
+ *   site at once.
+ * - Reference a SPECIFIC MODEL (`CLAUDE_SONNET`, `OPENAI_GPT_5`) when
+ *   you have a hard requirement on that exact model and don't want a
+ *   role bump to silently move you.
+ * - For the playground / model pickers, use `CLAUDE_MODELS`.
+ *
+ * If you find yourself adding a raw `"openai/..."` or `"anthropic/..."`
+ * string anywhere else in the repo, add it here first and import the
+ * symbol instead. That's the entire point of this file.
  */
 
-/** Latest Anthropic models exposed through the Vercel AI Gateway.
- *  Verified live against https://ai-gateway.vercel.sh/v1/models. */
+// ─── Anthropic ───────────────────────────────────────────────────────
+// Verified live against https://ai-gateway.vercel.sh/v1/models.
+
 export const CLAUDE_OPUS = "anthropic/claude-opus-4.7" as const
 export const CLAUDE_SONNET = "anthropic/claude-sonnet-4.6" as const
 export const CLAUDE_HAIKU = "anthropic/claude-haiku-4.5" as const
 
 /** Default Claude model for general-purpose chat / reasoning tasks.
  *  Sonnet 4.6 is the current "smart enough for most things, fast
- *  enough to stream conversationally" sweet spot. Bump this when a
- *  newer Sonnet ships. */
+ *  enough to stream conversationally" sweet spot. */
 export const CLAUDE_DEFAULT = CLAUDE_SONNET
 
 export type ClaudeModelId =
   | typeof CLAUDE_OPUS
   | typeof CLAUDE_SONNET
   | typeof CLAUDE_HAIKU
+
+// ─── OpenAI ──────────────────────────────────────────────────────────
+// Models actually referenced from this codebase. Add more here before
+// using them at a call site rather than splicing strings inline.
+
+export const OPENAI_GPT_4O = "openai/gpt-4o" as const
+export const OPENAI_GPT_5 = "openai/gpt-5" as const
+export const OPENAI_GPT_5_MINI = "openai/gpt-5-mini" as const
+
+// ─── Role-based aliases ──────────────────────────────────────────────
+// These bind a workload to a specific model. To migrate a workload to
+// a different model (e.g. flip ALFRED to Claude Sonnet) change the
+// constant on the right-hand side here — every call site picks it up.
+
+/** ALFRED conversational chat with tool-use. Long context window + many
+ *  parallel tool calls per turn, so we stay on a top-tier reasoning
+ *  model. Keep on OpenAI for now — switching providers mid-stream is a
+ *  separate decision from the registry refactor. */
+export const ALFRED_CHAT_MODEL = OPENAI_GPT_4O
+
+/** Short, formulaic British-butler prose for transactional emails
+ *  (daily briefing intro, weekly Tommy recap). Capped at a few hundred
+ *  tokens; doesn't need flagship reasoning. */
+export const EMAIL_PROSE_MODEL = OPENAI_GPT_4O
+
+/** Jotform intake research summaries — both the "what does this
+ *  company do" enrichment and the "answer the prospect's question"
+ *  research pass. We deliberately use a small/fast model with a short
+ *  timeout so a slow LLM never blocks the intake email. */
+export const RESEARCH_SUMMARY_MODEL = OPENAI_GPT_5_MINI
+
+// ─── UI surfaces ─────────────────────────────────────────────────────
 
 export interface ClaudeModelOption {
   id: ClaudeModelId

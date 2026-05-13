@@ -20,10 +20,11 @@
  * cite sources so the partner can verify before forwarding.
  */
 import { generateText } from "ai"
+import { RESEARCH_SUMMARY_MODEL } from "@/lib/ai/models"
 
 const RESEARCH_TIMEOUT_MS = 12_000
 const SUMMARY_TIMEOUT_MS = 12_000
-const SUMMARY_MODEL = "openai/gpt-5-mini"
+const SUMMARY_MODEL = RESEARCH_SUMMARY_MODEL
 const PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1beta/search"
 
 interface ParallelResult {

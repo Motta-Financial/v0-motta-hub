@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/server"
 import { buildDailyBriefingHtml, sendCategoryEmail } from "@/lib/email"
 import { fetchNewsCategory, type NewsItem } from "@/lib/news-feed"
 import { getRemindersForRange } from "@/lib/team-reminders"
+import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
 
 /**
  * ALFRED Ai's weekday morning briefing.
@@ -657,7 +658,7 @@ Rules:
 - One light British flourish ("one observes...", "rather", "indeed", "if I may") is plenty; don't overdo it.`
 
     const { text } = await generateText({
-      model: "openai/gpt-4o",
+      model: EMAIL_PROSE_MODEL,
       prompt,
       maxOutputTokens: 280,
     })

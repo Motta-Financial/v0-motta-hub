@@ -11,6 +11,9 @@
  */
 import { streamText } from "ai"
 
+// Standalone node smoke test — can't import from `lib/ai/models.ts` at
+// runtime without a build step, so the model id is duplicated here.
+// Keep it in lockstep with `CLAUDE_OPUS` in `lib/ai/models.ts`.
 const result = streamText({
   model: "anthropic/claude-opus-4.7",
   prompt: "Why is the sky blue?",
