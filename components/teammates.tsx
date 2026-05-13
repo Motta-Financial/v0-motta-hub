@@ -20,15 +20,18 @@ import {
   AlertCircle,
   Building2,
   Network,
+  Sparkles,
 } from "lucide-react"
 import { ViewManager } from "@/components/view-manager"
 import type { FilterView } from "@/lib/view-types"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { OrgChart } from "@/components/org-chart"
 import { Bot, Lock } from "lucide-react"
 import { isAlfredServiceAccount } from "@/lib/alfred/service-account"
+import { findHeroProfile, type HeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
 interface TeamMember {
   id: string
@@ -72,6 +75,12 @@ export function Teammates() {
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [departmentFilter, setDepartmentFilter] = useState<string>("all")
+  // Active hero profile to render in the modal. `null` when no card has
+  // been clicked. We resolve the comic-book hero from the teammate row
+  // by name + aliases (see lib/motta-alliance/hero-profiles.ts) so
+  // adding a new profile is one entry in that registry — no changes
+  // here.
+  const [activeHero, setActiveHero] = useState<HeroProfile | null>(null)
 
   useEffect(() => {
     fetchUsers()
@@ -302,11 +311,21 @@ export function Teammates() {
                   // see why deactivate-style controls (when they exist) are
                   // disabled on this row.
                   const isAlfred = isAlfredServiceAccount(user)
+                  // Resolve the comic-book hero profile (if any) for this
+                  // teammate. Returns null when the teammate hasn't been
+                  // comic-ified yet — we just skip the action in that case
+                  // so the card stays clean. Matching is by full_name plus
+                  // any aliases registered alongside the hero.
+                  const heroProfile = findHeroProfile(user.full_name)
                   return (
                   <Card
                     key={user.id}
                     className={`hover:shadow-md transition-shadow ${
-                      isAlfred ? "border-primary/40 bg-primary/[0.03]" : ""
+                      isAlfred
+                        ? "border-primary/40 bg-primary/[0.03]"
+                        : heroProfile
+                          ? "border-[#A8C566]/40"
+                          : ""
                     }`}
                   >
                     <CardContent className="p-6">
