@@ -413,9 +413,17 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         taxYear: number | null
         status: string | null
         efileStatus: string | null
+        amended: boolean | null
+        preparer: string | null
         totalRevenue: number | null
         totalIncome: number | null
         totalTax: number | null
+        refund: number | null
+        amountOwed: number | null
+        // The raw row stays attached so the profile can reach into
+        // form-specific fields (filing_status, business_activity_code,
+        // k1_count, etc.) without another DB round-trip.
+        raw: Record<string, any>
         updatedAt: string | null
       }>
       returnCount: number
@@ -423,6 +431,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     } | null = null
 
     if (proconnectClientId) {
+      // Mirror the breadth of the ProConnect Returns API so the
+      // client profile Tax tab can render every column the dedicated
+      // tax pages render — refund / amount owed / preparer /
+      // amended flag / filing status — without a second fetch.
       const [pcClientRes, pc1040, pc1065, pc1120, pc1120s, pc990] = await Promise.all([
         supabase
           .from("proconnect_clients")
@@ -432,33 +444,38 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         supabase
           .from("proconnect_1040_returns")
           .select(
-            "tax_year, return_status, efile_status, wages_salaries_tips, adjusted_gross_income, total_tax, updated_at",
+            "tax_year, return_status, efile_status, amended, preparer, filing_status, taxpayer_occupation, wages_salaries_tips, adjusted_gross_income, taxable_income, total_tax, refund, amount_owed, federal_tax_withheld, qualified_business_income_deduction, total_itemized_or_standard_deduction, has_schedule_c, has_schedule_e, qualifying_children_count, other_dependents_count, updated_at",
           )
-          .eq("proconnect_client_id", proconnectClientId),
+          .eq("proconnect_client_id", proconnectClientId)
+          .order("tax_year", { ascending: false }),
         supabase
           .from("proconnect_1065_returns")
           .select(
-            "tax_year, return_status, efile_status, gross_receipts_less_returns, ordinary_business_income_loss, updated_at",
+            "tax_year, return_status, efile_status, amended, preparer, business_activity_code, k1_count, gross_receipts_less_returns, gross_profit, ordinary_business_income_loss, total_deductions, depreciation, cash_distributions, partners_ending_capital, total_balance_due, overpayment, beginning_assets, ending_assets, updated_at",
           )
-          .eq("proconnect_client_id", proconnectClientId),
+          .eq("proconnect_client_id", proconnectClientId)
+          .order("tax_year", { ascending: false }),
         supabase
           .from("proconnect_1120_returns")
           .select(
-            "tax_year, return_status, efile_status, gross_receipts_less_returns, taxable_income, total_tax, updated_at",
+            "tax_year, return_status, efile_status, amended, preparer, business_activity_code, gross_receipts_less_returns, gross_profit, taxable_income, total_tax, tax_due, payments_and_credits, refund_or_amount_due, officer_compensation, depreciation, total_deductions, beginning_assets, ending_assets, updated_at",
           )
-          .eq("proconnect_client_id", proconnectClientId),
+          .eq("proconnect_client_id", proconnectClientId)
+          .order("tax_year", { ascending: false }),
         supabase
           .from("proconnect_1120s_returns")
           .select(
-            "tax_year, return_status, efile_status, gross_receipts_less_returns, ordinary_business_income_loss, updated_at",
+            "tax_year, return_status, efile_status, amended, preparer, business_activity_code, k1_count, gross_receipts_less_returns, gross_profit, ordinary_business_income_loss, compensation_of_officers, depreciation, total_deductions, balance_due, refund, overpayment, beginning_assets, ending_assets, updated_at",
           )
-          .eq("proconnect_client_id", proconnectClientId),
+          .eq("proconnect_client_id", proconnectClientId)
+          .order("tax_year", { ascending: false }),
         supabase
           .from("proconnect_990_returns")
           .select(
-            "tax_year, return_status, efile_status, total_revenue, revenue_less_expenses, pf_tax_due, updated_at",
+            "tax_year, return_subtype, return_status, efile_status, amended, preparer, ein, total_revenue, total_expenses, revenue_less_expenses, total_assets_end, total_liabilities_end, net_assets_end, ez_total_revenue, ez_total_expenses, ez_net_assets_end, pf_tax_due, pf_net_assets_end, updated_at",
           )
-          .eq("proconnect_client_id", proconnectClientId),
+          .eq("proconnect_client_id", proconnectClientId)
+          .order("tax_year", { ascending: false }),
       ])
 
       // Normalize all five form-specific schemas into one row shape so
@@ -472,9 +489,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
           taxYear: r.tax_year ?? null,
           status: r.return_status ?? null,
           efileStatus: r.efile_status ?? null,
+          amended: r.amended ?? null,
+          preparer: r.preparer ?? null,
           totalRevenue: r.wages_salaries_tips ?? null,
           totalIncome: r.adjusted_gross_income ?? null,
           totalTax: r.total_tax ?? null,
+          refund: r.refund ?? null,
+          amountOwed: r.amount_owed ?? null,
+          raw: r,
           updatedAt: r.updated_at ?? null,
         })),
         ...(pc1065.data || []).map((r: any) => ({
@@ -482,9 +504,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
           taxYear: r.tax_year ?? null,
           status: r.return_status ?? null,
           efileStatus: r.efile_status ?? null,
+          amended: r.amended ?? null,
+          preparer: r.preparer ?? null,
           totalRevenue: r.gross_receipts_less_returns ?? null,
           totalIncome: r.ordinary_business_income_loss ?? null,
           totalTax: null,
+          refund: r.overpayment ?? null,
+          amountOwed: r.total_balance_due ?? null,
+          raw: r,
           updatedAt: r.updated_at ?? null,
         })),
         ...(pc1120.data || []).map((r: any) => ({
@@ -492,9 +519,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
           taxYear: r.tax_year ?? null,
           status: r.return_status ?? null,
           efileStatus: r.efile_status ?? null,
+          amended: r.amended ?? null,
+          preparer: r.preparer ?? null,
           totalRevenue: r.gross_receipts_less_returns ?? null,
           totalIncome: r.taxable_income ?? null,
           totalTax: r.total_tax ?? null,
+          refund: null,
+          amountOwed: r.tax_due ?? null,
+          raw: r,
           updatedAt: r.updated_at ?? null,
         })),
         ...(pc1120s.data || []).map((r: any) => ({
@@ -502,9 +534,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
           taxYear: r.tax_year ?? null,
           status: r.return_status ?? null,
           efileStatus: r.efile_status ?? null,
+          amended: r.amended ?? null,
+          preparer: r.preparer ?? null,
           totalRevenue: r.gross_receipts_less_returns ?? null,
           totalIncome: r.ordinary_business_income_loss ?? null,
           totalTax: null,
+          refund: r.refund ?? null,
+          amountOwed: r.balance_due ?? null,
+          raw: r,
           updatedAt: r.updated_at ?? null,
         })),
         ...(pc990.data || []).map((r: any) => ({
@@ -512,9 +549,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
           taxYear: r.tax_year ?? null,
           status: r.return_status ?? null,
           efileStatus: r.efile_status ?? null,
+          amended: r.amended ?? null,
+          preparer: r.preparer ?? null,
           totalRevenue: r.total_revenue ?? null,
           totalIncome: r.revenue_less_expenses ?? null,
           totalTax: r.pf_tax_due ?? null,
+          refund: null,
+          amountOwed: null,
+          raw: r,
           updatedAt: r.updated_at ?? null,
         })),
       ].sort((a, b) => (b.taxYear ?? 0) - (a.taxYear ?? 0))
