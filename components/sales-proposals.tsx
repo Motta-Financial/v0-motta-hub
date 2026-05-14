@@ -501,13 +501,13 @@ export function SalesProposals() {
 
           <MultiSelectChip
             label="Status"
-            options={data?.dimensions.statuses || []}
+            options={data?.dimensions?.statuses || []}
             value={status}
             onChange={(v) => updateParams({ status: v.length ? v.join(",") : null })}
           />
           <MultiSelectChip
             label="State"
-            options={data?.dimensions.states || []}
+            options={data?.dimensions?.states || []}
             value={state}
             // The picker shows "Massachusetts" but the URL stores the abbr "MA"
             // so links remain compact and don't change when the lookup table grows.
@@ -525,10 +525,10 @@ export function SalesProposals() {
             // problem (e.g. "Individual Tax Return (1040)" vs
             // "Tax | Prep (1040): Federal Return (Individual)" all
             // collapse into the same canonical id).
-            options={(data?.dimensions.canonicalServices || []).map((c) => c.id)}
+            options={(data?.dimensions?.canonicalServices || []).map((c) => c.id)}
             value={canonicalService}
             formatLabel={(id) =>
-              data?.dimensions.canonicalServices.find((c) => c.id === id)?.label ?? id
+              data?.dimensions?.canonicalServices.find((c) => c.id === id)?.label ?? id
             }
             onChange={(v) =>
               updateParams({ canonicalService: v.length ? v.join(",") : null })
@@ -536,7 +536,7 @@ export function SalesProposals() {
           />
           <MultiSelectChip
             label="Service Line"
-            options={data?.dimensions.serviceLines || []}
+            options={data?.dimensions?.serviceLines || []}
             value={serviceLine}
             // Pass through verbatim: the values are already user-facing
             // ("Tax", "Accounting", "Advisory", "Other").
@@ -545,19 +545,19 @@ export function SalesProposals() {
           />
           <MultiSelectChip
             label="Partner"
-            options={data?.dimensions.partners || []}
+            options={data?.dimensions?.partners || []}
             value={partner}
             onChange={(v) => updateParams({ partner: v.length ? v.join(",") : null })}
           />
           <MultiSelectChip
             label="Manager"
-            options={data?.dimensions.managers || []}
+            options={data?.dimensions?.managers || []}
             value={manager}
             onChange={(v) => updateParams({ manager: v.length ? v.join(",") : null })}
           />
           <MultiSelectChip
             label="Sent by"
-            options={data?.dimensions.sentBy || []}
+            options={data?.dimensions?.sentBy || []}
             value={sentBy}
             onChange={(v) => updateParams({ sentBy: v.length ? v.join(",") : null })}
           />
@@ -871,7 +871,7 @@ export function SalesProposals() {
 
       <ProposalEditSheet
         proposal={editing}
-        statuses={data?.dimensions.statuses || []}
+        statuses={data?.dimensions?.statuses || []}
         open={!!editing}
         onOpenChange={(o) => {
           if (!o) setEditing(null)

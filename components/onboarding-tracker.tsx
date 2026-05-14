@@ -395,7 +395,7 @@ export function OnboardingTracker() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All statuses</SelectItem>
-              {(data?.dimensions.statuses ?? []).map((s) => (
+              {(data?.dimensions?.statuses ?? []).map((s) => (
                 <SelectItem key={s} value={s}>
                   {s}
                 </SelectItem>
@@ -409,7 +409,7 @@ export function OnboardingTracker() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All assignees</SelectItem>
-              {(data?.dimensions.assignees ?? []).map((a) => (
+              {(data?.dimensions?.assignees ?? []).map((a) => (
                 <SelectItem key={a} value={a}>
                   {a}
                 </SelectItem>
@@ -467,7 +467,7 @@ export function OnboardingTracker() {
   )
 }
 
-// ─── Cards ──────────────────────────────────────────────────────────────
+// ─── Cards ─────────────��────────────────────────────────────────────────
 
 function StatCard({
   label,

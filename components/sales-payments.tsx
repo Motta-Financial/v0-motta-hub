@@ -405,14 +405,14 @@ export function SalesPayments() {
 
           <MultiSelectChip
             label="Status"
-            options={data?.dimensions.statuses || []}
+            options={data?.dimensions?.statuses || []}
             value={status}
             formatLabel={(v) => (v === "(none)" ? "(no status)" : titleCase(v))}
             onChange={(v) => updateParams({ status: v.length ? v.join(",") : null })}
           />
           <MultiSelectChip
             label="State"
-            options={data?.dimensions.states || []}
+            options={data?.dimensions?.states || []}
             value={state}
             formatLabel={(v) =>
               v === "(unknown)" ? "(no state on file)" : US_STATE_NAMES[v] || v

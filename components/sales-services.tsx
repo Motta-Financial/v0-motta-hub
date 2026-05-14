@@ -376,7 +376,7 @@ export function SalesServices() {
           />
           <MultiSelectChip
             label="Category"
-            options={data?.dimensions.categories || []}
+            options={data?.dimensions?.categories || []}
             value={category}
             onChange={(v) =>
               updateParams({ category: v.length ? v.join(",") : null })
@@ -384,7 +384,7 @@ export function SalesServices() {
           />
           <MultiSelectChip
             label="Billing"
-            options={data?.dimensions.billingTypes || []}
+            options={data?.dimensions?.billingTypes || []}
             value={billingType}
             onChange={(v) =>
               updateParams({ billingType: v.length ? v.join(",") : null })

@@ -700,7 +700,7 @@ export function SalesDashboard() {
             <MultiSelectFilter
               label="Status"
               value={statusFilter}
-              options={data?.dimensions.statuses ?? []}
+              options={data?.dimensions?.statuses ?? []}
               onChange={(v) => setParam("status", v.length ? v.join(",") : null)}
               renderOption={(s) => (
                 <Badge variant="outline" className={cn("text-xs", statusMeta(s).tone)}>
@@ -711,25 +711,25 @@ export function SalesDashboard() {
             <MultiSelectFilter
               label="State"
               value={stateFilter}
-              options={data?.dimensions.states ?? []}
+              options={data?.dimensions?.states ?? []}
               onChange={(v) => setParam("state", v.length ? v.join(",") : null)}
             />
             <MultiSelectFilter
               label="Partner"
               value={partnerFilter}
-              options={data?.dimensions.partners ?? []}
+              options={data?.dimensions?.partners ?? []}
               onChange={(v) => setParam("partner", v.length ? v.join(",") : null)}
             />
             <MultiSelectFilter
               label="Manager"
               value={managerFilter}
-              options={data?.dimensions.managers ?? []}
+              options={data?.dimensions?.managers ?? []}
               onChange={(v) => setParam("manager", v.length ? v.join(",") : null)}
             />
             <MultiSelectFilter
               label="Sent by"
               value={sentByFilter}
-              options={data?.dimensions.sentBy ?? []}
+              options={data?.dimensions?.sentBy ?? []}
               onChange={(v) => setParam("sentBy", v.length ? v.join(",") : null)}
             />
             <ValueRangeFilter
