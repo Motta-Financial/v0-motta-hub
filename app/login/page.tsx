@@ -137,50 +137,99 @@ function LoginContent() {
       }
     }
 
-    // Purge any stale local Supabase session BEFORE the GoTrue client
+    // Purge any stale Supabase session state BEFORE the GoTrue client
     // gets a chance to act on it.
     //
-    // The "Too many sign-in attempts from this network" error has a
-    // particularly nasty failure mode where the per-IP /token bucket
-    // stays exhausted even when nobody is actively signing in. The
-    // cause: every team member who got kicked from a session
-    // (deactivation redirect, prior "enforce single session per user"
-    // setting, expired refresh token) lands on /login with a stale
-    // refresh token still sitting in their browser's local storage.
-    // The @supabase/ssr browser client mounts, sees that token, and
-    // immediately fires POST /token grant_type=refresh_token. Supabase
-    // returns 400 "Refresh Token Not Found" -- which the client treats
-    // as a transient failure and retries on a backoff. Multiple tabs
-    // on multiple machines behind the office NAT all do this in
-    // parallel and the per-IP rate limit stays pegged, which is the
-    // SAME bucket Sign In has to draw from.
+    // Why this exists at all:
+    //   Users who reach /login almost always have a broken auth state
+    //   to clean up -- session expired, kicked by deactivation, came
+    //   from a crashed tab, etc. If we don't clean it up here, the
+    //   stale state causes two distinct failure modes:
     //
-    // The fix is to explicitly clear the local session keys before
-    // the browser client has a chance to look at them. We don't use
-    // `supabase.auth.signOut({ scope: 'local' })` because by the time
-    // that runs the client has already started a refresh attempt --
-    // we need to wipe the storage keys directly.
+    //   1. The signed-out user lands on /login with leftover tokens
+    //      in their browser. The GoTrue client mounts, sees them, and
+    //      fires POST /token grant_type=refresh_token. With invalid
+    //      tokens that returns 400, which the client retries on a
+    //      backoff -- pegging the per-IP rate-limit bucket and
+    //      blocking other users on the same NAT from signing in.
     //
-    // Safe to run on every mount: if there's no session, this is a
-    // no-op; if there's a valid session, the user would have been
-    // redirected away by middleware before reaching this page.
+    //   2. The "Signing in..." spinner hangs forever. @supabase/ssr's
+    //      auth client uses the Web Locks API to serialize concurrent
+    //      auth operations across tabs/workers. If a prior tab
+    //      crashed mid-operation (or the dashboard force-terminated a
+    //      session) the lock can be left in a "held but unreleasable"
+    //      state for this origin. The next signInWithPassword() then
+    //      awaits a lock that will never resolve and the UI freezes.
+    //      Incognito doesn't share locks/cookies with the main
+    //      profile, which is exactly why incognito sign-in works
+    //      when the regular browser doesn't.
+    //
+    // What to clean up:
+    //   @supabase/ssr v0.8 stores the session in COOKIES on the
+    //   document (key: sb-<project-ref>-auth-token, plus chunked
+    //   `.0` / `.1` variants for large JWTs). It may *also* mirror
+    //   into localStorage. So we have to wipe both. Cookies are the
+    //   important one -- localStorage alone is not enough, and that
+    //   was the bug in the prior version of this purge.
     if (typeof window !== "undefined") {
       try {
-        // Supabase-ssr stores the session under
-        // `sb-<project-ref>-auth-token` (and a `.0` / `.1` chunked
-        // variant for large sessions). Wipe any key matching that
-        // pattern so the browser client comes up clean.
-        const keysToRemove: string[] = []
+        // 1. Wipe matching localStorage keys.
+        const lsKeys: string[] = []
         for (let i = 0; i < window.localStorage.length; i++) {
           const key = window.localStorage.key(i)
           if (key && key.startsWith("sb-") && key.includes("-auth-token")) {
-            keysToRemove.push(key)
+            lsKeys.push(key)
           }
         }
-        keysToRemove.forEach((k) => window.localStorage.removeItem(k))
+        lsKeys.forEach((k) => window.localStorage.removeItem(k))
+
+        // 2. Wipe matching sessionStorage keys (some @supabase/ssr
+        //    builds and PKCE flows park transient state here).
+        try {
+          const ssKeys: string[] = []
+          for (let i = 0; i < window.sessionStorage.length; i++) {
+            const key = window.sessionStorage.key(i)
+            if (key && key.startsWith("sb-")) {
+              ssKeys.push(key)
+            }
+          }
+          ssKeys.forEach((k) => window.sessionStorage.removeItem(k))
+        } catch {
+          // ignore
+        }
+
+        // 3. Wipe sb-* cookies on the current origin. THIS is the one
+        //    that actually unsticks the spinner-hang case.
+        //
+        //    document.cookie can only see/clear cookies that match
+        //    the current path+domain visibility, but @supabase/ssr
+        //    writes its cookies at Path=/ with no special Domain, so
+        //    a same-origin overwrite to expire=Thu, 01 Jan 1970 is
+        //    sufficient. We also clear at a couple of common
+        //    Domain= scopings in case Vercel preview/prod set them
+        //    on the apex.
+        const expire = "; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/"
+        const host = window.location.hostname
+        const apex = host.split(".").slice(-2).join(".") // e.g. mottafinancial.com
+        document.cookie.split(";").forEach((rawCookie) => {
+          const eq = rawCookie.indexOf("=")
+          const name = (eq > -1 ? rawCookie.substring(0, eq) : rawCookie).trim()
+          if (!name.startsWith("sb-")) return
+          // No domain (default — what @supabase/ssr writes)
+          document.cookie = `${name}=${expire}`
+          // Current host
+          document.cookie = `${name}=${expire}; domain=${host}`
+          // Apex (covers cases where the cookie was written with a
+          // leading-dot apex domain by another auth helper)
+          if (apex && apex !== host) {
+            document.cookie = `${name}=${expire}; domain=.${apex}`
+          }
+        })
       } catch {
-        // Local storage may be unavailable (private mode, disabled
-        // cookies, etc.) -- not fatal, sign-in still works.
+        // Storage may be unavailable (private mode, disabled cookies,
+        // odd extension sandbox). Not fatal -- the user can still
+        // attempt sign-in; if it hangs, the safety timeout in
+        // handleLogin will surface a clear error.
       }
     }
 
@@ -213,10 +262,32 @@ function LoginContent() {
     try {
       const supabase = createClient()
 
-      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
+      // Safety timeout. @supabase/ssr uses the Web Locks API to
+      // serialize auth operations across tabs. If a prior tab left a
+      // lock in a non-releasable state, signInWithPassword() can hang
+      // forever awaiting it -- the user just sees "Signing in..."
+      // spin indefinitely with no error to act on. We race the
+      // sign-in against a 15s timeout so the failure surfaces as a
+      // recoverable error message with a clear recovery hint
+      // ("clear site data" or "try incognito"). 15s is comfortably
+      // above any real-world signInWithPassword latency (<2s).
+      const TIMEOUT_MS = 15_000
+      const signInPromise = supabase.auth.signInWithPassword({ email, password })
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                "Sign-in timed out. This usually means your browser has stale session data. Please open Developer Tools → Application → Clear site data, or try an incognito window.",
+              ),
+            ),
+          TIMEOUT_MS,
+        ),
+      )
+      const { data: authData, error: authError } = (await Promise.race([
+        signInPromise,
+        timeoutPromise,
+      ])) as Awaited<typeof signInPromise>
 
       if (authError) {
         // GoTrue's per-IP request limiter fires when an IP makes too
@@ -278,6 +349,10 @@ function LoginContent() {
     } catch (err) {
       if (err instanceof TypeError && err.message.includes("fetch")) {
         setError("Unable to connect. Please check your internet connection.")
+      } else if (err instanceof Error && err.message.startsWith("Sign-in timed out")) {
+        // Surface the timeout message verbatim -- it contains the
+        // actionable recovery hint (clear site data / incognito).
+        setError(err.message)
       } else {
         setError("An unexpected error occurred. Please try again.")
       }
