@@ -125,12 +125,19 @@ export function UserProvider({ children }: { children: ReactNode }) {
     const supabase = createClient()
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event: AuthChangeEvent) => {
-        // On any auth change, clear the cache and refetch. This handles:
-        // - SIGNED_IN after login
-        // - SIGNED_OUT after logout
-        // - TOKEN_REFRESHED (session renewed in the background)
-        // - USER_UPDATED
-        if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+        // Only refetch user data on REAL identity transitions:
+        //   - SIGNED_IN  -> we have a new user, populate the cache
+        //   - SIGNED_OUT -> user is gone, clear the cache
+        //
+        // We deliberately ignore TOKEN_REFRESHED and USER_UPDATED here.
+        // Supabase fires TOKEN_REFRESHED roughly every 50 minutes per
+        // open tab as part of normal session refresh -- the underlying
+        // user identity hasn't changed, so refetching /api/auth/user
+        // each time was a pure waste of a Postgres round-trip per tab
+        // per hour. Multiply that by every team member with the Hub
+        // open in the background and it was a non-trivial chunk of
+        // the project's request budget.
+        if (event === "SIGNED_IN" || event === "SIGNED_OUT") {
           clearUserCache()
           fetchUserData(true)
         }

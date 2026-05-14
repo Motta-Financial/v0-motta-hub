@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 import {
   calendlyListAll,
   calendlyRequest,
@@ -101,7 +102,7 @@ async function resolveConnection(
   if (!teamMemberId) {
     const {
       data: { user },
-    } = await supabase.auth.getUser()
+    } = await getAuthenticatedUser(supabase)
     if (!user) return null
     const { data: tm } = await supabase
       .from("team_members")

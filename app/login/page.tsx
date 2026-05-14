@@ -166,7 +166,23 @@ function LoginContent() {
       })
 
       if (authError) {
-        setError(authError.message)
+        // GoTrue's per-IP request limiter fires when an IP makes too
+        // many auth requests in a short window (Supabase Cloud default
+        // is ~30 requests / 5 min). When several team members share an
+        // office NAT or someone is mashing the sign-in button, the
+        // raw "Request rate limit reached" message reads like a bug.
+        // Surface a friendlier explanation + cooldown instead.
+        const msg = authError.message || ""
+        const isRateLimit =
+          /rate limit/i.test(msg) ||
+          (authError as { status?: number }).status === 429
+        if (isRateLimit) {
+          setError(
+            "Too many sign-in attempts from this network. Please wait a few minutes and try again. If this keeps happening, contact an administrator.",
+          )
+        } else {
+          setError(msg)
+        }
         setIsLoading(false)
         return
       }

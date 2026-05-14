@@ -36,11 +36,30 @@ export async function middleware(request: NextRequest) {
   // automation that runs as ALFRED must do so via service-role calls in a
   // server action / API route, not via this middleware.
   if (user) {
-    const { data: tm } = await supabase
+    // Two-step lookup so we never feed user-controlled values into a
+    // PostgREST `.or()` filter string. The previous implementation
+    // built `or=(auth_user_id.eq.${id},email.eq.${email})` by string
+    // interpolation -- emails legally contain `,` and `)` inside
+    // quoted local parts (RFC 5321), and any such value would break
+    // PostgREST's filter parser and return 4xx, silently kicking the
+    // user back to /login. Each query below is a single `.eq()` so
+    // the value is URL-encoded as a whole token.
+    let tm: { is_active: boolean | null } | null = null
+    const byAuthId = await supabase
       .from("team_members")
       .select("is_active")
-      .or(`auth_user_id.eq.${user.id},email.eq.${user.email ?? ""}`)
+      .eq("auth_user_id", user.id)
       .maybeSingle()
+    if (byAuthId.data) {
+      tm = byAuthId.data
+    } else if (user.email) {
+      const byEmail = await supabase
+        .from("team_members")
+        .select("is_active")
+        .eq("email", user.email)
+        .maybeSingle()
+      tm = byEmail.data
+    }
 
     // If we found a row and it's explicitly inactive, terminate the session.
     // (No row = brand new auth user that hasn't been provisioned yet -- let

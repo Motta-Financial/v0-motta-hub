@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 import {
   buildLoomShareUrl,
   extractLoomVideoId,
@@ -132,7 +133,7 @@ export async function POST(req: NextRequest) {
   // we don't want anonymous traffic creating rows even if they can).
   const {
     data: { user },
-  } = await supabase.auth.getUser()
+  } = await getAuthenticatedUser(supabase)
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }

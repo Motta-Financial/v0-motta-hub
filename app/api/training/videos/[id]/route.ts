@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 
 /**
  * Single-video endpoints.
@@ -46,7 +47,7 @@ export async function PATCH(
 
   const {
     data: { user },
-  } = await supabase.auth.getUser()
+  } = await getAuthenticatedUser(supabase)
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -110,7 +111,7 @@ export async function DELETE(
 
   const {
     data: { user },
-  } = await supabase.auth.getUser()
+  } = await getAuthenticatedUser(supabase)
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }

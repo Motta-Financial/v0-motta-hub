@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 import { calendlyRequest, type CalendlyConnectionRow } from "@/lib/calendly-api"
 
 /**
@@ -20,7 +21,7 @@ export async function POST(request: NextRequest) {
     if (!resolvedTeamMember) {
       const {
         data: { user },
-      } = await supabase.auth.getUser()
+      } = await getAuthenticatedUser(supabase)
       if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
       const { data: tm } = await supabase
         .from("team_members")

@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import crypto from "crypto"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 import { getCalendlyOAuthConfig } from "@/lib/calendly-api"
 
 /**
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
 
     const {
       data: { user },
-    } = await supabase.auth.getUser()
+    } = await getAuthenticatedUser(supabase)
     if (!user) {
       return NextResponse.redirect(new URL("/login?next=/calendly", request.url))
     }

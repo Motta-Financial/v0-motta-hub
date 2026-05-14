@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 import { revokeToken } from "@/lib/ignition/oauth"
 
 /**
@@ -15,7 +16,7 @@ export async function POST(_request: NextRequest) {
 
     const {
       data: { user },
-    } = await supabase.auth.getUser()
+    } = await getAuthenticatedUser(supabase)
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }

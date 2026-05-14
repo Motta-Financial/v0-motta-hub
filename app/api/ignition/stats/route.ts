@@ -23,6 +23,7 @@
  */
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 
 export const runtime = "nodejs"
 
@@ -32,7 +33,7 @@ export async function GET() {
 
     const {
       data: { user },
-    } = await supabase.auth.getUser()
+    } = await getAuthenticatedUser(supabase)
     if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
   // Run all aggregates in parallel; each is a tiny indexed COUNT or a
