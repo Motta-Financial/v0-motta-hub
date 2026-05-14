@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import crypto from "crypto"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 import { buildAuthorizeUrl } from "@/lib/ignition/oauth"
 
 /**
@@ -20,7 +21,7 @@ export async function GET(request: NextRequest) {
 
     const {
       data: { user },
-    } = await supabase.auth.getUser()
+    } = await getAuthenticatedUser(supabase)
     if (!user) {
       return NextResponse.redirect(new URL("/login?next=/admin/ignition", request.url))
     }

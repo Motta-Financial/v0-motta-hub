@@ -16,6 +16,7 @@
  */
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 
 export const runtime = "nodejs"
 
@@ -25,7 +26,7 @@ export async function GET(_req: Request, { params }: RouteCtx) {
   const { id } = await params
   const supabase = await createClient()
 
-  const { data: { user } } = await supabase.auth.getUser()
+  const { data: { user } } = await getAuthenticatedUser(supabase)
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
   const [{ data: client, error: clientErr }, { data: candidates, error: candErr }] = await Promise.all([
@@ -50,7 +51,7 @@ export async function POST(req: Request, { params }: RouteCtx) {
   const { id } = await params
   const supabase = await createClient()
 
-  const { data: { user } } = await supabase.auth.getUser()
+  const { data: { user } } = await getAuthenticatedUser(supabase)
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
   const body = await req.json().catch(() => ({}))
@@ -94,7 +95,7 @@ export async function DELETE(_req: Request, { params }: RouteCtx) {
   const { id } = await params
   const supabase = await createClient()
 
-  const { data: { user } } = await supabase.auth.getUser()
+  const { data: { user } } = await getAuthenticatedUser(supabase)
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
   // Reset to unmatched so the next sync tick re-runs auto-matching.
