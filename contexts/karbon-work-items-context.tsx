@@ -154,13 +154,33 @@ function isTaxWorkItem(title: string, workType?: string): boolean {
 export function KarbonWorkItemsProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname()
 
-  // Don't fetch on login or auth pages
+  // Pathname allowlist for the 5000-row work-items fetch.
+  //
+  // This provider is mounted at the root layout (app/layout.tsx), so
+  // historically it fired its 5000-row fetch on **every** page
+  // navigation — including the sign-in redirect to "/" — even though
+  // only one app route actually consumes the data:
+  //   • /work-items                      → WorkItemsView
+  //
+  // The other components that import useKarbonWorkItems
+  // (irs-notices, triage-summary, busy-season-tracker) are currently
+  // not rendered from any app/** route, so they don't trigger fetches
+  // either. Add their owning routes here if/when they get re-mounted.
+  //
+  // On every other route we pass `null` to useSWR, which means the
+  // fetcher never runs and the provider just returns empty arrays.
+  // Consumers on those routes don't exist, so they never read the
+  // empty state — this is a pure cost cut. Saves ~500ms–2s on the
+  // post-signin render and on every navigation that doesn't need it.
   const isAuthPage = pathname === "/login" || pathname?.startsWith("/auth")
+  const needsWorkItems =
+    !isAuthPage &&
+    (pathname === "/work-items" || pathname?.startsWith("/work-items/"))
 
   // Fetch from Supabase-backed route (fast, <100ms) instead of
-  // the Karbon API proxy (slow, 30+ seconds, frequently times out)
+  // the Karbon API proxy (slow, 30+ seconds, frequently times out).
   const { data, error, isLoading, mutate } = useSWR(
-    isAuthPage ? null : "/api/work-items?limit=5000",
+    needsWorkItems ? "/api/work-items?limit=5000" : null,
     fetcher,
     {
       revalidateOnFocus: false,
