@@ -140,6 +140,12 @@ function LoginContent() {
     const message = searchParams.get("message")
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
+    } else if (message === "password_changed") {
+      // Set by /settings/profile after a successful in-app password
+      // change. The profile route signs the user out server-side and
+      // sends them here so the post-update flow is one clean sign-in
+      // instead of a cascade of stale-token refreshes.
+      setSuccessMessage("Your password has been updated. Please sign in again with your new password.")
     }
 
     // Set by middleware when an active session belongs to a team_member that

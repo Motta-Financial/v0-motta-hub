@@ -15,6 +15,8 @@ import { useToast } from "@/hooks/use-toast"
 import { User, Mail, Phone, Building, MapPin, Camera, Save, Shield, Key, Calendar, Clock, Loader2, Trophy } from "lucide-react"
 import { useUser, useDisplayName, useUserInitials } from "@/hooks/use-user" // Importing missing hooks
 import { TrophyCase } from "@/components/trophy-case"
+import { createClient } from "@/lib/supabase/client"
+import { clearUserCache } from "@/contexts/user-context"
 
 const TIMEZONES = [
   { value: "America/New_York", label: "Eastern Time (ET)" },
@@ -176,9 +178,49 @@ export default function ProfileSettingsPage() {
         }),
       })
 
+      const result = await response.json().catch(() => ({}))
+
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || "Failed to update password")
+        throw new Error(result?.error || "Failed to update password")
+      }
+
+      // Server-side, the password route already revoked this session
+      // and Supabase has invalidated every OTHER refresh token for this
+      // user. If we just left the page alone here, this tab's
+      // in-memory Supabase client would keep using its now-stale
+      // access token until the next auto-refresh, at which point it
+      // would burn a GoTrue request to discover its refresh token is
+      // dead, fire SIGNED_OUT, and bounce to /login. Multiply that by
+      // every other tab the user has open and we'd start tripping the
+      // per-IP auth rate limit (which is exactly the bug that led to
+      // the "Too many sign-in attempts from this network" screen
+      // showing up right after a password change).
+      //
+      // Do the cleanup explicitly instead:
+      //   1. Tell the client-side Supabase instance to drop its
+      //      session locally (no GoTrue call -- `scope: 'local'`).
+      //   2. Wipe the UserContext cache so the destination /login
+      //      doesn't briefly hydrate from a stale user.
+      //   3. Hard-redirect to /login with a success banner.
+      if (result?.requireRelogin) {
+        try {
+          const supabase = createClient()
+          await supabase.auth.signOut({ scope: "local" })
+        } catch {
+          // ignore -- cookies are gone server-side anyway
+        }
+        clearUserCache()
+
+        toast({
+          title: "Password Updated",
+          description: "Please sign in again with your new password.",
+        })
+
+        // window.location is intentional over router.push so the
+        // entire React tree (and any stale module-level state in the
+        // Supabase client) is dropped.
+        window.location.href = "/login?message=password_changed"
+        return
       }
 
       toast({
