@@ -137,6 +137,53 @@ function LoginContent() {
       }
     }
 
+    // Purge any stale local Supabase session BEFORE the GoTrue client
+    // gets a chance to act on it.
+    //
+    // The "Too many sign-in attempts from this network" error has a
+    // particularly nasty failure mode where the per-IP /token bucket
+    // stays exhausted even when nobody is actively signing in. The
+    // cause: every team member who got kicked from a session
+    // (deactivation redirect, prior "enforce single session per user"
+    // setting, expired refresh token) lands on /login with a stale
+    // refresh token still sitting in their browser's local storage.
+    // The @supabase/ssr browser client mounts, sees that token, and
+    // immediately fires POST /token grant_type=refresh_token. Supabase
+    // returns 400 "Refresh Token Not Found" -- which the client treats
+    // as a transient failure and retries on a backoff. Multiple tabs
+    // on multiple machines behind the office NAT all do this in
+    // parallel and the per-IP rate limit stays pegged, which is the
+    // SAME bucket Sign In has to draw from.
+    //
+    // The fix is to explicitly clear the local session keys before
+    // the browser client has a chance to look at them. We don't use
+    // `supabase.auth.signOut({ scope: 'local' })` because by the time
+    // that runs the client has already started a refresh attempt --
+    // we need to wipe the storage keys directly.
+    //
+    // Safe to run on every mount: if there's no session, this is a
+    // no-op; if there's a valid session, the user would have been
+    // redirected away by middleware before reaching this page.
+    if (typeof window !== "undefined") {
+      try {
+        // Supabase-ssr stores the session under
+        // `sb-<project-ref>-auth-token` (and a `.0` / `.1` chunked
+        // variant for large sessions). Wipe any key matching that
+        // pattern so the browser client comes up clean.
+        const keysToRemove: string[] = []
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const key = window.localStorage.key(i)
+          if (key && key.startsWith("sb-") && key.includes("-auth-token")) {
+            keysToRemove.push(key)
+          }
+        }
+        keysToRemove.forEach((k) => window.localStorage.removeItem(k))
+      } catch {
+        // Local storage may be unavailable (private mode, disabled
+        // cookies, etc.) -- not fatal, sign-in still works.
+      }
+    }
+
     const message = searchParams.get("message")
     if (message === "password_reset_success") {
       setSuccessMessage("Your password has been reset successfully. Please sign in with your new password.")
