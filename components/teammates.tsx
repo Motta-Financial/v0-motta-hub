@@ -31,7 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { OrgChart } from "@/components/org-chart"
 import { Bot, Lock } from "lucide-react"
 import { isAlfredServiceAccount } from "@/lib/alfred/service-account"
-import { findHeroProfile, type HeroProfile } from "@/lib/motta-alliance/hero-profiles"
+import { findHeroProfile, findHeroProfileBySlug, type HeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
 interface TeamMember {
   id: string
@@ -56,6 +56,10 @@ interface TeamMember {
   karbon_user_key?: string
   created_at?: string
   updated_at?: string
+  // Slug linking to a hero profile in HERO_PROFILES array. When set,
+  // we use findHeroProfileBySlug for direct lookup instead of the
+  // fuzzy name-based matching.
+  hero_profile_slug?: string
 }
 
 interface SyncResult {
@@ -314,9 +318,12 @@ export function Teammates() {
                   // Resolve the comic-book hero profile (if any) for this
                   // teammate. Returns null when the teammate hasn't been
                   // comic-ified yet — we just skip the action in that case
-                  // so the card stays clean. Matching is by full_name plus
-                  // any aliases registered alongside the hero.
-                  const heroProfile = findHeroProfile(user.full_name)
+                  // so the card stays clean.
+                  // Primary: lookup by hero_profile_slug (direct DB link)
+                  // Fallback: name-based matching for backward compatibility
+                  const heroProfile = user.hero_profile_slug
+                    ? findHeroProfileBySlug(user.hero_profile_slug)
+                    : findHeroProfile(user.full_name)
                   return (
                   <Card
                     key={user.id}

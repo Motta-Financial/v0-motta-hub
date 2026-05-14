@@ -164,9 +164,24 @@ function normalizeName(name?: string | null): string {
 }
 
 /**
+ * Resolve a hero profile by slug. This is the PRIMARY lookup method
+ * when the team_member row has a `hero_profile_slug` column set.
+ * Returns `null` when no match exists.
+ */
+export function findHeroProfileBySlug(slug?: string | null): HeroProfile | null {
+  if (!slug) return null
+  const normalizedSlug = slug.trim().toLowerCase()
+  return HERO_PROFILES.find((h) => h.slug.toLowerCase() === normalizedSlug) ?? null
+}
+
+/**
  * Resolve a teammate name (or any of their known aliases) to a hero
  * profile. Returns `null` when no match exists so callers can fall
  * back gracefully — not every teammate has been comic-ified yet.
+ * 
+ * @deprecated Prefer `findHeroProfileBySlug` when the team_member row
+ * has a `hero_profile_slug` column. Name-based matching is kept as a
+ * fallback for backward compatibility.
  */
 export function findHeroProfile(name?: string | null): HeroProfile | null {
   const needle = normalizeName(name)
