@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js"
+import { createAdminClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
 
 /**
@@ -8,30 +8,31 @@ import { NextResponse } from "next/server"
  * hero profiles to team members by name.
  */
 export async function POST() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-  if (!supabaseUrl || !supabaseKey) {
+  console.log("[v0] Starting hero profile migration")
+  
+  let supabase
+  try {
+    supabase = await createAdminClient()
+    console.log("[v0] Supabase client created")
+  } catch (e) {
+    console.error("[v0] Failed to create admin client:", e)
     return NextResponse.json(
-      { error: "Missing Supabase environment variables" },
+      { error: `Failed to create Supabase client: ${e instanceof Error ? e.message : "Unknown"}` },
       { status: 500 }
     )
   }
 
-  const supabase = createClient(supabaseUrl, supabaseKey, {
-    auth: { persistSession: false },
-  })
-
   // Hero profile mappings: name patterns -> slug
+  // These match the slugs defined in lib/motta-alliance/hero-profiles.ts
   const heroMappings = [
-    { slug: "steph-motta", patterns: ["Steph Motta", "Stephanie Motta"] },
-    { slug: "david-motta", patterns: ["David Motta"] },
-    { slug: "austin-heisey", patterns: ["Austin Heisey"] },
-    { slug: "zach-siegel", patterns: ["Zachary Siegel", "Zach Siegel"] },
-    { slug: "ryan-bunnell", patterns: ["Ryan Bunnell"] },
-    { slug: "emma-siegel", patterns: ["Emma Siegel"] },
-    { slug: "nick-siegel", patterns: ["Nicholas Siegel", "Nick Siegel"] },
-    { slug: "mike-mcardle", patterns: ["Mike McArdle", "Michael McArdle"] },
+    { slug: "dat-le", patterns: ["Dat Le"] },
+    { slug: "mark-dwyer", patterns: ["Mark Dwyer"] },
+    { slug: "caleb-long", patterns: ["Caleb Long"] },
+    { slug: "amy-sparaco", patterns: ["Amy Sparaco"] },
+    { slug: "micaela-palacios", patterns: ["Micaela Palacios"] },
+    { slug: "ocp-andrew-gianares", patterns: ["Andrew Gianares", "Andrew \"OCP\" Gianares"] },
+    { slug: "samprina-zekio", patterns: ["Samprina Zekio"] },
+    // P24 Shadow Task Force is shared by Ganesh & Thameem - handled separately
   ]
 
   const results: { name: string; slug: string; success: boolean; error?: string }[] = []
