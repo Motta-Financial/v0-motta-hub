@@ -23,6 +23,7 @@
 // signature we can verify (cookie or Bearer), never from the body.
 
 import { createAdminClient, createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 // Mirrors the legacy `CurrentUser` shape consumed by app/api/alfred/chat
@@ -93,9 +94,17 @@ export async function resolveAlfredUser(
   }
 
   // ── Strategy B: Supabase session cookie ──────────────────────────
+  //
+  // Verify the cookie's JWT locally via `getAuthenticatedUser()`
+  // instead of round-tripping to Supabase's `/auth/v1/user` endpoint
+  // with `supabase.auth.getUser()`. Every Alfred chat turn fans out
+  // to multiple Alfred API routes, each of which used to fire one
+  // network auth check -- this is the single biggest contributor to
+  // the per-project auth-request volume that's saturating Supabase's
+  // per-IP rate limit and breaking sign-in for the whole office.
   try {
     const supabase = await createClient()
-    const { data, error } = await supabase.auth.getUser()
+    const { data, error } = await getAuthenticatedUser(supabase)
     if (!error && data?.user) {
       // We deliberately switch to the admin client for the team_members
       // lookup. RLS on team_members is unrelated to ALFRED scoping and

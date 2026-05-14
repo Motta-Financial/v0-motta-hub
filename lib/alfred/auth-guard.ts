@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 
 /**
  * Auth guard for the ALFRED data REST endpoints
@@ -68,11 +69,22 @@ export async function requireAlfredAuth(
   //    UI never calls these endpoints directly, only ALFRED does, but we
   //    leave the door open so debugging from a logged-in browser tab
   //    works without rotating the shared secret.)
+  //
+  // IMPORTANT: we use `getAuthenticatedUser()` (local JWT verify via
+  // getSession + signature check) instead of `supabase.auth.getUser()`
+  // here. The latter makes a network round-trip to Supabase's
+  // `/auth/v1/user` endpoint on EVERY call, and Alfred's 8 API routes
+  // hitting it on every chat turn was generating tens of thousands of
+  // auth requests per day -- the dominant source of the per-project
+  // auth-request budget burn and the per-IP rate limiting that was
+  // locking users out of sign-in. The JWT we verify locally is the
+  // same one GoTrue signs, so the identity is trustworthy for the
+  // lifetime of the access token.
   try {
     const supabase = await createClient()
     const {
       data: { user },
-    } = await supabase.auth.getUser()
+    } = await getAuthenticatedUser(supabase)
     if (user) {
       return null // Authorized via Supabase session.
     }
