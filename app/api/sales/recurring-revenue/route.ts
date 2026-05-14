@@ -4,10 +4,11 @@ import { createClient } from "@supabase/supabase-js"
 import {
   classifyService,
   effectiveBillingFrequency,
-  extractPayloadServices,
   normalizeClientName,
+  servicePeriodRate,
   type Department,
   type IgnitionBillingFrequency,
+  type ServiceRateInput,
 } from "@/lib/sales/ignition-recurring"
 import { normalizeState } from "@/lib/sales/us-geo"
 
@@ -33,25 +34,33 @@ const ACCEPTED_STATUSES = ["accepted", "completed"]
  * Sales > Recurring Revenue (live from Ignition)
  * ────────────────────────────────────────────────────────────────────────
  * MRR / ARR / Onboarding totals computed from active Ignition proposals
- * via the raw `payload.services` JSON — not the `ignition_proposal_services`
- * normalized table. That table is populated by an incomplete sync that
- * drops rows for ~460 of the firm's active proposals (including PROP-3021
- * "BKPG | Synergy Rehab Scottsbluff", which shows correctly in Ignition as
- * "$300 billed on acceptance + $300/mo recurring" but has zero rows in
- * the normalized table). Reading from the payload directly fixes that.
+ * via the normalized `ignition_proposal_services` table. As of the latest
+ * Ignition services import, this table is fully populated for every
+ * active proposal — see `scripts/audit-recurring-revenue-import.ts`,
+ * which confirmed parity to the penny against the legacy payload-JSON
+ * path ($40,872 MRR, 1,709 service lines, zero per-proposal deltas).
  *
  * Algorithm:
- *   1. Pull every active proposal (accepted, not revoked / lost / archived).
- *   2. For each service line in `payload.services`:
+ *   1. Pull every proposal matching the lifecycle filter (small column
+ *      set — we no longer need the multi-KB `payload` JSON on each row).
+ *   2. Pull every `ignition_proposal_services` row keyed to those
+ *      proposal_ids. Each row carries `unit_price`, `quantity`,
+ *      `total_amount`, `billing_frequency`, plus the raw Ignition
+ *      service payload (used as a fallback rate source via
+ *      `servicePeriodRate` — `total_amount / billing_events` is the
+ *      preferred per-cycle rate because it already reflects any
+ *      partner-applied discount).
+ *   3. For each service line:
  *        • classify into Department + service_type via the catalog
  *        • apply firm policy via `effectiveBillingFrequency` — Tax is
  *          never recurring, even when Ignition records monthly cadence
  *          (installment billing for one-time returns is common)
- *        • monthly contribution: period_rate for Monthly, period_rate/3
- *          for Quarterly, 0 otherwise
- *        • one-time contribution: contract_amount when the line is not
- *          recurring (captures Onboarding & Optimization too)
- *   3. Roll up by department, service_type, and client (grouped by
+ *        • monthly / annual contributions via `serviceMonthly` /
+ *          `serviceAnnual`
+ *        • one-time contribution: `total_amount` when the effective
+ *          frequency is one-time (captures Onboarding & Optimization,
+ *          billed-on-acceptance fees, and similar one-shot lines)
+ *   4. Roll up by department, service_type, and client (grouped by
  *      organization_id when present, else normalized client name).
  *
  * The partner-curated `motta_recurring_revenue` table is still consulted
@@ -82,11 +91,25 @@ interface ProposalRow {
   lost_at: string | null
   lost_reason: string | null
   created_at: string | null
+  effective_start_date: string | null
+  billing_starts_on: string | null
   total_value: number | null
   recurring_total: number | null
   one_time_total: number | null
-  payload: Record<string, unknown> | null
   organizations: { id: string; name: string | null } | null
+}
+
+interface ServiceRow {
+  proposal_id: string
+  service_name: string | null
+  description: string | null
+  billing_frequency: string | null
+  billing_type: string | null
+  unit_price: number | string | null
+  quantity: number | string | null
+  total_amount: number | string | null
+  ordinal: number | null
+  raw_payload: Record<string, unknown> | null
 }
 
 interface DeptAgg {
@@ -135,7 +158,16 @@ interface ClientAgg {
   earliest_accepted_at: string | null
 }
 
-/** Monthly contribution from one classified service line. */
+/**
+ * Monthly contribution from one classified service line.
+ *
+ * Firm policy: only true monthly and quarterly engagements roll into MRR.
+ * Weekly and annual services exist in Ignition but partners do not count
+ * them as recurring revenue here — they're tracked on other surfaces.
+ * Keep this helper local to enforce that policy rather than relying on
+ * the more permissive `serviceMonthly` in the lib (which is shared with
+ * other consumers that may want a fuller definition).
+ */
 function monthlyContribution(
   freq: IgnitionBillingFrequency,
   periodRate: number,
@@ -143,12 +175,11 @@ function monthlyContribution(
   if (periodRate <= 0) return 0
   if (freq === "monthly") return periodRate
   if (freq === "quarterly") return periodRate / 3
-  // Weekly, annual, etc. don't roll into MRR — the firm's partners count
-  // only true monthly / quarterly recurring engagements.
   return 0
 }
 
-/** Annual contribution (ARR) from one classified service line. */
+/** Annual contribution (ARR) from one classified service line. Same
+ * monthly/quarterly-only policy as `monthlyContribution` above. */
 function annualContribution(
   freq: IgnitionBillingFrequency,
   periodRate: number,
@@ -157,6 +188,28 @@ function annualContribution(
   if (freq === "monthly") return periodRate * 12
   if (freq === "quarterly") return periodRate * 4
   return 0
+}
+
+/** One-time contract value for a service line that we already know is
+ * non-recurring. Prefers `total_amount` (the contract total Ignition
+ * actually invoices) and falls back to `unit_price × quantity` for the
+ * rare row where `total_amount` is missing. */
+function oneTimeAmount(svc: ServiceRow): number {
+  const total = Number(svc.total_amount) || 0
+  if (total > 0) return total
+  const unit = Number(svc.unit_price) || 0
+  const qty = Number(svc.quantity) || 1
+  return unit * qty
+}
+
+/** ServiceRateInput shape required by the lib helpers. */
+function rateInputOf(svc: ServiceRow): ServiceRateInput {
+  return {
+    unit_price: svc.unit_price,
+    quantity: svc.quantity,
+    total_amount: svc.total_amount,
+    raw_payload: svc.raw_payload,
+  }
 }
 
 export async function GET(req: NextRequest) {
@@ -179,6 +232,8 @@ export async function GET(req: NextRequest) {
   // Paginate to safely walk past the PostgREST 1000-row cap. We always
   // exclude `archived_at` rows — archived proposals are tombstones,
   // never useful for any view. Other filters are applied per lifecycle.
+  // No more `payload` column on the wire — the normalized services
+  // table replaces it and the proposal rows are now <2 KB each.
   const proposals: ProposalRow[] = []
   {
     const PAGE = 500
@@ -191,8 +246,9 @@ export async function GET(req: NextRequest) {
           `proposal_id, proposal_number, status, client_name,
            client_partner, client_manager, proposal_sent_by,
            organization_id, contact_id, ignition_client_id,
-           accepted_at, sent_at, lost_at, lost_reason, created_at, total_value, recurring_total,
-           one_time_total, payload,
+           accepted_at, sent_at, lost_at, lost_reason, created_at,
+           effective_start_date, billing_starts_on,
+           total_value, recurring_total, one_time_total,
            organizations(id, name)`,
         )
         .is("archived_at", null)
@@ -227,6 +283,52 @@ export async function GET(req: NextRequest) {
       proposals.push(...chunk)
       if (chunk.length < PAGE) break
       if (offset >= 20_000) break
+    }
+  }
+
+  // ── 1a. Pull every service line for the proposals we just fetched ────
+  // `ignition_proposal_services` is the normalized table populated by
+  // the Ignition services import. It now mirrors `payload.services` for
+  // every active proposal (audited via scripts/audit-recurring-revenue-
+  // import.ts). Querying it lets us drop the heavy `payload` JSON from
+  // the proposals SELECT above and keeps classification on the request
+  // hot path simple — one row per service line.
+  //
+  // `.in("proposal_id", …)` is chunked to keep the URL well under
+  // PostgREST's 4096-char limit when we have many proposals selected.
+  const servicesByProposal = new Map<string, ServiceRow[]>()
+  if (proposals.length > 0) {
+    const proposalIds = proposals.map((p) => p.proposal_id)
+    const ID_CHUNK = 300
+    for (let i = 0; i < proposalIds.length; i += ID_CHUNK) {
+      const idChunk = proposalIds.slice(i, i + ID_CHUNK)
+      const PAGE = 1000
+      for (let offset = 0; ; offset += PAGE) {
+        const { data, error } = await supabase
+          .from("ignition_proposal_services")
+          .select(
+            `proposal_id, service_name, description, billing_frequency,
+             billing_type, unit_price, quantity, total_amount, ordinal,
+             raw_payload`,
+          )
+          .in("proposal_id", idChunk)
+          .order("ordinal", { ascending: true, nullsFirst: false })
+          .range(offset, offset + PAGE - 1)
+        if (error) {
+          console.error(
+            "[sales/recurring-revenue] services query failed:",
+            error,
+          )
+          return NextResponse.json({ error: error.message }, { status: 500 })
+        }
+        const chunk = (data ?? []) as unknown as ServiceRow[]
+        for (const s of chunk) {
+          const arr = servicesByProposal.get(s.proposal_id) ?? []
+          arr.push(s)
+          servicesByProposal.set(s.proposal_id, arr)
+        }
+        if (chunk.length < PAGE) break
+      }
     }
   }
 
@@ -299,7 +401,7 @@ export async function GET(req: NextRequest) {
 
   let totalServiceLines = 0
   for (const p of proposals) {
-    const services = extractPayloadServices(p.payload)
+    const services = servicesByProposal.get(p.proposal_id) ?? []
     if (services.length === 0) continue
 
     // Client identity: prefer organization_id when present so two
@@ -317,28 +419,27 @@ export async function GET(req: NextRequest) {
 
     let svcIdx = 0
     for (const svc of services) {
-      const cls = classifyService(svc.name)
+      const cls = classifyService(svc.service_name)
       const dept = cls.department
       const serviceType = cls.service_type
       const isOnboarding = cls.is_onboarding
 
       // Firm policy: Tax is never recurring, even when Ignition records
       // monthly cadence (installment-billed returns are common).
-      const freq = effectiveBillingFrequency(svc.raw_cadence, dept)
+      const freq: IgnitionBillingFrequency = effectiveBillingFrequency(
+        svc.billing_frequency,
+        dept,
+      )
 
-      const m = monthlyContribution(freq, svc.period_rate)
-      const a = annualContribution(freq, svc.period_rate)
+      const rateInput = rateInputOf(svc)
+      const periodRate = servicePeriodRate(rateInput)
+      const m = monthlyContribution(freq, periodRate)
+      const a = annualContribution(freq, periodRate)
 
       // One-time bucket: when the effective frequency is one-time we
-      // attribute the full contract amount. `contract_amount` carries
-      // the on-acceptance fee for the line (e.g. PROP-3021 has a $300
-      // "Billed on acceptance" line that lands here as $300 one-time).
-      const oneTime =
-        freq === "one-time"
-          ? svc.contract_amount > 0
-            ? svc.contract_amount
-            : svc.period_rate
-          : 0
+      // attribute the full contract amount via `total_amount` (Ignition's
+      // canonical line-level total).
+      const oneTime = freq === "one-time" ? oneTimeAmount(svc) : 0
       const onboarding = isOnboarding && freq === "one-time" ? oneTime : 0
 
       totalServiceLines += 1
@@ -430,11 +531,19 @@ export async function GET(req: NextRequest) {
       if (freq === "monthly") cRoll.cadences.add("Monthly")
       if (freq === "quarterly") cRoll.cadences.add("Quarterly")
       // Effective lifecycle date for the client roll-up. Prefer
-      // accepted_at; fall back through lost_at → sent_at → created_at so
-      // the column is still meaningful in the Pipeline / Lost / All
-      // tabs (those rows may not have an accepted_at).
+      // billing_starts_on / effective_start_date when set (these come
+      // directly from the new Ignition import and represent when the
+      // engagement actually begins billing), then fall back through
+      // accepted_at → lost_at → sent_at → created_at so the column is
+      // still meaningful in the Pipeline / Lost / All tabs.
       const effectiveDate =
-        p.accepted_at ?? p.lost_at ?? p.sent_at ?? p.created_at ?? null
+        p.billing_starts_on ??
+        p.effective_start_date ??
+        p.accepted_at ??
+        p.lost_at ??
+        p.sent_at ??
+        p.created_at ??
+        null
       if (
         effectiveDate &&
         (!cRoll.earliest_accepted_at ||
@@ -447,12 +556,12 @@ export async function GET(req: NextRequest) {
       // ── Raw row for the page expand view (recurring lines only) ────
       if (freq === "monthly" || freq === "quarterly") {
         rawRows.push({
-          id: `${p.proposal_id}::${svcIdx}`,
+          id: `${p.proposal_id}::${svc.ordinal ?? svcIdx}`,
           department: dept,
           service_type: serviceType,
           client_name: fallbackName,
           cadence: freq === "monthly" ? "Monthly" : "Quarterly",
-          service_fee: svc.period_rate,
+          service_fee: periodRate,
           one_time_fee: 0,
         })
       }
