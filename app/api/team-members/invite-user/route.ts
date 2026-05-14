@@ -1,7 +1,7 @@
 import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js"
-import { createClient as createServerClient } from "@/lib/supabase/server"
 import { NextResponse, type NextRequest } from "next/server"
 import { sendEmail, buildPasswordResetEmailHtml } from "@/lib/email"
+import { requireAdmin } from "@/lib/auth/require-admin"
 
 /**
  * POST /api/team-members/invite-user
@@ -77,18 +77,15 @@ async function findExistingAuthUser(admin: ReturnType<typeof createAdminClient>,
 
 export async function POST(request: NextRequest) {
   try {
-    // Caller must be a logged-in user (middleware already enforces auth, but
-    // we defensively re-check so this can't be hit unauthenticated even if
-    // middleware config drifts).
-    const serverSupabase = await createServerClient()
-    const {
-      data: { user: caller },
-      error: authError,
-    } = await serverSupabase.auth.getUser()
-
-    if (authError || !caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    // ADMIN ONLY. This endpoint uses the Supabase service-role key to
+    // create auth accounts and dispatch invite / recovery emails on
+    // the firm's behalf. Without an admin gate, any signed-in team
+    // member (associate, intern, ALFRED service account) could mint
+    // invites with arbitrary roles and departments and trigger emails
+    // from info@mottafinancial.com. We gate to ADMIN_ROLES
+    // (Company / Partner) — see `lib/auth/require-admin.ts`.
+    const adminCheck = await requireAdmin()
+    if (!adminCheck.ok) return adminCheck.response
 
     const body = await request.json()
     const { action, users }: { action: "invite" | "reset_password"; users: UserInput[] } = body

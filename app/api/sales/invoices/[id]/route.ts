@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 
 /**
  * PATCH /api/sales/invoices/[id]
@@ -35,12 +36,15 @@ export async function PATCH(
     return NextResponse.json({ error: "Missing invoice id" }, { status: 400 })
   }
 
-  // Auth gate
+  // Auth gate. Uses the local JWT-signature check from
+  // `lib/supabase/auth-helpers.ts` — no GoTrue network call. The
+  // middleware has already verified the session for any request that
+  // reaches this handler.
   try {
     const auth = await createClient()
     const {
       data: { user },
-    } = await auth.auth.getUser()
+    } = await getAuthenticatedUser(auth)
     if (!user) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 })
     }
