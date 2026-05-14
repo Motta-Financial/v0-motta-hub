@@ -91,68 +91,143 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
 
   if (loading) {
     return (
-      <Card className="border-border">
+      <Card
+        className="border-2"
+        style={{
+          backgroundColor: "#0F140C",
+          borderColor: "rgba(168,197,102,0.25)",
+        }}
+      >
         <CardContent className="flex items-center justify-center h-48">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-foreground"></div>
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2" style={{ borderColor: "#A8C566" }}></div>
         </CardContent>
       </Card>
     )
   }
 
   return (
-    <Card className="border-border bg-card">
+    <Card
+      className="border-2"
+      style={{
+        backgroundColor: "#0F140C",
+        borderColor: "rgba(168,197,102,0.25)",
+      }}
+    >
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-100 rounded-lg">
-              <TrendingUp className="h-5 w-5 text-emerald-600" />
+            <div
+              className="p-2 rounded-lg"
+              style={{ backgroundColor: "rgba(168,197,102,0.15)" }}
+            >
+              <TrendingUp className="h-5 w-5" style={{ color: "#A8C566" }} />
             </div>
             <div>
-              <CardTitle className="text-foreground">{displayYear} Year-to-Date Standings</CardTitle>
-              <CardDescription>Season-long standings & scoring system</CardDescription>
+              <CardTitle style={{ color: "#F4EFE8" }}>{displayYear} Year-to-Date Standings</CardTitle>
+              <CardDescription style={{ color: "#B8B3AA" }}>Season-long standings & scoring system</CardDescription>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
+            <Badge
+              variant="outline"
+              style={{
+                backgroundColor: "rgba(168,197,102,0.10)",
+                color: "#A8C566",
+                borderColor: "rgba(168,197,102,0.35)",
+              }}
+            >
               <Calendar className="h-3 w-3 mr-1" />
               {totalWeeks} {totalWeeks === 1 ? "week" : "weeks"}
             </Badge>
-            <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+            <Badge
+              variant="outline"
+              style={{
+                backgroundColor: "rgba(230,168,92,0.10)",
+                color: "#E6A85C",
+                borderColor: "rgba(230,168,92,0.35)",
+              }}
+            >
               {totalBallots} ballots
             </Badge>
           </div>
         </div>
 
         {/* Embedded Scoring System */}
-        <div className="mt-3 pt-3 border-t border-border">
+        <div
+          className="mt-3 pt-3 border-t"
+          style={{ borderColor: "rgba(168,197,102,0.20)" }}
+        >
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide mr-1">
+            <span
+              className="text-xs font-medium uppercase tracking-wide mr-1"
+              style={{ color: "#B8B3AA" }}
+            >
               Scoring:
             </span>
-            <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 text-xs">
+            <Badge
+              variant="outline"
+              className="text-xs"
+              style={{
+                backgroundColor: "rgba(230,168,92,0.15)",
+                color: "#E6A85C",
+                borderColor: "rgba(230,168,92,0.40)",
+              }}
+            >
               <Trophy className="h-3 w-3 mr-1" />
               1st: 3 pts
             </Badge>
-            <Badge variant="outline" className="bg-slate-50 text-slate-600 border-slate-200 text-xs">
+            <Badge
+              variant="outline"
+              className="text-xs"
+              style={{
+                backgroundColor: "rgba(168,197,102,0.10)",
+                color: "#A8C566",
+                borderColor: "rgba(168,197,102,0.35)",
+              }}
+            >
               <Medal className="h-3 w-3 mr-1" />
               2nd: 2 pts
             </Badge>
-            <Badge variant="outline" className="bg-orange-50 text-orange-600 border-orange-200 text-xs">
+            <Badge
+              variant="outline"
+              className="text-xs"
+              style={{
+                backgroundColor: "rgba(230,168,92,0.10)",
+                color: "#E6A85C",
+                borderColor: "rgba(230,168,92,0.30)",
+              }}
+            >
               <Award className="h-3 w-3 mr-1" />
               3rd: 1 pt
             </Badge>
             {!isYear2026OrLater && (
               <>
-                <Badge variant="outline" className="bg-blue-50 text-blue-600 border-blue-200 text-xs opacity-75">
+                <Badge
+                  variant="outline"
+                  className="text-xs opacity-75"
+                  style={{
+                    backgroundColor: "rgba(168,197,102,0.06)",
+                    color: "#B8B3AA",
+                    borderColor: "rgba(168,197,102,0.20)",
+                  }}
+                >
                   HM: 0.5 pts
                 </Badge>
-                <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs opacity-75">
+                <Badge
+                  variant="outline"
+                  className="text-xs opacity-75"
+                  style={{
+                    backgroundColor: "rgba(168,197,102,0.10)",
+                    color: "#A8C566",
+                    borderColor: "rgba(168,197,102,0.30)",
+                  }}
+                >
                   Partner: 5 pts
                 </Badge>
               </>
             )}
             {isYear2026OrLater && (
-              <span className="text-xs text-muted-foreground italic ml-1">
+              <span className="text-xs italic ml-1" style={{ color: "#B8B3AA" }}>
                 (Top 3 only — streamlined for 2026+)
               </span>
             )}
@@ -162,8 +237,8 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
 
       <CardContent>
         {entries.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">
-            <Trophy className="h-10 w-10 mx-auto mb-2 opacity-30" />
+          <div className="text-center py-8" style={{ color: "#B8B3AA" }}>
+            <Trophy className="h-10 w-10 mx-auto mb-2 opacity-30" style={{ color: "#A8C566" }} />
             <p className="text-sm">No votes recorded for {displayYear} yet</p>
           </div>
         ) : (
@@ -171,64 +246,107 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
             {entries.map((entry) => (
               <div
                 key={entry.name}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all hover:shadow-sm ${getRankBg(entry.rank)}`}
+                className="flex items-center gap-3 px-3 py-2.5 rounded-lg border-2 transition-all hover:shadow-lg"
+                style={{
+                  backgroundColor: entry.rank === 1
+                    ? "rgba(230,168,92,0.10)"
+                    : entry.rank === 2
+                      ? "rgba(168,197,102,0.06)"
+                      : entry.rank === 3
+                        ? "rgba(230,168,92,0.05)"
+                        : "rgba(168,197,102,0.03)",
+                  borderColor: entry.rank === 1
+                    ? "rgba(230,168,92,0.35)"
+                    : entry.rank === 2
+                      ? "rgba(168,197,102,0.25)"
+                      : entry.rank === 3
+                        ? "rgba(230,168,92,0.20)"
+                        : "rgba(168,197,102,0.12)",
+                }}
               >
                 <div className="w-7 flex justify-center flex-shrink-0">{getRankIcon(entry.rank)}</div>
 
-                <Avatar className="h-9 w-9 border-2 border-white shadow-sm flex-shrink-0">
-                  <AvatarFallback className="bg-gradient-to-br from-[#6B745D] to-[#5a6450] text-white font-semibold text-xs">
+                <Avatar
+                  className="h-9 w-9 border-2 shadow-sm flex-shrink-0"
+                  style={{ borderColor: "rgba(168,197,102,0.25)" }}
+                >
+                  <AvatarFallback
+                    className="font-semibold text-xs"
+                    style={{
+                      background: "linear-gradient(135deg, #0F140C, #1a1f15)",
+                      color: "#A8C566",
+                    }}
+                  >
                     {getInitials(entry.name)}
                   </AvatarFallback>
                 </Avatar>
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="font-semibold text-foreground text-sm truncate">{entry.name}</p>
+                    <p className="font-semibold text-sm truncate" style={{ color: "#F4EFE8" }}>{entry.name}</p>
                     {/* Inline weekly podium pills */}
                     {entry.weeks_in_first > 0 && (
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-medium whitespace-nowrap">
+                      <span
+                        className="text-[11px] px-1.5 py-0.5 rounded font-medium whitespace-nowrap"
+                        style={{
+                          backgroundColor: "rgba(230,168,92,0.20)",
+                          color: "#E6A85C",
+                        }}
+                      >
                         {entry.weeks_in_first}× 1st
                       </span>
                     )}
                     {entry.weeks_in_second > 0 && (
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-medium whitespace-nowrap">
+                      <span
+                        className="text-[11px] px-1.5 py-0.5 rounded font-medium whitespace-nowrap"
+                        style={{
+                          backgroundColor: "rgba(168,197,102,0.15)",
+                          color: "#A8C566",
+                        }}
+                      >
                         {entry.weeks_in_second}× 2nd
                       </span>
                     )}
                     {entry.weeks_in_third > 0 && (
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-800 font-medium whitespace-nowrap">
+                      <span
+                        className="text-[11px] px-1.5 py-0.5 rounded font-medium whitespace-nowrap"
+                        style={{
+                          backgroundColor: "rgba(230,168,92,0.12)",
+                          color: "#E6A85C",
+                        }}
+                      >
                         {entry.weeks_in_third}× 3rd
                       </span>
                     )}
                   </div>
 
                   {/* Vote counts on second line */}
-                  <div className="flex items-center gap-x-3 gap-y-0.5 mt-0.5 text-[11px] text-muted-foreground flex-wrap">
+                  <div className="flex items-center gap-x-3 gap-y-0.5 mt-0.5 text-[11px] flex-wrap" style={{ color: "#B8B3AA" }}>
                     <span>
-                      <strong className="text-foreground">{entry.first_place_votes}</strong> 1st
+                      <strong style={{ color: "#F4EFE8" }}>{entry.first_place_votes}</strong> 1st
                     </span>
                     <span>
-                      <strong className="text-foreground">{entry.second_place_votes}</strong> 2nd
+                      <strong style={{ color: "#F4EFE8" }}>{entry.second_place_votes}</strong> 2nd
                     </span>
                     <span>
-                      <strong className="text-foreground">{entry.third_place_votes}</strong> 3rd
+                      <strong style={{ color: "#F4EFE8" }}>{entry.third_place_votes}</strong> 3rd
                     </span>
                     {!isYear2026OrLater && entry.honorable_mention_votes > 0 && (
                       <span>
-                        <strong className="text-foreground">{entry.honorable_mention_votes}</strong> HM
+                        <strong style={{ color: "#F4EFE8" }}>{entry.honorable_mention_votes}</strong> HM
                       </span>
                     )}
                     {!isYear2026OrLater && entry.partner_votes > 0 && (
                       <span>
-                        <strong className="text-foreground">{entry.partner_votes}</strong> partner
+                        <strong style={{ color: "#F4EFE8" }}>{entry.partner_votes}</strong> partner
                       </span>
                     )}
                   </div>
                 </div>
 
                 <div className="text-right flex-shrink-0 ml-2">
-                  <p className="text-xl font-bold text-foreground leading-none">{entry.total_points}</p>
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">pts</p>
+                  <p className="text-xl font-bold leading-none" style={{ color: "#F4EFE8" }}>{entry.total_points}</p>
+                  <p className="text-[10px] uppercase tracking-wide" style={{ color: "#B8B3AA" }}>pts</p>
                 </div>
               </div>
             ))}
