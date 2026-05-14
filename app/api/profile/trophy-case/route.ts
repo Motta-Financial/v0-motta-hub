@@ -3,17 +3,37 @@ import { createClient } from "@/lib/supabase/server"
 
 /**
  * Returns the authenticated user's Tommy Awards statistics for the
- * Trophy Case section on the profile page. Combines:
- *  - Per-week points (`tommy_award_points`) for the lifetime breakdown
- *    and the recent-weeks timeline.
- *  - Yearly rollups (`tommy_award_yearly_totals`) when available; the
- *    weekly aggregation is the source of truth and we only surface the
- *    yearly row's `current_rank` (which the rest of the system already
- *    treats as the canonical leaderboard position).
+ * Trophy Case section on the profile page.
  *
- * The endpoint is auth-gated to the logged-in team member only — it
- * should not be reused for arbitrary lookups; that would be a separate
- * route under /api/team-members/[id]/trophy-case if we ever need it.
+ * Data model
+ * ─────────
+ * Three tables back this endpoint:
+ *
+ *   1. `tommy_award_ballots`        — raw votes submitted by teammates.
+ *                                     ONE BALLOT = one voter's picks for
+ *                                     one week. This is the source of
+ *                                     truth.
+ *
+ *   2. `tommy_award_points`         — aggregated per (member, week). Now
+ *                                     kept in sync by a trigger; we treat
+ *                                     it as the canonical input for both
+ *                                     the lifetime and yearly views.
+ *
+ *   3. `tommy_award_yearly_totals`  — pre-rolled yearly rank/totals. Used
+ *                                     ONLY to surface `current_rank` (the
+ *                                     leaderboard position the rest of the
+ *                                     system already displays). The yearly
+ *                                     point totals shown on this page are
+ *                                     recomputed from `tommy_award_points`
+ *                                     on every request so prior-year data
+ *                                     can never be missing again, even if
+ *                                     the yearly rollup drifts.
+ *
+ * Auth
+ * ────
+ * Auth-gated to the logged-in team member only. Don't reuse this endpoint
+ * for arbitrary member lookups — that would be a separate route at
+ * /api/team-members/[id]/trophy-case.
  */
 export async function GET() {
   const supabase = await createClient()
@@ -37,27 +57,29 @@ export async function GET() {
 
   const teamMemberId = teamMember.id
 
-  // Fan-out: weekly points, yearly totals, and feedback received in parallel.
-  // Sort weekly results in JS rather than the database to avoid a second
-  // round-trip when computing the "best week".
-  const [pointsRes, yearlyRes, feedbackRes] = await Promise.all([
+  // Fan-out: weekly points, yearly rank rollup, and feedback received.
+  // We deliberately pull ALL of the member's weekly points rows (no
+  // `.limit`) because:
+  //   • There's exactly one row per (member, week); for a long-tenured
+  //     employee with ~50 weeks/yr × 5 yrs of history that's still only
+  //     ~250 rows. The previous 200-row cap was silently truncating
+  //     prior-year data for the most active people.
+  //   • The lifetime totals AND the yearly trend are both derived from
+  //     this list, so any cap creates inconsistencies between sections.
+  const [pointsRes, rankRes, feedbackRes] = await Promise.all([
     supabase
       .from("tommy_award_points")
       .select(
         "id, week_id, week_date, first_place_votes, second_place_votes, third_place_votes, honorable_mention_votes, partner_votes, total_points",
       )
       .eq("team_member_id", teamMemberId)
-      .order("week_date", { ascending: false })
-      .limit(200),
+      .order("week_date", { ascending: false }),
     supabase
       .from("tommy_award_yearly_totals")
-      .select(
-        "year, total_first_place_votes, total_second_place_votes, total_third_place_votes, total_honorable_mention_votes, total_partner_votes, total_points, weeks_participated, current_rank",
-      )
-      .eq("team_member_id", teamMemberId)
-      .order("year", { ascending: false }),
-    // Fetch all ballots where this team member was nominated in any position
-    // to surface the feedback/notes they received from teammates
+      .select("year, current_rank")
+      .eq("team_member_id", teamMemberId),
+    // All ballots where this team member was nominated in any position —
+    // used to surface the feedback notes voters wrote.
     supabase
       .from("tommy_award_ballots")
       .select(
@@ -67,7 +89,7 @@ export async function GET() {
         `first_place_id.eq.${teamMemberId},second_place_id.eq.${teamMemberId},third_place_id.eq.${teamMemberId},honorable_mention_id.eq.${teamMemberId},partner_vote_id.eq.${teamMemberId}`,
       )
       .order("week_date", { ascending: false })
-      .limit(100),
+      .limit(200),
   ])
 
   if (pointsRes.error) {
@@ -75,11 +97,13 @@ export async function GET() {
   }
 
   const points = pointsRes.data || []
-  const yearly = yearlyRes.data || []
+  const rankRows = rankRes.data || []
   const feedbackBallots = feedbackRes.data || []
 
-  // Transform ballots into feedback items — extract only the notes where this
-  // team member was nominated in that specific slot
+  // ── Feedback Received ────────────────────────────────────────────────
+  // Pull only the notes that were written for THIS team member in their
+  // specific placement slot. A single ballot can contribute multiple
+  // feedback items (e.g. voter put them at 1st and partner).
   type FeedbackItem = {
     id: string
     weekDate: string
@@ -143,9 +167,9 @@ export async function GET() {
     }
   }
 
-  // Lifetime aggregation from the weekly source-of-truth. Numeric coercion
-  // matters here: total_points comes back as a Postgres `numeric` which
-  // serializes to a string in JSON.
+  // ── Lifetime Aggregation ────────────────────────────────────────────
+  // Coerces total_points (Postgres `numeric` → string in JSON) to Number
+  // before summing.
   const lifetime = points.reduce(
     (acc, p) => {
       acc.firstPlace += p.first_place_votes || 0
@@ -154,15 +178,14 @@ export async function GET() {
       acc.honorableMention += p.honorable_mention_votes || 0
       acc.partner += p.partner_votes || 0
       acc.totalPoints += Number(p.total_points || 0)
-      // A "week placed" is any week where the user received at least one vote.
-      const placed =
+      // A "week placed" = any week where the user got at least one vote.
+      const totalVotes =
         (p.first_place_votes || 0) +
-          (p.second_place_votes || 0) +
-          (p.third_place_votes || 0) +
-          (p.honorable_mention_votes || 0) +
-          (p.partner_votes || 0) >
-        0
-      if (placed) acc.weeksPlaced += 1
+        (p.second_place_votes || 0) +
+        (p.third_place_votes || 0) +
+        (p.honorable_mention_votes || 0) +
+        (p.partner_votes || 0)
+      if (totalVotes > 0) acc.weeksPlaced += 1
       return acc
     },
     {
@@ -176,8 +199,8 @@ export async function GET() {
     },
   )
 
-  // Best week = highest total_points in any single week. Ties broken by
-  // most-recent date so the user sees their freshest peak.
+  // Best week = highest single-week total. Ties broken by recency so the
+  // user sees their freshest peak rather than an old one.
   let bestWeek: (typeof points)[number] | null = null
   for (const p of points) {
     const score = Number(p.total_points || 0)
@@ -186,9 +209,6 @@ export async function GET() {
     }
   }
 
-  // Trophy count = total number of times the user took 1st place across
-  // all weeks. This is more meaningful than "first_place_votes" which
-  // counts individual voters, not weeks won.
   const weeksWon = points.filter((p) => (p.first_place_votes || 0) > 0).length
   const podiumWeeks = points.filter(
     (p) =>
@@ -197,13 +217,89 @@ export async function GET() {
       (p.third_place_votes || 0) > 0,
   ).length
 
-  // Best rank across all years on the yearly leaderboard. Lower is better.
-  // We ignore rank=0 rows (which the materialized view emits when the year
-  // has no participation yet).
+  // ── Yearly Aggregation (authoritative) ──────────────────────────────
+  // Compute yearly totals from the weekly source of truth instead of
+  // trusting `tommy_award_yearly_totals.total_points`. The rank column
+  // from the rollup table is still useful (it's relative to the rest of
+  // the company), but the per-member point breakdown is now invulnerable
+  // to rollup drift.
+  type YearAgg = {
+    year: number
+    points: number
+    weeksParticipated: number
+    firstPlace: number
+    secondPlace: number
+    thirdPlace: number
+    honorableMention: number
+    partner: number
+  }
+  const yearMap = new Map<number, YearAgg>()
+  for (const p of points) {
+    const totalVotes =
+      (p.first_place_votes || 0) +
+      (p.second_place_votes || 0) +
+      (p.third_place_votes || 0) +
+      (p.honorable_mention_votes || 0) +
+      (p.partner_votes || 0)
+    if (totalVotes === 0) continue
+    // week_date is a calendar date string like "2025-04-25". Parse as UTC
+    // to avoid the year flipping in negative-UTC timezones around Jan 1.
+    const year = new Date(`${p.week_date}T00:00:00Z`).getUTCFullYear()
+    const existing = yearMap.get(year) || {
+      year,
+      points: 0,
+      weeksParticipated: 0,
+      firstPlace: 0,
+      secondPlace: 0,
+      thirdPlace: 0,
+      honorableMention: 0,
+      partner: 0,
+    }
+    existing.points += Number(p.total_points || 0)
+    existing.weeksParticipated += 1
+    existing.firstPlace += p.first_place_votes || 0
+    existing.secondPlace += p.second_place_votes || 0
+    existing.thirdPlace += p.third_place_votes || 0
+    existing.honorableMention += p.honorable_mention_votes || 0
+    existing.partner += p.partner_votes || 0
+    yearMap.set(year, existing)
+  }
+
+  // Splice in the rank from the rollup table where we have one. If the
+  // rollup is stale or missing, rank is null and the UI hides it.
+  const rankByYear = new Map<number, number | null>()
+  for (const r of rankRows) {
+    if (typeof r.year === "number" && typeof r.current_rank === "number") {
+      rankByYear.set(r.year, r.current_rank)
+    }
+  }
+
+  const yearly = Array.from(yearMap.values())
+    .map((y) => ({
+      ...y,
+      // Round to 1 decimal to match how points are displayed elsewhere.
+      points: Math.round(y.points * 10) / 10,
+      rank: rankByYear.get(y.year) ?? null,
+    }))
+    .sort((a, b) => b.year - a.year)
+
+  // Best rank across all years (smaller is better). Only consider rows
+  // with a positive rank; null/0 mean "not ranked".
   const bestRank = yearly
-    .map((y) => y.current_rank)
-    .filter((r) => typeof r === "number" && r > 0)
+    .map((y) => y.rank)
+    .filter((r): r is number => typeof r === "number" && r > 0)
     .reduce<number | null>((acc, r) => (acc === null || r < acc ? r : acc), null)
+
+  // ── Year-Over-Year Trend ────────────────────────────────────────────
+  // Compact array for the trend chart on the client. Ascending order
+  // (earliest → latest) so the line reads left-to-right intuitively.
+  const yearlyTrend = [...yearly]
+    .sort((a, b) => a.year - b.year)
+    .map((y) => ({
+      year: y.year,
+      points: y.points,
+      weeksParticipated: y.weeksParticipated,
+    }))
 
   return NextResponse.json({
     teamMember: {
@@ -212,8 +308,6 @@ export async function GET() {
     },
     lifetime: {
       ...lifetime,
-      // Round to 1 decimal — the points system uses 0.5-step weights but
-      // displaying full floats is noisy.
       totalPoints: Math.round(lifetime.totalPoints * 10) / 10,
       weeksWon,
       podiumWeeks,
@@ -230,9 +324,7 @@ export async function GET() {
           partner: bestWeek.partner_votes || 0,
         }
       : null,
-    // Recent activity — last 12 weeks where the user got any votes. The
-    // table has a row per (member, week) pair regardless of votes, so we
-    // filter to non-zero rows to show meaningful history.
+    // Last 12 scoring weeks (across all years).
     recentWeeks: points
       .filter((p) => Number(p.total_points || 0) > 0)
       .slice(0, 12)
@@ -245,31 +337,8 @@ export async function GET() {
         honorableMention: p.honorable_mention_votes || 0,
         partner: p.partner_votes || 0,
       })),
-    // Drop rows where the materialized yearly view hasn't been refreshed
-    // yet (`total_points = 0 AND weeks_participated = 0`). Keeping them
-    // would surface contradictory data — e.g. lifetime shows 15 pts but
-    // the only yearly row reads "0 pts, 0 weeks" — and would suggest the
-    // user has been benched when in fact the rollup just hasn't run.
-    yearly: yearly
-      .filter(
-        (y) =>
-          Number(y.total_points || 0) > 0 ||
-          (y.weeks_participated || 0) > 0 ||
-          (y.current_rank || 0) > 0,
-      )
-      .map((y) => ({
-        year: y.year,
-        points: Number(y.total_points || 0),
-        rank: y.current_rank,
-        weeksParticipated: y.weeks_participated || 0,
-        firstPlace: y.total_first_place_votes || 0,
-        secondPlace: y.total_second_place_votes || 0,
-        thirdPlace: y.total_third_place_votes || 0,
-        honorableMention: y.total_honorable_mention_votes || 0,
-        partner: y.total_partner_votes || 0,
-      })),
-    // Feedback received from teammates — notes written when they voted
-    // for this team member. Only entries with actual notes are included.
+    yearly,
+    yearlyTrend,
     feedbackReceived,
   })
 }

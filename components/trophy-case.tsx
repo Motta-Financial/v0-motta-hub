@@ -3,7 +3,20 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Trophy, Medal, Award, Star, Crown, TrendingUp, Calendar, Sparkles, Loader2, MessageCircle, Quote } from "lucide-react"
+import { Trophy, Medal, Award, Star, Crown, TrendingUp, Calendar, Sparkles, Loader2, MessageCircle, Quote, LineChart as LineChartIcon } from "lucide-react"
+// Recharts is already a project dependency (see package.json). We import
+// piecewise from the package root because the project doesn't ship the
+// shadcn/ui chart wrapper component.
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  type TooltipProps,
+} from "recharts"
 
 interface TrophyCaseData {
   teamMember: { id: string; full_name: string | null }
@@ -47,6 +60,13 @@ interface TrophyCaseData {
     thirdPlace: number
     honorableMention: number
     partner: number
+  }>
+  // Ascending-by-year compact series for the trend chart. Authored
+  // server-side so the chart and the yearly table never disagree.
+  yearlyTrend: Array<{
+    year: number
+    points: number
+    weeksParticipated: number
   }>
   feedbackReceived: Array<{
     id: string
@@ -121,7 +141,7 @@ export function TrophyCase() {
     )
   }
 
-  const { lifetime, bestWeek, recentWeeks, yearly, feedbackReceived } = data
+  const { lifetime, bestWeek, recentWeeks, yearly, yearlyTrend, feedbackReceived } = data
   const hasAnyVotes =
     lifetime.firstPlace +
       lifetime.secondPlace +
@@ -247,6 +267,82 @@ export function TrophyCase() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Year-Over-Year Trend
+              ──────────────────────────────────────────────────────────
+              Only render when the member has scored in at least 2 years
+              — a single dot isn't a "trend" and would look odd. The
+              chart reads left-to-right (earliest → latest year) so the
+              shape matches readers' intuition for time series. */}
+          {yearlyTrend.length >= 2 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <LineChartIcon className="h-5 w-5 text-[#6B745D]" />
+                  Year-over-Year Trend
+                </CardTitle>
+                <CardDescription>
+                  Tommy points earned in each year you&apos;ve been recognized.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={yearlyTrend}
+                      margin={{ top: 8, right: 16, bottom: 8, left: -8 }}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        stroke="hsl(var(--border))"
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="year"
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                      />
+                      <YAxis
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                        width={36}
+                      />
+                      <Tooltip
+                        content={(props: TooltipProps<number, string>) => {
+                          if (!props.active || !props.payload?.length) return null
+                          const datum = props.payload[0].payload as {
+                            year: number
+                            points: number
+                            weeksParticipated: number
+                          }
+                          return (
+                            <div className="rounded-md border bg-background px-3 py-2 text-xs shadow-sm">
+                              <p className="font-semibold">{datum.year}</p>
+                              <p className="text-[#6B745D]">{datum.points} pts</p>
+                              <p className="text-muted-foreground">
+                                {datum.weeksParticipated}{" "}
+                                {datum.weeksParticipated === 1 ? "week" : "weeks"}
+                              </p>
+                            </div>
+                          )
+                        }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="points"
+                        stroke="#6B745D"
+                        strokeWidth={2.5}
+                        dot={{ r: 4, fill: "#6B745D", strokeWidth: 0 }}
+                        activeDot={{ r: 6 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
 
           {/* Two-column layout: best week on the left, yearly history on
               the right. On mobile they stack. */}
