@@ -192,11 +192,20 @@ function LoginContent() {
       }
 
       // Clear the UserContext cache before navigating so the dashboard
-      // picks up the new session immediately (the onAuthStateChange listener
-      // in UserProvider will also fire, but doing it here ensures zero delay).
+      // picks up the new session immediately. The onAuthStateChange
+      // listener in UserProvider will also fire SIGNED_IN, which
+      // triggers its own refetch — so by the time we land on "/", the
+      // user data is already on its way.
+      //
+      // We deliberately do NOT call router.refresh() after the push.
+      // In App Router, router.push() to a different route ALREADY does
+      // a fresh server render of the destination with the latest
+      // cookies. Adding refresh() forces the same SSR work to happen a
+      // second time and BLOCKS the UI transition while it runs — that
+      // single line was adding ~500ms–2s to perceived sign-in time,
+      // which is exactly what users were reporting as "slow login".
       clearUserCache()
       router.push("/")
-      router.refresh()
     } catch (err) {
       if (err instanceof TypeError && err.message.includes("fetch")) {
         setError("Unable to connect. Please check your internet connection.")
