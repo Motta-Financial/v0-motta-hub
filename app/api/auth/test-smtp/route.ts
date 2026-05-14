@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js"
-import { createClient as createServerClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
+import { requireAdmin } from "@/lib/auth/require-admin"
 
 function createAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
@@ -21,16 +21,13 @@ function createAdminClient() {
 // POST: Send a test password reset email to verify SMTP is working
 export async function POST(request: Request) {
   try {
-    // Verify the calling user is authenticated
-    const serverSupabase = await createServerClient()
-    const {
-      data: { user: caller },
-      error: authError,
-    } = await serverSupabase.auth.getUser()
-
-    if (authError || !caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    // ADMIN ONLY. This route sends real recovery emails through
+    // Supabase + Resend to any address the caller supplies, so it's
+    // both an exfiltration vector (can probe whether an email exists
+    // in the system) and an abuse vector (send-spam-as-Motta).
+    // Restrict to firm leadership.
+    const adminCheck = await requireAdmin()
+    if (!adminCheck.ok) return adminCheck.response
 
     const body = await request.json()
     const { email } = body
@@ -100,15 +97,10 @@ export async function POST(request: Request) {
 // GET: Check SMTP configuration status
 export async function GET() {
   try {
-    const serverSupabase = await createServerClient()
-    const {
-      data: { user: caller },
-      error: authError,
-    } = await serverSupabase.auth.getUser()
-
-    if (authError || !caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    // ADMIN ONLY. Returns a full directory listing — every auth user's
+    // email, confirmation status, and last sign-in timestamp.
+    const adminCheck = await requireAdmin()
+    if (!adminCheck.ok) return adminCheck.response
 
     const supabase = createAdminClient()
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 import type { IgnitionConnectionRow } from "@/lib/ignition/oauth"
 import {
   RESOURCE_ORDER,
@@ -48,11 +49,22 @@ export const maxDuration = 300
 export async function POST(request: Request) {
   try {
     // 1. Auth check via the user's cookie session.
+    //
+    // CRITICAL: this endpoint is polled every 60 seconds by both
+    // `components/sales/ignition-live-badge.tsx` and
+    // `components/ignition/backfill-card.tsx`. With multiple users on
+    // a shared office NAT IP, calling `auth.getUser()` here was the
+    // single biggest contributor to saturating Supabase's per-IP
+    // GoTrue rate limit (~30 requests / 5 min on Cloud), which then
+    // caused legitimate sign-ins to fail with "Request rate limit
+    // reached". We use the local JWT-signature check from
+    // `lib/supabase/auth-helpers.ts` instead — same trust model as
+    // the middleware, zero GoTrue calls.
     const sessionClient = await createClient()
     const {
       data: { user },
       error: authError,
-    } = await sessionClient.auth.getUser()
+    } = await getAuthenticatedUser(sessionClient)
     if (authError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }

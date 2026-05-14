@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -98,11 +99,17 @@ export async function PATCH(
 
   // Auth gate: we don't enforce role-based permissions, but we do require a
   // logged-in session so anonymous traffic can't mutate records.
+  //
+  // Uses the local JWT-signature check (no GoTrue network call) — see
+  // `lib/supabase/auth-helpers.ts` for the rationale. The middleware
+  // already ran a `getSession()` to gate access to this route, so an
+  // additional `getUser()` round-trip here was pure overhead that
+  // contributed to the per-IP auth rate limit.
   try {
     const auth = await createClient()
     const {
       data: { user },
-    } = await auth.auth.getUser()
+    } = await getAuthenticatedUser(auth)
     if (!user) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 })
     }
