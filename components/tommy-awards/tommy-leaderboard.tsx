@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Trophy, Medal, Award } from "lucide-react"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
+import { TommyMemberBreakdownDialog } from "./tommy-member-breakdown-dialog"
 
 interface LeaderboardEntry {
   name: string
@@ -32,6 +33,7 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([])
   const [totalBallots, setTotalBallots] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [selectedMember, setSelectedMember] = useState<string | null>(null)
 
   const is2026OrLater = filters.year !== "all" && Number.parseInt(filters.year) >= 2026
 
@@ -153,9 +155,11 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
             {leaderboard.map((entry) => {
               const hero = findHeroProfile(entry.name)
               return (
-              <div
+              <button
                 key={entry.name}
-                className="flex items-center gap-4 p-4 rounded-xl border-2 transition-all hover:shadow-lg"
+                type="button"
+                onClick={() => setSelectedMember(entry.name)}
+                className="w-full text-left flex items-center gap-4 p-4 rounded-xl border-2 transition-all hover:shadow-lg hover:scale-[1.01] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-[#0F140C] cursor-pointer"
                 style={{
                   backgroundColor: entry.rank === 1
                     ? "rgba(230,168,92,0.12)"
@@ -268,12 +272,23 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                   <p className="text-2xl font-bold" style={{ color: "#F4EFE8" }}>{entry.total_points}</p>
                   <p className="text-xs" style={{ color: "#B8B3AA" }}>points</p>
                 </div>
-              </div>
+              </button>
               )
             })}
           </div>
         )}
       </CardContent>
+      <TommyMemberBreakdownDialog
+        open={selectedMember !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedMember(null)
+        }}
+        memberName={selectedMember}
+        mode="weekly"
+        year={filters.year}
+        weekIds={filters.weekIds}
+        periodLabel={getFilterDescription()}
+      />
     </Card>
   )
 }

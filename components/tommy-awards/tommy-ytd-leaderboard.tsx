@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Trophy, Medal, Award, TrendingUp, Calendar } from "lucide-react"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
+import { TommyMemberBreakdownDialog } from "./tommy-member-breakdown-dialog"
 
 interface YTDEntry {
   name: string
@@ -31,6 +32,7 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
   const [totalWeeks, setTotalWeeks] = useState(0)
   const [totalBallots, setTotalBallots] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [selectedMember, setSelectedMember] = useState<string | null>(null)
 
   const displayYear = year === "all" ? new Date().getFullYear().toString() : year
   const isYear2026OrLater = Number.parseInt(displayYear) >= 2026
@@ -247,9 +249,11 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
             {entries.map((entry) => {
               const hero = findHeroProfile(entry.name)
               return (
-              <div
+              <button
                 key={entry.name}
-                className="flex items-center gap-3 px-3 py-2.5 rounded-lg border-2 transition-all hover:shadow-lg"
+                type="button"
+                onClick={() => setSelectedMember(entry.name)}
+                className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg border-2 transition-all hover:shadow-lg hover:scale-[1.005] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-[#0F140C] cursor-pointer"
                 style={{
                   backgroundColor: entry.rank === 1
                     ? "rgba(230,168,92,0.10)"
@@ -359,12 +363,21 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
                   <p className="text-xl font-bold leading-none" style={{ color: "#F4EFE8" }}>{entry.total_points}</p>
                   <p className="text-[10px] uppercase tracking-wide" style={{ color: "#B8B3AA" }}>pts</p>
                 </div>
-              </div>
+              </button>
               )
             })}
           </div>
         )}
       </CardContent>
+      <TommyMemberBreakdownDialog
+        open={selectedMember !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedMember(null)
+        }}
+        memberName={selectedMember}
+        mode="ytd"
+        year={displayYear}
+      />
     </Card>
   )
 }

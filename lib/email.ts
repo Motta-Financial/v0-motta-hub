@@ -1003,6 +1003,8 @@ export function buildTommyRecapHtml(opts: {
   }>
   totalBallots: number
   leaderboardUrl: string
+  /** Optional weekly F1-podium hero image (Vercel Blob URL). */
+  podiumImageUrl?: string | null
 }) {
   // Functional medal palette — these are NOT brand colors, they communicate
   // 1st/2nd/3rd place at a glance and shouldn't be repainted with the Motta
@@ -1036,17 +1038,52 @@ export function buildTommyRecapHtml(opts: {
           .join("")
       : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No votes recorded this week.</p>`
 
+  // Split ALFRED's summary on blank lines so we can render each paragraph
+  // in its own block with explicit <br><br> separators — email clients
+  // strip whitespace and ignore CSS `white-space:pre-wrap` inconsistently,
+  // so explicit <br> tags are the only reliable way to preserve paragraph
+  // breaks across Gmail / Outlook / Apple Mail.
+  const summaryParagraphs = (opts.aiSummary || "")
+    .split(/\n\s*\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+  const summaryHtml =
+    summaryParagraphs.length > 0
+      ? summaryParagraphs
+          .map(
+            (p) =>
+              `<p style="margin:0;font-size:15px;color:${BRAND.textPrimary};line-height:1.7;">${p.replace(
+                /\n/g,
+                "<br>",
+              )}</p>`,
+          )
+          .join("<br><br>")
+      : `<p style="margin:0;font-size:15px;color:${BRAND.textPrimary};line-height:1.7;">${opts.aiSummary}</p>`
+
+  // Optional F1-podium hero image — placed BEFORE the narrative so the
+  // visual sets the comic-book tone before ALFRED's prose lands.
+  const podiumImageHtml = opts.podiumImageUrl
+    ? `
+        <div style="margin:0 0 24px;text-align:center;">
+          <img src="${opts.podiumImageUrl}"
+               alt="Tommy Awards podium — week of ${opts.weekLabel}"
+               style="display:block;width:100%;max-width:560px;height:auto;border-radius:10px;border:1px solid ${BRAND.border};margin:0 auto;" />
+        </div>`
+    : ""
+
   const body = `
     <p style="margin:0 0 8px;color:${BRAND.textMuted};font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">
       Week of ${opts.weekLabel}
     </p>
     <h2 style="margin:0 0 20px;font-size:20px;color:${BRAND.textPrimary};">This Week's Tommy Awards</h2>
 
+    ${podiumImageHtml}
+
     <div style="background:${BRAND.background};border-left:4px solid ${BRAND.primary};padding:18px 20px;border-radius:6px;margin:0 0 28px;">
       <div style="font-size:12px;font-weight:600;color:${BRAND.primary};text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;">
         From ALFRED Ai
       </div>
-      <div style="font-size:15px;color:${BRAND.textPrimary};line-height:1.7;white-space:pre-wrap;">${opts.aiSummary}</div>
+      ${summaryHtml}
     </div>
 
     <h3 style="font-size:16px;color:${BRAND.textPrimary};margin:0 0 16px;">Top 3 Finishers</h3>
