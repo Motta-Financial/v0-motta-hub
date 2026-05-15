@@ -167,8 +167,13 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           <Avatar
-                            className="h-10 w-10 border-2"
-                            style={{ borderColor: "rgba(168,197,102,0.25)" }}
+                            className={`border-2 transition-all duration-300 ${
+                              isExpanded ? "h-20 w-20" : "h-10 w-10"
+                            }`}
+                            style={{
+                              borderColor: isExpanded ? "rgba(168,197,102,0.55)" : "rgba(168,197,102,0.25)",
+                              boxShadow: isExpanded ? "0 0 30px rgba(168,197,102,0.25)" : undefined,
+                            }}
                             title={voterHero ? `${voterHero.name} — ${voterHero.alias}` : ballot.voter_name}
                           >
                             <AvatarImage
@@ -177,7 +182,7 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
                               className="object-cover object-top"
                             />
                             <AvatarFallback
-                              className="font-semibold text-sm"
+                              className={`font-semibold ${isExpanded ? "text-xl" : "text-sm"}`}
                               style={{
                                 background: "linear-gradient(135deg, #0F140C, #1a1f15)",
                                 color: "#A8C566",
@@ -187,8 +192,21 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
                             </AvatarFallback>
                           </Avatar>
                           <div>
-                            <p className="font-medium" style={{ color: "#F4EFE8" }}>{ballot.voter_name}</p>
-                            <div className="flex items-center gap-1 text-xs" style={{ color: "#B8B3AA" }}>
+                            <p
+                              className={`font-medium transition-all ${isExpanded ? "text-lg" : ""}`}
+                              style={{ color: "#F4EFE8" }}
+                            >
+                              {ballot.voter_name}
+                            </p>
+                            {isExpanded && voterHero && (
+                              <p
+                                className="text-xs font-bold uppercase tracking-[0.18em]"
+                                style={{ color: "#A8C566" }}
+                              >
+                                {voterHero.alias}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-1 text-xs mt-0.5" style={{ color: "#B8B3AA" }}>
                               <Calendar className="h-3 w-3" />
                               {ballot.week?.week_name || formatDate(ballot.week_date)}
                             </div>
