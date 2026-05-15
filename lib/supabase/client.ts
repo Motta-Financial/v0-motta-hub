@@ -7,9 +7,30 @@ export function createClient() {
     return supabaseClient
   }
 
+  // Surface a clear, actionable error when the public Supabase env vars
+  // aren't inlined into the client bundle. This happens when the dev
+  // server is built without the NEXT_PUBLIC_* vars in process.env (the
+  // bundle then ships `undefined` for both args and @supabase/ssr's
+  // generic "URL and API key are required" message crashes the whole
+  // React tree on every route). We re-throw with the same shape so the
+  // call sites that already have try/catch on createClient() (login,
+  // forgot-password handlers) still work, but the message now tells
+  // the operator exactly what to do.
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  if (!url || !anonKey) {
+    throw new Error(
+      "Supabase env vars are missing from the client bundle. " +
+        "NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY must be " +
+        "present in process.env when `next build` or `next dev` runs. In the " +
+        "v0 sandbox, ensure `.env.local` symlinks to /vercel/share/.env.project " +
+        "so Next.js picks them up at build time.",
+    )
+  }
+
   supabaseClient = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    url,
+    anonKey,
     {
       auth: {
         // CRITICAL: Disable background token refresh in the browser.

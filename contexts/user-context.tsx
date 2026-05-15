@@ -122,7 +122,20 @@ export function UserProvider({ children }: { children: ReactNode }) {
   // so we automatically refetch when the user logs in or out from another
   // tab / component without having to call clearCacheAndRefetch manually.
   useEffect(() => {
-    const supabase = createClient()
+    // createClient() will throw if the public Supabase env vars aren't
+    // inlined into the browser bundle. Without this guard, that single
+    // exception unmounts the entire React tree on EVERY route (login,
+    // public pages, error overlays included) because UserProvider sits
+    // at the very top of app/layout.tsx. We swallow the error here so
+    // the rest of the app can still render -- the actual sign-in
+    // handler in /login surfaces a clear error message to the user.
+    let supabase
+    try {
+      supabase = createClient()
+    } catch (e) {
+      console.error("[v0] UserProvider: Supabase client unavailable -", e)
+      return
+    }
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event: AuthChangeEvent) => {
         // Only refetch user data on REAL identity transitions:
