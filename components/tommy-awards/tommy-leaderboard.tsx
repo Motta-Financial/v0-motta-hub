@@ -1,10 +1,11 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import Image from "next/image"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { Trophy, Medal, Award } from "lucide-react"
+import { Trophy, Medal, Award, Sparkles } from "lucide-react"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 import { TommyMemberBreakdownDialog } from "./tommy-member-breakdown-dialog"
 
@@ -17,6 +18,19 @@ interface LeaderboardEntry {
   partner_votes: number
   total_points: number
   rank: number
+}
+
+// Shape of the persisted Friday recap surfaced from
+// `tommy_weekly_recaps` via /api/tommy-awards?type=weekly_recap. Only
+// the fields the dashboard actually renders are typed here.
+interface WeeklyRecap {
+  week_id: string
+  week_date: string
+  week_label: string
+  total_ballots: number
+  ai_summary: string
+  podium_image_url: string | null
+  email_sent_at: string | null
 }
 
 interface Filters {
@@ -34,8 +48,14 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
   const [totalBallots, setTotalBallots] = useState(0)
   const [loading, setLoading] = useState(true)
   const [selectedMember, setSelectedMember] = useState<string | null>(null)
+  // Weekly recap is rendered ONLY when exactly one week is selected —
+  // the API enforces this too, but we mirror the condition here so we
+  // don't show a stale recap from a previous filter state while a
+  // wider filter is loading.
+  const [recap, setRecap] = useState<WeeklyRecap | null>(null)
 
   const is2026OrLater = filters.year !== "all" && Number.parseInt(filters.year) >= 2026
+  const showRecap = filters.weekIds.length === 1 && recap !== null
 
   useEffect(() => {
     fetchLeaderboard()
@@ -48,11 +68,22 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
       if (filters.year && filters.year !== "all") params.append("year", filters.year)
       if (filters.weekIds.length > 0) params.append("week_ids", filters.weekIds.join(","))
 
-      const res = await fetch(`/api/tommy-awards?${params}`)
-      const data = await res.json()
+      // Fetch the leaderboard and the (optional) weekly recap in
+      // parallel. The recap endpoint short-circuits to `null` unless
+      // exactly one week is selected, so this is a cheap call.
+      const recapParams = new URLSearchParams({ type: "weekly_recap" })
+      if (filters.weekIds.length > 0) recapParams.append("week_ids", filters.weekIds.join(","))
 
-      setLeaderboard(data.leaderboard || [])
-      setTotalBallots(data.total_ballots || 0)
+      const [lbRes, recapRes] = await Promise.all([
+        fetch(`/api/tommy-awards?${params}`),
+        fetch(`/api/tommy-awards?${recapParams}`),
+      ])
+      const lbData = await lbRes.json()
+      const recapData = await recapRes.json().catch(() => ({ recap: null }))
+
+      setLeaderboard(lbData.leaderboard || [])
+      setTotalBallots(lbData.total_ballots || 0)
+      setRecap(recapData?.recap ?? null)
     } catch (error) {
       console.error("Error fetching leaderboard:", error)
     } finally {
@@ -144,7 +175,73 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
           </div>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-5">
+        {/* Friday recap panel — ALFRED's storyline + the generated
+            F1-podium image for the selected week. Mirrors what gets
+            emailed firm-wide so the dashboard is the single source of
+            truth. Only renders when exactly one week is in scope. */}
+        {showRecap && recap && (
+          <div
+            className="rounded-xl border-2 overflow-hidden"
+            style={{
+              borderColor: "rgba(168,197,102,0.30)",
+              backgroundColor: "rgba(168,197,102,0.04)",
+            }}
+          >
+            {recap.podium_image_url && (
+              <div className="relative w-full aspect-[16/9]" style={{ backgroundColor: "#0F140C" }}>
+                <Image
+                  src={recap.podium_image_url}
+                  alt={`Generated podium image for ${recap.week_label}`}
+                  fill
+                  sizes="(max-width: 1024px) 100vw, 768px"
+                  className="object-cover"
+                  unoptimized
+                />
+              </div>
+            )}
+            <div className="p-4 sm:p-5 space-y-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <div
+                    className="p-1.5 rounded-md"
+                    style={{ backgroundColor: "rgba(168,197,102,0.15)" }}
+                  >
+                    <Sparkles className="h-4 w-4" style={{ color: "#A8C566" }} />
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] font-bold" style={{ color: "#A8C566" }}>
+                      ALFRED&apos;s Recap
+                    </p>
+                    <p className="text-sm font-semibold" style={{ color: "#F4EFE8" }}>
+                      {recap.week_label}
+                    </p>
+                  </div>
+                </div>
+                <Badge
+                  variant="outline"
+                  className="text-xs"
+                  style={{
+                    backgroundColor: "rgba(168,197,102,0.10)",
+                    color: "#A8C566",
+                    borderColor: "rgba(168,197,102,0.35)",
+                  }}
+                >
+                  {recap.total_ballots} ballots
+                </Badge>
+              </div>
+              {recap.ai_summary && (
+                <p
+                  className="text-sm leading-relaxed whitespace-pre-wrap"
+                  style={{ color: "#E8E3DA" }}
+                >
+                  {recap.ai_summary}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
         {leaderboard.length === 0 ? (
           <div className="text-center py-8" style={{ color: "#B8B3AA" }}>
             <Trophy className="h-12 w-12 mx-auto mb-3 opacity-30" style={{ color: "#A8C566" }} />
