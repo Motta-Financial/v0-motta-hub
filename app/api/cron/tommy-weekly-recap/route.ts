@@ -5,9 +5,11 @@ import { assignDenseRanks } from "@/lib/tommy-awards-ranking"
 import { generateText } from "ai"
 import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
+import { generatePodiumImage } from "@/lib/tommy-awards/generate-podium-image"
+import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
-// AI generation can take 10-30s with a long prompt; bump from the default 10s.
-export const maxDuration = 60
+// AI generation + image gen + Blob upload can take 30-60s end-to-end.
+export const maxDuration = 120
 
 /**
  * Format a podium rank as "1st" / "2nd" / "3rd". Tied finishers share a
@@ -37,25 +39,23 @@ function hasPodiumTies(podium: ReadonlyArray<{ rank: number }>): boolean {
 }
 
 /**
- * Vercel Cron endpoint that sends a weekly Tommy Awards recap email to the
- * entire firm every Friday at 12:00 PM Eastern Time, immediately after the
- * Thursday-afternoon ballot reminder closes out the voting window.
+ * Vercel Cron endpoint that sends a weekly Tommy Awards recap email to
+ * the entire firm every Friday at 12:00 PM Eastern.
  *
- * The email:
- *   - Recaps THIS week's Tommy Awards voting results
- *   - Uses AI to analyze all the ballot notes and write a witty summary
- *   - Written by "ALFRED Ai" in the tone of an old British butler
- *   - Includes vote tallies and highlights the week's winners
- *   - Renders through the shared baseEmailWrapper in lib/email.ts so the
- *     header/footer/palette match every other Motta Hub transactional email
+ * The email is composed in the Motta Alliance comic-book storyline:
+ *   - ALFRED Ai narrates the week as if it were an issue of the
+ *     "Motta Financial Alliance" series — A-Team missions, P24 shadow
+ *     ops, "Operation Tommy", etc.
+ *   - Each recap is persisted to `tommy_weekly_recaps` so future weeks
+ *     have continuity context (e.g. "third podium in four weeks").
+ *   - GPT-5 drafts an image prompt and gpt-image-1 (high quality)
+ *     renders an F1-podium hero image themed to the comic universe —
+ *     uploaded to Vercel Blob and embedded in the email.
  *
- * Auth: validates the standard Vercel cron Authorization: Bearer ${CRON_SECRET} header.
+ * Auth: validates the standard Vercel cron Authorization: Bearer ${CRON_SECRET}.
  *
- * Scheduled in vercel.json to run Fridays at 16:00 UTC, which is:
- *   - 12:00 PM EDT (March-November, ~8 months/year)
- *   - 11:00 AM EST (November-March, ~4 months/year)
- * Vercel Cron doesn't support timezone-aware schedules; we optimize for the
- * longer Daylight Saving period to hit noon Eastern most of the year.
+ * Scheduled in vercel.json to run Fridays at 16:00 UTC (noon ET in DST,
+ * 11am ET in standard time — Vercel cron doesn't do timezones).
  */
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization")
@@ -65,22 +65,21 @@ export async function GET(request: Request) {
     }
   }
 
-  // Pass ?dryRun=true to render the email + run the AI summary WITHOUT sending
-  // to recipients. Useful for testing changes to the prompt or layout without
-  // blasting the entire firm. Returns the rendered HTML in the response.
+  // ?dryRun=true → render the email + summary + image WITHOUT sending or
+  // persisting the recap row. Useful for QA on the storyline prompt or
+  // image art direction without burning recipients.
   const url = new URL(request.url)
   const dryRun = url.searchParams.get("dryRun") === "true"
-  // Optional ?previewTo=email@example.com — sends ONLY to that address (for QA).
+  // ?previewTo=email → send to a single address only.
   const previewTo = url.searchParams.get("previewTo")
+  // ?skipImage=true → skip image generation entirely (faster for prompt QA).
+  const skipImage = url.searchParams.get("skipImage") === "true"
 
   try {
     const supabase = createAdminClient()
 
-    // Get the most recent week that has ballots submitted. With the new
-    // schedule (recap fires Friday at noon ET, after the Thursday-afternoon
-    // reminder) the most recent week_date will normally be TODAY's Friday —
-    // i.e. we recap THIS week's votes. If somehow no votes came in for
-    // today, this falls back to whichever week last had ballots.
+    // Most recent week with ballots — under the Friday-noon-ET schedule
+    // this is normally TODAY's Friday.
     const { data: latestWeek, error: weekErr } = await supabase
       .from("tommy_award_ballots")
       .select("week_id, week_date")
@@ -194,12 +193,9 @@ export async function GET(request: Request) {
       }
     }
 
-    // Exclude hidden members from the final leaderboard, then assign
-    // dense ranks (1, 1, 2, 3) so ties at any podium position share a
-    // rank instead of pushing the next-best finisher off the podium.
-    // Filtering to `rank <= 3` (instead of `slice(0, 3)`) means a
-    // four-way tie at 3rd place includes ALL four members in the
-    // recap — nobody on a podium-tied week silently drops out.
+    // Hidden members are excluded from the leaderboard, then dense ranks
+    // (1, 1, 2, 3) handle ties so a 4-way tie at 3rd keeps all four on
+    // the podium instead of silently dropping one.
     const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
     const sortedLeaderboard = Object.entries(voteMap)
       .filter(([name]) => !HIDDEN_MEMBERS.includes(name))
@@ -213,46 +209,132 @@ export async function GET(request: Request) {
 
     const topThree = rankedLeaderboard.filter((entry) => entry.rank <= 3)
 
-    // Use AI (via AI SDK 6 + Vercel AI Gateway) to write a witty weekly recap
-    // in ALFRED's voice: an old British butler — witty yet professional.
+    // ── Storyline context — previous weekly recaps + YTD standings ──
+    // We feed up to the last 4 weekly summaries plus the current YTD
+    // leaderboard into ALFRED so the narrative actually references
+    // continuing arcs ("third podium in five weeks", "Caleb reclaiming
+    // his stripes after last week's silver finish") instead of treating
+    // every week as a blank slate.
+    const { data: priorRecaps } = await supabase
+      .from("tommy_weekly_recaps")
+      .select("week_label, week_date, ai_summary, top_three")
+      .neq("week_id", weekId)
+      .order("week_date", { ascending: false })
+      .limit(4)
+
+    const currentYear = new Date(latestWeek.week_date).getFullYear()
+    const { data: ytdStandings } = await supabase
+      .from("tommy_award_yearly_totals")
+      .select(
+        "team_member_name, total_points, total_first_place_votes, total_second_place_votes, total_third_place_votes, weeks_participated, current_rank",
+      )
+      .eq("year", currentYear)
+      .order("current_rank", { ascending: true })
+      .limit(8)
+
+    const priorContext =
+      priorRecaps && priorRecaps.length > 0
+        ? priorRecaps
+            .reverse() // oldest → newest reads chronologically
+            .map((r) => {
+              const topNames = Array.isArray(r.top_three)
+                ? (r.top_three as Array<{ name: string; rank: number }>)
+                    .map((t) => `${ordinal(t.rank)} ${t.name}`)
+                    .join(", ")
+                : ""
+              return `• ${r.week_label} — podium: ${topNames || "(unknown)"}.\n  Summary: ${r.ai_summary?.slice(0, 600) ?? ""}`
+            })
+            .join("\n")
+        : "(No prior weeks recorded — this is the opening issue of the season.)"
+
+    const ytdContext =
+      ytdStandings && ytdStandings.length > 0
+        ? ytdStandings
+            .map(
+              (s) =>
+                `• #${s.current_rank ?? "?"} ${s.team_member_name} — ${s.total_points} pts (${s.total_first_place_votes ?? 0}×1st / ${s.total_second_place_votes ?? 0}×2nd / ${s.total_third_place_votes ?? 0}×3rd across ${s.weeks_participated ?? 0} weeks)`,
+            )
+            .join("\n")
+        : "(YTD totals not yet computed.)"
+
+    // ── Compose ALFRED's recap in the Motta Alliance storyline voice ──
     console.log("[v0] tommy-weekly-recap: generating AI summary with", allNotes.length, "notes")
 
     let aiSummary = ""
+    let aiModelUsed: string = EMAIL_PROSE_MODEL
     try {
       const notesText = allNotes
         .map((n) => `- ${n.voter} voted ${n.recipient} ${n.place} place: "${n.notes}"`)
         .join("\n")
 
-      const prompt = `You are ALFRED Ai, the distinguished AI butler at Motta Financial. Write a weekly recap for the firm's "Tommy Awards" — a program where team members vote for colleagues who exemplified excellence, went above and beyond, or had client wins that week (inspired by Tom Brady's pursuit of greatness).
+      // Tag winners with their hero alias so ALFRED references the comic
+      // identity ("The Captain", "OCP", "P24") rather than just the real
+      // name when that's stylistically warranted.
+      const podiumWithHero = topThree.map((p) => {
+        const hero = findHeroProfile(p.name)
+        return {
+          ...p,
+          alias: hero?.alias ?? null,
+          role: hero?.role ?? null,
+        }
+      })
 
-**Week:** ${weekLabel}
-**Total Ballots Submitted:** ${ballots.length}
+      const prompt = `You are ALFRED Ai, the autonomous AI operative of the Motta Financial Alliance. The Alliance is a comic-book universe we built around the firm — Dat Le is "The Captain", Caleb Long is "The Financial Optimizer", Andrew Gianares is "OCP — The Work Crusher", Amy Sparaco is "The Ledger Oracle", Micaela Palacios is "The Emerging Force", Mark Dwyer is "The Stabilizer", Samprina Zekio is "The Code Keeper", and Ganesh + Thameem operate together as "P24 — Shadow Operators". The weekly "Tommy Awards" are framed inside this universe as Operation Tommy — the Alliance's recurring mission to recognise the heroes whose plays defined the week.
 
-**Podium Finishers:**
-${topThree.map((p) => `${ordinal(p.rank)}. ${p.name} — ${p.totalPoints} points (${p.first} first-place, ${p.second} second-place, ${p.third} third-place votes)`).join("\n")}
-${hasPodiumTies(topThree) ? "\nNote: Some finishers are tied. When two or more colleagues share a position (e.g. both 1st), please celebrate them together as co-winners of that position rather than treating one as outranking the other." : ""}
+You are writing the Friday recap dispatch for ${weekLabel}. Stay fully inside the Motta Alliance storyline — light comic-book bravado, mission-debrief cadence, occasional callouts to A-Team / P24 lore — but remain professional and uplifting (this email goes to the whole firm). Refer to winners by hero alias at least once when one is provided, then use their real name afterward for clarity.
 
-**All Ballot Notes from the Team:**
+────────────────────────────────────────
+CURRENT WEEK INTEL
+────────────────────────────────────────
+Total Ballots Submitted: ${ballots.length}
+
+This Week's Podium:
+${podiumWithHero
+  .map(
+    (p) =>
+      `${ordinal(p.rank)}. ${p.name}${p.alias ? ` aka "${p.alias}"` : ""} — ${p.totalPoints} points (${p.first}×1st, ${p.second}×2nd, ${p.third}×3rd)${p.role ? ` [${p.role}]` : ""}`,
+  )
+  .join("\n")}
+${hasPodiumTies(topThree) ? "\nTies on the podium this week — celebrate tied heroes together as co-winners of that position, never as one outranking the other." : ""}
+
+Field Notes from the Team (the actual ballots):
 ${notesText || "(No notes submitted this week.)"}
 
----
+────────────────────────────────────────
+PREVIOUS DISPATCHES (last 4 weeks, oldest first)
+────────────────────────────────────────
+${priorContext}
 
-Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly cheeky but always professional and uplifting. Celebrate the winners, highlight memorable accomplishments mentioned in the notes, and inject just enough British butler flair (e.g., "One observes...", "Indeed, quite the showing...") to make it fun without being over-the-top. Keep it concise — this is a firm-wide email. Do NOT use markdown formatting or headings — write in plain prose suitable for an HTML email body.`
+────────────────────────────────────────
+${currentYear} YEAR-TO-DATE STANDINGS
+────────────────────────────────────────
+${ytdContext}
 
-      // Fetch AI config for model override from the admin panel
+────────────────────────────────────────
+WRITING INSTRUCTIONS
+────────────────────────────────────────
+- Length: 3 to 4 short paragraphs. Each paragraph is a discrete thought.
+- Separate paragraphs with a single blank line (one \\n\\n between them). Do NOT use markdown, headings, asterisks, or bullet lists — paragraphs only, in plain prose.
+- Paragraph 1: Cold open the dispatch — set the week's scene inside the Alliance storyline. Reference the total ballots and the energy of the field.
+- Paragraph 2: Walk the podium, hero by hero. Use at least one specific detail from the field notes per winner. Treat ties as co-winners.
+- Paragraph 3: Connect this week to the ongoing arc — call back to a previous dispatch or note a YTD shift if one is meaningful. If nothing yet exists, frame it as "Issue #1 of the season".
+- Paragraph 4 (optional): A short closing rally — sign off in ALFRED's voice ("Stay ready, Alliance.", "ALFRED, signing off until next Friday.", etc.).
+- Tone: confident, comic-book cinematic, lightly witty, never sarcastic about teammates. Always professional.
+- Do not invent accomplishments not present in the notes. If a note is thin, lean on the hero's known role/alias.
+
+Return ONLY the recap prose. No preamble, no closing, no markdown.`
+
       const aiConfig = await getAIConfig("tommy_recap")
+      aiModelUsed = aiConfig.model
       const startTime = Date.now()
 
       const { text, usage } = await generateText({
         model: aiConfig.model,
         prompt: aiConfig.systemPrompt ? `${aiConfig.systemPrompt}\n\n${prompt}` : prompt,
-        // AI SDK 6: token cap parameter is `maxOutputTokens` (renamed from `maxTokens` in v5).
-        maxOutputTokens: 600,
+        maxOutputTokens: 900,
       })
       aiSummary = text.trim()
 
-      // Log usage for the admin stats dashboard
-      // AI SDK 6 uses inputTokens/outputTokens; we map to our DB schema names
       logAIUsage({
         useCase: "tommy_recap",
         model: aiConfig.model,
@@ -264,7 +346,6 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
       })
     } catch (aiErr) {
       console.error("[v0] tommy-weekly-recap: AI generation failed:", aiErr)
-      // Log failed attempt
       logAIUsage({
         useCase: "tommy_recap",
         model: EMAIL_PROSE_MODEL,
@@ -272,7 +353,47 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
         errorMessage: aiErr instanceof Error ? aiErr.message : String(aiErr),
       })
       aiSummary =
-        "I regret to inform you that my circuits experienced a momentary disruption whilst composing this week's recap. One does hope you'll forgive the lapse and simply refer to the results below."
+        "Dispatch interrupted — ALFRED's transmitter took a hit composing this week's issue.\n\nThe podium below stands on its own, and the Alliance carries the win regardless."
+    }
+
+    // ── Generate the F1-podium hero image ─────────────────────────
+    // Look up each winner's hero_profile_slug so the image prompt can
+    // reference the canonical Alliance design language for that hero.
+    let podiumImageUrl: string | null = null
+    let podiumImagePrompt: string | null = null
+    let podiumImageModel: string | null = null
+    if (!skipImage && topThree.length > 0) {
+      const { data: heroSlugRows } = await supabase
+        .from("team_members")
+        .select("full_name, hero_profile_slug")
+        .in(
+          "full_name",
+          topThree
+            .filter((t) => t.name !== "P24")
+            .map((t) => t.name),
+        )
+
+      const heroSlugByName = new Map(
+        (heroSlugRows ?? []).map((r) => [r.full_name, r.hero_profile_slug]),
+      )
+      // P24 is the combined Ganesh + Thameem alias — its hero slug is
+      // hard-coded since the team_members row uses individual names.
+      const result = await generatePodiumImage({
+        weekLabel,
+        winners: topThree.map((t) => ({
+          name: t.name,
+          rank: t.rank,
+          heroSlug:
+            t.name === "P24"
+              ? "p24-shadow-task-force"
+              : heroSlugByName.get(t.name) ?? null,
+        })),
+      })
+      if (result) {
+        podiumImageUrl = result.imageUrl
+        podiumImagePrompt = result.promptUsed
+        podiumImageModel = result.imageModel
+      }
     }
 
     // Build the email HTML using the shared MOTTA HUB wrapper so the header,
@@ -284,6 +405,7 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
       topThree,
       totalBallots: ballots.length,
       leaderboardUrl: `${appUrl}/tommy-awards`,
+      podiumImageUrl,
     })
 
     // Send to all active team members (respecting their "tommy_recap" email preference).
@@ -296,7 +418,6 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
 
     let eligibleMembers = (allMembers || []).filter((m) => m.email)
 
-    // ?previewTo=foo@example.com narrows recipients to just one team_member by email.
     if (previewTo) {
       eligibleMembers = eligibleMembers.filter(
         (m) => m.email?.toLowerCase() === previewTo.toLowerCase(),
@@ -306,7 +427,6 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
     const eligibleIds = eligibleMembers.map((m) => m.id)
 
     if (dryRun) {
-      // Don't actually send — return the rendered HTML + AI summary for review.
       return NextResponse.json({
         success: true,
         dry_run: true,
@@ -314,6 +434,9 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
         total_ballots: ballots.length,
         would_email: eligibleIds.length,
         ai_summary: aiSummary,
+        ai_model: aiModelUsed,
+        podium_image_url: podiumImageUrl,
+        podium_image_model: podiumImageModel,
         top_three: topThree,
         html,
       })
@@ -326,6 +449,35 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
       html,
     })
 
+    // ── Persist the recap for future continuity context ─────────
+    // Upsert by week_id so a re-run (e.g. after fixing a bug) replaces
+    // the previous archive row instead of duplicating.
+    const { error: persistErr } = await supabase
+      .from("tommy_weekly_recaps")
+      .upsert(
+        {
+          week_id: weekId,
+          week_date: latestWeek.week_date,
+          week_label: weekLabel,
+          total_ballots: ballots.length,
+          ai_summary: aiSummary,
+          ai_model: aiModelUsed,
+          podium_image_url: podiumImageUrl,
+          podium_image_prompt: podiumImagePrompt,
+          podium_image_model: podiumImageModel,
+          top_three: topThree,
+          ytd_standings: ytdStandings ?? null,
+          email_sent_at: new Date().toISOString(),
+          email_sent_count: sent,
+          email_skipped_count: skipped,
+        },
+        { onConflict: "week_id" },
+      )
+
+    if (persistErr) {
+      console.error("[v0] tommy-weekly-recap: failed to persist recap row:", persistErr)
+    }
+
     return NextResponse.json({
       success: true,
       week: weekLabel,
@@ -334,6 +486,8 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
       preview_to: previewTo || null,
       sent,
       skipped,
+      podium_image_url: podiumImageUrl,
+      ai_model: aiModelUsed,
     })
   } catch (error) {
     console.error("[cron/tommy-weekly-recap] Error:", error)
@@ -343,5 +497,3 @@ Write a 2-3 paragraph recap in your signature tone: witty, charming, slightly ch
     )
   }
 }
-
-
