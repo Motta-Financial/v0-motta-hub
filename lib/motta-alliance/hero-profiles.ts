@@ -168,6 +168,7 @@ export const HERO_PROFILES: HeroProfile[] = [
       "thameem",
       "ganesh & thameem",
       "ganesh and thameem",
+      "g&t",
       "p24",
       "p24 shadow operators",
     ],

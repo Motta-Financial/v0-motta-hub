@@ -108,7 +108,7 @@ export function TommyVotingForm() {
 
     try {
       // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
-      // Ganesh Vasan and Thameem JA vote together as "G&T"
+      // Ganesh Vasan and Thameem JA vote together as "P24" (formerly "G&T")
       const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
       const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
       
@@ -122,23 +122,26 @@ export function TommyVotingForm() {
 
       if (membersError) throw membersError
       
-      // Filter out hidden members and the combined voters (they'll be replaced by G&T)
+      // Filter out hidden members and the combined voters (they'll be replaced by P24)
       const filteredMembers = (members || []).filter(
         (m: { full_name: string }) => 
           !HIDDEN_MEMBERS.includes(m.full_name) && 
           !COMBINED_VOTERS.includes(m.full_name)
       )
       
-      // Add the combined "G&T" voter entry (uses a special composite ID)
+      // Add the combined "P24" voter entry (uses a special composite ID).
+      // Stored as "P24" going forward; legacy ballots saved as "G&T" are
+      // still picked up downstream via the normalize helpers + voter_name
+      // lookup below.
       const gtVoter: TeamMember = {
-        id: "G&T",
-        full_name: "G&T",
+        id: "P24",
+        full_name: "P24",
         email: "",
         avatar_url: null,
         role: "Combined Voter",
       }
       
-      // Insert G&T in alphabetical position
+      // Insert P24 in alphabetical position
       const membersWithGT = [...filteredMembers, gtVoter].sort((a, b) => 
         a.full_name.localeCompare(b.full_name)
       )
@@ -207,16 +210,17 @@ export function TommyVotingForm() {
     const supabase = createClient()
     
     try {
-      // For the combined "G&T" voter, look up ballots by voter_name instead of voter_id
-      // since G&T isn't a real team_member row
+      // For the combined "P24" voter, look up ballots by voter_name instead of voter_id
+      // since P24 isn't a real team_member row. Match BOTH the new "P24" label and
+      // the legacy "G&T" label so prior weeks of ballots still load for editing.
       let existingBallot = null
       let error = null
       
-      if (currentVoter === "G&T") {
+      if (currentVoter === "P24") {
         const result = await supabase
           .from("tommy_award_ballots")
           .select("*")
-          .eq("voter_name", "G&T")
+          .in("voter_name", ["P24", "G&T"])
           .eq("week_id", selectedWeekId)
           .single()
         existingBallot = result.data
@@ -469,8 +473,8 @@ export function TommyVotingForm() {
 
     try {
       const voter = teamMembers.find((m) => m.id === currentVoter)
-      const isGT = currentVoter === "G&T"
-      const voterName = isGT ? "G&T" : (voter?.full_name || "Unknown")
+      const isGT = currentVoter === "P24"
+      const voterName = isGT ? "P24" : (voter?.full_name || "Unknown")
 
       // Build payload. We POST to our own /api/tommy-awards/ballot endpoint
       // (same-origin, motta.cpa) instead of writing to Supabase directly so that
