@@ -24,6 +24,7 @@ import { IssueNewEditionDialog } from "@/components/motta-alliance/issue-new-edi
 import {
   ALLIANCE_COVER_URL,
   HERO_PROFILES,
+  findHeroProfile,
   type HeroProfile,
 } from "@/lib/motta-alliance/hero-profiles"
 
@@ -89,6 +90,49 @@ type Issue = {
   // Publish date — only set for DB-backed editions. Shown as a relative
   // "3 days ago"-style label so newer drops surface visually.
   publishedAt?: string | null
+  // When an issue is a single-hero spotlight / origin story we attach
+  // the matching HeroProfile so the cover can render the teammate's
+  // portrait + hero alias instead of just a plain character chip. This
+  // is how we make sure DB-uploaded Origin Stories get filed under the
+  // correct hero in the Hero Volumes section.
+  hero?: HeroProfile | null
+}
+
+/**
+ * Classify an issue as a Hero Volume / Origin Story so it shows up in
+ * the right gallery section. We consider it a Hero Volume when ANY of:
+ *   - the `series` label literally says "Hero Volume"
+ *   - the `arc` mentions "Origin" (covers "Origin Story", "The Origin", ...)
+ *   - the cast is exactly one teammate AND that teammate resolves to a
+ *     HeroProfile — the canonical shape of a solo character spotlight.
+ * Anything else stays in the numbered Team Issues / Latest Editions flow.
+ */
+function isHeroVolumeIssue(issue: Issue): boolean {
+  const series = (issue.series || "").toLowerCase()
+  if (series.includes("hero volume")) return true
+  const arc = (issue.arc || "").toLowerCase()
+  if (arc.includes("origin")) return true
+  if (
+    Array.isArray(issue.characters) &&
+    issue.characters.length === 1 &&
+    findHeroProfile(issue.characters[0]) !== null
+  ) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Resolve the hero a given issue belongs to. For Hero Volume covers we
+ * try the title first (e.g. "Caleb Long"), then fall back to the single
+ * featured character. Returns `null` when the issue isn't tied to a
+ * specific teammate so the renderer can degrade gracefully.
+ */
+function resolveIssueHero(issue: Issue): HeroProfile | null {
+  return (
+    findHeroProfile(issue.title) ||
+    (issue.characters.length === 1 ? findHeroProfile(issue.characters[0]) : null)
+  )
 }
 
 // Team-wide ensemble issues — the main numbered series.
@@ -131,7 +175,9 @@ const TEAM_ISSUES: Issue[] = [
 ]
 
 // Solo character spotlights — "Volume" rather than "Issue" so the
-// numbering doesn't collide with the main series.
+// numbering doesn't collide with the main series. The `hero` field on
+// each entry pairs the volume to its HeroProfile so the cover card can
+// render the teammate's portrait + alias alongside the title.
 const HERO_VOLUMES: Issue[] = [
   {
     slug: "caleb-long-vol-1",
@@ -144,6 +190,7 @@ const HERO_VOLUMES: Issue[] = [
     pdfUrl:
       "https://blobs.vusercontent.net/blob/Motta%20-%20Caleb%20Long%20-%20Volume%20-%201-ZCBlvd6RL2uYyWKHAcKhvrlFn6VurF.pdf",
     variant: "cream-olive",
+    hero: findHeroProfile("Caleb Long"),
   },
   {
     slug: "amy-sparaco-vol-1",
@@ -156,6 +203,7 @@ const HERO_VOLUMES: Issue[] = [
     pdfUrl:
       "https://blobs.vusercontent.net/blob/Motta%20-%20Amy%20Sparaco%20-%20Volume%20-%201-lnpj1pUWl41WRj7aKZhNEZEJ9e6wsz.pdf",
     variant: "amber",
+    hero: findHeroProfile("Amy Sparaco"),
   },
 ]
 
@@ -433,6 +481,43 @@ function IssueCover({ issue }: { issue: Issue }) {
         className="space-y-3 p-4"
         style={{ backgroundColor: "#0F140C" }}
       >
+        {/* Hero portrait — only rendered for Hero Volumes / Origin
+            Stories. Anchors the card to the teammate the volume is
+            about by surfacing their headshot, alias, and one-line role
+            descriptor straight from the HeroProfile registry. */}
+        {issue.hero && (
+          <div
+            className="flex items-center gap-3 rounded-md border px-2.5 py-2"
+            style={{
+              borderColor: "rgba(168,197,102,0.25)",
+              backgroundColor: "rgba(168,197,102,0.05)",
+            }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={issue.hero.imageUrl}
+              alt={`${issue.hero.name} — ${issue.hero.alias} hero profile`}
+              className="h-10 w-10 shrink-0 rounded-md border object-cover object-top"
+              style={{ borderColor: "rgba(168,197,102,0.35)" }}
+              loading="lazy"
+            />
+            <div className="min-w-0">
+              <div
+                className="truncate text-[10px] font-bold uppercase tracking-[0.18em]"
+                style={{ color: "#A8C566" }}
+              >
+                {issue.hero.alias}
+              </div>
+              <div
+                className="truncate text-xs font-semibold"
+                style={{ color: "#F4EFE8" }}
+              >
+                {issue.hero.name}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Featured characters — chips. */}
         <div className="flex items-start gap-2">
           <Users
@@ -595,20 +680,28 @@ function isKnownVariant(v: string | null | undefined): v is CoverVariant {
  *  so the existing IssueCover / IssueGrid components render it as-is.
  *  Unknown variants fall back to the default olive look. */
 function dbRowToIssue(row: DbIssueRow): Issue {
-  return {
+  const characters = row.characters ?? []
+  const issue: Issue = {
     slug: row.slug,
     series: row.series || "Motta Alliance",
     number: row.issue_number,
     title: row.title,
     arc: row.arc ?? undefined,
     tagline: row.tagline ?? "",
-    characters: row.characters ?? [],
+    characters,
     pdfUrl: row.pdf_url,
     variant: isKnownVariant(row.variant) ? row.variant : "olive",
     aiSummary: row.ai_summary,
     issuedBy: row.created_by_name,
     publishedAt: row.published_at,
   }
+  // Only attach a hero when the issue actually classifies as a Hero
+  // Volume — that's how an uploaded "Origin Story" for a teammate ends
+  // up filed under their profile in the Hero Volumes section.
+  if (isHeroVolumeIssue(issue)) {
+    issue.hero = resolveIssueHero(issue)
+  }
+  return issue
 }
 
 const fetcher = async (url: string) => {
@@ -633,6 +726,28 @@ export function MottaAlliance() {
   const dbIssues = useMemo<Issue[]>(
     () => (data?.issues ?? []).map(dbRowToIssue),
     [data?.issues],
+  )
+
+  // Bucket the DB-backed editions so the "Latest Editions" strip stays
+  // focused on team-wide drops and any Origin Story / Hero Volume drops
+  // get filed under the correct teammate in the Hero Volumes section.
+  // `isHeroVolumeIssue` is the single source of truth so seeded and DB
+  // entries are classified identically.
+  const dbHeroVolumes = useMemo<Issue[]>(
+    () => dbIssues.filter(isHeroVolumeIssue),
+    [dbIssues],
+  )
+  const dbLatestEditions = useMemo<Issue[]>(
+    () => dbIssues.filter((i) => !isHeroVolumeIssue(i)),
+    [dbIssues],
+  )
+
+  // Merge seeded + DB hero volumes. We put DB volumes first so newly
+  // issued Origin Stories surface above the originals, matching the
+  // "newest at the top" convention used everywhere else in the gallery.
+  const allHeroVolumes = useMemo<Issue[]>(
+    () => [...dbHeroVolumes, ...HERO_VOLUMES],
+    [dbHeroVolumes],
   )
 
   return (
@@ -775,19 +890,21 @@ export function MottaAlliance() {
         </div>
       </header>
 
-      {/* Latest Editions — DB-backed uploads. Hidden when none exist so
-          the page doesn't show an empty section on first load. */}
-      {dbIssues.length > 0 && (
+      {/* Latest Editions — DB-backed team-wide drops only. Hero Volume
+          / Origin Story uploads are routed to the Hero Volumes section
+          below so they appear under the correct teammate instead of
+          here. Hidden when none exist so we don't show an empty strip. */}
+      {dbLatestEditions.length > 0 && (
         <section className="space-y-4">
           <ComicSectionHeader
             kicker="New From the Press"
             title="Latest Editions"
             subtitle="Newly issued via the Hub — announced to the team by ALFRED Ai with a story preview."
-            count={dbIssues.length}
-            countLabel={dbIssues.length === 1 ? "Edition" : "Editions"}
+            count={dbLatestEditions.length}
+            countLabel={dbLatestEditions.length === 1 ? "Edition" : "Editions"}
             icon={<Sparkles className="h-4 w-4" />}
           />
-          <IssueGrid issues={dbIssues} />
+          <IssueGrid issues={dbLatestEditions} />
         </section>
       )}
 
@@ -804,17 +921,20 @@ export function MottaAlliance() {
         <IssueGrid issues={TEAM_ISSUES} />
       </section>
 
-      {/* Hero Volumes — seeded constants. */}
+      {/* Hero Volumes — seeded constants + any DB-uploaded Origin
+          Stories, filed under the correct teammate via `findHeroProfile`
+          on the cast. Each card renders the linked hero's portrait so
+          it's obvious whose origin story it is at a glance. */}
       <section className="space-y-4">
         <ComicSectionHeader
           kicker="Solo Spotlights"
           title="Hero Volumes"
           subtitle="Origin stories — one hero at a time."
-          count={HERO_VOLUMES.length}
-          countLabel={HERO_VOLUMES.length === 1 ? "Volume" : "Volumes"}
+          count={allHeroVolumes.length}
+          countLabel={allHeroVolumes.length === 1 ? "Volume" : "Volumes"}
           icon={<Zap className="h-4 w-4" />}
         />
-        <IssueGrid issues={HERO_VOLUMES} />
+        <IssueGrid issues={allHeroVolumes} />
       </section>
 
       {/* Hero Profiles — gallery of the comic-book hero profile pages
