@@ -859,16 +859,6 @@ export function TommyVotingForm() {
             </div>
           </div>
         )}
-                  {entry.change_type === "created" && (
-                    <div className="text-slate-500 text-xs">
-                      Initial ballot submitted by {entry.changed_by_name}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         {isAmendment && originalBallot && (
           <PendingChangesPreview
