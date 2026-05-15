@@ -83,6 +83,33 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ team_members: allMembers })
     }
 
+    // Weekly recap (AI summary + generated F1-podium image) for the
+    // currently-filtered week. Surfaces the same artifact that ALFRED
+    // emails out on Fridays inside the Tommy Awards dashboard so the
+    // Weekly Leaderboard can render it alongside the standings.
+    //
+    // Resolution rules (intentionally narrow — a recap is per-week):
+    //   - exactly one week_id selected → return that week's recap row
+    //   - otherwise → return null so the UI hides the recap panel
+    // We never collapse multi-week filters down to "the latest one"
+    // because the resulting summary would describe a different week
+    // than the leaderboard above it.
+    if (type === "weekly_recap") {
+      if (weekIdList.length !== 1) {
+        return NextResponse.json({ recap: null })
+      }
+      const { data, error } = await supabase
+        .from("tommy_weekly_recaps")
+        .select(
+          "week_id, week_date, week_label, total_ballots, ai_summary, podium_image_url, top_three, email_sent_at, created_at",
+        )
+        .eq("week_id", weekIdList[0])
+        .maybeSingle()
+
+      if (error) throw error
+      return NextResponse.json({ recap: data || null })
+    }
+
     // Get leaderboard data
     if (type === "leaderboard") {
       // Calculate points from ballots
