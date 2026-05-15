@@ -38,7 +38,7 @@ type BallotSnapshot = {
 type SubmitBody = {
   weekId: string
   weekDate: string
-  voterId: string // "G&T" or a real team_members uuid
+  voterId: string // "P24" (or legacy "G&T") or a real team_members uuid
   voterName: string
   firstPlace: Placement
   secondPlace: Placement
@@ -54,8 +54,9 @@ type SubmitBody = {
   } | null
 }
 
-// Helper: when "G&T" appears in any uuid column it must become NULL.
-// Real uuids must match this pattern; everything else (including "G&T") -> null.
+// Helper: when "P24" (or legacy "G&T") appears in any uuid column it must
+// become NULL. Real uuids must match this pattern; everything else
+// (including "P24" / "G&T") -> null.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const toUuidOrNull = (id: string | null | undefined): string | null => {
   if (!id) return null
@@ -82,7 +83,9 @@ export async function POST(request: NextRequest) {
   }
 
   const supabase = await createClient()
-  const isGT = body.voterId === "G&T"
+  // Accept both the new "P24" label and the legacy "G&T" label so requests
+  // from older bookmarked clients still succeed.
+  const isGT = body.voterId === "P24" || body.voterId === "G&T"
 
   // Build the ballot row using uuid-safe coercion for every *_id column.
   const ballotData: Record<string, unknown> = {

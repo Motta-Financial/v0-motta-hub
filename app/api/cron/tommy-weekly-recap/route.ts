@@ -123,9 +123,9 @@ export async function GET(request: Request) {
       })
     }
 
-    // Normalize "Ganesh Vasan" and "Thameem JA" → "G&T" for aggregation
-    const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
-    const normalizeName = (name: string) => (COMBINED_VOTERS.includes(name) ? "G&T" : name)
+    // Normalize "Ganesh Vasan", "Thameem JA", and the legacy "G&T" label → "P24"
+    const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA", "G&T"]
+    const normalizeName = (name: string) => (COMBINED_VOTERS.includes(name) ? "P24" : name)
 
     // Aggregate vote tallies and collect all notes for AI summarization.
     const voteMap: Record<

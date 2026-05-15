@@ -43,7 +43,7 @@ export async function GET(request: Request) {
 
     // Fetch all active team members; we exclude members who are hidden from
     // the Tommy Awards experience to keep the email list clean.
-    // Ganesh Vasan and Thameem JA vote together as "G&T" - they get a combined email.
+    // Ganesh Vasan and Thameem JA vote together as "P24" — they get a combined email.
     const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
     const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
     
@@ -54,7 +54,7 @@ export async function GET(request: Request) {
 
     if (error) throw error
 
-    // Separate out the combined voters (G&T) and the regular voters
+    // Separate out the combined voters (P24) and the regular voters
     const gtMembers = (members || []).filter(
       (m) => m.email && COMBINED_VOTERS.includes(m.full_name),
     )
@@ -84,10 +84,10 @@ export async function GET(request: Request) {
       }),
     )
     
-    // Send a single combined email to G&T (both Ganesh and Thameem)
+    // Send a single combined email to P24 (both Ganesh and Thameem)
     if (gtMembers.length > 0) {
       const html = buildTommyReminderHtml({
-        recipientName: "G&T",
+        recipientName: "P24",
         weekLabel,
         ballotUrl,
       })

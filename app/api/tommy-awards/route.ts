@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
     // Get team members for filter dropdown
     if (type === "team_members") {
       // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
-      // Ganesh Vasan and Thameem JA are combined as "G&T"
+      // Ganesh Vasan and Thameem JA are combined as "P24" (formerly "G&T")
       const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
       const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
       
@@ -66,16 +66,16 @@ export async function GET(request: NextRequest) {
         (m) => !HIDDEN_MEMBERS.includes(m.full_name) && !COMBINED_VOTERS.includes(m.full_name)
       )
       
-      // Add the combined "G&T" entry
+      // Add the combined "P24" entry
       const gtEntry = {
-        id: "G&T",
-        full_name: "G&T",
-        first_name: "G&T",
+        id: "P24",
+        full_name: "P24",
+        first_name: "P24",
         last_name: "",
         is_active: true,
       }
       
-      // Insert G&T in alphabetical order
+      // Insert P24 in alphabetical order
       const allMembers = [...filteredMembers, gtEntry].sort((a, b) =>
         a.full_name.localeCompare(b.full_name)
       )
@@ -102,9 +102,9 @@ export async function GET(request: NextRequest) {
 
       if (error) throw error
 
-      // Ganesh Vasan and Thameem JA are combined as "G&T"
-      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
-      const normalizeName = (name: string) => COMBINED_VOTERS.includes(name) ? "G&T" : name
+      // Ganesh Vasan and Thameem JA are combined as "P24" (legacy "G&T" rolls up too)
+      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA", "G&T"]
+      const normalizeName = (name: string) => COMBINED_VOTERS.includes(name) ? "P24" : name
 
       // Calculate points per team member
       const pointsMap: Record<
@@ -193,9 +193,9 @@ export async function GET(request: NextRequest) {
     // Year-to-date stats: tracks weeks finished 1st/2nd/3rd based on weekly point totals
     if (type === "ytd_stats") {
       const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
-      // Ganesh Vasan and Thameem JA are combined as "G&T"
-      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
-      const normalizeName = (name: string) => COMBINED_VOTERS.includes(name) ? "G&T" : name
+      // Ganesh Vasan and Thameem JA are combined as "P24" (legacy "G&T" rolls up too)
+      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA", "G&T"]
+      const normalizeName = (name: string) => COMBINED_VOTERS.includes(name) ? "P24" : name
       
       const targetYear = year || new Date().getFullYear().toString()
       const isYear2026OrLater = Number.parseInt(targetYear) >= 2026
