@@ -138,6 +138,22 @@ export const HERO_PROFILES: HeroProfile[] = [
     aliases: ["samprina zekio", "the code keeper"],
   },
   {
+    slug: "alfred",
+    name: "ALFRED",
+    alias: "The AI Operative",
+    role: "Autonomous Logistics & Financial Reasoning Engine for the Drey-team.",
+    quote: "I don't sleep. I don't forget. I just keep the engine running.",
+    variant: "shadow",
+    imageUrl: "/images/alfred-logo.png",
+    aliases: [
+      "alfred",
+      "alfred ai",
+      "alfred service account",
+      "info@mottafinancial.com",
+      "the ai operative",
+    ],
+  },
+  {
     slug: "p24-shadow-task-force",
     name: "Ganesh & Thameem",
     alias: "P24 — Shadow Operators",
