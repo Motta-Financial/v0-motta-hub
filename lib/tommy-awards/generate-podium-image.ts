@@ -25,13 +25,22 @@
 import { generateText, generateImage } from "ai"
 import { put } from "@vercel/blob"
 import { findHeroProfile, findHeroProfileBySlug } from "@/lib/motta-alliance/hero-profiles"
-import { OPENAI_GPT_5 } from "@/lib/ai/models"
+import { IMAGE_PROMPT_MODEL, IMAGE_GENERATION_MODEL } from "@/lib/ai/models"
 
-/** Model used to compose the image prompt. */
-export const PODIUM_PROMPT_MODEL = OPENAI_GPT_5
+/** Model used to compose the image prompt.
+ *  Currently bound to `openai/gpt-5.5-pro` — OpenAI's flagship
+ *  reasoning model (May 2026). The prompt determines 80% of final
+ *  image quality and this is a once-a-week one-shot, so we lean into
+ *  the strongest available reasoning model. To bump models firm-wide,
+ *  edit `IMAGE_PROMPT_MODEL` in `lib/ai/models.ts` instead of this
+ *  re-export. */
+export const PODIUM_PROMPT_MODEL = IMAGE_PROMPT_MODEL
 
-/** Image model — OpenAI's flagship image generator, via the AI Gateway. */
-export const PODIUM_IMAGE_MODEL = "openai/gpt-image-1" as const
+/** Image model — currently bound to `openai/gpt-image-2`, OpenAI's
+ *  latest image generator (May 2026). Same `quality` provider option
+ *  as the previous gpt-image-1 tier; `"high"` is the slowest + best
+ *  output the model exposes. */
+export const PODIUM_IMAGE_MODEL = IMAGE_GENERATION_MODEL
 
 export interface PodiumImageWinner {
   name: string
@@ -98,18 +107,22 @@ Week label to display on the banner: "${opts.weekLabel}".
 
 Return ONLY the final image prompt as a single paragraph of ≤ 220 words. Do not include any other commentary.`
 
-    // GPT-5 is a reasoning model — it spends a significant chunk of
-    // its output budget on hidden reasoning tokens BEFORE any visible
-    // text emerges. 500 was empirically too tight: the model burned
-    // the entire budget on reasoning and returned an empty string,
-    // which caused the whole image pipeline to silently fail. 2_500
-    // leaves comfortable headroom for reasoning + a ≤ 220-word prompt.
+    // gpt-5.5-pro is a deep-reasoning model — it spends a large share
+    // of its output budget on hidden reasoning tokens BEFORE emitting
+    // any visible text. Empirically:
+    //   -    500 tokens → reasoning exhausted budget, empty output
+    //   -  2_500 tokens → worked most of the time, occasional empty
+    //   -  8_000 tokens → reliable for gpt-5.5-pro at "≤ 220 word"
+    //     prompt length. Image-prompt drafting is once-a-week, so the
+    //     extra cost is negligible and the quality ceiling is what
+    //     matters. If we ever see a truncation we can raise further
+    //     — the gateway caps gpt-5.5-pro at 65_536 output tokens.
     let cleanedPrompt = ""
     try {
       const { text: imagePrompt } = await generateText({
         model: PODIUM_PROMPT_MODEL,
         prompt: promptDraftInstruction,
-        maxOutputTokens: 2500,
+        maxOutputTokens: 8000,
       })
       cleanedPrompt = imagePrompt.trim().replace(/^["']|["']$/g, "")
     } catch (promptErr) {
