@@ -305,13 +305,23 @@ export async function GET(request: Request) {
      * ────────────────────────────────────────────────────────────────── */
     const { data: allMembers, error: membersErr } = await supabase
       .from("team_members")
-      .select("id, full_name, email, is_active, role")
+      .select("id, full_name, email, is_active, role, is_service_account")
       .eq("is_active", true)
       .not("role", "eq", "Company")
       .not("role", "eq", "Alumni")
     if (membersErr) throw membersErr
 
-    let eligible = (allMembers || []).filter((m) => m.email)
+    // Filter out service accounts (ALFRED) and dedupe by lowercased email so
+    // legacy duplicate rows (Info@... vs info@...) only get one briefing.
+    const seenEmails = new Set<string>()
+    let eligible = (allMembers || [])
+      .filter((m) => m.email && !m.is_service_account)
+      .filter((m) => {
+        const key = m.email!.toLowerCase()
+        if (seenEmails.has(key)) return false
+        seenEmails.add(key)
+        return true
+      })
     if (previewTo) {
       eligible = eligible.filter(
         (m) => m.email?.toLowerCase() === previewTo.toLowerCase(),
@@ -356,39 +366,51 @@ export async function GET(request: Request) {
       0,
     )
 
+    /*
+     * Send sequentially with a small delay between attempts.
+     *
+     * Resend's default rate limit is 2 requests/second. Firing all
+     * 12 sends in parallel (Promise.all) was tripping that limit and
+     * causing ~7 of 12 emails to silently fail every weekday. A 600ms
+     * spacing keeps us safely under 2/sec while still finishing the
+     * whole fan-out in <10 seconds.
+     */
     let totalSent = 0
     let totalSkipped = 0
-    await Promise.all(
-      eligible.map(async (m) => {
-        const html = buildDailyBriefingHtml({
-  recipientName: m.full_name?.split(" ")[0] || "there",
-  dateLabel,
-  weekRangeLabel,
-  executiveSummary,
-  recentDebriefs,
-  upcomingMeetings,
-  teamReminders,
-  marketNews,
-  taxNews,
-  techNews,
-  hubUpdates,
-  newIntakeForms,
-  newFeedback,
-  newProposalsAccepted,
-  proposalsTotalValue,
-  signOff,
-  hubUrl,
-  })
-        const r = await sendCategoryEmail({
-          category: "daily_briefing",
-          teamMemberIds: [m.id],
-          subject: `Your Daily Briefing - ${dateLabel}`,
-          html,
-        })
-totalSent += r.sent
-  totalSkipped += r.skipped
-  }),
-  )
+    for (let i = 0; i < eligible.length; i++) {
+      const m = eligible[i]
+      const html = buildDailyBriefingHtml({
+        recipientName: m.full_name?.split(" ")[0] || "there",
+        dateLabel,
+        weekRangeLabel,
+        executiveSummary,
+        recentDebriefs,
+        upcomingMeetings,
+        teamReminders,
+        marketNews,
+        taxNews,
+        techNews,
+        hubUpdates,
+        newIntakeForms,
+        newFeedback,
+        newProposalsAccepted,
+        proposalsTotalValue,
+        signOff,
+        hubUrl,
+      })
+      const r = await sendCategoryEmail({
+        category: "daily_briefing",
+        teamMemberIds: [m.id],
+        subject: `Your Daily Briefing - ${dateLabel}`,
+        html,
+      })
+      totalSent += r.sent
+      totalSkipped += r.skipped
+      // Don't sleep after the last one — keeps total runtime tight.
+      if (i < eligible.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      }
+    }
 
     // Mark briefing run as completed
     if (briefingRunId) {
