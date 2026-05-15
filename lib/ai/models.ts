@@ -60,6 +60,27 @@ export type ClaudeModelId =
 export const OPENAI_GPT_4O = "openai/gpt-4o" as const
 export const OPENAI_GPT_5 = "openai/gpt-5" as const
 export const OPENAI_GPT_5_MINI = "openai/gpt-5-mini" as const
+/** OpenAI's current flagship reasoning model (May 2026). Deeper
+ *  reasoning + better instruction-following than gpt-5 / gpt-5.1, at
+ *  the cost of slower inference. Use for high-stakes one-shot
+ *  authoring tasks (image-prompt drafting, complex code synthesis). */
+export const OPENAI_GPT_5_5_PRO = "openai/gpt-5.5-pro" as const
+/** Faster gpt-5.5 tier — drops some reasoning depth but ~3x faster.
+ *  Good default when latency matters more than ceiling quality. */
+export const OPENAI_GPT_5_5 = "openai/gpt-5.5" as const
+
+// ─── OpenAI image models ─────────────────────────────────────────────
+// Listed flagship → tier-down. Always reference the named role
+// (`IMAGE_GENERATION_MODEL`) at call sites so a future bump rebinds
+// every caller at once.
+
+/** OpenAI's latest image model (May 2026). Higher photographic
+ *  fidelity, better text-in-image rendering, and stronger style
+ *  adherence than gpt-image-1.5 / gpt-image-1. Supports the same
+ *  `quality: "low" | "medium" | "high"` provider option. */
+export const OPENAI_GPT_IMAGE_2 = "openai/gpt-image-2" as const
+export const OPENAI_GPT_IMAGE_1_5 = "openai/gpt-image-1.5" as const
+export const OPENAI_GPT_IMAGE_1 = "openai/gpt-image-1" as const
 
 // ─── Role-based aliases ──────────────────────────────────────────────
 // These bind a workload to a specific model. To migrate a workload to
@@ -92,6 +113,17 @@ export const QUESTION_RESEARCH_MODEL = CLAUDE_SONNET
 // Legacy alias — kept for backward compatibility during migration.
 // New code should use LEAD_ENRICHMENT_MODEL or QUESTION_RESEARCH_MODEL.
 export const RESEARCH_SUMMARY_MODEL = LEAD_ENRICHMENT_MODEL
+
+/** Drafter for image-generation prompts — used by the Tommy Awards
+ *  podium image pipeline. We use OpenAI's flagship reasoning model
+ *  (gpt-5.5-pro) because the prompt determines 80% of final image
+ *  quality and it's a once-a-week one-shot, so the latency cost is
+ *  irrelevant. */
+export const IMAGE_PROMPT_MODEL = OPENAI_GPT_5_5_PRO
+
+/** Image renderer — OpenAI's latest gpt-image generation. Pairs with
+ *  `quality: "high"` for the best output the model exposes. */
+export const IMAGE_GENERATION_MODEL = OPENAI_GPT_IMAGE_2
 
 // ─── UI surfaces ─────────────────────────────────────────────────────
 

@@ -25,13 +25,22 @@
 import { generateText, generateImage } from "ai"
 import { put } from "@vercel/blob"
 import { findHeroProfile, findHeroProfileBySlug } from "@/lib/motta-alliance/hero-profiles"
-import { OPENAI_GPT_5 } from "@/lib/ai/models"
+import { IMAGE_PROMPT_MODEL, IMAGE_GENERATION_MODEL } from "@/lib/ai/models"
 
-/** Model used to compose the image prompt. */
-export const PODIUM_PROMPT_MODEL = OPENAI_GPT_5
+/** Model used to compose the image prompt.
+ *  Currently bound to `openai/gpt-5.5-pro` — OpenAI's flagship
+ *  reasoning model (May 2026). The prompt determines 80% of final
+ *  image quality and this is a once-a-week one-shot, so we lean into
+ *  the strongest available reasoning model. To bump models firm-wide,
+ *  edit `IMAGE_PROMPT_MODEL` in `lib/ai/models.ts` instead of this
+ *  re-export. */
+export const PODIUM_PROMPT_MODEL = IMAGE_PROMPT_MODEL
 
-/** Image model — OpenAI's flagship image generator, via the AI Gateway. */
-export const PODIUM_IMAGE_MODEL = "openai/gpt-image-1" as const
+/** Image model — currently bound to `openai/gpt-image-2`, OpenAI's
+ *  latest image generator (May 2026). Same `quality` provider option
+ *  as the previous gpt-image-1 tier; `"high"` is the slowest + best
+ *  output the model exposes. */
+export const PODIUM_IMAGE_MODEL = IMAGE_GENERATION_MODEL
 
 export interface PodiumImageWinner {
   name: string
@@ -98,16 +107,42 @@ Week label to display on the banner: "${opts.weekLabel}".
 
 Return ONLY the final image prompt as a single paragraph of ≤ 220 words. Do not include any other commentary.`
 
-    const { text: imagePrompt } = await generateText({
-      model: PODIUM_PROMPT_MODEL,
-      prompt: promptDraftInstruction,
-      maxOutputTokens: 500,
-    })
+    // gpt-5.5-pro is a deep-reasoning model — it spends a large share
+    // of its output budget on hidden reasoning tokens BEFORE emitting
+    // any visible text. Empirically:
+    //   -    500 tokens → reasoning exhausted budget, empty output
+    //   -  2_500 tokens → worked most of the time, occasional empty
+    //   -  8_000 tokens → reliable for gpt-5.5-pro at "≤ 220 word"
+    //     prompt length. Image-prompt drafting is once-a-week, so the
+    //     extra cost is negligible and the quality ceiling is what
+    //     matters. If we ever see a truncation we can raise further
+    //     — the gateway caps gpt-5.5-pro at 65_536 output tokens.
+    let cleanedPrompt = ""
+    try {
+      const { text: imagePrompt } = await generateText({
+        model: PODIUM_PROMPT_MODEL,
+        prompt: promptDraftInstruction,
+        maxOutputTokens: 8000,
+      })
+      cleanedPrompt = imagePrompt.trim().replace(/^["']|["']$/g, "")
+    } catch (promptErr) {
+      console.warn("[v0] tommy podium image: prompt draft errored:", promptErr)
+    }
 
-    const cleanedPrompt = imagePrompt.trim().replace(/^["']|["']$/g, "")
+    // Deterministic fallback — if GPT-5 returns empty (reasoning budget
+    // exhausted, rate-limited, transient gateway issue, etc.) we still
+    // hand gpt-image-1 a well-formed Alliance-themed prompt so the
+    // image renders. The fallback intentionally mirrors the same visual
+    // direction GPT-5 is asked to author so the result is on-brand.
     if (!cleanedPrompt) {
-      console.warn("[v0] tommy podium image: empty prompt from GPT-5")
-      return null
+      console.warn("[v0] tommy podium image: empty prompt from GPT-5, using deterministic fallback")
+      const winnersLine = heroDescriptors
+        .map(
+          (h) =>
+            `${ordinal(h.rank)}: ${h.alias ? `${h.alias} (${h.name})` : h.name}${h.role ? ` — ${h.role}` : ""}`,
+        )
+        .join("; ")
+      cleanedPrompt = `Cinematic comic-book illustration of an F1-style three-tier podium celebrating this week's Motta Financial Alliance Tommy Awards winners (${winnersLine}). Tallest center tier for 1st, left tier for 2nd, right tier for 3rd, each with a large stencil rank number. Stylised heroic figures in tactical superhero attire — NOT real-likeness portraits — each with a white lotus emblem on the chest, spraying olive-tinted "Motta Mist" from champagne bottles. A banner across the top reads "MOTTA ALLIANCE — TOMMY AWARDS" with "${opts.weekLabel}" beneath it. Dark moody background with a faint nighttime city skyline, dramatic rim lighting, bold inked outlines, halftone shading. Strict palette: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), cream/off-white. No purple, no pastel pink. Style: Marvel hero profile card crossed with an F1 victory poster.`
     }
 
     console.log("[v0] tommy podium image: prompt drafted, generating image…")
