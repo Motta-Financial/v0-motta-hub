@@ -594,9 +594,15 @@ export function TommyVotingForm() {
 
   if (loading) {
     return (
-      <Card className="border-border">
+      <Card
+        className="border-2"
+        style={{
+          backgroundColor: "#0F140C",
+          borderColor: "rgba(168,197,102,0.25)",
+        }}
+      >
         <CardContent className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-foreground"></div>
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2" style={{ borderColor: "#A8C566" }}></div>
         </CardContent>
       </Card>
     )
@@ -604,15 +610,33 @@ export function TommyVotingForm() {
 
   if (submitted) {
     return (
-      <Card className="border-[#8E9B79]/40 bg-gradient-to-br from-[#6B745D] to-[#5a6450] text-white">
+      <Card
+        className="border-2"
+        style={{
+          backgroundColor: "#0F140C",
+          borderColor: "rgba(168,197,102,0.40)",
+        }}
+      >
         <CardContent className="flex flex-col items-center justify-center py-16">
-          <div className="w-20 h-20 rounded-full bg-white/15 flex items-center justify-center mb-6 border-2 border-white/30">
-            {isAmendment ? <Edit3 className="h-10 w-10 text-white" /> : <Trophy className="h-10 w-10 text-white" />}
+          <div
+            className="w-20 h-20 rounded-full flex items-center justify-center mb-6 border-2"
+            style={{
+              backgroundColor: "rgba(168,197,102,0.15)",
+              borderColor: "rgba(168,197,102,0.40)",
+            }}
+          >
+            {isAmendment ? <Edit3 className="h-10 w-10" style={{ color: "#A8C566" }} /> : <Trophy className="h-10 w-10" style={{ color: "#A8C566" }} />}
           </div>
-          <h3 className="text-2xl font-bold mb-2">
+          <h3
+            className="text-2xl font-bold mb-2"
+            style={{ color: "#F4EFE8" }}
+          >
             {isAmendment ? "Ballot Updated!" : "Ballot Submitted!"}
           </h3>
-          <p className="text-white/85 text-center max-w-md">
+          <p
+            className="text-center max-w-md"
+            style={{ color: "#B8B3AA" }}
+          >
             {isAmendment
               ? "Your ballot has been successfully amended. The leaderboard will reflect your updated votes."
               : "Thank you for recognizing your teammates' contributions. Your votes have been recorded for this week's Tommy Awards."
@@ -620,7 +644,12 @@ export function TommyVotingForm() {
           </p>
           <Button
             variant="outline"
-            className="mt-6 bg-transparent border-white/40 text-white hover:bg-white/10"
+            className="mt-6"
+            style={{
+              backgroundColor: "transparent",
+              borderColor: "rgba(168,197,102,0.40)",
+              color: "#A8C566",
+            }}
             onClick={() => window.location.reload()}
           >
             Submit Another Ballot
@@ -631,15 +660,24 @@ export function TommyVotingForm() {
   }
 
   return (
-    <Card className="border-[#8E9B79]/30 bg-card">
+    <Card
+      className="border-2"
+      style={{
+        backgroundColor: "#0F140C",
+        borderColor: "rgba(168,197,102,0.25)",
+      }}
+    >
       <CardHeader className="pb-4">
-        <CardTitle className="flex items-center gap-3 text-foreground">
-          <div className="p-2 bg-[#8E9B79]/20 rounded-lg">
-            <Send className="h-5 w-5 text-[#6B745D]" />
+        <CardTitle className="flex items-center gap-3" style={{ color: "#F4EFE8" }}>
+          <div
+            className="p-2 rounded-lg"
+            style={{ backgroundColor: "rgba(168,197,102,0.15)" }}
+          >
+            <Send className="h-5 w-5" style={{ color: "#A8C566" }} />
           </div>
           Submit Your Tommy Award Ballot
         </CardTitle>
-        <CardDescription>Recognize your teammates who demonstrated Tom Brady-like excellence this week</CardDescription>
+        <CardDescription style={{ color: "#B8B3AA" }}>Recognize your teammates who demonstrated Tom Brady-like excellence this week</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
         {error && (
@@ -649,23 +687,41 @@ export function TommyVotingForm() {
         )}
 
         {is2026OrLater && (
-          <Alert className="bg-blue-50 border-blue-200">
-            <Info className="h-4 w-4 text-blue-600" />
-            <AlertDescription className="text-blue-800">
-              <strong>2026 Scoring Update:</strong> The Tommy Awards now uses simplified scoring with 1st, 2nd, and 3rd
+          <Alert
+            className="border"
+            style={{
+              backgroundColor: "rgba(168,197,102,0.08)",
+              borderColor: "rgba(168,197,102,0.30)",
+            }}
+          >
+            <Info className="h-4 w-4" style={{ color: "#A8C566" }} />
+            <AlertDescription style={{ color: "#B8B3AA" }}>
+              <strong style={{ color: "#A8C566" }}>2026 Scoring Update:</strong> The Tommy Awards now uses simplified scoring with 1st, 2nd, and 3rd
               place votes only. Honorable Mentions and Partner Votes have been retired.
             </AlertDescription>
           </Alert>
         )}
 
         <div className="grid gap-4 md:grid-cols-2">
-          <div className="p-4 rounded-xl bg-muted/50 border border-border">
-            <Label className="flex items-center gap-2 mb-3 text-foreground font-medium">
-              <Users className="h-4 w-4" />
+          <div
+            className="p-4 rounded-xl border"
+            style={{
+              backgroundColor: "rgba(168,197,102,0.06)",
+              borderColor: "rgba(168,197,102,0.20)",
+            }}
+          >
+            <Label className="flex items-center gap-2 mb-3 font-medium" style={{ color: "#F4EFE8" }}>
+              <Users className="h-4 w-4" style={{ color: "#A8C566" }} />
               Your Name
             </Label>
             <Select value={currentVoter} onValueChange={setCurrentVoter}>
-              <SelectTrigger className="bg-background">
+              <SelectTrigger
+                style={{
+                  backgroundColor: "rgba(15,20,12,0.8)",
+                  borderColor: "rgba(168,197,102,0.30)",
+                  color: "#F4EFE8",
+                }}
+              >
                 <SelectValue placeholder="Select your name" />
               </SelectTrigger>
               <SelectContent>
@@ -678,13 +734,25 @@ export function TommyVotingForm() {
             </Select>
           </div>
 
-          <div className="p-4 rounded-xl bg-muted/50 border border-border">
-            <Label className="flex items-center gap-2 mb-3 text-foreground font-medium">
-              <Calendar className="h-4 w-4" />
+          <div
+            className="p-4 rounded-xl border"
+            style={{
+              backgroundColor: "rgba(168,197,102,0.06)",
+              borderColor: "rgba(168,197,102,0.20)",
+            }}
+          >
+            <Label className="flex items-center gap-2 mb-3 font-medium" style={{ color: "#F4EFE8" }}>
+              <Calendar className="h-4 w-4" style={{ color: "#A8C566" }} />
               Week
             </Label>
             <Select value={selectedWeekId || ""} onValueChange={handleWeekChange}>
-              <SelectTrigger className="bg-background">
+              <SelectTrigger
+                style={{
+                  backgroundColor: "rgba(15,20,12,0.8)",
+                  borderColor: "rgba(168,197,102,0.30)",
+                  color: "#F4EFE8",
+                }}
+              >
                 <SelectValue placeholder="Select week" />
               </SelectTrigger>
               <SelectContent>
@@ -700,12 +768,18 @@ export function TommyVotingForm() {
         </div>
 
         {isAmendment && (
-          <Alert className="bg-amber-50 border-amber-200">
-            <Edit3 className="h-4 w-4 text-amber-600" />
-            <AlertDescription className="text-amber-800">
+          <Alert
+            className="border"
+            style={{
+              backgroundColor: "rgba(230,168,92,0.10)",
+              borderColor: "rgba(230,168,92,0.35)",
+            }}
+          >
+            <Edit3 className="h-4 w-4" style={{ color: "#E6A85C" }} />
+            <AlertDescription style={{ color: "#B8B3AA" }}>
               <div className="flex items-center justify-between">
                 <div>
-                  <strong>Amending Previous Ballot:</strong> You already submitted a ballot for this week. 
+                  <strong style={{ color: "#E6A85C" }}>Amending Previous Ballot:</strong> You already submitted a ballot for this week. 
                   Your changes will update your existing vote.
                 </div>
                 {ballotHistory.length > 0 && (
@@ -713,7 +787,8 @@ export function TommyVotingForm() {
                     variant="ghost"
                     size="sm"
                     onClick={() => setShowHistory(!showHistory)}
-                    className="ml-2 text-amber-700 hover:text-amber-900 hover:bg-amber-100"
+                    className="ml-2"
+                    style={{ color: "#E6A85C" }}
                   >
                     <History className="h-4 w-4 mr-1" />
                     {showHistory ? "Hide" : "View"} History ({ballotHistory.length})
@@ -725,38 +800,65 @@ export function TommyVotingForm() {
         )}
 
         {isAmendment && showHistory && ballotHistory.length > 0 && (
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-            <h4 className="font-semibold text-slate-700 flex items-center gap-2">
-              <Clock className="h-4 w-4" />
+          <div
+            className="p-4 rounded-xl border space-y-3"
+            style={{
+              backgroundColor: "rgba(168,197,102,0.06)",
+              borderColor: "rgba(168,197,102,0.25)",
+            }}
+          >
+            <h4 className="font-semibold flex items-center gap-2" style={{ color: "#F4EFE8" }}>
+              <Clock className="h-4 w-4" style={{ color: "#A8C566" }} />
               Ballot Change History
             </h4>
             <div className="space-y-2 max-h-64 overflow-y-auto">
               {ballotHistory.map((entry) => (
-                <div key={entry.id} className="p-3 bg-white rounded-lg border border-slate-100 text-sm">
+                <div
+                  key={entry.id}
+                  className="p-3 rounded-lg border text-sm"
+                  style={{
+                    backgroundColor: "rgba(15,20,12,0.6)",
+                    borderColor: "rgba(168,197,102,0.15)",
+                  }}
+                >
                   <div className="flex items-center justify-between mb-2">
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                      entry.change_type === "created" 
-                        ? "bg-green-100 text-green-700" 
-                        : "bg-blue-100 text-blue-700"
-                    }`}>
+                    <span
+                      className="px-2 py-0.5 rounded text-xs font-medium"
+                      style={{
+                        backgroundColor: entry.change_type === "created"
+                          ? "rgba(168,197,102,0.20)"
+                          : "rgba(230,168,92,0.20)",
+                        color: entry.change_type === "created" ? "#A8C566" : "#E6A85C",
+                      }}
+                    >
                       {entry.change_type === "created" ? "Original Submission" : "Amendment"}
                     </span>
-                    <span className="text-slate-500 text-xs">
+                    <span className="text-xs" style={{ color: "#B8B3AA" }}>
                       {new Date(entry.changed_at).toLocaleString()}
                     </span>
                   </div>
                   {entry.change_type === "amended" && entry.change_summary?.changes && (
                     <div className="space-y-1">
                       {entry.change_summary.changes.map((change, idx) => (
-                        <div key={idx} className="text-slate-600">
-                          <span className="font-medium">{change.field}:</span>{" "}
-                          <span className="text-red-600 line-through">{change.from}</span>
-                          {" ��� "}
-                          <span className="text-green-600">{change.to}</span>
+                        <div key={idx} style={{ color: "#B8B3AA" }}>
+                          <span className="font-medium" style={{ color: "#F4EFE8" }}>{change.field}:</span>{" "}
+                          <span className="line-through" style={{ color: "#E6A85C" }}>{change.from}</span>
+                          {" → "}
+                          <span className="font-medium" style={{ color: "#A8C566" }}>{change.to}</span>
                         </div>
                       ))}
                     </div>
                   )}
+                  {entry.change_type === "created" && (
+                    <div className="text-xs" style={{ color: "#B8B3AA" }}>
+                      Initial ballot submitted by {entry.changed_by_name}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
                   {entry.change_type === "created" && (
                     <div className="text-slate-500 text-xs">
                       Initial ballot submitted by {entry.changed_by_name}
@@ -839,15 +941,22 @@ export function TommyVotingForm() {
 
         {!is2026OrLater && (
           <>
-            <div className="flex items-center gap-3 p-4 rounded-xl bg-muted/30 border border-border">
+            <div
+              className="flex items-center gap-3 p-4 rounded-xl border"
+              style={{
+                backgroundColor: "rgba(168,197,102,0.06)",
+                borderColor: "rgba(168,197,102,0.20)",
+              }}
+            >
               <input
                 type="checkbox"
                 id="isPartner"
                 checked={isPartner}
                 onChange={(e) => setIsPartner(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
+                className="h-4 w-4 rounded"
+                style={{ accentColor: "#A8C566" }}
               />
-              <Label htmlFor="isPartner" className="cursor-pointer text-muted-foreground">
+              <Label htmlFor="isPartner" className="cursor-pointer" style={{ color: "#B8B3AA" }}>
                 I am a Partner and want to award a Partner Vote (5 Points)
               </Label>
             </div>
@@ -872,11 +981,15 @@ export function TommyVotingForm() {
         <Button
           onClick={handleSubmit}
           disabled={submitting || !currentVoter || !firstPlace.memberId || !selectedWeekId}
-          className="w-full h-12 text-lg font-semibold bg-[#6B745D] hover:bg-[#5a6450] text-white"
+          className="w-full h-12 text-lg font-bold uppercase tracking-wider"
+          style={{
+            backgroundColor: "#A8C566",
+            color: "#0F140C",
+          }}
         >
           {submitting ? (
             <span className="flex items-center gap-2">
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2" style={{ borderColor: "#0F140C" }}></div>
               {isAmendment ? "Updating..." : "Submitting..."}
             </span>
           ) : (
@@ -932,21 +1045,31 @@ function PendingChangesPreview({
   }
 
   return (
-    <div className="p-4 rounded-xl bg-blue-50 border border-blue-200">
-      <h4 className="font-semibold text-blue-800 mb-2 flex items-center gap-2">
+    <div
+      className="p-4 rounded-xl border"
+      style={{
+        backgroundColor: "rgba(168,197,102,0.08)",
+        borderColor: "rgba(168,197,102,0.30)",
+      }}
+    >
+      <h4 className="font-semibold mb-2 flex items-center gap-2" style={{ color: "#A8C566" }}>
         <Edit3 className="h-4 w-4" />
         Pending Changes
       </h4>
-      <p className="text-sm text-blue-600 mb-3">
+      <p className="text-sm mb-3" style={{ color: "#B8B3AA" }}>
         The following changes will be recorded when you submit:
       </p>
       <div className="space-y-1">
         {changes.map((change, idx) => (
-          <div key={idx} className="text-sm bg-white/50 rounded px-2 py-1">
-            <span className="font-medium text-blue-800">{change.field}:</span>{" "}
-            <span className="text-red-600 line-through">{change.from}</span>
+          <div
+            key={idx}
+            className="text-sm rounded px-2 py-1"
+            style={{ backgroundColor: "rgba(15,20,12,0.5)" }}
+          >
+            <span className="font-medium" style={{ color: "#F4EFE8" }}>{change.field}:</span>{" "}
+            <span className="line-through" style={{ color: "#E6A85C" }}>{change.from}</span>
             {" → "}
-            <span className="text-green-600 font-medium">{change.to}</span>
+            <span className="font-medium" style={{ color: "#A8C566" }}>{change.to}</span>
           </div>
         ))}
       </div>
@@ -981,18 +1104,50 @@ function VoteCard({
   onNotesChange,
   optional,
 }: VoteCardProps) {
+  // Map old color classes to Motta Alliance palette
+  const cardStyle = title.includes("First")
+    ? { backgroundColor: "rgba(230,168,92,0.12)", borderColor: "rgba(230,168,92,0.35)" }
+    : title.includes("Second")
+      ? { backgroundColor: "rgba(168,197,102,0.10)", borderColor: "rgba(168,197,102,0.30)" }
+      : title.includes("Third")
+        ? { backgroundColor: "rgba(230,168,92,0.08)", borderColor: "rgba(230,168,92,0.25)" }
+        : title.includes("Honorable")
+          ? { backgroundColor: "rgba(168,197,102,0.06)", borderColor: "rgba(168,197,102,0.20)" }
+          : { backgroundColor: "rgba(168,197,102,0.10)", borderColor: "rgba(168,197,102,0.30)" }
+
+  const badgeStyle = title.includes("First")
+    ? { backgroundColor: "rgba(230,168,92,0.20)", color: "#E6A85C", borderColor: "rgba(230,168,92,0.40)" }
+    : title.includes("Second")
+      ? { backgroundColor: "rgba(168,197,102,0.15)", color: "#A8C566", borderColor: "rgba(168,197,102,0.40)" }
+      : title.includes("Third")
+        ? { backgroundColor: "rgba(230,168,92,0.15)", color: "#E6A85C", borderColor: "rgba(230,168,92,0.35)" }
+        : title.includes("Honorable")
+          ? { backgroundColor: "rgba(168,197,102,0.10)", color: "#B8B3AA", borderColor: "rgba(168,197,102,0.25)" }
+          : { backgroundColor: "rgba(168,197,102,0.15)", color: "#A8C566", borderColor: "rgba(168,197,102,0.35)" }
+
+  const iconStyle = title.includes("First") || title.includes("Third")
+    ? { color: "#E6A85C" }
+    : { color: "#A8C566" }
+
   return (
-    <div className={`p-4 rounded-xl ${bgColor} border ${borderColor}`}>
+    <div className="p-4 rounded-xl border-2" style={cardStyle}>
       <div className="flex items-center justify-between mb-3">
-        <Label className="flex items-center gap-2 text-foreground font-medium">
-          {icon}
+        <Label className="flex items-center gap-2 font-medium" style={{ color: "#F4EFE8" }}>
+          <span style={iconStyle}>{icon}</span>
           {title}
-          {optional && <span className="text-xs text-muted-foreground">(Optional)</span>}
+          {optional && <span className="text-xs" style={{ color: "#B8B3AA" }}>(Optional)</span>}
         </Label>
-        <Badge className={badgeColor}>{subtitle}</Badge>
+        <Badge variant="outline" style={badgeStyle}>{subtitle}</Badge>
       </div>
       <Select value={selection.memberId || ""} onValueChange={onMemberSelect}>
-        <SelectTrigger className="bg-white mb-3">
+        <SelectTrigger
+          className="mb-3"
+          style={{
+            backgroundColor: "rgba(15,20,12,0.8)",
+            borderColor: "rgba(168,197,102,0.30)",
+            color: "#F4EFE8",
+          }}
+        >
           <SelectValue placeholder={`Select teammate for ${title.toLowerCase()}`} />
         </SelectTrigger>
         <SelectContent>
@@ -1007,7 +1162,12 @@ function VoteCard({
         placeholder={`Share why ${selection.memberName || "this teammate"} deserves this recognition...`}
         value={selection.notes}
         onChange={(e) => onNotesChange(e.target.value)}
-        className="bg-white min-h-[80px] resize-none"
+        className="min-h-[80px] resize-none"
+        style={{
+          backgroundColor: "rgba(15,20,12,0.8)",
+          borderColor: "rgba(168,197,102,0.25)",
+          color: "#F4EFE8",
+        }}
       />
     </div>
   )

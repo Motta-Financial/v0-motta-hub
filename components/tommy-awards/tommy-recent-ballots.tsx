@@ -91,33 +91,57 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
 
   if (loading) {
     return (
-      <Card className="border-border">
+      <Card
+        className="border-2"
+        style={{
+          backgroundColor: "#0F140C",
+          borderColor: "rgba(168,197,102,0.25)",
+        }}
+      >
         <CardContent className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-foreground"></div>
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2" style={{ borderColor: "#A8C566" }}></div>
         </CardContent>
       </Card>
     )
   }
 
   return (
-    <Card className="border-border bg-card">
+    <Card
+      className="border-2"
+      style={{
+        backgroundColor: "#0F140C",
+        borderColor: "rgba(168,197,102,0.25)",
+      }}
+    >
       <CardHeader className="pb-4">
         <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-3 text-foreground">
-            <div className="p-2 bg-blue-100 rounded-lg">
-              <FileText className="h-5 w-5 text-blue-600" />
+          <CardTitle className="flex items-center gap-3" style={{ color: "#F4EFE8" }}>
+            <div
+              className="p-2 rounded-lg"
+              style={{ backgroundColor: "rgba(168,197,102,0.15)" }}
+            >
+              <FileText className="h-5 w-5" style={{ color: "#A8C566" }} />
             </div>
             Ballots
           </CardTitle>
-          <Badge variant="outline">{ballots.length} ballots</Badge>
+          <Badge
+            variant="outline"
+            style={{
+              backgroundColor: "rgba(168,197,102,0.10)",
+              color: "#A8C566",
+              borderColor: "rgba(168,197,102,0.35)",
+            }}
+          >
+            {ballots.length} ballots
+          </Badge>
         </div>
-        <CardDescription>Tommy Award submissions from the team</CardDescription>
+        <CardDescription style={{ color: "#B8B3AA" }}>Tommy Award submissions from the team</CardDescription>
       </CardHeader>
       <CardContent>
         <ScrollArea className="h-[500px] pr-4">
           {ballots.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <FileText className="h-12 w-12 mx-auto mb-3 opacity-30" />
+            <div className="text-center py-8" style={{ color: "#B8B3AA" }}>
+              <FileText className="h-12 w-12 mx-auto mb-3 opacity-30" style={{ color: "#A8C566" }} />
               <p>No ballots found for this filter</p>
             </div>
           ) : (
@@ -128,7 +152,11 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
                 return (
                   <div
                     key={ballot.id}
-                    className="p-4 rounded-xl border border-border bg-muted/30 transition-all hover:shadow-sm"
+                    className="p-4 rounded-xl border-2 transition-all hover:shadow-lg"
+                    style={{
+                      backgroundColor: "rgba(168,197,102,0.04)",
+                      borderColor: "rgba(168,197,102,0.20)",
+                    }}
                   >
                     <button
                       onClick={() => setExpandedBallot(isExpanded ? null : ballot.id)}
@@ -136,35 +164,55 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
-                          <Avatar className="h-10 w-10">
+                          <Avatar
+                            className="h-10 w-10 border-2"
+                            style={{ borderColor: "rgba(168,197,102,0.25)" }}
+                          >
                             <AvatarImage src="/placeholder.svg" alt={ballot.voter_name} />
-                            <AvatarFallback className="bg-gradient-to-br from-[#6B745D] to-[#5a6450] text-white font-semibold text-sm">
+                            <AvatarFallback
+                              className="font-semibold text-sm"
+                              style={{
+                                background: "linear-gradient(135deg, #0F140C, #1a1f15)",
+                                color: "#A8C566",
+                              }}
+                            >
                               {getInitials(ballot.voter_name)}
                             </AvatarFallback>
                           </Avatar>
                           <div>
-                            <p className="font-medium text-foreground">{ballot.voter_name}</p>
-                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                            <p className="font-medium" style={{ color: "#F4EFE8" }}>{ballot.voter_name}</p>
+                            <div className="flex items-center gap-1 text-xs" style={{ color: "#B8B3AA" }}>
                               <Calendar className="h-3 w-3" />
                               {ballot.week?.week_name || formatDate(ballot.week_date)}
                             </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
-                          <Badge variant="outline" className="text-xs">
+                          <Badge
+                            variant="outline"
+                            className="text-xs"
+                            style={{
+                              backgroundColor: "rgba(230,168,92,0.12)",
+                              color: "#E6A85C",
+                              borderColor: "rgba(230,168,92,0.35)",
+                            }}
+                          >
                             1st: {ballot.first_place_name?.split(" ")[0]}
                           </Badge>
                           {isExpanded ? (
-                            <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                            <ChevronUp className="h-4 w-4" style={{ color: "#B8B3AA" }} />
                           ) : (
-                            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                            <ChevronDown className="h-4 w-4" style={{ color: "#B8B3AA" }} />
                           )}
                         </div>
                       </div>
                     </button>
 
                     {isExpanded && (
-                      <div className="mt-4 pt-4 border-t border-border space-y-3">
+                      <div
+                        className="mt-4 pt-4 border-t space-y-3"
+                        style={{ borderColor: "rgba(168,197,102,0.20)" }}
+                      >
                         {!is2026Ballot && ballot.partner_vote_name && (
                           <VoteDetail
                             rank="Partner"
@@ -223,16 +271,27 @@ function VoteDetail({
   notes: string
   color: string
 }) {
+  // Map color to Motta Alliance palette
+  const badgeStyle = color.includes("amber")
+    ? { backgroundColor: "rgba(230,168,92,0.15)", color: "#E6A85C", borderColor: "rgba(230,168,92,0.40)" }
+    : color.includes("slate")
+      ? { backgroundColor: "rgba(168,197,102,0.10)", color: "#A8C566", borderColor: "rgba(168,197,102,0.35)" }
+      : color.includes("orange")
+        ? { backgroundColor: "rgba(230,168,92,0.12)", color: "#E6A85C", borderColor: "rgba(230,168,92,0.30)" }
+        : color.includes("emerald")
+          ? { backgroundColor: "rgba(168,197,102,0.12)", color: "#A8C566", borderColor: "rgba(168,197,102,0.35)" }
+          : { backgroundColor: "rgba(168,197,102,0.08)", color: "#B8B3AA", borderColor: "rgba(168,197,102,0.25)" }
+
   return (
     <div className="flex gap-3">
-      <Badge variant="outline" className={`${color} flex-shrink-0`}>
+      <Badge variant="outline" className="flex-shrink-0" style={badgeStyle}>
         {rank}
       </Badge>
       <div className="flex-1 min-w-0">
-        <p className="font-medium text-foreground text-sm">{name}</p>
+        <p className="font-medium text-sm" style={{ color: "#F4EFE8" }}>{name}</p>
         {notes && (
-          <div className="mt-1 flex gap-2 text-sm text-muted-foreground">
-            <Quote className="h-4 w-4 flex-shrink-0 mt-0.5 opacity-50" />
+          <div className="mt-1 flex gap-2 text-sm" style={{ color: "#B8B3AA" }}>
+            <Quote className="h-4 w-4 flex-shrink-0 mt-0.5 opacity-50" style={{ color: "#A8C566" }} />
             <p className="italic">{notes}</p>
           </div>
         )}

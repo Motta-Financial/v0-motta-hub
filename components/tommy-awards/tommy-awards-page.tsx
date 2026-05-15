@@ -198,49 +198,107 @@ export function TommyAwardsPage() {
 
   return (
     <div className="space-y-8">
-      {/* Brand-themed hero. The previous design used a Patriots-style
-          navy + red palette which clashed with the rest of the app. We
-          now use Motta's sage/cream brand colors so the page belongs to
-          the same visual system as the sidebar and dashboard chrome. */}
-      <div className="relative overflow-hidden rounded-2xl border border-[#8E9B79]/40 bg-gradient-to-br from-[#6B745D] via-[#7c876c] to-[#5a6450] text-white">
-        <div className="absolute inset-0 opacity-20 pointer-events-none">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(234,230,225,0.45),transparent_55%)]" />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_80%,rgba(142,155,121,0.55),transparent_55%)]" />
-          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#8E9B79] via-[#EAE6E1] to-[#8E9B79]" />
-        </div>
+      {/* Brand-themed hero — Motta Alliance comic-book style. Dark midnight
+          olive base with the signature comic-green accent and halftone
+          texture, matching the Alliance gallery aesthetic. */}
+      <div
+        className="relative overflow-hidden rounded-2xl border-2"
+        style={{
+          backgroundColor: "#0F140C",
+          borderColor: "rgba(168,197,102,0.30)",
+          boxShadow:
+            "0 0 0 1px rgba(168,197,102,0.08) inset, 0 30px 80px -40px rgba(0,0,0,0.75)",
+        }}
+      >
+        {/* Radial gradient spotlights — comic-green at top, amber at bottom */}
+        <div
+          aria-hidden
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle at 90% 0%, rgba(168,197,102,0.18), transparent 55%)," +
+              "radial-gradient(circle at 0% 100%, rgba(230,168,92,0.10), transparent 55%)",
+          }}
+        />
+        {/* Halftone dot pattern — printed-comic texture */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 opacity-[0.08]"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle at center, rgba(244,239,232,0.8) 1px, transparent 1.5px)",
+            backgroundSize: "8px 8px",
+          }}
+        />
 
         <div className="relative z-10 p-8 lg:p-10">
           <div className="flex flex-col lg:flex-row items-start gap-8">
-            {/* Trophy Icon */}
+            {/* Trophy Icon — comic-book badge style */}
             <div className="relative flex-shrink-0">
-              <div className="w-24 h-24 lg:w-28 lg:h-28 rounded-2xl bg-white/15 backdrop-blur-sm flex items-center justify-center shadow-2xl shadow-black/20 border border-white/25">
-                <Trophy className="h-12 w-12 lg:h-14 lg:w-14 text-white" />
+              <div
+                className="w-24 h-24 lg:w-28 lg:h-28 rounded-2xl flex items-center justify-center shadow-2xl border-2"
+                style={{
+                  backgroundColor: "rgba(168,197,102,0.15)",
+                  borderColor: "rgba(168,197,102,0.40)",
+                  boxShadow: "0 0 40px rgba(168,197,102,0.20)",
+                }}
+              >
+                <Trophy className="h-12 w-12 lg:h-14 lg:w-14" style={{ color: "#A8C566" }} />
               </div>
             </div>
 
             {/* Header Content */}
             <div className="flex-1">
               <div className="flex items-center gap-3 mb-3 flex-wrap">
-                <Badge className="bg-white/20 hover:bg-white/30 text-white border border-white/30 text-[11px] uppercase tracking-wider">
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-sm border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.22em]"
+                  style={{
+                    borderColor: "rgba(168,197,102,0.5)",
+                    color: "#A8C566",
+                    backgroundColor: "rgba(168,197,102,0.08)",
+                  }}
+                >
                   Weekly Peer Recognition
-                </Badge>
-                <Badge variant="outline" className="border-white/40 text-white/90 text-[11px] uppercase tracking-wider bg-transparent">
+                </span>
+                <span
+                  className="inline-flex items-center rounded-sm border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.22em]"
+                  style={{
+                    borderColor: "rgba(230,168,92,0.5)",
+                    color: "#E6A85C",
+                    backgroundColor: "rgba(230,168,92,0.08)",
+                  }}
+                >
                   Motta Financial
-                </Badge>
+                </span>
               </div>
-              <h1 className="text-4xl lg:text-5xl font-bold tracking-tight mb-3 text-balance">Tommy Awards</h1>
-              <p className="text-white/85 text-base lg:text-lg leading-relaxed max-w-3xl text-pretty">
+              <h1
+                className="font-sans text-4xl font-black uppercase italic leading-[0.95] tracking-tight text-balance lg:text-5xl"
+                style={{
+                  color: "#F4EFE8",
+                  textShadow: "0 2px 0 rgba(0,0,0,0.6), 0 0 30px rgba(168,197,102,0.18)",
+                }}
+              >
+                Tommy <span style={{ color: "#A8C566" }}>Awards</span>
+              </h1>
+              <p
+                className="mt-4 text-sm leading-relaxed max-w-3xl text-pretty lg:text-base"
+                style={{ color: "#B8B3AA" }}
+              >
                 A weekly vote among all team members of the firm to vote for who they thought represents Tom Brady the
                 best — whether with their contributions from a work standpoint, going the extra mile, client wins, and
                 most importantly being a good teammate and representing firm culture.
               </p>
 
-              {/* Primary CTA — submit ballot now lives on its own page */}
+              {/* Primary CTA — comic-book button style */}
               <div className="mt-5 flex flex-wrap gap-3">
                 <Button
                   asChild
                   size="lg"
-                  className="bg-white text-[#6B745D] hover:bg-[#EAE6E1] font-semibold shadow-lg"
+                  className="font-bold uppercase tracking-wider"
+                  style={{
+                    backgroundColor: "#A8C566",
+                    color: "#0F140C",
+                  }}
                 >
                   <Link href="/tommy-awards/ballot" className="inline-flex items-center gap-2">
                     <Send className="h-4 w-4" />
@@ -251,7 +309,7 @@ export function TommyAwardsPage() {
             </div>
           </div>
 
-          {/* Core Characteristics */}
+          {/* Core Characteristics — comic-book card style */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-8">
             <CharacteristicBadge
               icon={<Flame className="h-5 w-5" />}
@@ -277,20 +335,35 @@ export function TommyAwardsPage() {
         </div>
       </div>
 
-      <Card className="border-[#8E9B79]/30 bg-card">
+      <Card
+        className="border-2"
+        style={{
+          backgroundColor: "#0F140C",
+          borderColor: "rgba(168,197,102,0.25)",
+        }}
+      >
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="p-2 bg-[#8E9B79]/20 rounded-lg">
-                <Filter className="h-5 w-5 text-[#6B745D]" />
+              <div
+                className="p-2 rounded-lg"
+                style={{ backgroundColor: "rgba(168,197,102,0.15)" }}
+              >
+                <Filter className="h-5 w-5" style={{ color: "#A8C566" }} />
               </div>
               <div>
-                <CardTitle className="text-lg">Filter Results</CardTitle>
-                <CardDescription>Filter by year, week, or team member</CardDescription>
+                <CardTitle className="text-lg" style={{ color: "#F4EFE8" }}>Filter Results</CardTitle>
+                <CardDescription style={{ color: "#B8B3AA" }}>Filter by year, week, or team member</CardDescription>
               </div>
             </div>
             {hasActiveFilters && (
-              <Button variant="ghost" size="sm" onClick={clearFilters} className="text-muted-foreground">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearFilters}
+                style={{ color: "#B8B3AA" }}
+                className="hover:bg-[rgba(168,197,102,0.1)]"
+              >
                 <X className="h-4 w-4 mr-1" />
                 Clear Filters
               </Button>
@@ -371,7 +444,15 @@ export function TommyAwardsPage() {
                           <Checkbox checked={isSelected} className="pointer-events-none" />
                           <span className="flex-1 truncate">{week.week_name}</span>
                           {isCurrentWeek && (
-                            <Badge variant="outline" className="text-xs flex-shrink-0 border-[#8E9B79] text-[#6B745D] bg-[#8E9B79]/10">
+                            <Badge
+                              variant="outline"
+                              className="text-xs flex-shrink-0"
+                              style={{
+                                borderColor: "rgba(168,197,102,0.5)",
+                                color: "#A8C566",
+                                backgroundColor: "rgba(168,197,102,0.1)",
+                              }}
+                            >
                               Current
                             </Badge>
                           )}
@@ -450,13 +531,22 @@ function CharacteristicBadge({
   description,
 }: { icon: React.ReactNode; label: string; description?: string }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/10 backdrop-blur-sm border border-white/20 hover:bg-white/15 transition-colors">
-      <div className="p-2 rounded-lg bg-white/15">
-        <span className="text-white">{icon}</span>
+    <div
+      className="flex items-center gap-3 px-4 py-3 rounded-xl border transition-colors"
+      style={{
+        backgroundColor: "rgba(168,197,102,0.08)",
+        borderColor: "rgba(168,197,102,0.25)",
+      }}
+    >
+      <div
+        className="p-2 rounded-lg"
+        style={{ backgroundColor: "rgba(168,197,102,0.15)" }}
+      >
+        <span style={{ color: "#A8C566" }}>{icon}</span>
       </div>
       <div>
-        <span className="text-sm font-semibold text-white block">{label}</span>
-        {description && <span className="text-xs text-white/70">{description}</span>}
+        <span className="text-sm font-semibold block" style={{ color: "#F4EFE8" }}>{label}</span>
+        {description && <span className="text-xs" style={{ color: "#B8B3AA" }}>{description}</span>}
       </div>
     </div>
   )
