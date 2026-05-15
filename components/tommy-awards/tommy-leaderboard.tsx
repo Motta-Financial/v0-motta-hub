@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Trophy, Medal, Award } from "lucide-react"
+import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
 interface LeaderboardEntry {
   name: string
@@ -149,7 +150,9 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
           </div>
         ) : (
           <div className="space-y-3">
-            {leaderboard.map((entry) => (
+            {leaderboard.map((entry) => {
+              const hero = findHeroProfile(entry.name)
+              return (
               <div
                 key={entry.name}
                 className="flex items-center gap-4 p-4 rounded-xl border-2 transition-all hover:shadow-lg"
@@ -174,8 +177,13 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                 <Avatar
                   className="h-12 w-12 border-2 shadow-sm"
                   style={{ borderColor: "rgba(168,197,102,0.30)" }}
+                  title={hero ? `${hero.name} — ${hero.alias}` : entry.name}
                 >
-                  <AvatarImage src="/placeholder.svg" alt={entry.name} />
+                  <AvatarImage
+                    src={hero?.imageUrl || "/placeholder.svg"}
+                    alt={hero ? `${entry.name} — ${hero.alias}` : entry.name}
+                    className="object-cover object-top"
+                  />
                   <AvatarFallback
                     className="font-semibold"
                     style={{
@@ -261,7 +269,8 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                   <p className="text-xs" style={{ color: "#B8B3AA" }}>points</p>
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </CardContent>

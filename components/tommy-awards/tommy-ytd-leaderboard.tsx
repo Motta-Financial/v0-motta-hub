@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Trophy, Medal, Award, TrendingUp, Calendar } from "lucide-react"
+import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
 interface YTDEntry {
   name: string
@@ -243,7 +244,9 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
           </div>
         ) : (
           <div className="space-y-2">
-            {entries.map((entry) => (
+            {entries.map((entry) => {
+              const hero = findHeroProfile(entry.name)
+              return (
               <div
                 key={entry.name}
                 className="flex items-center gap-3 px-3 py-2.5 rounded-lg border-2 transition-all hover:shadow-lg"
@@ -269,7 +272,15 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
                 <Avatar
                   className="h-9 w-9 border-2 shadow-sm flex-shrink-0"
                   style={{ borderColor: "rgba(168,197,102,0.25)" }}
+                  title={hero ? `${hero.name} — ${hero.alias}` : entry.name}
                 >
+                  {hero?.imageUrl && (
+                    <AvatarImage
+                      src={hero.imageUrl}
+                      alt={`${entry.name} — ${hero.alias}`}
+                      className="object-cover object-top"
+                    />
+                  )}
                   <AvatarFallback
                     className="font-semibold text-xs"
                     style={{
@@ -349,7 +360,8 @@ export function TommyYTDLeaderboard({ year }: TommyYTDLeaderboardProps) {
                   <p className="text-[10px] uppercase tracking-wide" style={{ color: "#B8B3AA" }}>pts</p>
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </CardContent>
