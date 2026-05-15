@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { FileText, ChevronDown, ChevronUp, Quote, Calendar } from "lucide-react"
+import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
 interface Ballot {
   id: string
@@ -149,6 +150,7 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
               {ballots.map((ballot) => {
                 const isExpanded = expandedBallot === ballot.id
                 const is2026Ballot = isBallot2026OrLater(ballot)
+                const voterHero = findHeroProfile(ballot.voter_name)
                 return (
                   <div
                     key={ballot.id}
@@ -167,8 +169,13 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
                           <Avatar
                             className="h-10 w-10 border-2"
                             style={{ borderColor: "rgba(168,197,102,0.25)" }}
+                            title={voterHero ? `${voterHero.name} — ${voterHero.alias}` : ballot.voter_name}
                           >
-                            <AvatarImage src="/placeholder.svg" alt={ballot.voter_name} />
+                            <AvatarImage
+                              src={voterHero?.imageUrl || "/placeholder.svg"}
+                              alt={voterHero ? `${ballot.voter_name} — ${voterHero.alias}` : ballot.voter_name}
+                              className="object-cover object-top"
+                            />
                             <AvatarFallback
                               className="font-semibold text-sm"
                               style={{
