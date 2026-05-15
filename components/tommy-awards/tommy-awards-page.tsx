@@ -374,12 +374,19 @@ export function TommyAwardsPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Year Filter */}
             <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">Year</label>
+              <label className="text-sm font-medium" style={{ color: "#F4EFE8" }}>Year</label>
               <Select
                 value={filters.year}
                 onValueChange={(value) => setFilters((prev) => ({ ...prev, year: value, weekId: "" }))}
               >
-                <SelectTrigger>
+                <SelectTrigger
+                  style={{
+                    backgroundColor: "rgba(168,197,102,0.06)",
+                    borderColor: "rgba(168,197,102,0.30)",
+                    color: "#F4EFE8",
+                  }}
+                  className="h-10 hover:bg-[rgba(168,197,102,0.10)]"
+                >
                   <SelectValue placeholder="All Years" />
                 </SelectTrigger>
                 <SelectContent>
@@ -395,13 +402,21 @@ export function TommyAwardsPage() {
 
             {/* Week Filter (Multi-Select) */}
             <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">Week</label>
+              <label className="text-sm font-medium" style={{ color: "#F4EFE8" }}>Week</label>
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="outline" className="w-full justify-start font-normal h-10">
-                    <Calendar className="h-4 w-4 mr-2 text-muted-foreground" />
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start font-normal h-10 hover:bg-[rgba(168,197,102,0.10)]"
+                    style={{
+                      backgroundColor: "rgba(168,197,102,0.06)",
+                      borderColor: "rgba(168,197,102,0.30)",
+                      color: "#F4EFE8",
+                    }}
+                  >
+                    <Calendar className="h-4 w-4 mr-2" style={{ color: "#A8C566" }} />
                     {filters.weekIds.length === 0 ? (
-                      <span className="text-muted-foreground">All Weeks</span>
+                      <span style={{ color: "#B8B3AA" }}>All Weeks</span>
                     ) : filters.weekIds.length === 1 ? (
                       <span className="truncate">
                         {filteredWeeks.find((w) => w.id === filters.weekIds[0])?.week_name || "1 week"}
@@ -469,13 +484,20 @@ export function TommyAwardsPage() {
 
             {/* Team Member Filter */}
             <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">Team Member</label>
+              <label className="text-sm font-medium" style={{ color: "#F4EFE8" }}>Team Member</label>
               <Select
                 value={filters.teamMemberId}
                 onValueChange={(value) => setFilters((prev) => ({ ...prev, teamMemberId: value }))}
               >
-                <SelectTrigger>
-                  <Users className="h-4 w-4 mr-2 text-muted-foreground" />
+                <SelectTrigger
+                  style={{
+                    backgroundColor: "rgba(168,197,102,0.06)",
+                    borderColor: "rgba(168,197,102,0.30)",
+                    color: "#F4EFE8",
+                  }}
+                  className="h-10 hover:bg-[rgba(168,197,102,0.10)]"
+                >
+                  <Users className="h-4 w-4 mr-2" style={{ color: "#A8C566" }} />
                   <SelectValue placeholder="All Team Members" />
                 </SelectTrigger>
                 <SelectContent>
