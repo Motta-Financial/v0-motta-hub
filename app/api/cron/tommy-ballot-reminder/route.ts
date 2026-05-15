@@ -1,20 +1,28 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { buildTommyReminderHtml, sendCategoryEmail } from "@/lib/email"
+import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 
 /**
  * Vercel Cron endpoint that emails every active team member a Tommy Awards
  * ballot reminder.
  *
- * Schedule: Thursdays at 20:00 UTC (vercel.json), which lands at:
- *   - 4:00 PM EDT (March-November, ~8 months/year) — late afternoon
- *   - 3:00 PM EST (November-March, ~4 months/year) — mid afternoon
- * Vercel Cron is timezone-naive, so we optimize for the longer Daylight
- * Saving period to hit late afternoon Eastern most of the year. Voting
- * stays open through Friday morning, with the firm-wide recap going out
- * Friday at noon Eastern.
+ * Target send time: Thursdays at 3:00 PM Eastern, year-round.
+ *
+ * Vercel Cron is timezone-naive (UTC only), so this endpoint is scheduled
+ * in vercel.json at BOTH possible UTC hours that map to 3:00 PM Eastern:
+ *   - `0 19 * * 4`  — Thursday 19:00 UTC = 3:00 PM EDT (March-November)
+ *   - `0 20 * * 4`  — Thursday 20:00 UTC = 3:00 PM EST (November-March)
+ * Exactly one of those invocations will satisfy the DST-aware
+ * `isEasternHourAndWeekday(15, 4)` guard below on any given Thursday and
+ * actually send. The other invocation no-ops with `skipped: true`.
+ *
+ * Voting stays open through Friday morning; the firm-wide recap goes
+ * out Friday at noon Eastern (see tommy-weekly-recap/route.ts).
  *
  * Auth: validates the standard Vercel cron Authorization: Bearer ${CRON_SECRET} header.
+ * Manual override: pass `?force=true` to bypass the Eastern-time guard
+ * (auth still required in production).
  */
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization")
@@ -22,6 +30,21 @@ export async function GET(request: Request) {
     if (process.env.CRON_SECRET && process.env.NODE_ENV === "production") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
+  }
+
+  // DST guard: only proceed when we're actually at 3 PM ET on a Thursday.
+  // The other UTC-twin invocation will hit this branch and exit cleanly.
+  const url = new URL(request.url)
+  const force = url.searchParams.get("force") === "true"
+  if (!force && !isEasternHourAndWeekday(15, 4)) {
+    const { hour, weekday } = nowInEastern()
+    return NextResponse.json({
+      success: true,
+      skipped: true,
+      reason: "Not 3:00 PM Eastern on a Thursday — skipping (DST twin invocation).",
+      eastern_hour: hour,
+      eastern_weekday: weekday,
+    })
   }
 
   try {

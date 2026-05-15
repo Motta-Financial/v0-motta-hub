@@ -7,6 +7,7 @@ import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 import { generatePodiumImage } from "@/lib/tommy-awards/generate-podium-image"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
+import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 
 // AI generation + image gen + Blob upload can take 30-60s end-to-end.
 export const maxDuration = 120
@@ -54,8 +55,18 @@ function hasPodiumTies(podium: ReadonlyArray<{ rank: number }>): boolean {
  *
  * Auth: validates the standard Vercel cron Authorization: Bearer ${CRON_SECRET}.
  *
- * Scheduled in vercel.json to run Fridays at 16:00 UTC (noon ET in DST,
- * 11am ET in standard time — Vercel cron doesn't do timezones).
+ * Target send time: Fridays at 12:00 PM Eastern, year-round.
+ *
+ * Vercel Cron is timezone-naive (UTC only), so this endpoint is scheduled
+ * in vercel.json at BOTH possible UTC hours that map to noon Eastern:
+ *   - `0 16 * * 5` — Friday 16:00 UTC = 12:00 PM EDT (March-November)
+ *   - `0 17 * * 5` — Friday 17:00 UTC = 12:00 PM EST (November-March)
+ * Exactly one of those invocations will satisfy the DST-aware
+ * `isEasternHourAndWeekday(12, 5)` guard below on any given Friday and
+ * actually send. The other invocation no-ops with `skipped: true`.
+ *
+ * Manual previews (`?dryRun=true`, `?previewTo=`, `?skipImage=true`) and
+ * `?force=true` bypass the guard so QA isn't gated on the wall clock.
  */
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization")
@@ -74,6 +85,22 @@ export async function GET(request: Request) {
   const previewTo = url.searchParams.get("previewTo")
   // ?skipImage=true → skip image generation entirely (faster for prompt QA).
   const skipImage = url.searchParams.get("skipImage") === "true"
+  // ?force=true → bypass the DST-aware Eastern-time guard.
+  const force = url.searchParams.get("force") === "true"
+
+  // DST guard: only proceed when we're actually at noon ET on a Friday.
+  // The other UTC-twin invocation will hit this branch and exit cleanly.
+  // Any QA flag (dryRun, previewTo, force) bypasses the guard.
+  if (!dryRun && !previewTo && !force && !isEasternHourAndWeekday(12, 5)) {
+    const { hour, weekday } = nowInEastern()
+    return NextResponse.json({
+      success: true,
+      skipped: true,
+      reason: "Not 12:00 PM Eastern on a Friday — skipping (DST twin invocation).",
+      eastern_hour: hour,
+      eastern_weekday: weekday,
+    })
+  }
 
   try {
     const supabase = createAdminClient()
