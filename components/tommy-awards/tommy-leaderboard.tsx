@@ -5,7 +5,7 @@ import Image from "next/image"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { Trophy, Medal, Award, Sparkles } from "lucide-react"
+import { Trophy, Medal, Award, Sparkles, Lock, FileDown } from "lucide-react"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 import { TommyMemberBreakdownDialog } from "./tommy-member-breakdown-dialog"
 
@@ -30,6 +30,7 @@ interface WeeklyRecap {
   total_ballots: number
   ai_summary: string
   podium_image_url: string | null
+  podium_pdf_url: string | null
   email_sent_at: string | null
 }
 
@@ -55,7 +56,15 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
   const [recap, setRecap] = useState<WeeklyRecap | null>(null)
 
   const is2026OrLater = filters.year !== "all" && Number.parseInt(filters.year) >= 2026
-  const showRecap = filters.weekIds.length === 1 && recap !== null
+  // Once a single week is in scope we treat its recap as the source
+  // of truth: results are only revealed AFTER ALFRED's Friday recap
+  // email actually ships (`email_sent_at` is set on the persisted
+  // `tommy_weekly_recaps` row by the cron). Until then we render the
+  // ALFRED "results sealed" waiting screen instead of leaking the
+  // standings prematurely.
+  const isSingleWeekView = filters.weekIds.length === 1
+  const isAwaitingRecap = isSingleWeekView && (!recap || !recap.email_sent_at)
+  const showRecap = isSingleWeekView && recap !== null && !!recap.email_sent_at
 
   useEffect(() => {
     fetchLeaderboard()
@@ -247,11 +256,97 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                   {recap.ai_summary}
                 </p>
               )}
+              {recap.podium_pdf_url && (
+                <div className="pt-1">
+                  <a
+                    href={recap.podium_pdf_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors"
+                    style={{
+                      backgroundColor: "rgba(168,197,102,0.10)",
+                      borderColor: "rgba(168,197,102,0.40)",
+                      color: "#A8C566",
+                    }}
+                  >
+                    <FileDown className="h-3.5 w-3.5" />
+                    Download Dispatch PDF
+                  </a>
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {leaderboard.length === 0 ? (
+        {isAwaitingRecap ? (
+          /* ALFRED "Results Sealed" waiting screen — the leaderboard
+             standings stay hidden until the Friday recap email actually
+             ships. We render the same dark-comic styling as the recap
+             panel itself so the transition from "waiting" to "revealed"
+             feels like one continuous storyline. The cron flips
+             `email_sent_at` on the persisted recap row which causes this
+             component to swap in the real leaderboard on its next
+             refresh. */
+          <div
+            className="rounded-xl border-2 overflow-hidden"
+            style={{
+              borderColor: "rgba(168,197,102,0.30)",
+              backgroundColor: "rgba(168,197,102,0.04)",
+            }}
+          >
+            <div className="relative w-full aspect-[3/2]" style={{ backgroundColor: "#0F140C" }}>
+              <Image
+                src="/images/alfred-waiting.jpg"
+                alt="ALFRED Ai standing by in the command center — Tommy Awards results sealed until the Friday recap drops"
+                fill
+                sizes="(max-width: 1024px) 100vw, 768px"
+                className="object-cover"
+                priority
+              />
+              <div
+                className="absolute inset-0"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(to top, rgba(15,20,12,0.85) 0%, rgba(15,20,12,0.15) 50%, rgba(15,20,12,0.55) 100%)",
+                }}
+              />
+              <div className="absolute inset-x-0 bottom-0 p-4 sm:p-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <div
+                    className="p-1.5 rounded-md"
+                    style={{ backgroundColor: "rgba(168,197,102,0.20)" }}
+                  >
+                    <Lock className="h-4 w-4" style={{ color: "#A8C566" }} />
+                  </div>
+                  <p className="text-xs uppercase tracking-[0.18em] font-bold" style={{ color: "#A8C566" }}>
+                    Results Sealed
+                  </p>
+                </div>
+                <p
+                  className="font-sans text-2xl font-black uppercase italic tracking-tight"
+                  style={{
+                    color: "#F4EFE8",
+                    textShadow: "0 2px 0 rgba(0,0,0,0.6)",
+                  }}
+                >
+                  ALFRED is standing by
+                </p>
+              </div>
+            </div>
+            <div className="p-4 sm:p-5">
+              <p className="text-sm leading-relaxed" style={{ color: "#E8E3DA" }}>
+                Operation Tommy for{" "}
+                <span style={{ color: "#A8C566", fontWeight: 600 }}>
+                  {recap?.week_label || "this week"}
+                </span>{" "}
+                is still in motion. The podium, ALFRED&apos;s recap, and the
+                generated dispatch PDF unlock the moment the Friday noon
+                recap email ships to the firm. Check back after the
+                dispatch hits your inbox.
+              </p>
+            </div>
+          </div>
+        ) : leaderboard.length === 0 ? (
           <div className="text-center py-8" style={{ color: "#B8B3AA" }}>
             <Trophy className="h-12 w-12 mx-auto mb-3 opacity-30" style={{ color: "#A8C566" }} />
             <p>No votes recorded for this period</p>
