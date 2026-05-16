@@ -584,7 +584,21 @@ export async function GET(req: NextRequest) {
     }))
     .sort((a, b) => a.department.localeCompare(b.department))
 
+  // Service breakdown shows ONLY service types that actually contribute
+  // recurring monthly or quarterly revenue. The aggregator above walks
+  // every classified service line (including one-time tax returns,
+  // schedule add-ons, onboarding fees, and any rare annually/weekly
+  // accounting lines) — but firm policy via `effectiveBillingFrequency`
+  // makes Tax always one-time, and `monthlyContribution` /
+  // `annualContribution` already zero out any cadence that isn't
+  // monthly or quarterly. So a service bucket with `mrr === 0 && arr === 0`
+  // had zero monthly/quarterly lines and is, by definition, not a
+  // recurring-revenue service. Drop it from this list so the dashboard's
+  // Services view matches the page's headline definition: monthly +
+  // quarterly only. One-time and onboarding revenue are still surfaced
+  // via the dedicated KPI tiles and the per-client roll-up.
   const serviceBreakdown = Array.from(byService.values())
+    .filter((s) => s.mrr > 0 || s.arr > 0)
     .map((s) => ({
       department: s.department,
       service_type: s.service_type,
@@ -706,7 +720,18 @@ export async function GET(req: NextRequest) {
     notInIgnition = (curatedRaw as CuratedRow[] | null ?? [])
       .filter((c) => {
         const dept = c.department === "Accounting" || c.department === "Tax"
-        return dept && c.normalized_name && !ignitionKeys.has(c.normalized_name)
+        // Same definition as the rest of the page: only count curated
+        // clients whose CSV row actually has a monthly or quarterly
+        // recurring fee. Annual-only or one-time-only rows on the CSV
+        // are NOT what this dashboard tracks, so they shouldn't appear
+        // in the gap callout either.
+        const hasRecurring = !!c.has_monthly || !!c.has_quarterly
+        return (
+          dept &&
+          hasRecurring &&
+          c.normalized_name &&
+          !ignitionKeys.has(c.normalized_name)
+        )
       })
       .map((c) => ({
         department: (c.department as Department) ?? "Accounting",
