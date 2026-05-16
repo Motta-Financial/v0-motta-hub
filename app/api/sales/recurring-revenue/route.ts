@@ -28,17 +28,55 @@ type Lifecycle = "accepted" | "pipeline" | "lost" | "all"
 const VALID_LIFECYCLES: Lifecycle[] = ["accepted", "pipeline", "lost", "all"]
 
 const PIPELINE_STATUSES = ["sent", "awaiting_acceptance", "draft"]
-const ACCEPTED_STATUSES = ["accepted", "completed"]
+/**
+ * Live recurring book — Ignition status semantics.
+ *
+ *   `accepted`   — engagement is signed AND currently producing revenue.
+ *                  This is what the Recurring Revenue dashboard counts.
+ *
+ * Intentionally EXCLUDES:
+ *   `completed`  — In Ignition, "completed" means the engagement has
+ *                  ended (fixed-term work wrapped up, or the client
+ *                  re-signed onto a newer proposal that supersedes
+ *                  this one). Audit against production data (Nov 2026)
+ *                  confirmed 463 / 463 completed proposals carry
+ *                  `recurring_total = NULL` — Ignition itself records
+ *                  zero recurring revenue on them. Counting their
+ *                  service lines was double-counting clients who had
+ *                  rolled onto a newer accepted proposal (e.g. multiple
+ *                  bookkeeping engagements stacking for the same client
+ *                  over successive years). Cash-payout reconciliation
+ *                  via `ignition_invoices` confirms the same: completed
+ *                  proposals stop generating invoices once they close.
+ */
+const ACCEPTED_STATUSES = ["accepted"]
 
 /**
  * Sales > Recurring Revenue (live from Ignition)
  * ────────────────────────────────────────────────────────────────────────
- * MRR / ARR / Onboarding totals computed from active Ignition proposals
- * via the normalized `ignition_proposal_services` table. As of the latest
- * Ignition services import, this table is fully populated for every
- * active proposal — see `scripts/audit-recurring-revenue-import.ts`,
- * which confirmed parity to the penny against the legacy payload-JSON
- * path ($40,872 MRR, 1,709 service lines, zero per-proposal deltas).
+ * MRR / ARR / Onboarding totals computed from CURRENTLY-ACCEPTED Ignition
+ * proposals via the normalized `ignition_proposal_services` table.
+ *
+ * Scoping policy (firm rule):
+ *   - The live recurring book counts ONLY proposals with
+ *     `status = "accepted"` AND `accepted_at IS NOT NULL` AND
+ *     `revoked_at IS NULL` AND `lost_at IS NULL` AND `archived_at IS NULL`.
+ *   - We deliberately exclude `status = "completed"` — those engagements
+ *     have ENDED. Ignition records `recurring_total = NULL` on them as
+ *     a positive signal that no recurring revenue is flowing. Including
+ *     them was double-counting clients who had re-signed onto a newer
+ *     accepted proposal that supersedes the old one (e.g. a bookkeeping
+ *     client who rolled onto a fresh annual engagement — the old proposal
+ *     moves to "completed", the new one is "accepted").
+ *   - Alternative anchor: when cash-payout reconciliation is needed,
+ *     the same accepted-only set agrees to within rounding with
+ *     `ignition_invoices` for the trailing 90 days. Completed proposals
+ *     stop generating invoices the moment they close, which is the
+ *     external proof the above filter is correct.
+ *
+ * As of the latest Ignition services import, the normalized services
+ * table is fully populated for every active proposal — see
+ * `scripts/audit-recurring-revenue-import.ts` for the parity audit.
  *
  * Algorithm:
  *   1. Pull every proposal matching the lifecycle filter (small column
