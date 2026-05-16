@@ -22,8 +22,6 @@ import { useRouter, useSearchParams, usePathname } from "next/navigation"
 import useSWR from "swr"
 import {
   ResponsiveContainer,
-  LineChart,
-  Line,
   CartesianGrid,
   XAxis,
   YAxis,
@@ -481,30 +479,64 @@ export function SalesDashboard() {
       )
   }, [proposals])
 
-  // ── Monthly trend (uses the active dateField, default created_at) ─────
-  const trendData = useMemo(() => {
-    const buckets = new Map<string, { month: string; created: number; accepted: number; lost: number }>()
-    const ensure = (key: string) => {
-      if (!buckets.has(key)) buckets.set(key, { month: key, created: 0, accepted: 0, lost: 0 })
-      return buckets.get(key)!
-    }
+  // ── YoY monthly accepted revenue (firm-growth view) ───────────────────
+  //
+  // What this chart answers: "are we growing month-over-month vs last
+  // year?". To make growth obvious we pin to `accepted_at` (the date
+  // revenue was actually won) regardless of which dateField the user
+  // picked elsewhere on the page — the comparison is about realised
+  // revenue, not pipeline activity, so it should NOT swing when the
+  // user flips between "Created / Sent / Accepted" date modes for the
+  // table & KPIs.
+  //
+  // The two compared years are auto-detected from the dataset: we take
+  // the latest year that has any accepted proposals as "current year"
+  // and the year before as "prior year". This means the chart works
+  // whether the dashboard is filtered to the last 90 days, YTD, or all
+  // time — as long as both years are present in the filter window the
+  // comparison is meaningful, and if only one year is present the
+  // other series renders at zero (still useful: it shows the firm is
+  // brand-new in that month/year).
+  const yoyTrendData = useMemo(() => {
+    // Find the two most recent years that have any accepted revenue.
+    let currentYear = new Date().getFullYear()
+    const yearsSeen = new Set<number>()
     for (const p of proposals) {
-      if (p.created_at) {
-        const k = format(parseISO(p.created_at), "yyyy-MM")
-        ensure(k).created += p.total_value
-      }
-      if (p.accepted_at) {
-        const k = format(parseISO(p.accepted_at), "yyyy-MM")
-        ensure(k).accepted += p.total_value
-      }
-      if (p.lost_at) {
-        const k = format(parseISO(p.lost_at), "yyyy-MM")
-        ensure(k).lost += p.total_value
-      }
+      if (!p.accepted_at) continue
+      yearsSeen.add(parseISO(p.accepted_at).getFullYear())
     }
-    return Array.from(buckets.values())
-      .sort((a, b) => a.month.localeCompare(b.month))
-      .map((b) => ({ ...b, label: format(parseISO(b.month + "-01"), "MMM yy") }))
+    if (yearsSeen.size > 0) {
+      currentYear = Math.max(...Array.from(yearsSeen))
+    }
+    const priorYear = currentYear - 1
+
+    // 12-month skeleton so empty months still render and the X axis is
+    // always Jan → Dec. Recharts won't draw bars for months with both
+    // values at 0, but the axis ticks stay anchored which makes the
+    // chart visually consistent across filters.
+    const months = Array.from({ length: 12 }, (_, i) => ({
+      monthIdx: i,
+      label: format(new Date(2000, i, 1), "MMM"),
+      current: 0,
+      prior: 0,
+    }))
+
+    for (const p of proposals) {
+      if (!p.accepted_at) continue
+      const d = parseISO(p.accepted_at)
+      const y = d.getFullYear()
+      const m = d.getMonth()
+      if (y === currentYear) months[m].current += p.total_value
+      else if (y === priorYear) months[m].prior += p.total_value
+    }
+
+    const currentTotal = months.reduce((s, x) => s + x.current, 0)
+    const priorTotal = months.reduce((s, x) => s + x.prior, 0)
+    const yoyPct = priorTotal > 0
+      ? ((currentTotal - priorTotal) / priorTotal) * 100
+      : null
+
+    return { months, currentYear, priorYear, currentTotal, priorTotal, yoyPct }
   }, [proposals])
 
   // ── Sales by state ────────────────────────────────────────────────────
@@ -836,17 +868,62 @@ export function SalesDashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2 border-stone-200">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-stone-700">Sales trend by month</CardTitle>
+            {/* Two-row header: title on top, YoY headline metrics on
+                the right. The growth chip switches colour by sign so a
+                glance tells you the direction even before reading the
+                number. Negative growth uses the same red as the Lost
+                series elsewhere on this dashboard for consistency. */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-medium text-stone-700">
+                  Monthly revenue — YoY growth
+                </CardTitle>
+                <p className="text-[11px] text-stone-500 mt-0.5">
+                  Accepted proposal value · {yoyTrendData.currentYear} vs {yoyTrendData.priorYear}
+                </p>
+              </div>
+              {!isLoading && (yoyTrendData.currentTotal > 0 || yoyTrendData.priorTotal > 0) && (
+                <div className="flex items-center gap-2">
+                  <div className="text-right">
+                    <div className="text-[10px] uppercase tracking-wide text-stone-500">YTD {yoyTrendData.currentYear}</div>
+                    <div className="text-sm font-semibold text-stone-800">{fmtMoney(yoyTrendData.currentTotal)}</div>
+                  </div>
+                  {yoyTrendData.yoyPct !== null && (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
+                        yoyTrendData.yoyPct >= 0
+                          ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
+                          : "bg-rose-50 text-rose-700 ring-1 ring-rose-200"
+                      }`}
+                      aria-label={`Year over year growth ${yoyTrendData.yoyPct.toFixed(1)} percent`}
+                    >
+                      <TrendingUp className={`h-3 w-3 ${yoyTrendData.yoyPct < 0 ? "rotate-180" : ""}`} />
+                      {yoyTrendData.yoyPct >= 0 ? "+" : ""}
+                      {yoyTrendData.yoyPct.toFixed(1)}%
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="pt-0">
             <div className="h-[280px]">
               {isLoading ? (
                 <Skeleton className="h-full w-full" />
-              ) : trendData.length === 0 ? (
-                <EmptyChart message="No proposals in the selected window" />
+              ) : yoyTrendData.currentTotal === 0 && yoyTrendData.priorTotal === 0 ? (
+                <EmptyChart message="No accepted revenue in the selected window" />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={trendData} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}>
+                  {/* Grouped bars per month — current year (olive/emerald,
+                      matches "Accepted" colour used elsewhere on this
+                      dashboard) next to prior year (muted stone). Bar
+                      grouping makes the YoY delta visually obvious for
+                      each month without needing a tooltip. */}
+                  <BarChart
+                    data={yoyTrendData.months}
+                    margin={{ top: 10, right: 12, left: 0, bottom: 0 }}
+                    barCategoryGap="20%"
+                  >
                     <CartesianGrid strokeDasharray="3 3" stroke="#E7E2DA" vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#78716C" }} stroke="#D6CFC2" />
                     <YAxis
@@ -860,10 +937,19 @@ export function SalesDashboard() {
                       contentStyle={{ borderRadius: 6, border: "1px solid #E7E2DA", fontSize: 12 }}
                     />
                     <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} />
-                    <Line type="monotone" dataKey="created" name="Proposed" stroke="#9C9285" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="accepted" name="Accepted" stroke="#3F7D58" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="lost" name="Lost" stroke="#A6433A" strokeWidth={2} dot={false} />
-                  </LineChart>
+                    <Bar
+                      dataKey="prior"
+                      name={String(yoyTrendData.priorYear)}
+                      fill="#C7B79B"
+                      radius={[3, 3, 0, 0]}
+                    />
+                    <Bar
+                      dataKey="current"
+                      name={String(yoyTrendData.currentYear)}
+                      fill="#3F7D58"
+                      radius={[3, 3, 0, 0]}
+                    />
+                  </BarChart>
                 </ResponsiveContainer>
               )}
             </div>

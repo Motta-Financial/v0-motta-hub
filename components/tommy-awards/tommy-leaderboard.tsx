@@ -189,13 +189,22 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
             }}
           >
             {recap.podium_image_url && (
-              <div className="relative w-full aspect-[16/9]" style={{ backgroundColor: "#0F140C" }}>
+              // gpt-image-2 renders this artwork at 1536×1024 (3:2).
+              // The container mirrors that ratio EXACTLY so the image
+              // fills edge-to-edge with no side-cropping — the prior
+              // 16:9 box with `object-cover` was chopping the
+              // "MOTTA ALLIANCE — TOMMY AWARDS" banner text on both
+              // ends. `object-contain` is the belt-and-braces safety
+              // net: even if a future render returns a different
+              // aspect ratio, the dark backdrop letterboxes it instead
+              // of clipping any artwork.
+              <div className="relative w-full aspect-[3/2]" style={{ backgroundColor: "#0F140C" }}>
                 <Image
                   src={recap.podium_image_url}
                   alt={`Generated podium image for ${recap.week_label}`}
                   fill
                   sizes="(max-width: 1024px) 100vw, 768px"
-                  className="object-cover"
+                  className="object-contain"
                   unoptimized
                 />
               </div>

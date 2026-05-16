@@ -38,6 +38,20 @@ export interface HeroProfile {
   /** Public Blob URL of the full profile PNG. */
   imageUrl: string
   /**
+   * Visual descriptor used by the Tommy Awards weekly podium image
+   * generator (`lib/tommy-awards/generate-podium-image.ts`) to keep
+   * the AI-rendered podium characters consistent with each hero's
+   * canonical comic-book profile page. Intentionally narrow — apparent
+   * gender + a signature prop + tactical-suit cue — because real-
+   * likeness faces are off-table (the comic uses stylised heroic
+   * figures, not portraits) but apparent gender and role-aligned
+   * props are essential. Without this field the image model defaulted
+   * to "four generic male superheroes", which was wrong for any
+   * female teammate. Keep entries to ≤ 240 chars so they fit cleanly
+   * inside the image prompt's per-winner bullet.
+   */
+  appearance: string
+  /**
    * Extra names this hero is known by in our internal data systems.
    * Lowercased, trimmed. The registry matcher checks `name` AND every
    * alias when resolving a teammate row to a profile, so adding a new
@@ -59,6 +73,8 @@ export const HERO_PROFILES: HeroProfile[] = [
     variant: "primary",
     imageUrl:
       "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Dat%20Le-vz1djcsmozLsMpaqcXKe2tgS5TFZnh.png",
+    appearance:
+      "Adult man, Asian-American features, short dark hair, confident captain stance. Black tactical suit with white lotus chest emblem, olive-green cape, gold belt. Signature: glowing holographic interface or floating data nodes around one hand.",
     aliases: ["dat le", "the captain"],
   },
   {
@@ -70,6 +86,8 @@ export const HERO_PROFILES: HeroProfile[] = [
     variant: "primary",
     imageUrl:
       "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Mark%20Dwyer-nGT4mZBTZVMoS6SnmOluddgOz1FdPS.png",
+    appearance:
+      "Adult man, Caucasian features, light/silver-flecked hair, steady commanding posture. Black tactical suit with white lotus chest emblem, gold-trimmed shoulder pauldrons. Signature: a floating wealth-management shield or family-legacy crest at his side.",
     aliases: ["mark dwyer", "the stabilizer"],
   },
   {
@@ -82,6 +100,8 @@ export const HERO_PROFILES: HeroProfile[] = [
     variant: "primary",
     imageUrl:
       "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Caleb%20Long-fwNGzhdAFosRfAwdnhbhe3fgRiEfU4.png",
+    appearance:
+      "Adult man, Caucasian features, short brown hair, sharp focused expression. Black tactical suit with white lotus chest emblem, olive trim. Signature: a glowing process flowchart converging from chaos to clarity, plus a gold M&A lightning-bolt motif.",
     aliases: ["caleb long", "the financial optimizer"],
   },
   {
@@ -94,6 +114,8 @@ export const HERO_PROFILES: HeroProfile[] = [
     variant: "amber",
     imageUrl:
       "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Amy%20Sparaco-vDEPVYSRH30YlXaAqNGA7DQjcgXgcI.png",
+    appearance:
+      "Adult WOMAN — feminine build, long hair pulled back, poised analytical stance. Black tactical suit with white lotus chest emblem, AMBER/gold accents (distinct from the olive-green team). Signature: a glowing open ledger book or floating Balance Sheet / P&L / Cash Flow holograms.",
     aliases: ["amy sparaco", "the ledger oracle", "the newest member"],
   },
   {
@@ -106,6 +128,8 @@ export const HERO_PROFILES: HeroProfile[] = [
     variant: "primary",
     imageUrl:
       "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Micaela%20Palacios-ICjehWYdgdhf6sLbdwZPGHKz7OV8KS.png",
+    appearance:
+      "Young adult WOMAN — feminine build, long dark hair, dynamic upward-rising pose suggesting momentum. Black tactical suit with white lotus chest emblem, olive trim. Signature: glowing tax / accounting / advisory icons orbiting her, with a forward-momentum energy trail.",
     aliases: ["micaela palacios", "the emerging force"],
   },
   {
@@ -117,6 +141,8 @@ export const HERO_PROFILES: HeroProfile[] = [
     variant: "primary",
     imageUrl:
       "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_OCP-11kcCVPro8PnTfDSIWc9LAhLFNks2e.png",
+    appearance:
+      "Adult man, Caucasian features, short hair, aggressive forward stance like a charging linebacker. Black tactical suit with white lotus chest emblem, reinforced exo-plating, olive trim. Signature: an armoured gauntlet crushing a stack of accounting work-papers, dust-and-spark particles.",
     aliases: [
       "andrew gianares",
       "andrew \"ocp\" gianares",
@@ -135,6 +161,8 @@ export const HERO_PROFILES: HeroProfile[] = [
     variant: "primary",
     imageUrl:
       "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Samprina%20Zekio-eKpLU61IxTeFA5CLS2ErpzdA2GqMHN.png",
+    appearance:
+      "Young adult WOMAN — feminine build, long dark hair, South Asian features, calm focused expression. Black tactical suit with white lotus chest emblem, olive hooded cloak. Signature: glowing green floating code terminal / `</>` brackets, a gold key symbolising platform access.",
     aliases: ["samprina zekio", "the code keeper"],
   },
   {
@@ -145,6 +173,8 @@ export const HERO_PROFILES: HeroProfile[] = [
     quote: "I don't sleep. I don't forget. I just keep the engine running.",
     variant: "shadow",
     imageUrl: "/images/alfred-logo.png",
+    appearance:
+      "NOT a human — render as a sleek humanoid AI avatar made of dark obsidian plating with glowing olive-green circuitry, faceless visor with a single horizontal light bar, white lotus emblem on the chest. Holographic data streams swirl around it.",
     aliases: [
       "alfred",
       "alfred ai",
@@ -163,6 +193,8 @@ export const HERO_PROFILES: HeroProfile[] = [
     variant: "shadow",
     imageUrl:
       "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/P24_%20The%20shadow%20task%20force%20in%20action-19byT36IZOWTPGSIC5xCsBw9RNu4NT.png",
+    appearance:
+      "Two adult men, South Asian features, dark tactical hoods up, mostly shadowed silhouettes with only the white lotus chest emblem and olive-green visor glow visible. Stealth ninja-operator stance, working in unison behind the main team.",
     aliases: [
       "ganesh",
       "thameem",
