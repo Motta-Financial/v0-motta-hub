@@ -11,7 +11,14 @@ import {
   Search as SearchIcon,
   Filter as FilterIcon,
   ExternalLink,
+  Network,
 } from "lucide-react"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -96,6 +103,8 @@ const fetcher = (u: string) =>
         linkedToKarbon: number
         linkedToIgnition: number
         unmappedToHub: number
+        byState: Record<string, number>
+        subEntities: number
       }
     }>
   })
@@ -106,22 +115,43 @@ export function TaxClientsClient() {
   const [typeFilter, setTypeFilter] = useState<"all" | "PERSON" | "ORGANIZATION">(
     "all",
   )
+  // ProConnect's lifecycle/workflow status. Today every row is ACTIVE
+  // but ARCHIVED clients will appear here as the year closes out, so
+  // we let users filter on it explicitly instead of silently mixing
+  // them in.
+  const [stateFilter, setStateFilter] = useState<string>("all")
+
+  // The unique set of `client_state` values we've seen in the payload,
+  // used to build the lifecycle filter chips. Sorted with ACTIVE first
+  // so the most common case sits next to the "All" chip.
+  const stateOptions = useMemo(() => {
+    const keys = Object.keys(data?.stats.byState || {})
+    return keys.sort((a, b) => {
+      if (a === "ACTIVE") return -1
+      if (b === "ACTIVE") return 1
+      return a.localeCompare(b)
+    })
+  }, [data])
 
   const filtered = useMemo(() => {
     if (!data?.clients) return []
     const q = search.trim().toLowerCase()
     return data.clients.filter((c) => {
       if (typeFilter !== "all" && c.client_type !== typeFilter) return false
+      if (stateFilter !== "all" && (c.client_state || "UNKNOWN") !== stateFilter)
+        return false
       if (!q) return true
       return (
         c.display_name?.toLowerCase().includes(q) ||
         c.email?.toLowerCase().includes(q) ||
         c.proconnect_client_id?.toLowerCase().includes(q) ||
         c.business_name?.toLowerCase().includes(q) ||
-        c.tax_id?.toLowerCase().includes(q)
+        c.tax_id?.toLowerCase().includes(q) ||
+        c.proconnect_entity_id?.toLowerCase().includes(q) ||
+        c.top_level_entity_id?.toLowerCase().includes(q)
       )
     })
-  }, [data, search, typeFilter])
+  }, [data, search, typeFilter, stateFilter])
 
   return (
     <div className="space-y-4">
@@ -176,7 +206,11 @@ export function TaxClientsClient() {
         <KpiCard
           label="Unmapped to Hub"
           value={data ? fmtNumber(data.stats.unmappedToHub) : "—"}
-          subtitle="Needs cross-system match"
+          subtitle={
+            data
+              ? `${fmtNumber(data.stats.subEntities)} sub-entit${data.stats.subEntities === 1 ? "y" : "ies"} in roster`
+              : "Needs cross-system match"
+          }
           icon={AlertCircle}
           tone={data && data.stats.unmappedToHub > 0 ? "amber" : "stone"}
         />
@@ -203,6 +237,35 @@ export function TaxClientsClient() {
               </Button>
             ))}
           </div>
+          {/* Lifecycle / client_state chips. Hidden when only one
+              state is present in the dataset so we don't render a
+              single ACTIVE chip that does nothing. */}
+          {stateOptions.length > 1 && (
+            <div className="flex items-center gap-1 border-l pl-2 ml-1">
+              <Button
+                size="sm"
+                variant={stateFilter === "all" ? "default" : "outline"}
+                onClick={() => setStateFilter("all")}
+                className="h-7 px-2 text-xs"
+              >
+                All status
+              </Button>
+              {stateOptions.map((s) => (
+                <Button
+                  key={s}
+                  size="sm"
+                  variant={stateFilter === s ? "default" : "outline"}
+                  onClick={() => setStateFilter(s)}
+                  className="h-7 px-2 text-xs"
+                >
+                  {s.charAt(0) + s.slice(1).toLowerCase()}{" "}
+                  <span className="ml-1 text-[10px] text-muted-foreground">
+                    {data?.stats.byState[s] ?? 0}
+                  </span>
+                </Button>
+              ))}
+            </div>
+          )}
           <div className="relative ml-auto w-72">
             <SearchIcon className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
@@ -239,24 +302,68 @@ export function TaxClientsClient() {
                   <TableRow>
                     <TableHead>Client</TableHead>
                     <TableHead className="w-[110px]">Type</TableHead>
+                    <TableHead className="w-[90px]">Status</TableHead>
                     <TableHead>Contact</TableHead>
                     <TableHead>Location</TableHead>
                     <TableHead>Returns on file</TableHead>
                     <TableHead className="w-[130px]">Preparer(s)</TableHead>
-                    <TableHead className="w-[110px]">Last activity</TableHead>
+                    <TableHead className="w-[120px]">Last activity</TableHead>
                     <TableHead>Hub linkage</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filtered.map((c) => (
+                  {filtered.map((c) => {
+                    // Sub-entity = this row's entity UUID differs from
+                    // its top-level entity UUID. ProConnect uses this
+                    // to model parent/child relationships (parent corp
+                    // + subsidiaries, MFJ filers, etc.) so we surface
+                    // it visually next to the PC id.
+                    const isSubEntity =
+                      !!c.proconnect_entity_id &&
+                      !!c.top_level_entity_id &&
+                      c.proconnect_entity_id !== c.top_level_entity_id
+                    return (
                     <TableRow key={c.id}>
                       <TableCell>
                         <div className="font-medium text-stone-900 text-sm">
                           {c.display_name || c.business_name || "—"}
                         </div>
-                        <div className="text-[11px] text-muted-foreground font-mono">
-                          PC · {c.proconnect_client_id || "—"}
-                        </div>
+                        <TooltipProvider delayDuration={200}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <div className="text-[11px] text-muted-foreground font-mono inline-flex items-center gap-1 cursor-help">
+                                PC · {c.proconnect_client_id || "—"}
+                                {isSubEntity ? (
+                                  <Network className="h-3 w-3 text-violet-500" />
+                                ) : null}
+                              </div>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="right"
+                              className="max-w-[360px] font-mono text-[10px] leading-relaxed"
+                            >
+                              <div>
+                                <span className="text-muted-foreground">entity</span>{" "}
+                                {c.proconnect_entity_id || "—"}
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">top-level</span>{" "}
+                                {c.top_level_entity_id || "—"}
+                              </div>
+                              {isSubEntity ? (
+                                <div className="mt-1 text-violet-300">
+                                  Sub-entity of a parent record
+                                </div>
+                              ) : null}
+                              {c.name_for_matching ? (
+                                <div className="mt-1">
+                                  <span className="text-muted-foreground">match-key</span>{" "}
+                                  {c.name_for_matching}
+                                </div>
+                              ) : null}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                         {c.tax_id ? (
                           <div className="text-[11px] text-muted-foreground font-mono">
                             TIN · {c.tax_id}
@@ -276,6 +383,26 @@ export function TaxClientsClient() {
                           {c.client_type === "PERSON"
                             ? "Individual"
                             : "Organization"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {/* ProConnect lifecycle status. ACTIVE is the
+                            common case (emerald) — anything else gets
+                            stone so an archived/inactive client stands
+                            out without being alarming. */}
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "text-[10px]",
+                            c.client_state === "ACTIVE"
+                              ? "bg-emerald-50 text-emerald-900 border-emerald-200"
+                              : "bg-stone-50 text-stone-700 border-stone-200",
+                          )}
+                        >
+                          {c.client_state
+                            ? c.client_state.charAt(0) +
+                              c.client_state.slice(1).toLowerCase()
+                            : "—"}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -352,16 +479,33 @@ export function TaxClientsClient() {
                         )}
                       </TableCell>
                       <TableCell>
+                        {/* Two distinct timestamps: the top line is
+                            the latest return updated_at across all
+                            forms (what ProConnect filed/edited most
+                            recently); the bottom line is the
+                            ProConnect client record's own updated_at
+                            (when ProConnect's CRM-level row was last
+                            touched). They diverge when the address
+                            book changes but no return moved, or vice
+                            versa, which is operationally useful. */}
                         {c.last_activity_at ? (
-                          <span
-                            className="text-xs text-stone-600 tabular-nums"
-                            title={new Date(c.last_activity_at).toLocaleString()}
+                          <div
+                            className="text-xs text-stone-700 tabular-nums"
+                            title={`Latest return activity · ${new Date(c.last_activity_at).toLocaleString()}`}
                           >
                             {new Date(c.last_activity_at).toLocaleDateString()}
-                          </span>
+                          </div>
                         ) : (
-                          <span className="text-xs text-stone-400">—</span>
+                          <div className="text-xs text-stone-400">—</div>
                         )}
+                        {c.updated_at ? (
+                          <div
+                            className="text-[10px] text-muted-foreground tabular-nums"
+                            title={`ProConnect record updated · ${new Date(c.updated_at).toLocaleString()}`}
+                          >
+                            rec {new Date(c.updated_at).toLocaleDateString()}
+                          </div>
+                        ) : null}
                       </TableCell>
                       <TableCell>
                         {c.mapping ? (
@@ -392,7 +536,8 @@ export function TaxClientsClient() {
                         )}
                       </TableCell>
                     </TableRow>
-                  ))}
+                    )
+                  })}
                 </TableBody>
               </Table>
             </div>
