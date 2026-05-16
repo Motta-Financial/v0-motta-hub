@@ -10,9 +10,15 @@
  *
  * Two-step pipeline:
  *   1. GPT-5 ("the latest ChatGPT") drafts a tightly scoped image
- *      prompt that references each winner's hero profile (alias,
- *      role, visual cues) so the generated image actually matches the
- *      Alliance art direction instead of producing generic stock art.
+ *      prompt. CRITICALLY, the prompt drafter is given each winner's
+ *      hero profile PNG as a vision input — it actually LOOKS at the
+ *      canonical comic-book artwork for each winner and grounds the
+ *      generated description in what it sees (apparent gender, hair,
+ *      costume colour, mask/cowl design, signature props). Earlier
+ *      iterations passed only textual descriptions, which led to
+ *      drift (e.g. four generic male superheroes when two of the
+ *      winners were women). Letting the model see the source art is
+ *      the cure for that drift.
  *   2. gpt-image-1 ("the latest image generation tool") renders the
  *      image at HIGH quality (the "extended pro" tier OpenAI exposes
  *      for that model).
@@ -68,10 +74,11 @@ export async function generatePodiumImage(opts: {
 
   try {
     // ── Step 1 — resolve hero profiles for each winner ────────────
-    // We pass the comic-book hero descriptors into the image prompt
-    // so the generated art looks like the rest of the Motta Alliance
-    // universe (same olive/black palette, lotus emblems, cinematic
-    // comic-book rendering) rather than generic finance stock art.
+    // We pull each winner's hero profile so we can hand GPT-5 the
+    // canonical comic-book PNG as a vision input. The model studies
+    // the source art directly instead of relying on textual
+    // descriptors that drift over time (e.g. forgetting that a
+    // teammate is a woman, or omitting a signature prop).
     const heroDescriptors = opts.winners.map((w) => {
       const hero =
         findHeroProfileBySlug(w.heroSlug ?? undefined) ?? findHeroProfile(w.name)
@@ -81,87 +88,124 @@ export async function generatePodiumImage(opts: {
         alias: hero?.alias ?? null,
         role: hero?.role ?? null,
         quote: hero?.quote ?? null,
-        // Apparent gender + signature visual props sourced from the
-        // hero registry. This is what stops the image model from
-        // defaulting to "four generic male superheroes" — see the
-        // `appearance` field in `lib/motta-alliance/hero-profiles.ts`
-        // for why each hero has a custom descriptor.
         appearance: hero?.appearance ?? null,
+        // Public Blob URL of the canonical hero profile PNG. Must be
+        // an absolute https URL for the AI Gateway to fetch it as a
+        // vision input. Relative paths (e.g. ALFRED's `/images/...`)
+        // are filtered out below and fall through to the textual
+        // `appearance` descriptor.
+        imageUrl: hero?.imageUrl ?? null,
       }
     })
 
-    // ── Step 2 — ask GPT-5 to author the image prompt ────────────
-    // CRITICAL: every winner's APPEARANCE descriptor must survive into
-    // the final prompt verbatim. Earlier versions of this prompt only
-    // listed alias + role and the image model defaulted to "four
-    // generic male superheroes", which mis-rendered female teammates
-    // (Amy Sparaco / Micaela Palacios / Samprina Zekio) as men. The
-    // explicit "Apparent gender and signature props are MANDATORY"
-    // rule below is what fixes that.
-    const promptDraftInstruction = `You are the art director for the Motta Financial Alliance comic book series. Compose a SINGLE image generation prompt (no preamble, no markdown, no quotation marks) describing a cinematic, comic-book-style illustration of an F1-style podium celebration for this week's Tommy Awards winners.
+    // ── Step 2 — ask GPT-5 to LOOK AT each hero's profile image and
+    //              author an image prompt grounded in what it sees ──
+    //
+    // Vision-grounded prompting — we hand GPT-5 the actual canonical
+    // hero artwork for every winner whose profile image is hosted on
+    // a fetchable URL, and ask it to study the art before drafting.
+    // This eliminates the entire class of "text described it wrong"
+    // bugs (mis-gendered teammates, missing signature props, generic
+    // costume colours) because the model is now looking at the truth.
+    //
+    // For roster entries whose `imageUrl` is a project-relative path
+    // (currently only ALFRED at `/images/alfred-logo.png`) we still
+    // emit the textual `appearance` fallback so the model has SOMETHING
+    // to anchor on — vision-when-possible, text-when-not.
+    const visionHeroes = heroDescriptors.filter(
+      (h) => h.imageUrl && /^https?:\/\//i.test(h.imageUrl),
+    )
+    const textOnlyHeroes = heroDescriptors.filter(
+      (h) => !h.imageUrl || !/^https?:\/\//i.test(h.imageUrl),
+    )
+
+    // Build the multimodal user message: one text block setting the
+    // task, followed by one image block PER hero (with a text label
+    // immediately before it so GPT-5 can correlate image-to-winner).
+    // The AI SDK 6 message format accepts mixed `text` + `image` parts
+    // in a single user message — the gateway routes images via OpenAI's
+    // multimodal endpoint automatically when the bound model supports
+    // vision (gpt-5.5-pro does).
+    const userContent: Array<
+      { type: "text"; text: string } | { type: "image"; image: URL | string }
+    > = [
+      {
+        type: "text",
+        text: `You are the art director for the Motta Financial Alliance comic book series. I will show you the CANONICAL hero profile artwork for each of this week's Tommy Awards winners. STUDY each image carefully — note apparent gender, body type, hair length/colour, skin tone, costume accents, mask/visor/hood design, signature props, and pose energy. Then compose a SINGLE image generation prompt (no preamble, no markdown, no quotation marks) describing a cinematic, comic-book-style illustration of an F1-style podium celebration for these winners, drawn in the same Motta Alliance art style as the source images.
 
 Mandatory visual direction (do not deviate):
 - Comic-book rendering matching the Motta Alliance series: dark background, dramatic moody lighting, faint city skyline at night, olive-green and gold accents, white lotus emblem on each hero's chest, halftone shading, bold inked outlines.
-- An F1-style three-tier podium center-frame: tallest center (1st), shorter left (2nd), shortest right (3rd). Each tier has the rank number in large stencil typography.
-- Each hero is depicted in tactical/superhero attire consistent with the Motta Alliance universe (NOT real-likeness portraits — stylised heroic figures). Heroes hold a champagne bottle spraying olive-tinted "Motta Mist" instead of bubbly.
-- Banner across the top reads "MOTTA ALLIANCE — TOMMY AWARDS" and the week label below it. Frame the composition so the FULL banner text fits within the canvas with at least 5% margin on each side — do not crop the banner.
+- An F1-style three-tier podium centre-frame: tallest centre (1st), shorter left (2nd), shortest right (3rd). Each tier has the rank number in large stencil typography.
+- Heroes are stylised, not real-likeness portraits — but every hero's apparent gender, hair, costume accents and signature props MUST match the source artwork you just studied. If a winner is a woman in the source art, she MUST be drawn as a woman in the podium scene.
+- Each hero holds a champagne bottle spraying olive-tinted "Motta Mist".
+- Banner across the top reads exactly: MOTTA ALLIANCE — TOMMY AWARDS, with the week label "${opts.weekLabel}" immediately below it. Both lines must fit fully inside the canvas with at least 8% margin on the left and right edges — do NOT crop the banner.
+- TEXT POLICY: The ONLY text in the image is the banner + week label + the three rank numerals (1, 2, 3) on the podium tiers. Do NOT bake hero names, role taglines, quotes, or any other captions into the artwork — those are rendered separately in the dashboard UI underneath the image.
 - Color palette strictly: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), cream/off-white. NO purple. NO pastel pink.
 - Style cue: same illustrator energy as a Marvel hero profile card crossed with an F1 victory poster.
 
-PER-HERO VISUAL IDENTITY — MANDATORY, NON-NEGOTIABLE. For each winner you MUST honour the apparent gender, body type, hair, costume accents, and signature props described below. Female heroes MUST be drawn as women (feminine build, long hair where specified). Each hero's signature prop MUST appear somewhere in their tier of the composition. Heroes are stylised — no real-likeness portraits — but apparent gender and signature props are required.
+Winners this week (images follow below, in podium order):`,
+      },
+    ]
 
-Winners this week:
-${heroDescriptors
-  .map(
-    (h) =>
-      `- ${ordinal(h.rank)} (${h.alias ? `${h.alias}, ${h.name}` : h.name})${h.role ? ` — role: ${h.role}` : ""}\n    APPEARANCE: ${h.appearance ?? "Stylised heroic figure in black tactical suit with white lotus chest emblem, olive trim."}`,
-  )
-  .join("\n")}
+    for (const h of visionHeroes) {
+      userContent.push({
+        type: "text",
+        text: `\n${ordinal(h.rank)} place — ${h.alias ? `${h.alias} (${h.name})` : h.name}${h.role ? `, role: ${h.role}` : ""}. The canonical hero profile artwork is shown below — study it and ensure your prompt preserves the apparent gender, hair, costume design, and any signature props or holographic motifs visible in this image.`,
+      })
+      userContent.push({ type: "image", image: h.imageUrl as string })
+    }
 
-Week label to display on the banner: "${opts.weekLabel}".
+    if (textOnlyHeroes.length > 0) {
+      userContent.push({
+        type: "text",
+        text: `\nAdditional winners (no source image available — render strictly per the description):\n${textOnlyHeroes
+          .map(
+            (h) =>
+              `- ${ordinal(h.rank)} (${h.alias ? `${h.alias}, ${h.name}` : h.name})${h.role ? ` — role: ${h.role}` : ""}\n    APPEARANCE: ${h.appearance ?? "Stylised heroic figure in black tactical suit with white lotus chest emblem, olive trim."}`,
+          )
+          .join("\n")}`,
+      })
+    }
 
-Return ONLY the final image prompt as a single paragraph of ≤ 260 words. Do not include any other commentary. Every per-hero APPEARANCE descriptor above must be preserved in your output (paraphrasing is fine, but apparent gender and signature props must survive).`
+    userContent.push({
+      type: "text",
+      text: `\nReturn ONLY the final image prompt as a single paragraph of ≤ 280 words. No preamble. No markdown. The prompt must explicitly mention each winner by alias and place on the podium, and must lock in their apparent gender + a signature prop drawn directly from the source artwork you studied above.`,
+    })
 
     // gpt-5.5-pro is a deep-reasoning model — it spends a large share
     // of its output budget on hidden reasoning tokens BEFORE emitting
-    // any visible text. Empirically:
-    //   -    500 tokens → reasoning exhausted budget, empty output
-    //   -  2_500 tokens → worked most of the time, occasional empty
-    //   -  8_000 tokens → reliable for gpt-5.5-pro at "≤ 220 word"
-    //     prompt length. Image-prompt drafting is once-a-week, so the
-    //     extra cost is negligible and the quality ceiling is what
-    //     matters. If we ever see a truncation we can raise further
-    //     — the gateway caps gpt-5.5-pro at 65_536 output tokens.
+    // any visible text. Vision inputs increase reasoning load further,
+    // so we keep the output budget generous (8k tokens). Image-prompt
+    // drafting is a once-a-week job so cost is negligible.
     let cleanedPrompt = ""
     try {
       const { text: imagePrompt } = await generateText({
         model: PODIUM_PROMPT_MODEL,
-        prompt: promptDraftInstruction,
+        messages: [{ role: "user", content: userContent }],
         maxOutputTokens: 8000,
       })
       cleanedPrompt = imagePrompt.trim().replace(/^["']|["']$/g, "")
+      console.log(
+        `[v0] tommy podium image: vision-grounded prompt drafted from ${visionHeroes.length} hero image(s)`,
+      )
     } catch (promptErr) {
       console.warn("[v0] tommy podium image: prompt draft errored:", promptErr)
     }
 
     // Deterministic fallback — if GPT-5 returns empty (reasoning budget
-    // exhausted, rate-limited, transient gateway issue, etc.) we still
-    // hand gpt-image-1 a well-formed Alliance-themed prompt so the
-    // image renders. The fallback intentionally mirrors the same visual
-    // direction GPT-5 is asked to author so the result is on-brand.
+    // exhausted, rate-limited, transient gateway issue, image fetch
+    // failure) we still hand gpt-image-1 a well-formed Alliance-themed
+    // prompt so the email/dashboard isn't broken. The fallback uses the
+    // textual `appearance` descriptors as the only available signal.
     if (!cleanedPrompt) {
       console.warn("[v0] tommy podium image: empty prompt from GPT-5, using deterministic fallback")
-      // The fallback MUST inline each winner's appearance descriptor —
-      // otherwise we hit the same "four generic male superheroes"
-      // failure mode as before. Keep the per-hero detail dense even
-      // though it makes the fallback prompt longer.
       const winnersBlock = heroDescriptors
         .map(
           (h) =>
             `${ordinal(h.rank)} place — ${h.alias ? `${h.alias} (${h.name})` : h.name}${h.role ? `, role: ${h.role}` : ""}. ${h.appearance ?? "Stylised heroic figure in black tactical suit with white lotus chest emblem, olive trim."}`,
         )
         .join(" ")
-      cleanedPrompt = `Cinematic comic-book illustration of an F1-style three-tier podium celebrating this week's Motta Financial Alliance Tommy Awards winners. Tallest center tier for 1st, left tier for 2nd, right tier for 3rd, each with a large stencil rank number. Each hero holds a champagne bottle spraying olive-tinted "Motta Mist". Apparent gender and signature props for each winner are MANDATORY: ${winnersBlock} A banner across the top reads "MOTTA ALLIANCE — TOMMY AWARDS" with "${opts.weekLabel}" beneath it; the FULL banner text must fit within the canvas with at least 5% margin on each side. Dark moody background with a faint nighttime city skyline, dramatic rim lighting, bold inked outlines, halftone shading. Strict palette: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), cream/off-white. No purple, no pastel pink. Style: Marvel hero profile card crossed with an F1 victory poster. Stylised heroic figures only — NOT real-likeness portraits — but female heroes must be drawn as women and male heroes as men, per the descriptions above.`
+      cleanedPrompt = `Cinematic comic-book illustration of an F1-style three-tier podium celebrating this week's Motta Financial Alliance Tommy Awards winners. Tallest centre tier for 1st, left tier for 2nd, right tier for 3rd, each with a large stencil rank number. Each hero holds a champagne bottle spraying olive-tinted "Motta Mist". Apparent gender and signature props for each winner are MANDATORY: ${winnersBlock} A banner across the top reads exactly "MOTTA ALLIANCE — TOMMY AWARDS" with "${opts.weekLabel}" beneath it; both banner lines must sit fully within the canvas with at least 8% margin on the left and right edges — do not crop the banner. The ONLY text in the image is that banner plus the rank numerals 1, 2, 3 on the podium tiers — do NOT bake hero names, taglines or quotes into the artwork. Dark moody background with a faint nighttime city skyline, dramatic rim lighting, bold inked outlines, halftone shading. Strict palette: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), cream/off-white. No purple, no pastel pink. Style: Marvel hero profile card crossed with an F1 victory poster. Stylised heroic figures only — NOT real-likeness portraits — but female heroes must be drawn as women and male heroes as men, per the descriptions above.`
     }
 
     console.log("[v0] tommy podium image: prompt drafted, generating image…")
