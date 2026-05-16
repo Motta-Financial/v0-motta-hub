@@ -877,6 +877,13 @@ export async function sendCategoryEmail(opts: {
   subject: string
   html: string
   replyTo?: string
+  /**
+   * Optional file attachments passed straight through to Resend on the
+   * single send call. Used by the Friday Tommy recap to attach the
+   * generated PDF so partners get a portable record they can forward
+   * to clients / save to OneDrive without bouncing back to the Hub.
+   */
+  attachments?: EmailAttachment[]
 }): Promise<{ attempted: number; sent: number; skipped: number }> {
   const recipients = await resolveRecipientsForCategory(opts.teamMemberIds, opts.category)
   const attempted = opts.teamMemberIds.length
@@ -889,6 +896,7 @@ export async function sendCategoryEmail(opts: {
     subject: opts.subject,
     html: opts.html,
     replyTo: opts.replyTo,
+    attachments: opts.attachments,
   })
 
   return {
