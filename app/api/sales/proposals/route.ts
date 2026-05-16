@@ -289,10 +289,44 @@ export async function GET(req: Request) {
       // already normalized — see `parsePayloadService` in
       // `lib/sales/ignition-recurring.ts` for the field mapping.
       const services = extractPayloadServices(p.payload)
+
+      // Derive one-time + recurring + recurring frequency directly from
+      // the payload service lines instead of trusting Ignition's
+      // top-level `one_time_total` / `recurring_total` / `recurring_frequency`
+      // columns. Those columns are NULL on a large slice of the firm's
+      // active proposals (PROP-3021 / Synergy Rehab Scottsbluff being
+      // the canonical example: $300 onboarding + $300/mo bookkeeping,
+      // total $3,900 — but Ignition records `recurring_total = null,
+      // one_time_total = null, recurring_frequency = "fixed"`). The
+      // payload services array always has the correct breakdown.
+      //
+      // Convention (matches the partners' mental model):
+      //   • `one_time_total` = sum of contract_amount for non-recurring
+      //     service lines (onboarding, setup, clean-up, etc.)
+      //   • `recurring_total` = sum of per-cycle rates for recurring
+      //     service lines (so a $300/mo + $150/mo engagement reads as
+      //     `recurring_total = 450, recurring_frequency = "monthly"`,
+      //     i.e. "$450/month" — NOT the multi-year contract total)
+      //   • `recurring_frequency` = the cadence of the dominant
+      //     recurring line. Almost always uniform across a proposal;
+      //     when mixed we pick the largest-rate line's cadence.
+      let derivedOneTime = 0
+      let derivedRecurring = 0
+      let dominantRecurringRate = 0
+      let derivedFrequency: string | null = null
       for (const s of services) {
         serviceCount++
         if (s.is_recurring && s.frequency !== "one-time") {
           hasRecurringLine = true
+          derivedRecurring += s.period_rate
+          if (s.period_rate > dominantRecurringRate) {
+            dominantRecurringRate = s.period_rate
+            derivedFrequency = s.frequency
+          }
+        } else {
+          // Non-recurring line: use the FULL contract amount because a
+          // one-time fee's "contract value" is just the lump sum.
+          derivedOneTime += s.contract_amount
         }
         if (s.name) {
           serviceLineSet.add(classifyService(s.name))
@@ -301,20 +335,40 @@ export async function GET(req: Request) {
         }
       }
 
-      // Curated-recurring scrub
+      const total = Number(p.total_value) || 0
+      // Fallback chain — only used when the payload has no parseable
+      // services (rare, mostly legacy Zapier-imported rows): trust
+      // Ignition's top-level columns, then collapse everything into
+      // one-time as a last resort so the row still shows the right
+      // contract value.
+      let oneTime = derivedOneTime
+      let recurring = derivedRecurring
+      let recurringFreq: string | null = derivedFrequency
+      if (services.length === 0) {
+        oneTime = Number(p.one_time_total) || 0
+        recurring = Number(p.recurring_total) || 0
+        recurringFreq = p.recurring_frequency
+        if (oneTime === 0 && recurring === 0 && total > 0) {
+          oneTime = total
+        }
+      }
+
+      // The curated-recurring CSV is intentionally NOT applied here.
+      // That scrub belongs to the firm-wide MRR roll-up in
+      // /api/sales/recurring-revenue, where it gates which clients are
+      // counted toward headline MRR. On the per-proposal listing the
+      // user wants to see exactly what Ignition agreed to, including
+      // the recurring split — so we surface the truth.
+      // `curatedRecurring` is still loaded above to power
+      // `is_curated_recurring`, which downstream consumers can use to
+      // tell whether the proposal's recurring revenue is partner-
+      // approved for the MRR dashboard.
       const candidates = [p.organizations?.name, p.client_name].filter(
         Boolean,
       ) as string[]
       const isCurated = candidates.some((n) =>
         curatedRecurring.has(normalizeClientName(n)),
       )
-      let recurring = Number(p.recurring_total) || 0
-      let oneTime = Number(p.one_time_total) || 0
-      const total = Number(p.total_value) || 0
-      if (!isCurated) {
-        oneTime = Math.max(oneTime + recurring, total > 0 ? total : 0)
-        recurring = 0
-      }
 
       // ── Direct links into Ignition ─────────────────────────────────
       // The Reporting API embeds `link` (the proposal page on
@@ -352,7 +406,10 @@ export async function GET(req: Request) {
         total_value: total,
         one_time_total: oneTime,
         recurring_total: recurring,
-        recurring_frequency: isCurated ? p.recurring_frequency : null,
+        // Surface the cadence detected on the payload service lines.
+        // Falls back to Ignition's top-level value only when the payload
+        // had no parseable services (see the fallback block above).
+        recurring_frequency: recurringFreq,
         currency: p.currency,
         client_name: p.client_name,
         client_email: p.client_email,
