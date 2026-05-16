@@ -9,6 +9,7 @@ import {
   Plus,
   Shield,
   Sparkles,
+  Trophy,
   Users,
   Zap,
 } from "lucide-react"
@@ -19,8 +20,10 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { IssueNewEditionDialog } from "@/components/motta-alliance/issue-new-edition-dialog"
+import { WeeklyTommysTab } from "@/components/motta-alliance/weekly-tommys-tab"
 import {
   ALLIANCE_COVER_URL,
   HERO_PROFILES,
@@ -712,6 +715,11 @@ const fetcher = async (url: string) => {
 
 export function MottaAlliance() {
   const [dialogOpen, setDialogOpen] = useState(false)
+  // Controlled tab state so the in-hero "Meet the Heroes" link can
+  // switch the gallery to the Hero Profiles tab in addition to
+  // scrolling. Without this the anchor would jump to a hidden tab
+  // panel and the user would see no change.
+  const [activeTab, setActiveTab] = useState<string>("team-issues")
   const { data, mutate, isLoading } = useSWR(
     "/api/motta-alliance/issues",
     fetcher,
@@ -847,14 +855,26 @@ export function MottaAlliance() {
                 <Plus className="mr-1.5 h-4 w-4" />
                 Issue New Edition
               </Button>
-              <a
-                href="#hero-profiles"
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("hero-profiles")
+                  // Defer the scroll one tick so Radix has time to
+                  // mount the freshly-activated TabsContent panel.
+                  // Without the deferral the element doesn't exist
+                  // yet (Radix unmounts inactive panels by default).
+                  setTimeout(() => {
+                    document
+                      .getElementById("hero-profiles")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                  }, 0)
+                }}
                 className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.18em] transition-colors"
                 style={{ color: "#A8C566" }}
               >
                 <Users className="h-3.5 w-3.5" />
                 Meet the Heroes
-              </a>
+              </button>
             </div>
           </div>
 
@@ -890,67 +910,114 @@ export function MottaAlliance() {
         </div>
       </header>
 
-      {/* Latest Editions — DB-backed team-wide drops only. Hero Volume
-          / Origin Story uploads are routed to the Hero Volumes section
-          below so they appear under the correct teammate instead of
-          here. Hidden when none exist so we don't show an empty strip. */}
-      {dbLatestEditions.length > 0 && (
-        <section className="space-y-4">
+      {/* Tabs — split the gallery into four focused surfaces so each
+          content type gets its own home. Defaults to "Team Issues" so
+          the main comic series stays the entry point. The four tabs:
+            - team-issues: numbered ensemble issues + DB-uploaded
+              "Latest Editions" team drops (the existing main flow)
+            - weekly-tommys: archive of persisted Operation Tommy
+              dispatches (image + ALFRED summary + dispatch PDF)
+            - origin-stories: solo "Hero Volumes" — seeded + any DB
+              uploads classified as origin stories
+            - hero-profiles: the comic-book hero profile sheets */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+        <TabsList
+          className="grid h-auto w-full grid-cols-2 gap-1 rounded-lg border p-1 sm:grid-cols-4"
+          style={{
+            backgroundColor: "rgba(168,197,102,0.04)",
+            borderColor: "rgba(168,197,102,0.25)",
+          }}
+        >
+          <AllianceTabTrigger value="team-issues" icon={<BookOpen className="h-3.5 w-3.5" />}>
+            Team Issues
+          </AllianceTabTrigger>
+          <AllianceTabTrigger value="weekly-tommys" icon={<Trophy className="h-3.5 w-3.5" />}>
+            Weekly Tommy&apos;s
+          </AllianceTabTrigger>
+          <AllianceTabTrigger value="origin-stories" icon={<Zap className="h-3.5 w-3.5" />}>
+            Origin Stories
+          </AllianceTabTrigger>
+          <AllianceTabTrigger value="hero-profiles" icon={<Users className="h-3.5 w-3.5" />}>
+            Hero Profiles
+          </AllianceTabTrigger>
+        </TabsList>
+
+        <TabsContent value="team-issues" className="space-y-12">
+          {/* Latest Editions — DB-backed team-wide drops only. Hero
+              Volume / Origin Story uploads are routed to the Origin
+              Stories tab so they appear under the correct teammate
+              instead of here. Hidden when none exist so we don't
+              show an empty strip. */}
+          {dbLatestEditions.length > 0 && (
+            <section className="space-y-4">
+              <ComicSectionHeader
+                kicker="New From the Press"
+                title="Latest Editions"
+                subtitle="Newly issued via the Hub — announced to the team by ALFRED Ai with a story preview."
+                count={dbLatestEditions.length}
+                countLabel={dbLatestEditions.length === 1 ? "Edition" : "Editions"}
+                icon={<Sparkles className="h-4 w-4" />}
+              />
+              <IssueGrid issues={dbLatestEditions} />
+            </section>
+          )}
+
+          {/* Team Issues — seeded constants. */}
+          <section className="space-y-4">
+            <ComicSectionHeader
+              kicker="The Main Series"
+              title="Team Issues"
+              subtitle="The numbered series — the whole Alliance on a mission."
+              count={TEAM_ISSUES.length}
+              countLabel={TEAM_ISSUES.length === 1 ? "Issue" : "Issues"}
+              icon={<BookOpen className="h-4 w-4" />}
+            />
+            <IssueGrid issues={TEAM_ISSUES} />
+          </section>
+        </TabsContent>
+
+        <TabsContent value="weekly-tommys" className="space-y-4">
           <ComicSectionHeader
-            kicker="New From the Press"
-            title="Latest Editions"
-            subtitle="Newly issued via the Hub — announced to the team by ALFRED Ai with a story preview."
-            count={dbLatestEditions.length}
-            countLabel={dbLatestEditions.length === 1 ? "Edition" : "Editions"}
-            icon={<Sparkles className="h-4 w-4" />}
+            kicker="Operation Tommy"
+            title="Weekly Tommy's"
+            subtitle="Every Friday dispatch ALFRED ships — the generated podium image, the recap, and the printable PDF."
+            count={0}
+            countLabel="Dispatches"
+            icon={<Trophy className="h-4 w-4" />}
+            hideCount
           />
-          <IssueGrid issues={dbLatestEditions} />
-        </section>
-      )}
+          <WeeklyTommysTab />
+        </TabsContent>
 
-      {/* Team Issues — seeded constants. */}
-      <section className="space-y-4">
-        <ComicSectionHeader
-          kicker="The Main Series"
-          title="Team Issues"
-          subtitle="The numbered series — the whole Alliance on a mission."
-          count={TEAM_ISSUES.length}
-          countLabel={TEAM_ISSUES.length === 1 ? "Issue" : "Issues"}
-          icon={<BookOpen className="h-4 w-4" />}
-        />
-        <IssueGrid issues={TEAM_ISSUES} />
-      </section>
+        <TabsContent value="origin-stories" className="space-y-4">
+          {/* Origin Stories (Hero Volumes) — seeded constants + any
+              DB-uploaded Origin Stories, filed under the correct
+              teammate via `findHeroProfile` on the cast. Each card
+              renders the linked hero's portrait so it's obvious whose
+              origin story it is at a glance. */}
+          <ComicSectionHeader
+            kicker="Solo Spotlights"
+            title="Origin Stories"
+            subtitle="Hero Volumes — one teammate at a time."
+            count={allHeroVolumes.length}
+            countLabel={allHeroVolumes.length === 1 ? "Volume" : "Volumes"}
+            icon={<Zap className="h-4 w-4" />}
+          />
+          <IssueGrid issues={allHeroVolumes} />
+        </TabsContent>
 
-      {/* Hero Volumes — seeded constants + any DB-uploaded Origin
-          Stories, filed under the correct teammate via `findHeroProfile`
-          on the cast. Each card renders the linked hero's portrait so
-          it's obvious whose origin story it is at a glance. */}
-      <section className="space-y-4">
-        <ComicSectionHeader
-          kicker="Solo Spotlights"
-          title="Hero Volumes"
-          subtitle="Origin stories — one hero at a time."
-          count={allHeroVolumes.length}
-          countLabel={allHeroVolumes.length === 1 ? "Volume" : "Volumes"}
-          icon={<Zap className="h-4 w-4" />}
-        />
-        <IssueGrid issues={allHeroVolumes} />
-      </section>
-
-      {/* Hero Profiles — gallery of the comic-book hero profile pages
-          for each teammate. Linked from the page hero so anyone can jump
-          straight into the roster. */}
-      <section id="hero-profiles" className="space-y-4 scroll-mt-20">
-        <ComicSectionHeader
-          kicker="The Roster"
-          title="Hero Profiles"
-          subtitle="Powers, alignments, signature moves. The handbook for every member of the A-Team."
-          count={HERO_PROFILES.length}
-          countLabel={HERO_PROFILES.length === 1 ? "Hero" : "Heroes"}
-          icon={<Users className="h-4 w-4" />}
-        />
-        <HeroProfileGrid />
-      </section>
+        <TabsContent value="hero-profiles" id="hero-profiles" className="space-y-4 scroll-mt-20">
+          <ComicSectionHeader
+            kicker="The Roster"
+            title="Hero Profiles"
+            subtitle="Powers, alignments, signature moves. The handbook for every member of the A-Team."
+            count={HERO_PROFILES.length}
+            countLabel={HERO_PROFILES.length === 1 ? "Hero" : "Heroes"}
+            icon={<Users className="h-4 w-4" />}
+          />
+          <HeroProfileGrid />
+        </TabsContent>
+      </Tabs>
 
       {/* Footer note */}
       <footer
@@ -998,6 +1065,7 @@ function ComicSectionHeader({
   count,
   countLabel,
   icon,
+  hideCount = false,
 }: {
   kicker: string
   title: string
@@ -1005,6 +1073,13 @@ function ComicSectionHeader({
   count: number
   countLabel: string
   icon?: React.ReactNode
+  /**
+   * When true, omits the right-side "N items" badge. The Weekly Tommy's
+   * tab uses this because the recap count is owned by `WeeklyTommysTab`
+   * itself (SWR-driven) and we don't want to either prop-drill it or
+   * render a misleading "0 Dispatches" badge while data loads.
+   */
+  hideCount?: boolean
 }) {
   return (
     <div
@@ -1032,19 +1107,60 @@ function ComicSectionHeader({
           {subtitle}
         </p>
       </div>
-      <span
-        className={cn(
-          "rounded-sm border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-widest",
-        )}
-        style={{
-          color: "#A8C566",
-          borderColor: "rgba(168,197,102,0.4)",
-          backgroundColor: "rgba(168,197,102,0.06)",
-        }}
-      >
-        {count} {countLabel}
-      </span>
+      {!hideCount && (
+        <span
+          className={cn(
+            "rounded-sm border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-widest",
+          )}
+          style={{
+            color: "#A8C566",
+            borderColor: "rgba(168,197,102,0.4)",
+            backgroundColor: "rgba(168,197,102,0.06)",
+          }}
+        >
+          {count} {countLabel}
+        </span>
+      )}
     </div>
+  )
+}
+
+/**
+ * Tab trigger styled to sit on the dark Alliance backdrop. The shadcn
+ * default trigger pulls in light-mode primary tokens which fight with
+ * the dark olive palette, so we restyle inline using the same accent
+ * the rest of the gallery uses for selected / accent surfaces.
+ */
+function AllianceTabTrigger({
+  value,
+  icon,
+  children,
+}: {
+  value: string
+  icon?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <TabsTrigger
+      value={value}
+      className={cn(
+        "flex items-center justify-center gap-1.5 rounded-md border border-transparent px-3 py-2 text-xs font-bold uppercase tracking-[0.16em] transition-colors",
+        // Idle: muted cream-ish on the dark Alliance backdrop.
+        "text-[#B8B3AA] hover:text-[#F4EFE8]",
+        // Active: olive halo + cream text, matching the rest of the
+        // gallery's accent surfaces. `!` overrides shadcn's default
+        // bg-background which would otherwise wash the trigger white.
+        "data-[state=active]:!bg-[rgba(168,197,102,0.18)]",
+        "data-[state=active]:!text-[#F4EFE8]",
+        "data-[state=active]:!border-[rgba(168,197,102,0.45)]",
+        "data-[state=active]:shadow-none",
+      )}
+    >
+      <span className="flex items-center gap-1.5">
+        {icon}
+        {children}
+      </span>
+    </TabsTrigger>
   )
 }
 

@@ -6,6 +6,7 @@ import { generateText } from "ai"
 import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 import { generatePodiumImage } from "@/lib/tommy-awards/generate-podium-image"
+import { generatePodiumPdf } from "@/lib/tommy-awards/generate-podium-pdf"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 
@@ -423,6 +424,29 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
       }
     }
 
+    // ── Generate the printable / shareable PDF ─────────────────────
+    // The PDF mirrors what teammates see in the recap email — header,
+    // generated podium image, ALFRED's narrated summary, and the top
+    // three with point totals. It gets attached to the recap email
+    // AND persisted on `tommy_weekly_recaps.podium_pdf_url` so the
+    // new "Weekly Tommy's" tab on the Motta Alliance page can link to
+    // each week's artifact. Failures are non-fatal — the email still
+    // ships without the attachment.
+    let podiumPdfUrl: string | null = null
+    if (topThree.length > 0) {
+      const pdfResult = await generatePodiumPdf({
+        weekId,
+        weekLabel,
+        aiSummary,
+        topThree,
+        totalBallots: ballots.length,
+        podiumImageUrl,
+      })
+      if (pdfResult) {
+        podiumPdfUrl = pdfResult.pdfUrl
+      }
+    }
+
     // Build the email HTML using the shared MOTTA HUB wrapper so the header,
     // footer, and brand palette match the Thursday reminder email exactly.
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
@@ -464,16 +488,31 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
         ai_model: aiModelUsed,
         podium_image_url: podiumImageUrl,
         podium_image_model: podiumImageModel,
+        podium_pdf_url: podiumPdfUrl,
         top_three: topThree,
         html,
       })
     }
+
+    // Attach the recap PDF to the email if we generated one. Resend
+    // fetches it via the public Blob URL so we don't have to inline
+    // the bytes — keeps the send payload tiny.
+    const attachments = podiumPdfUrl
+      ? [
+          {
+            filename: `Tommy-Awards-Recap-${weekLabel.replace(/[^a-zA-Z0-9]+/g, "-")}.pdf`,
+            path: podiumPdfUrl,
+            contentType: "application/pdf",
+          },
+        ]
+      : undefined
 
     const { sent, skipped } = await sendCategoryEmail({
       category: "tommy_recap",
       teamMemberIds: eligibleIds,
       subject: `Tommy Awards Recap — Week of ${weekLabel}`,
       html,
+      attachments,
     })
 
     // ── Persist the recap for future continuity context ─────────
@@ -492,6 +531,7 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
           podium_image_url: podiumImageUrl,
           podium_image_prompt: podiumImagePrompt,
           podium_image_model: podiumImageModel,
+          podium_pdf_url: podiumPdfUrl,
           top_three: topThree,
           ytd_standings: ytdStandings ?? null,
           email_sent_at: new Date().toISOString(),
@@ -514,6 +554,7 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
       sent,
       skipped,
       podium_image_url: podiumImageUrl,
+      podium_pdf_url: podiumPdfUrl,
       ai_model: aiModelUsed,
     })
   } catch (error) {
