@@ -112,7 +112,21 @@ const navigation = [
           { name: "Work Items", href: "/work-items", icon: CheckSquare },
         ],
       },
-      { name: "Clients", href: "/clients", icon: Users },
+      // Clients is the master roster, with Intake (inbound Jotform
+      // submissions that become clients) and Feedback (post-engagement
+      // NPS that drives referrals + recovery) nested underneath. Both
+      // used to live in the Sales tree, but operationally they're
+      // bookends of the client lifecycle, so they belong with the
+      // client roster itself.
+      {
+        name: "Clients",
+        href: "/clients",
+        icon: Users,
+        children: [
+          { name: "Intake", href: "/sales/intake", icon: Inbox },
+          { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
+        ],
+      },
       {
         // Calendly used to live as a child here ("Calendly Admin").
         // It moved to /settings/calendly so it sits alongside the
@@ -214,15 +228,11 @@ const navigation = [
           { name: "Payments", href: "/payments", icon: CreditCard },
         ],
       },
-      // Inbound prospects from the embedded Jotform on
-      // mottafinancial.com/intake-form. Sits below Ignition because a
-      // submission's natural next step is to become an Ignition proposal.
-      { name: "Intake", href: "/sales/intake", icon: Inbox },
+      // Intake (inbound Jotform → prospect → Ignition proposal) and
+      // Feedback (post-engagement NPS) used to live here, but they
+      // were moved under Clients in the Home tree because they're the
+      // bookends of the client lifecycle, not a Sales-pipeline step.
       { name: "Services", href: "/sales/services", icon: Briefcase },
-      // Feedback is the closing of the loop — it drives referrals
-      // (new pipeline) and detractor recovery (retention), so it lives
-      // at the bottom of the Sales tree as the post-engagement step.
-      { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
     ],
   },
   // "Talent" is the people side of the firm — directory + recognition.
