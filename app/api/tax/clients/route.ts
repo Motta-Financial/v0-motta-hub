@@ -247,7 +247,30 @@ export async function GET() {
       }
     })
 
-    // Aggregate stats — used by the Clients page KPI strip.
+    // Aggregate stats — used by the Clients page KPI strip. Includes
+    // a `byState` map keyed on `client_state` (ProConnect's workflow
+    // lifecycle field — ACTIVE / ARCHIVED / etc.) so the page can
+    // surface lifecycle distribution without re-scanning rows
+    // client-side. Today every row is ACTIVE but we report the
+    // breakdown defensively so an archived value would surface
+    // immediately on next refresh.
+    const byState: Record<string, number> = {}
+    for (const c of enriched) {
+      const key = c.client_state || "UNKNOWN"
+      byState[key] = (byState[key] || 0) + 1
+    }
+    // How many ProConnect entities are sub-entities of a different
+    // top-level entity — i.e. the row's own entity UUID differs from
+    // its top_level_entity_id. This catches related-party groupings
+    // (parent corp + subsidiaries, husband+wife joint filers, etc.)
+    // that the table now hints at via the entity-ids hover.
+    const subEntities = enriched.filter(
+      (c) =>
+        !!c.proconnect_entity_id &&
+        !!c.top_level_entity_id &&
+        c.proconnect_entity_id !== c.top_level_entity_id,
+    ).length
+
     const stats = {
       totalClients: enriched.length,
       persons: enriched.filter((c) => c.client_type === "PERSON").length,
@@ -263,6 +286,8 @@ export async function GET() {
         (c) => !!c.mapping?.ignition_client_id,
       ).length,
       unmappedToHub: enriched.filter((c) => !c.mapping).length,
+      byState,
+      subEntities,
     }
 
     return NextResponse.json({ clients: enriched, stats })
