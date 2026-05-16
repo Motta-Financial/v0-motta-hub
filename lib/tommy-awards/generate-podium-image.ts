@@ -81,31 +81,46 @@ export async function generatePodiumImage(opts: {
         alias: hero?.alias ?? null,
         role: hero?.role ?? null,
         quote: hero?.quote ?? null,
+        // Apparent gender + signature visual props sourced from the
+        // hero registry. This is what stops the image model from
+        // defaulting to "four generic male superheroes" — see the
+        // `appearance` field in `lib/motta-alliance/hero-profiles.ts`
+        // for why each hero has a custom descriptor.
+        appearance: hero?.appearance ?? null,
       }
     })
 
     // ── Step 2 — ask GPT-5 to author the image prompt ────────────
+    // CRITICAL: every winner's APPEARANCE descriptor must survive into
+    // the final prompt verbatim. Earlier versions of this prompt only
+    // listed alias + role and the image model defaulted to "four
+    // generic male superheroes", which mis-rendered female teammates
+    // (Amy Sparaco / Micaela Palacios / Samprina Zekio) as men. The
+    // explicit "Apparent gender and signature props are MANDATORY"
+    // rule below is what fixes that.
     const promptDraftInstruction = `You are the art director for the Motta Financial Alliance comic book series. Compose a SINGLE image generation prompt (no preamble, no markdown, no quotation marks) describing a cinematic, comic-book-style illustration of an F1-style podium celebration for this week's Tommy Awards winners.
 
 Mandatory visual direction (do not deviate):
 - Comic-book rendering matching the Motta Alliance series: dark background, dramatic moody lighting, faint city skyline at night, olive-green and gold accents, white lotus emblem on each hero's chest, halftone shading, bold inked outlines.
 - An F1-style three-tier podium center-frame: tallest center (1st), shorter left (2nd), shortest right (3rd). Each tier has the rank number in large stencil typography.
 - Each hero is depicted in tactical/superhero attire consistent with the Motta Alliance universe (NOT real-likeness portraits — stylised heroic figures). Heroes hold a champagne bottle spraying olive-tinted "Motta Mist" instead of bubbly.
-- Banner across the top reads "MOTTA ALLIANCE — TOMMY AWARDS" and the week label below it.
+- Banner across the top reads "MOTTA ALLIANCE — TOMMY AWARDS" and the week label below it. Frame the composition so the FULL banner text fits within the canvas with at least 5% margin on each side — do not crop the banner.
 - Color palette strictly: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), cream/off-white. NO purple. NO pastel pink.
 - Style cue: same illustrator energy as a Marvel hero profile card crossed with an F1 victory poster.
 
-Winners this week (use their hero alias when one is provided — do NOT use real-likeness portraits):
+PER-HERO VISUAL IDENTITY — MANDATORY, NON-NEGOTIABLE. For each winner you MUST honour the apparent gender, body type, hair, costume accents, and signature props described below. Female heroes MUST be drawn as women (feminine build, long hair where specified). Each hero's signature prop MUST appear somewhere in their tier of the composition. Heroes are stylised — no real-likeness portraits — but apparent gender and signature props are required.
+
+Winners this week:
 ${heroDescriptors
   .map(
     (h) =>
-      `- ${ordinal(h.rank)}: ${h.alias ? `${h.alias} (${h.name})` : h.name}${h.role ? ` — role: ${h.role}` : ""}`,
+      `- ${ordinal(h.rank)} (${h.alias ? `${h.alias}, ${h.name}` : h.name})${h.role ? ` — role: ${h.role}` : ""}\n    APPEARANCE: ${h.appearance ?? "Stylised heroic figure in black tactical suit with white lotus chest emblem, olive trim."}`,
   )
   .join("\n")}
 
 Week label to display on the banner: "${opts.weekLabel}".
 
-Return ONLY the final image prompt as a single paragraph of ≤ 220 words. Do not include any other commentary.`
+Return ONLY the final image prompt as a single paragraph of ≤ 260 words. Do not include any other commentary. Every per-hero APPEARANCE descriptor above must be preserved in your output (paraphrasing is fine, but apparent gender and signature props must survive).`
 
     // gpt-5.5-pro is a deep-reasoning model — it spends a large share
     // of its output budget on hidden reasoning tokens BEFORE emitting
@@ -136,13 +151,17 @@ Return ONLY the final image prompt as a single paragraph of ≤ 220 words. Do no
     // direction GPT-5 is asked to author so the result is on-brand.
     if (!cleanedPrompt) {
       console.warn("[v0] tommy podium image: empty prompt from GPT-5, using deterministic fallback")
-      const winnersLine = heroDescriptors
+      // The fallback MUST inline each winner's appearance descriptor —
+      // otherwise we hit the same "four generic male superheroes"
+      // failure mode as before. Keep the per-hero detail dense even
+      // though it makes the fallback prompt longer.
+      const winnersBlock = heroDescriptors
         .map(
           (h) =>
-            `${ordinal(h.rank)}: ${h.alias ? `${h.alias} (${h.name})` : h.name}${h.role ? ` — ${h.role}` : ""}`,
+            `${ordinal(h.rank)} place — ${h.alias ? `${h.alias} (${h.name})` : h.name}${h.role ? `, role: ${h.role}` : ""}. ${h.appearance ?? "Stylised heroic figure in black tactical suit with white lotus chest emblem, olive trim."}`,
         )
-        .join("; ")
-      cleanedPrompt = `Cinematic comic-book illustration of an F1-style three-tier podium celebrating this week's Motta Financial Alliance Tommy Awards winners (${winnersLine}). Tallest center tier for 1st, left tier for 2nd, right tier for 3rd, each with a large stencil rank number. Stylised heroic figures in tactical superhero attire — NOT real-likeness portraits — each with a white lotus emblem on the chest, spraying olive-tinted "Motta Mist" from champagne bottles. A banner across the top reads "MOTTA ALLIANCE — TOMMY AWARDS" with "${opts.weekLabel}" beneath it. Dark moody background with a faint nighttime city skyline, dramatic rim lighting, bold inked outlines, halftone shading. Strict palette: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), cream/off-white. No purple, no pastel pink. Style: Marvel hero profile card crossed with an F1 victory poster.`
+        .join(" ")
+      cleanedPrompt = `Cinematic comic-book illustration of an F1-style three-tier podium celebrating this week's Motta Financial Alliance Tommy Awards winners. Tallest center tier for 1st, left tier for 2nd, right tier for 3rd, each with a large stencil rank number. Each hero holds a champagne bottle spraying olive-tinted "Motta Mist". Apparent gender and signature props for each winner are MANDATORY: ${winnersBlock} A banner across the top reads "MOTTA ALLIANCE — TOMMY AWARDS" with "${opts.weekLabel}" beneath it; the FULL banner text must fit within the canvas with at least 5% margin on each side. Dark moody background with a faint nighttime city skyline, dramatic rim lighting, bold inked outlines, halftone shading. Strict palette: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), cream/off-white. No purple, no pastel pink. Style: Marvel hero profile card crossed with an F1 victory poster. Stylised heroic figures only — NOT real-likeness portraits — but female heroes must be drawn as women and male heroes as men, per the descriptions above.`
     }
 
     console.log("[v0] tommy podium image: prompt drafted, generating image…")
