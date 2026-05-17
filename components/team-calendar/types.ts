@@ -55,6 +55,20 @@ export interface TeamCalendarServiceTag {
 
 export interface TeamCalendarEvent {
   id: string
+  /**
+   * Origin of the row. Calendly events still come from `calendly_events`,
+   * Zoom meetings come from `zoom_meetings` and are normalised into the
+   * same shape by /api/calendly/team-calendar (see that route for the
+   * field-by-field mapping). The UI uses this to:
+   *   • render an origin chip / icon next to the meeting name
+   *   • skip the Calendly-only `Tags`/`Comments` tabs in the detail
+   *     dialog when the row is a Zoom meeting (those features are
+   *     wired against /api/calendly/events/* endpoints that don't
+   *     exist for Zoom).
+   */
+  source?: "calendly" | "zoom"
+  /** Numeric Zoom meeting id (only present when `source === "zoom"`). */
+  zoom_meeting_id?: number | string | null
   calendly_uuid: string
   name: string
   status: "active" | "canceled" | string
