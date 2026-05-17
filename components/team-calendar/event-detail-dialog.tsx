@@ -123,14 +123,25 @@ export function EventDetailDialog({ event, open, onOpenChange, timeZone, current
     setDraft("")
   }, [open, event?.calendly_uuid])
 
+  // Zoom rows are normalised into the Calendly-shaped `TeamCalendarEvent`
+  // by /api/calendly/team-calendar, but the writeable Tags/Comments tabs
+  // are wired to /api/calendly/events/{uuid}/* which doesn't exist for
+  // Zoom — so the dialog only shows the Overview tab in that case.
+  // Read-only auto-matched client/work-item tags from `zoom_meeting_*`
+  // are still surfaced as Badges in the Overview tab below.
+  const isZoom = event?.source === "zoom"
+
   // Hydrate tags + comments when the dialog opens or the user switches
   // tabs. Comments load lazily because the list view doesn't need them.
+  // We skip both fetches entirely for Zoom rows because those endpoints
+  // are Calendly-specific.
   useEffect(() => {
     if (!open || !event) return
+    if (isZoom) return
     void loadTags()
     if (activeTab === "comments") void loadComments()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, event?.calendly_uuid, activeTab])
+  }, [open, event?.calendly_uuid, activeTab, isZoom])
 
   async function loadTags() {
     if (!event) return
@@ -306,31 +317,56 @@ export function EventDetailDialog({ event, open, onOpenChange, timeZone, current
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="text-xl">{event.name}</DialogTitle>
+          <div className="flex flex-wrap items-center gap-2">
+            <DialogTitle className="text-xl">{event.name}</DialogTitle>
+            {/* Origin badge so the user can see at a glance whether the
+                meeting came from Calendly or Zoom — important because
+                the available actions (tags, comments) differ. */}
+            {isZoom ? (
+              <Badge variant="secondary" className="gap-1 text-[10px] uppercase tracking-wide">
+                <Video className="h-3 w-3" />
+                Zoom
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="gap-1 text-[10px] uppercase tracking-wide">
+                <Calendar className="h-3 w-3" />
+                Calendly
+              </Badge>
+            )}
+          </div>
           <DialogDescription>
             {formatRangeInTz(event.start_time, event.end_time, timeZone)}
           </DialogDescription>
         </DialogHeader>
 
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="mt-2">
-          <TabsList className="grid w-full grid-cols-3">
+          {/* Zoom rows can only show Overview — the Tags/Comments tabs
+              are wired to /api/calendly/events/[uuid]/* which doesn't
+              exist for Zoom meetings. Auto-matched client/work-item
+              tags from the `zoom_meeting_*` junction tables are still
+              available; they're rendered inline on the Overview tab. */}
+          <TabsList className={isZoom ? "grid w-full grid-cols-1" : "grid w-full grid-cols-3"}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="tags" className="gap-2">
-              Tags
-              {tagCount > 0 && (
-                <Badge variant="secondary" className="h-5 px-1.5 text-xs">
-                  {tagCount}
-                </Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="comments" className="gap-2">
-              Comments
-              {comments.length > 0 && (
-                <Badge variant="secondary" className="h-5 px-1.5 text-xs">
-                  {comments.length}
-                </Badge>
-              )}
-            </TabsTrigger>
+            {!isZoom && (
+              <TabsTrigger value="tags" className="gap-2">
+                Tags
+                {tagCount > 0 && (
+                  <Badge variant="secondary" className="h-5 px-1.5 text-xs">
+                    {tagCount}
+                  </Badge>
+                )}
+              </TabsTrigger>
+            )}
+            {!isZoom && (
+              <TabsTrigger value="comments" className="gap-2">
+                Comments
+                {comments.length > 0 && (
+                  <Badge variant="secondary" className="h-5 px-1.5 text-xs">
+                    {comments.length}
+                  </Badge>
+                )}
+              </TabsTrigger>
+            )}
           </TabsList>
 
           {/* OVERVIEW */}
