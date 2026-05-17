@@ -397,17 +397,127 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const ignitionPayments = ignitionPaymentsRes.data || []
     const pcMapping = pcMappingRes.data || null
 
+    // ── ProConnect auto-link (self-healing) ──────────────────────────────
+    // The seed run of scripts/match-proconnect-clients-by-email.ts only
+    // wrote 11 mappings out of 180 PC clients, because the older script
+    // required a stub row to already exist. Everyone imported into
+    // ProConnect *after* that run (Caroline Buckley is the canonical
+    // example) shows up on `proconnect_clients` with a perfect email
+    // and name match to a Supabase contact, but has no `client_mapping`
+    // row — so the existing PC fan-out below silently no-ops and the
+    // client profile renders as if PC didn't exist for them.
+    //
+    // Rather than wait for a periodic re-run of the matcher, we resolve
+    // the PC client opportunistically right here:
+    //
+    //   1. If `client_mapping` already returned a PC id, we use it
+    //      verbatim — manual overrides win.
+    //   2. Otherwise, look up the PC client by `email` against the
+    //      contact's primary/secondary email (or org primary email).
+    //      Require an exact-1 hit so we never auto-link an ambiguous
+    //      address (e.g. an admin email shared across an org's owners).
+    //   3. As a last-resort fallback, try `name_for_matching` against
+    //      the contact's normalized full_name. Same exact-1 rule.
+    //   4. On a successful auto-resolve, persist the mapping with
+    //      `match_method = "auto_profile_email"` (or `"_name"`) so the
+    //      next request hits the cheap path and the audit log captures
+    //      who got auto-linked. The insert is best-effort — a duplicate
+    //      key error means another request beat us to it, which is
+    //      fine.
+    //
+    // This keeps the API self-healing for the 169 unmatched PC clients
+    // that already exist AND for any new ones imported in the future,
+    // without requiring an out-of-band cron job.
+    let proconnectClientId: string | null = pcMapping?.proconnect_client_id || null
+    let pcLinkAutoMethod: "auto_profile_email" | "auto_profile_name" | null = null
+
+    if (!proconnectClientId) {
+      // Build the candidate-email set for this client. Lowercased so
+      // we can rely on Postgres `eq` matching the canonical form
+      // ProConnect already stores in `proconnect_clients.email`.
+      const candidateEmails = (
+        isOrg
+          ? [row.primary_email]
+          : [row.primary_email, row.secondary_email]
+      )
+        .filter((e: string | null | undefined): e is string => !!e && e.includes("@"))
+        .map((e: string) => e.toLowerCase().trim())
+
+      if (candidateEmails.length > 0) {
+        const { data: pcByEmail } = await supabase
+          .from("proconnect_clients")
+          .select("proconnect_client_id, email")
+          .in("email", candidateEmails)
+          .limit(2)
+
+        if (pcByEmail && pcByEmail.length === 1) {
+          proconnectClientId = pcByEmail[0].proconnect_client_id
+          pcLinkAutoMethod = "auto_profile_email"
+        }
+      }
+
+      // Name fallback: ProConnect normalises to upper-case in
+      // `name_for_matching`. Only trust this when the contact has a
+      // multi-token full_name (so we don't link "Dave" to a random PC
+      // "Dave" record). Skipped for organizations because org names
+      // collide constantly (every "Smith LLC").
+      if (!proconnectClientId && !isOrg && typeof row.full_name === "string") {
+        const normalized = row.full_name.trim().toUpperCase()
+        const tokens = normalized.split(/\s+/).filter(Boolean)
+        if (tokens.length >= 2) {
+          const { data: pcByName } = await supabase
+            .from("proconnect_clients")
+            .select("proconnect_client_id, name_for_matching")
+            .eq("name_for_matching", normalized)
+            .limit(2)
+          if (pcByName && pcByName.length === 1) {
+            proconnectClientId = pcByName[0].proconnect_client_id
+            pcLinkAutoMethod = "auto_profile_name"
+          }
+        }
+      }
+
+      // Persist the link so the next request hits the cheap path. Use
+      // upsert on (internal_client_id, source) to play nicely with the
+      // existing unique constraint and to be safe against concurrent
+      // writers. Errors are intentionally swallowed — the auto-link
+      // is an optimisation, not a hard requirement of the response.
+      if (proconnectClientId && pcLinkAutoMethod) {
+        try {
+          await supabase.from("client_mapping").upsert(
+            {
+              internal_client_id: entityId,
+              source: "PROCONNECT",
+              client_type: isOrg ? "ORGANIZATION" : "PERSON",
+              proconnect_client_id: proconnectClientId,
+              match_method: pcLinkAutoMethod,
+              match_notes:
+                pcLinkAutoMethod === "auto_profile_email"
+                  ? "Auto-linked from client profile request via primary/secondary email match"
+                  : "Auto-linked from client profile request via normalized full_name match",
+            },
+            { onConflict: "internal_client_id,source", ignoreDuplicates: false },
+          )
+        } catch (e) {
+          console.error("[clients/:id] proconnect auto-link upsert failed:", e)
+        }
+      }
+    }
+
     // ── ProConnect (second-tier) ─────────────────────────────────────────
-    // The client_mapping lookup above tells us *whether* this client
-    // exists in ProConnect; if it does, we fan out a second round of
-    // queries to pull the PC client record plus every return form. This
-    // adds one DB round-trip but keeps the response shape stable
-    // whether or not PC is linked, and keeps PC-specific logic out of
-    // the hot path for the 99% of clients with no PC link.
-    const proconnectClientId = pcMapping?.proconnect_client_id || null
+    // If we have a PC id (either from a stored mapping or just resolved
+    // above), fan out to pull the PC client record plus every return
+    // form. This adds one DB round-trip but keeps the response shape
+    // stable whether or not PC is linked, and keeps PC-specific logic
+    // out of the hot path for clients with no PC link.
     let proconnect: {
       clientId: string
       client: any | null
+      // Records *how* the link was determined so the UI can show a
+      // "Auto-linked by email" provenance hint when relevant. `stored`
+      // means the mapping row already existed; the auto values mean
+      // we resolved + persisted it on this request.
+      linkMethod: "stored" | "auto_profile_email" | "auto_profile_name"
       returns: Array<{
         form: "1040" | "1065" | "1120" | "1120S" | "990"
         taxYear: number | null
@@ -564,6 +674,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       proconnect = {
         clientId: proconnectClientId,
         client: pcClientRes.data || null,
+        // `pcLinkAutoMethod` is set above only when this request was
+        // the one that resolved the link; otherwise the mapping was
+        // already on disk.
+        linkMethod: pcLinkAutoMethod ?? "stored",
         returns,
         returnCount: returns.length,
         latestTaxYear: returns.reduce<number | null>(
