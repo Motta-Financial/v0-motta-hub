@@ -19,7 +19,7 @@ import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
-import { ALFRED_CHAT_MODEL } from "@/lib/ai/models"
+import { ALFRED_CHAT_MODEL, isClaudeModel, type ClaudeModelId } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 // Shape of the requesting user, sent from the client transport body.
@@ -767,13 +767,33 @@ export async function POST(req: Request) {
     messages,
     conversationId: incomingConversationId = null,
     audience = "staff",
+    model: requestedModel = null,
   }: {
     messages: UIMessage[]
     // currentUser is intentionally NOT typed/read here -- it is an
     // untrusted hint only and is silently discarded.
     conversationId?: string | null
     audience?: Audience
+    // Optional per-request model override sent by the alfred-chat
+    // client's model picker. Validated below via isClaudeModel() so
+    // a malicious client can't ask for an arbitrary provider/model.
+    model?: string | null
   } = await req.json()
+
+  // Resolve the per-request model override. We accept it only if it
+  // round-trips through the Claude allowlist; anything else (unknown
+  // string, OpenAI/Google id, etc.) silently falls through to
+  // aiConfig.model below. Logging the requested-vs-resolved pair so
+  // we can spot clients shipping stale ids after a model bump.
+  const overrideModel: ClaudeModelId | null = isClaudeModel(requestedModel)
+    ? requestedModel
+    : null
+  if (requestedModel && !overrideModel) {
+    console.warn(
+      `[alfred] rejected per-request model override: ${requestedModel}. ` +
+        `Falling back to aiConfig default.`,
+    )
+  }
 
   // Build the audience policy (staff today, client deliberately
   // throws). Doing this BEFORE we touch the model lets the route fail
@@ -1060,6 +1080,10 @@ export async function POST(req: Request) {
       // Fetch AI config for model + prompt overrides from the admin panel.
       // Falls back to hardcoded defaults if the DB isn't available.
       const aiConfig = await getAIConfig("alfred_chat")
+      // Per-request model override (validated above) wins over the
+      // admin-panel default. This is what the alfred-chat dropdown
+      // drives; if it's null we use whatever aiConfig resolves to.
+      const effectiveModel = overrideModel ?? aiConfig.model
       const startTime = Date.now()
 
       // Build the system prompt, using the admin override if set
@@ -1068,9 +1092,9 @@ export async function POST(req: Request) {
         : `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`
 
       const result = streamText({
-        // Model can be overridden from the admin panel; falls back to
-        // ALFRED_CHAT_MODEL from lib/ai/models.ts if no override is set.
-        model: aiConfig.model,
+        // Resolution order: per-request override (validated against
+        // CLAUDE_MODELS) > admin-panel override > ALFRED_CHAT_MODEL.
+        model: effectiveModel,
         system: baseSystemPrompt,
         messages: modelMessages,
         tools: filteredTools,
@@ -1083,7 +1107,7 @@ export async function POST(req: Request) {
           // AI SDK 6 uses inputTokens/outputTokens; we map to our DB schema names
           logAIUsage({
             useCase: "alfred_chat",
-            model: aiConfig.model,
+            model: effectiveModel,
             promptTokens: usage?.inputTokens,
             completionTokens: usage?.outputTokens,
             totalTokens: usage?.totalTokens,
