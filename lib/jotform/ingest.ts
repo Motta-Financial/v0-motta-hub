@@ -269,31 +269,47 @@ export async function runIntakePostProcessing(
     notified_at: string | null
   }
 
-  // ── 1. Auto-assign ─────────────────────────────────────────────
-  // Only attempts a match when the row has a preferred name AND no
-  // human has already assigned the submission. This preserves a manual
-  // re-assignment if the webhook re-fires for the same submission.
+  // ── 1. Auto-assign + persist preferred-teammate FK ─────────────────
+  // The resolver runs whenever the prospect typed a preferred name,
+  // regardless of `assigned_to_id`. We split the two effects:
+  //
+  //   • `preferred_team_member_id` — the FK that powers the "Motta
+  //     Professional" column on the Intake list. Always written when
+  //     the resolver finds a match, even if a human has already
+  //     reassigned the row, because it's "who the prospect chose"
+  //     and shouldn't disappear behind a manual override.
+  //   • `assigned_to_id` — the queue ownership column. Only auto-set
+  //     when null, so a manual reassignment is never clobbered.
+  //
+  // This split lets Hub UIs surface both "the prospect asked for
+  // X" and "Y is currently working it" without conflict.
   let resolvedAssignee: { id: string; name: string | null } | null = null
-  if (submissionRow.preferred_team_member && !submissionRow.assigned_to_id) {
+  if (submissionRow.preferred_team_member) {
     try {
       const resolved = await resolvePreferredTeamMember(supabase, submissionRow.preferred_team_member)
       if (resolved.team_member_id) {
+        const updates: Record<string, unknown> = { preferred_team_member_id: resolved.team_member_id }
+        if (!submissionRow.assigned_to_id) {
+          updates.assigned_to_id = resolved.team_member_id
+        }
         const { error: assignErr } = await supabase
           .from("jotform_intake_submissions")
-          .update({ assigned_to_id: resolved.team_member_id })
+          .update(updates)
           .eq("id", submissionRow.id)
         if (assignErr) {
           console.log("[Jotform] auto-assign update error:", assignErr.message)
         } else {
-          submissionRow.assigned_to_id = resolved.team_member_id
+          if (!submissionRow.assigned_to_id) {
+            submissionRow.assigned_to_id = resolved.team_member_id
+          }
           resolvedAssignee = { id: resolved.team_member_id, name: resolved.team_member_name }
           console.log(
-            `[Jotform] auto-assigned intake ${jotformSubmissionId} to ${resolved.team_member_name ?? resolved.team_member_id} via ${resolved.method}`,
+            `[Jotform] resolved preferred teammate "${resolved.input}" → ${resolved.team_member_name ?? resolved.team_member_id} via ${resolved.method}`,
           )
         }
       } else {
         console.log(
-          `[Jotform] preferred team member "${submissionRow.preferred_team_member}" did not match any active teammate — leaving unassigned`,
+          `[Jotform] preferred team member "${submissionRow.preferred_team_member}" did not match any active teammate — leaving unlinked`,
         )
       }
     } catch (err) {

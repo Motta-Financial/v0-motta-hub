@@ -31,6 +31,8 @@ import {
   Sparkles,
   Tag,
   TrendingUp,
+  UserCheck,
+  X,
 } from "lucide-react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -77,7 +79,25 @@ export interface IntakeRow {
   link_method: "auto_email" | "auto_business_name" | "auto_name" | "manual" | null
   linked_at: string | null
   lead_id: string | null
+  // New filterable columns added in migration 100. `referral_source`
+  // is the free-text "who sent you our way?" answer; the
+  // `preferred_*` pair are the prospect's pick of teammate (text
+  // they typed/selected + the resolved FK, when we could match it).
+  referral_source: string | null
+  preferred_team_member: string | null
+  preferred_team_member_id: string | null
   assignedTo: { id: string; name: string; avatarUrl: string | null } | null
+  // The Motta professional the prospect explicitly asked for on the
+  // intake form. May or may not equal `assignedTo` (a triager can
+  // re-assign to a different owner without losing the prospect's
+  // original choice). `null` when the prospect skipped the question
+  // or chose someone we couldn't resolve to an active teammate.
+  preferredProfessional: {
+    id: string
+    name: string
+    avatarUrl: string | null
+    heroProfileSlug: string | null
+  } | null
   // Resolved by /api/jotform/intake — surfaces the matched
   // contact/organization name so the row can deep-link to the client
   // profile without a second round-trip.
@@ -173,6 +193,19 @@ export function IntakeList() {
   // "no" surfaces the unlinked queue for triage. Server-side filter
   // keeps the row count honest.
   const [linked, setLinked] = useState<"all" | "yes" | "no">("all")
+  // Column-level filters added 2026-05 alongside the new columns.
+  // They piggyback on /api/jotform/intake's server filters so the row
+  // count and KPI totals stay honest. Defaults are "all" / empty.
+  const [stateFilter, setStateFilter] = useState<string>("all")
+  const [referralFilter, setReferralFilter] = useState<string>("")
+  // "all" → no filter; "none" → submissions with no resolved
+  // professional; UUID → that specific teammate.
+  const [professionalFilter, setProfessionalFilter] = useState<string>("all")
+  // Date-range filter on jotform_created_at. We keep these as strings
+  // for `<input type="date">` round-tripping; the API treats `to` as
+  // inclusive-end-of-day.
+  const [fromDate, setFromDate] = useState<string>("")
+  const [toDate, setToDate] = useState<string>("")
   // Initialize search from URL param (supports deep-linking from Daily Briefing)
   const [search, setSearch] = useState(searchParams.get("search") || "")
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -189,6 +222,11 @@ export function IntakeList() {
   if (statusTab !== "all") qs.set("status", statusTab)
   if (focus !== "all") qs.set("focus", focus)
   if (linked !== "all") qs.set("linked", linked)
+  if (stateFilter !== "all") qs.set("state", stateFilter)
+  if (referralFilter.trim()) qs.set("referral", referralFilter.trim())
+  if (professionalFilter !== "all") qs.set("professional", professionalFilter)
+  if (fromDate) qs.set("from", fromDate)
+  if (toDate) qs.set("to", toDate)
   if (search.trim()) qs.set("search", search.trim())
 
   const swrKey = `/api/jotform/intake?${qs.toString()}`
@@ -215,6 +253,43 @@ export function IntakeList() {
     const thisMonth = allRows.filter((r) => isThisMonth(r.jotform_created_at)).length
     return { total, newCount, converted, thisMonth }
   }, [allRows])
+
+  // Distinct states + professionals across ALL submissions, used to
+  // populate the column-filter selects. Built off the unfiltered row
+  // set so the option lists don't shrink as the user narrows the
+  // table — that would create the confusing UX of "the option I
+  // picked just disappeared".
+  const stateOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const r of allRows) if (r.submitter_state) set.add(r.submitter_state)
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [allRows])
+  const professionalOptions = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const r of allRows) {
+      if (r.preferredProfessional) map.set(r.preferredProfessional.id, r.preferredProfessional.name)
+    }
+    return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )
+  }, [allRows])
+
+  // Whether ANY column filter is active — drives the "Clear filters"
+  // affordance so the user can reset the table in one click.
+  const hasColumnFilters =
+    stateFilter !== "all" ||
+    referralFilter.trim() !== "" ||
+    professionalFilter !== "all" ||
+    fromDate !== "" ||
+    toDate !== ""
+
+  function clearColumnFilters() {
+    setStateFilter("all")
+    setReferralFilter("")
+    setProfessionalFilter("all")
+    setFromDate("")
+    setToDate("")
+  }
 
   return (
     <div className="space-y-6">
@@ -259,56 +334,140 @@ export function IntakeList() {
       </div>
 
       {/* ───────────────────────── Filters ───────────────────────── */}
+      {/* Two-row filter strip:
+       *   Row 1 — primary triage filters (status tabs, service focus,
+       *           linked-client toggle, free-text search).
+       *   Row 2 — column-level filters surfaced as their own row so
+       *           the page reads like a database table view: "filter
+       *           by State / Referral / Professional / Date range".
+       *   The Clear button only appears when at least one column
+       *   filter is active so the strip stays uncluttered.
+       */}
       <Card>
-        <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
-          <Tabs value={statusTab} onValueChange={(v) => setStatusTab(v as typeof statusTab)}>
-            <TabsList>
-              <TabsTrigger value="all">All</TabsTrigger>
-              {STATUS_VALUES.map((s) => (
-                <TabsTrigger key={s} value={s}>
-                  {STATUS_LABEL[s]}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+        <CardContent className="flex flex-col gap-3 p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <Tabs value={statusTab} onValueChange={(v) => setStatusTab(v as typeof statusTab)}>
+              <TabsList>
+                <TabsTrigger value="all">All</TabsTrigger>
+                {STATUS_VALUES.map((s) => (
+                  <TabsTrigger key={s} value={s}>
+                    {STATUS_LABEL[s]}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
 
-          <div className="flex flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-end">
-            <Select value={focus} onValueChange={setFocus}>
-              <SelectTrigger className="w-full md:w-[200px]">
-                <SelectValue placeholder="Service focus" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All service focuses</SelectItem>
-                <SelectItem value="Personal Only">Personal Only</SelectItem>
-                <SelectItem value="Business Only">Business Only</SelectItem>
-                <SelectItem value="Both Personal & Business">Both Personal &amp; Business</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="flex flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-end">
+              <Select value={focus} onValueChange={setFocus}>
+                <SelectTrigger className="w-full md:w-[200px]">
+                  <SelectValue placeholder="Service focus" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All service focuses</SelectItem>
+                  <SelectItem value="Personal Only">Personal Only</SelectItem>
+                  <SelectItem value="Business Only">Business Only</SelectItem>
+                  <SelectItem value="Both Personal & Business">Both Personal &amp; Business</SelectItem>
+                </SelectContent>
+              </Select>
 
-            {/* Linked-client filter. Defaults to "all" so the queue
-                shows everything; switching to "no" is the typical CSM
-                workflow ("show me submissions that still need a
-                client manually pinned"). */}
-            <Select value={linked} onValueChange={(v) => setLinked(v as typeof linked)}>
+              {/* Linked-client filter. Defaults to "all" so the queue
+                  shows everything; switching to "no" is the typical CSM
+                  workflow ("show me submissions that still need a
+                  client manually pinned"). */}
+              <Select value={linked} onValueChange={(v) => setLinked(v as typeof linked)}>
+                <SelectTrigger className="w-full md:w-[170px]">
+                  <SelectValue placeholder="Client link" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All submissions</SelectItem>
+                  <SelectItem value="yes">Linked to client</SelectItem>
+                  <SelectItem value="no">Unlinked</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <div className="relative w-full md:w-[260px]">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search name, email, business…"
+                  className="pl-9"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Row 2 — column-level filters */}
+          <div className="flex flex-col gap-2 border-t pt-3 md:flex-row md:flex-wrap md:items-center">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground md:mr-1">
+              Filter columns
+            </span>
+
+            <Select value={stateFilter} onValueChange={setStateFilter}>
               <SelectTrigger className="w-full md:w-[170px]">
-                <SelectValue placeholder="Client link" />
+                <SelectValue placeholder="State" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All submissions</SelectItem>
-                <SelectItem value="yes">Linked to client</SelectItem>
-                <SelectItem value="no">Unlinked</SelectItem>
+                <SelectItem value="all">All states</SelectItem>
+                {stateOptions.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {s}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
 
-            <div className="relative w-full md:w-[260px]">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Select value={professionalFilter} onValueChange={setProfessionalFilter}>
+              <SelectTrigger className="w-full md:w-[200px]">
+                <SelectValue placeholder="Motta professional" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Any professional</SelectItem>
+                <SelectItem value="none">No selection</SelectItem>
+                {professionalOptions.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Input
+              value={referralFilter}
+              onChange={(e) => setReferralFilter(e.target.value)}
+              placeholder="Referral source…"
+              className="w-full md:w-[200px]"
+            />
+
+            <div className="flex items-center gap-2">
               <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search name, email, business…"
-                className="pl-9"
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="w-full md:w-[150px]"
+                aria-label="From date"
+              />
+              <span className="text-xs text-muted-foreground">to</span>
+              <Input
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="w-full md:w-[150px]"
+                aria-label="To date"
               />
             </div>
+
+            {hasColumnFilters && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearColumnFilters}
+                className="gap-1.5 text-muted-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+                Clear filters
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -321,25 +480,27 @@ export function IntakeList() {
               <tr>
                 <th className="px-4 py-3 font-medium">Submitter</th>
                 <th className="px-4 py-3 font-medium">Client</th>
+                <th className="px-4 py-3 font-medium">State</th>
                 <th className="px-4 py-3 font-medium">Focus</th>
                 <th className="px-4 py-3 font-medium">Services</th>
-                <th className="px-4 py-3 font-medium">Business</th>
+                <th className="px-4 py-3 font-medium">Referral Source</th>
+                <th className="px-4 py-3 font-medium">Motta Professional</th>
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 font-medium">Owner</th>
-                <th className="px-4 py-3 font-medium text-right">Submitted</th>
+                <th className="px-4 py-3 font-medium text-right">Date</th>
               </tr>
             </thead>
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={10} className="px-4 py-12 text-center text-muted-foreground">
                     Loading submissions…
                   </td>
                 </tr>
               )}
               {!isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={10} className="px-4 py-12 text-center text-muted-foreground">
                     No submissions match the current filters.
                   </td>
                 </tr>
@@ -390,6 +551,16 @@ export function IntakeList() {
                       <span className="text-xs text-muted-foreground">Unlinked</span>
                     )}
                   </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {row.submitter_state ? (
+                      <div className="flex items-center gap-1.5">
+                        <MapPin className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{row.submitter_state}</span>
+                      </div>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-muted-foreground">{row.service_focus ?? "—"}</td>
                   <td className="px-4 py-3">
                     {row.services_requested && row.services_requested.length > 0 ? (
@@ -410,13 +581,46 @@ export function IntakeList() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {row.business_name ? (
-                      <div className="flex items-center gap-1.5">
-                        <Building2 className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">{row.business_name}</span>
-                      </div>
+                    {row.referral_source ? (
+                      <span
+                        className="block max-w-[200px] truncate"
+                        title={row.referral_source}
+                      >
+                        {row.referral_source}
+                      </span>
                     ) : (
-                      "—"
+                      <span className="text-xs">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    {/* Motta Professional column. Three render branches:
+                        (1) resolved FK → green chip linking to the
+                            teammate directory (no per-teammate route
+                            exists; clicking lands on /teammates which
+                            scrolls to the row);
+                        (2) unresolved free-text answer → italic
+                            muted hint so the triager can still see
+                            who the prospect named;
+                        (3) prospect skipped the question → em-dash. */}
+                    {row.preferredProfessional ? (
+                      <a
+                        href="/teammates"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex max-w-[180px] items-center gap-1.5 rounded-md border border-[#A8C566]/40 bg-[#A8C566]/10 px-2 py-0.5 text-xs font-medium text-[#5b7028] hover:bg-[#A8C566]/20"
+                        title={`Prospect requested ${row.preferredProfessional.name}`}
+                      >
+                        <UserCheck className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{row.preferredProfessional.name}</span>
+                      </a>
+                    ) : row.preferred_team_member ? (
+                      <span
+                        className="block max-w-[180px] truncate text-xs italic text-muted-foreground"
+                        title={`Prospect typed "${row.preferred_team_member}" — no match`}
+                      >
+                        {row.preferred_team_member}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </td>
                   <td className="px-4 py-3">{statusBadge(row.lead_status)}</td>
