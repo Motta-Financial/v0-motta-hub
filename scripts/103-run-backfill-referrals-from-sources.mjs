@@ -154,9 +154,10 @@ async function main() {
     if (refContactId) {
       await c.query(
         `insert into referrals (
-            source, referee_contact_id, referrer_contact_id,
-            raw_referrer_text, match_status, match_confidence
-         ) values ('karbon_custom_field', $1, $2, $3, 'matched_existing', 1.0)
+            source, referee_contact_id, referred_by_contact_id,
+            referred_by_legacy_id, referred_by_raw,
+            match_status, match_confidence
+         ) values ('karbon_custom_field', $1, $2, $3, $3, 'matched_existing', 1.0)
          on conflict do nothing`,
         [row.id, refContactId, refLegacy],
       )
@@ -165,8 +166,9 @@ async function main() {
       await c.query(
         `insert into referrals (
             source, referee_contact_id,
-            raw_referrer_text, match_status
-         ) values ('karbon_custom_field', $1, $2, 'unmatched_not_in_hub')
+            referred_by_legacy_id, referred_by_raw,
+            match_status
+         ) values ('karbon_custom_field', $1, $2, $2, 'unmatched_not_in_hub')
          on conflict do nothing`,
         [row.id, refLegacy],
       )
@@ -221,7 +223,7 @@ async function main() {
     await c.query(
       `insert into referrals (
           source, referee_jotform_submission_id,
-          referrer_contact_id, raw_referrer_text,
+          referred_by_contact_id, referred_by_raw,
           match_status, match_confidence, candidate_contact_ids
        ) values ('jotform_intake', $1, $2, $3, $4, $5, $6)
        on conflict do nothing`,
