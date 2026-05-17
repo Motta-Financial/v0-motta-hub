@@ -971,90 +971,51 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
       </div>
 
       {/* ═════ Tabs ═════ */}
+      {/*
+       * Consolidated tab strip (rev 2026-05). Several previously separate
+       * tabs were merged so the profile reads more like a story than a
+       * directory listing:
+       *   • Communications + Intakes folded into Overview — they're
+       *     read-mostly context, not destinations of their own.
+       *   • Work Items + Tasks → "Work & Tasks" (one engagement view).
+       *   • Notes + Debriefs → "Notes & Debriefs" (one narrative view).
+       *   • Proposals + Invoices + Payments → "Finance" (one billing
+       *     timeline).
+       * Timesheets is hidden from the strip (data still flows through
+       * Karbon, just not surfaced here). Tax stays conditional on a
+       * ProConnect link, Payments collapses into Finance, Documents and
+       * Relationships remain top-level. Multiple <TabsContent value=...>
+       * with the same value all render together inside that tab — Radix
+       * supports this and it lets us merge UIs without duplicating the
+       * card markup.
+       */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="flex flex-wrap h-auto gap-1 justify-start">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="work">
-            Work Items
-            {stats.totalWorkItems > 0 ? (
+            Work &amp; Tasks
+            {stats.totalWorkItems + stats.totalTasks > 0 ? (
               <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalWorkItems}
-              </Badge>
-            ) : null}
-          </TabsTrigger>
-          <TabsTrigger value="comms">
-            Communications
-            {communicationsTimeline.length > 0 ? (
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {communicationsTimeline.length}
-              </Badge>
-            ) : null}
-          </TabsTrigger>
-          <TabsTrigger value="tasks">
-            Tasks
-            {stats.totalTasks > 0 ? (
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalTasks}
+                {stats.totalWorkItems + stats.totalTasks}
               </Badge>
             ) : null}
           </TabsTrigger>
           <TabsTrigger value="notes">
-            Notes
-            {stats.totalNotes > 0 ? (
+            Notes &amp; Debriefs
+            {stats.totalNotes + stats.totalDebriefs > 0 ? (
               <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalNotes}
+                {stats.totalNotes + stats.totalDebriefs}
               </Badge>
             ) : null}
           </TabsTrigger>
-          <TabsTrigger value="debriefs">
-            Debriefs
-            {stats.totalDebriefs > 0 ? (
+          <TabsTrigger value="finance">
+            Finance
+            {stats.totalProposals + stats.totalInvoices > 0 ? (
               <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalDebriefs}
+                {stats.totalProposals + stats.totalInvoices}
               </Badge>
             ) : null}
           </TabsTrigger>
-          {/* Intake submissions live next to Debriefs because both
-              are "client speaks to us in their own words" artifacts.
-              Hidden when the client has zero linked submissions to
-              avoid the empty-tab clutter on long-time clients who
-              joined before the Jotform existed. */}
-          {stats.totalIntakeSubmissions > 0 ? (
-            <TabsTrigger value="intakes">
-              Intakes
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalIntakeSubmissions}
-              </Badge>
-            </TabsTrigger>
-          ) : null}
-          <TabsTrigger value="proposals">
-            Proposals
-            {stats.totalProposals > 0 ? (
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalProposals}
-              </Badge>
-            ) : null}
-          </TabsTrigger>
-          <TabsTrigger value="invoices">
-            Invoices
-            {stats.totalInvoices > 0 ? (
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalInvoices}
-              </Badge>
-            ) : null}
-          </TabsTrigger>
-          {/* Payments tab — only shown when this client has at least
-              one payment on file. Sits next to Invoices because the two
-              tell complementary halves of the billing story: what was
-              billed (Invoices) vs what was collected (Payments). */}
-          {paymentsSummary && paymentsSummary.paymentCount > 0 ? (
-            <TabsTrigger value="payments">
-              Payments
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {paymentsSummary.paymentCount}
-              </Badge>
-            </TabsTrigger>
-          ) : null}
           {/* Tax tab — only shown when this client is linked in
               ProConnect. The badge counts returns across all five
               form types (1040/1065/1120/1120S/990). */}
@@ -1074,7 +1035,6 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </Badge>
             ) : null}
           </TabsTrigger>
-          <TabsTrigger value="time">Timesheets</TabsTrigger>
           <TabsTrigger value="relationships">Relationships</TabsTrigger>
         </TabsList>
 
@@ -1435,7 +1395,12 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         </TabsContent>
 
         {/* ── Communications ────────────────────────────────────────────── */}
-        <TabsContent value="comms" className="mt-4">
+        {/* ── Communications (folded into Overview) ───────────────────── */}
+        {/* Lives under Overview because the timeline is read-mostly
+            context (recent emails + Karbon notes) and tells the story
+            of what's been said with the client. Pinned items still get
+            a "Pinned" badge. */}
+        <TabsContent value="overview" className="mt-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Communications Timeline</CardTitle>
@@ -1501,7 +1466,8 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         </TabsContent>
 
         {/* ── Tasks ────────────────────────���────────────────────────────── */}
-        <TabsContent value="tasks" className="mt-4">
+        {/* ── Tasks (folded into Work & Tasks) ─────────────────────────── */}
+        <TabsContent value="work" className="mt-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Tasks</CardTitle>
@@ -1641,7 +1607,8 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         </TabsContent>
 
         {/* ── Debriefs (grouped by Karbon work item) ────────────────────── */}
-        <TabsContent value="debriefs" className="mt-4">
+        {/* ── Debriefs (folded into Notes & Debriefs) ──────────────────── */}
+        <TabsContent value="notes" className="mt-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center justify-between">
@@ -1860,16 +1827,19 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
           </Card>
         </TabsContent>
 
-        {/* ── Intake Submissions (Jotform) ──────────────────────────────── */}
+        {/* ── Intake Submissions (Jotform — folded into Overview) ──────── */}
         {/* Mirrors the Debriefs tab visually: each submission is a
             collapsible row keyed by its submitted-at date. Click a
             row to reveal the full Q/A breakdown captured at the time
             of intake — useful for understanding what the client
             originally asked for vs. what they ended up engaging on.
-            Submissions reach this tab via lib/jotform/match-client.ts
+            Submissions reach this section via lib/jotform/match-client.ts
             (auto-link on email or business name) and via the manual
-            "Link to client" button on /sales/intake. */}
-        <TabsContent value="intakes" className="mt-4">
+            "Link to client" button on /sales/intake. Rendered only when
+            at least one submission is linked, so long-time clients who
+            joined pre-Jotform don't see an empty card. */}
+        {intakeSubmissions.length > 0 ? (
+          <TabsContent value="overview" className="mt-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center justify-between">
@@ -2073,11 +2043,16 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               )}
             </CardContent>
           </Card>
-        </TabsContent>
+          </TabsContent>
+        ) : null}
 
-        {/* ── Invoices ──────────────────────────────────────────────────── */}
-        {/* ── Proposals (Ignition) ──────────────────────────────────────── */}
-        <TabsContent value="proposals" className="mt-4">
+        {/* ── Finance: Proposals → Invoices → Payments ─────────────────── */}
+        {/* All three live under the single Finance tab so the billing
+            story reads top-to-bottom: what we proposed, what we billed,
+            what we collected. Each section is its own card to keep the
+            existing layout / interactions intact. */}
+        <TabsContent value="finance" className="mt-4 flex flex-col gap-4">
+          {/* Proposals (Ignition) */}
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center justify-between">
@@ -2223,9 +2198,8 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               )}
             </CardContent>
           </Card>
-        </TabsContent>
 
-        <TabsContent value="invoices" className="mt-4">
+          {/* Invoices (Karbon / Ignition / HubSpot) */}
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center justify-between">
@@ -2326,22 +2300,20 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               )}
             </CardContent>
           </Card>
-        </TabsContent>
 
-        {/* ── Payments ──────────────────────────────────────────────────── */}
-        {/* Default view is Year-to-Date. The PaymentsTab component owns
-            the date-range state (preset + custom range) and recomputes
-            its KPI strip and table whenever the range changes. The
-            lifetime context line keeps the bigger picture visible
-            when a narrow window is selected. */}
-        {paymentsSummary && paymentsSummary.paymentCount > 0 ? (
-          <TabsContent value="payments" className="mt-4">
+          {/* Payments — only rendered when this client has at least one
+              payment on file. The PaymentsTab component owns its own
+              date-range state (preset + custom range) and recomputes
+              its KPI strip and table independently; the lifetime
+              context line keeps the bigger picture visible when a
+              narrow window is selected. */}
+          {paymentsSummary && paymentsSummary.paymentCount > 0 ? (
             <PaymentsTab
               payments={ignitionPayments}
               lifetimeSummary={paymentsSummary}
             />
-          </TabsContent>
-        ) : null}
+          ) : null}
+        </TabsContent>
 
         {/* ── Tax (ProConnect) ──────────────────────────────────────────── */}
         {/* Only rendered when the client is linked in ProConnect. The
@@ -2501,64 +2473,12 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         </TabsContent>
 
         {/* ── Timesheets ────────────────────────────────────────────────── */}
-        <TabsContent value="time" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center justify-between">
-                <span>Time Entries ({karbonTimesheets.length})</span>
-                <span className="text-sm font-normal text-muted-foreground">
-                  Total: {(stats.totalBillableMinutes / 60).toFixed(1)}h
-                </span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {karbonTimesheets.length === 0 ? (
-                <EmptyState message="No time entries logged." />
-              ) : (
-                <ScrollArea className="max-h-[600px]">
-                  <div className="divide-y">
-                    {karbonTimesheets.map((t) => (
-                      <div key={t.id} className="p-4 flex items-center justify-between gap-4">
-                        <div className="flex flex-col gap-1 min-w-0 flex-1">
-                          <span className="text-sm font-medium truncate">
-                            {t.description || t.work_item_title || "(no description)"}
-                          </span>
-                          <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-                            {t.user_name ? <span>{t.user_name}</span> : null}
-                            {t.date ? (
-                              <>
-                                <span>•</span>
-                                <span>{formatDate(t.date)}</span>
-                              </>
-                            ) : null}
-                            {t.is_billable ? (
-                              <>
-                                <span>•</span>
-                                <Badge variant="outline" className="text-xs">
-                                  Billable
-                                </Badge>
-                              </>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-4 shrink-0">
-                          <span className="text-sm font-medium">
-                            {((t.minutes || 0) / 60).toFixed(2)}h
-                          </span>
-                          {t.billed_amount ? (
-                            <span className="text-sm text-muted-foreground">
-                              {formatCurrency(t.billed_amount)}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+        {/* Hidden from the tab strip in 2026-05 to keep the profile
+            focused on client-facing surfaces. The Karbon timesheet
+            data still syncs and feeds stats.totalBillableMinutes for
+            internal reporting; if it ever needs surfacing again, just
+            re-add a <TabsTrigger value="time"> entry above and restore
+            this panel. */}
 
         {/* ── Relationships ─────────────────────────────────────────────── */}
         <TabsContent value="relationships" className="mt-4">
