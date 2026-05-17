@@ -9,6 +9,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useUser, useDisplayName, useUserInitials, clearUserCache } from "@/contexts/user-context"
+import { isLeadershipRole } from "@/lib/auth/leadership-roles"
 import {
   LayoutDashboard,
   Users,
@@ -61,6 +62,7 @@ import {
   Wallet,
   Webhook,
   FolderKanban,
+  Crown,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -268,6 +270,17 @@ const navigation = [
         name: "Training",
         href: "/training",
         icon: Video,
+      },
+      {
+        // Leadership ("PPD" — Partners, Principals, Directors) is a
+        // restricted child only rendered for team_members.role values
+        // matching `LEADERSHIP_ROLES` in lib/auth/require-leadership.
+        // The actual page is also server-gated, so flipping this flag
+        // is just a cosmetic hide — never the security boundary.
+        name: "Leadership",
+        href: "/talent/leadership",
+        icon: Crown,
+        requiresLeadership: true,
       },
     ],
   },
@@ -851,9 +864,51 @@ function HeaderUserMenu() {
 // migration path if the shape of the value ever changes.
 const SIDEBAR_EXPANDED_STORAGE_KEY = "motta:sidebar:expanded:v1"
 
+/**
+ * Recursively prune nav nodes that the current caller isn't allowed
+ * to see. Today the only flag is `requiresLeadership` (PPD), but the
+ * function is written generically so additional flags
+ * (e.g. `requiresAdmin`) can be added without touching the rendering
+ * logic. Returns a NEW array — never mutates `navigation`.
+ *
+ * IMPORTANT: this is a cosmetic UX hide only. The pages and API
+ * routes that back these links MUST be server-gated independently
+ * (see `requireLeadership()` / `requireAdmin()`).
+ */
+function filterNavigationByRole(
+  items: any[],
+  ctx: { isLeadership: boolean },
+): any[] {
+  return items
+    .filter((item) => {
+      if (item.requiresLeadership && !ctx.isLeadership) return false
+      return true
+    })
+    .map((item) =>
+      item.children
+        ? { ...item, children: filterNavigationByRole(item.children, ctx) }
+        : item,
+    )
+}
+
 function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
+  // Pull the caller's role so we can hide leadership-only ("PPD")
+  // nav entries from rank-and-file users. This is purely cosmetic;
+  // the actual page + API routes are server-gated by
+  // `requireLeadership()`. Falsy until UserProvider hydrates, which
+  // means the link briefly stays hidden — preferred over a flash of
+  // a link the user can't access.
+  const { teamMember } = useUser()
+  const isLeadership = isLeadershipRole(teamMember?.role)
+
+  // Filter the static `navigation` tree based on the caller's role.
+  // Currently the only `requiresLeadership` flag is on
+  // Talent → Leadership, but the helper is recursive so any future
+  // restricted nodes (admin sub-items, etc.) can flip a flag instead
+  // of forking the tree.
+  const visibleNavigation = filterNavigationByRole(navigation, { isLeadership })
   // Start with an empty state to avoid hydration mismatch. The server and
   // client must render identically on first paint — we cannot read
   // localStorage during SSR, and even `buildInitialExpandedState` can
@@ -962,7 +1017,7 @@ function Sidebar() {
         <ul role="list" className="flex flex-1 flex-col gap-y-7">
           <li>
             <ul role="list" className="-mx-2 space-y-1">
-              {navigation.map((item) => {
+              {visibleNavigation.map((item) => {
                 const hasChildren = item.children && item.children.length > 0
                 const isExpanded = expandedSections[item.name] || false
                 const isParentActive = hasActiveChild(item.children)
