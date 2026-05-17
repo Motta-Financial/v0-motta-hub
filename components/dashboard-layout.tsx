@@ -310,6 +310,7 @@ const navigation = [
         children: [
           { name: "ALFRED AI", href: "/admin/alfred-ai", icon: Sparkles },
           { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
+          { name: "Webhooks", href: "/admin/webhooks", icon: Webhook },
           {
             name: "Master Client Mapping",
             href: "/admin/master-client-mapping",
@@ -320,7 +321,6 @@ const navigation = [
           { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
           { name: "Work Statuses", href: "/admin/work-statuses", icon: ListChecks },
           { name: "Migration", href: "/settings/migration", icon: ArrowRightLeft },
-          { name: "Webhooks", href: "/settings/webhooks", icon: Webhook },
         ],
       },
     ],
