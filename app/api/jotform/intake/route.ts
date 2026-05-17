@@ -15,7 +15,16 @@ import { createAdminClient } from "@/lib/supabase/server"
  *   ?focus=Personal Only|Business Only|Both Personal & Business
  *   ?linked=yes|no             — filter by whether the row is linked
  *                                to a contact or organization
- *   ?search=<free text> — matches name, email, business_name (ILIKE)
+ *   ?state=<state>             — filter on submitter_state (exact match,
+ *                                full state name as Jotform delivers it)
+ *   ?referral=<text>           — ILIKE match on referral_source
+ *   ?professional=<uuid>|none  — filter on preferred_team_member_id;
+ *                                'none' surfaces submissions where
+ *                                the prospect didn't pick anyone
+ *                                (or whose pick couldn't be resolved)
+ *   ?from=YYYY-MM-DD&to=YYYY-MM-DD — date-range filter on
+ *                                jotform_created_at
+ *   ?search=<free text>        — matches name, email, business_name (ILIKE)
  *   ?limit=<n> (default 200, max 1000)
  *
  * Returned shape mirrors the table columns the list view renders, plus
@@ -32,6 +41,14 @@ export async function GET(req: NextRequest) {
     const status = searchParams.get("status")
     const focus = searchParams.get("focus")
     const linked = searchParams.get("linked") // "yes" | "no" | null
+    const stateFilter = searchParams.get("state")?.trim()
+    const referralFilter = searchParams.get("referral")?.trim()
+    // "none" is a sentinel for "the prospect didn't pick anyone (or
+    // we couldn't resolve who they picked)"; any other value is
+    // treated as a UUID equality match on `preferred_team_member_id`.
+    const professionalFilter = searchParams.get("professional")?.trim()
+    const fromDate = searchParams.get("from")?.trim()
+    const toDate = searchParams.get("to")?.trim()
     const search = searchParams.get("search")?.trim()
     const limit = Math.min(Number(searchParams.get("limit") ?? 200), 1000)
 
@@ -61,7 +78,10 @@ export async function GET(req: NextRequest) {
         organization_id,
         link_method,
         linked_at,
-        lead_id
+        lead_id,
+        referral_source,
+        preferred_team_member,
+        preferred_team_member_id
         `,
       )
       .order("jotform_created_at", { ascending: false, nullsFirst: false })
@@ -69,6 +89,26 @@ export async function GET(req: NextRequest) {
 
     if (status) query = query.eq("lead_status", status)
     if (focus) query = query.eq("service_focus", focus)
+    if (stateFilter) query = query.eq("submitter_state", stateFilter)
+    // `referral_source` is free text — use ILIKE so a partial match
+    // ("emily") finds the row even when the prospect typed a longer
+    // shoutout ("Emily Mooza, Andrew Castronovo").
+    if (referralFilter) {
+      const safe = referralFilter.replace(/[%,()]/g, " ")
+      query = query.ilike("referral_source", `%${safe}%`)
+    }
+    if (professionalFilter) {
+      if (professionalFilter === "none") {
+        query = query.is("preferred_team_member_id", null)
+      } else {
+        query = query.eq("preferred_team_member_id", professionalFilter)
+      }
+    }
+    if (fromDate) query = query.gte("jotform_created_at", fromDate)
+    // `to` is treated as inclusive of the entire day. We stay date-only
+    // (`YYYY-MM-DD`) at the API surface to keep the URL cacheable; if a
+    // narrower window ever matters we'll add an `?to_time=` later.
+    if (toDate) query = query.lt("jotform_created_at", `${toDate}T23:59:59.999Z`)
 
     // "linked=yes" → must have at least one of contact_id / org_id.
     // "linked=no"  → both must be null. Done at the SQL layer so
@@ -96,21 +136,32 @@ export async function GET(req: NextRequest) {
 
     // Resolve assigned_to_id → team member display info in a single
     // follow-up query. Avoids N round-trips and keeps the API
-    // self-contained so the table can render immediately.
-    const assignedIds = Array.from(
-      new Set((data ?? []).map((r) => r.assigned_to_id).filter(Boolean) as string[]),
+    // self-contained so the table can render immediately. We resolve
+    // *both* `assigned_to_id` (queue ownership) and
+    // `preferred_team_member_id` (the prospect's pick) from the same
+    // batched lookup, since they often refer to the same person.
+    const teamMemberIds = Array.from(
+      new Set(
+        (data ?? [])
+          .flatMap((r) => [r.assigned_to_id, r.preferred_team_member_id])
+          .filter(Boolean) as string[],
+      ),
     )
-    const assignedById = new Map<string, { id: string; name: string; avatarUrl: string | null }>()
-    if (assignedIds.length > 0) {
+    const teamMemberById = new Map<
+      string,
+      { id: string; name: string; avatarUrl: string | null; heroProfileSlug: string | null }
+    >()
+    if (teamMemberIds.length > 0) {
       const { data: members } = await supabase
         .from("team_members")
-        .select("id, full_name, first_name, last_name, avatar_url")
-        .in("id", assignedIds)
+        .select("id, full_name, first_name, last_name, avatar_url, hero_profile_slug")
+        .in("id", teamMemberIds)
       for (const m of members ?? []) {
-        assignedById.set(m.id, {
+        teamMemberById.set(m.id, {
           id: m.id,
           name: m.full_name || `${m.first_name ?? ""} ${m.last_name ?? ""}`.trim(),
           avatarUrl: m.avatar_url ?? null,
+          heroProfileSlug: m.hero_profile_slug ?? null,
         })
       }
     }
@@ -162,7 +213,14 @@ export async function GET(req: NextRequest) {
       }
       return {
         ...r,
-        assignedTo: r.assigned_to_id ? assignedById.get(r.assigned_to_id) ?? null : null,
+        assignedTo: r.assigned_to_id ? teamMemberById.get(r.assigned_to_id) ?? null : null,
+        // The Motta professional the prospect explicitly asked for on
+        // the form. May or may not equal `assignedTo`. Falls back to
+        // null when the prospect skipped the question or chose someone
+        // we couldn't resolve to an active team_members row.
+        preferredProfessional: r.preferred_team_member_id
+          ? teamMemberById.get(r.preferred_team_member_id) ?? null
+          : null,
         linkedClient,
       }
     })

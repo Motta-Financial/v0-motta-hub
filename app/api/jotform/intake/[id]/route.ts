@@ -52,7 +52,58 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       }
     }
 
-    return NextResponse.json({ submission: { ...data, assignedTo } })
+    // ── Resolve linked-client display info for both sides ─────────────
+    // The detail sheet shows two "Linked client" controls — one for the
+    // prospect (contact_id / organization_id) and one for the referrer
+    // (referral_contact_id / referral_organization_id). We hydrate
+    // names here so the UI can render the link without a second
+    // round-trip per record.
+    type LinkedClient = { type: "contact" | "organization"; id: string; name: string; email: string | null } | null
+    async function hydrateLinkedClient(
+      contactId: string | null,
+      orgId: string | null,
+    ): Promise<LinkedClient> {
+      if (contactId) {
+        const { data: c } = await supabase
+          .from("contacts")
+          .select("id, full_name, primary_email")
+          .eq("id", contactId)
+          .maybeSingle()
+        if (c) {
+          return {
+            type: "contact",
+            id: c.id,
+            name: c.full_name || "(unnamed contact)",
+            email: c.primary_email ?? null,
+          }
+        }
+      }
+      if (orgId) {
+        const { data: o } = await supabase
+          .from("organizations")
+          .select("id, name, primary_email")
+          .eq("id", orgId)
+          .maybeSingle()
+        if (o) {
+          return {
+            type: "organization",
+            id: o.id,
+            name: o.name || "(unnamed organization)",
+            email: o.primary_email ?? null,
+          }
+        }
+      }
+      return null
+    }
+
+    const [linkedClient, referralLinkedClient] = await Promise.all([
+      hydrateLinkedClient(data.contact_id, data.organization_id),
+      hydrateLinkedClient(data.referral_contact_id, data.referral_organization_id),
+    ])
+
+    return NextResponse.json({
+      submission: { ...data, assignedTo, linkedClient, referralLinkedClient },
+    })
   } catch (err: any) {
     console.error("[v0] GET /api/jotform/intake/[id] error:", err)
     return NextResponse.json({ error: err?.message ?? "Internal error" }, { status: 500 })
@@ -85,6 +136,26 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (body.action_items !== undefined) {
       // Action items from the triage sheet — store as JSONB
       updates.action_items = body.action_items
+    }
+
+    // ── Linked-client mutations (prospect + referrer) ──────────────
+    // The Intake detail sheet exposes a "Link to client" picker for
+    // both the prospect (contact_id/organization_id) and the
+    // referrer (referral_contact_id/referral_organization_id). The
+    // payload always sets the two columns of a pair together so the
+    // pair is mutually exclusive (a record is EITHER a contact OR an
+    // organization, never both). We accept null to clear a link.
+    if (body.contact_id !== undefined) {
+      updates.contact_id = body.contact_id || null
+    }
+    if (body.organization_id !== undefined) {
+      updates.organization_id = body.organization_id || null
+    }
+    if (body.referral_contact_id !== undefined) {
+      updates.referral_contact_id = body.referral_contact_id || null
+    }
+    if (body.referral_organization_id !== undefined) {
+      updates.referral_organization_id = body.referral_organization_id || null
     }
 
     if (Object.keys(updates).length === 0) {

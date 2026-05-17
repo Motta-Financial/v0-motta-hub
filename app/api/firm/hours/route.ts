@@ -92,6 +92,109 @@ export async function GET(request: NextRequest) {
     role_name: string | null
   }>
 
+  // ── Resolve Karbon keys → Hub records ──────────────────────────────
+  // The /Timesheets $expand=TimeEntries payload from Karbon doesn't
+  // include UserName / ClientName on individual time entries, so the
+  // upstream import writes those columns as null. Without resolution
+  // the leadership dashboard renders every row as "Unknown" / "Unknown
+  // client" — which is exactly the regression the user reported.
+  //
+  // We do the join in code (rather than Postgres) because:
+  //   1. There's no FK between karbon_timesheets.user_key and
+  //      team_members.karbon_user_key — cross-referencing those two
+  //      columns inside PostgREST would require a view.
+  //   2. The lookup tables are tiny (≈20 team members, ≈3k contacts,
+  //      ≈700 orgs) and easily cached in memory per request.
+  //   3. We want graceful fallback when a Karbon user/client isn't
+  //      yet imported into the Hub (admins can fix at their leisure
+  //      without breaking the dashboard).
+  const distinctUserKeys = Array.from(new Set(entries.map((e) => e.user_key).filter(Boolean) as string[]))
+  const distinctClientKeys = Array.from(new Set(entries.map((e) => e.client_key).filter(Boolean) as string[]))
+
+  type MemberInfo = { id: string; name: string; avatarUrl: string | null }
+  type ClientInfo = { type: "contact" | "organization"; id: string; name: string }
+
+  const memberByKarbonKey = new Map<string, MemberInfo>()
+  const clientByKarbonKey = new Map<string, ClientInfo>()
+
+  if (distinctUserKeys.length > 0) {
+    const { data: members } = await supabase
+      .from("team_members")
+      .select("id, full_name, first_name, last_name, avatar_url, karbon_user_key")
+      .in("karbon_user_key", distinctUserKeys)
+    for (const m of members ?? []) {
+      const key = (m as any).karbon_user_key as string | null
+      if (!key) continue
+      const name =
+        (m as any).full_name ||
+        [(m as any).first_name, (m as any).last_name].filter(Boolean).join(" ").trim() ||
+        "(unnamed teammate)"
+      memberByKarbonKey.set(key, {
+        id: (m as any).id,
+        name,
+        avatarUrl: (m as any).avatar_url ?? null,
+      })
+    }
+  }
+
+  if (distinctClientKeys.length > 0) {
+    // Karbon's `ClientKey` is overloaded — it can point at either a
+    // person (contact) or an entity (organization). We try contacts
+    // first because that's the more common case for a tax/accounting
+    // firm; misses fall through to organizations.
+    const [{ data: contacts }, { data: orgs }] = await Promise.all([
+      supabase
+        .from("contacts")
+        .select("id, full_name, karbon_contact_key")
+        .in("karbon_contact_key", distinctClientKeys),
+      supabase
+        .from("organizations")
+        .select("id, name, karbon_organization_key")
+        .in("karbon_organization_key", distinctClientKeys),
+    ])
+    for (const c of contacts ?? []) {
+      const key = (c as any).karbon_contact_key as string | null
+      if (!key) continue
+      clientByKarbonKey.set(key, {
+        type: "contact",
+        id: (c as any).id,
+        name: (c as any).full_name || "(unnamed contact)",
+      })
+    }
+    for (const o of orgs ?? []) {
+      const key = (o as any).karbon_organization_key as string | null
+      if (!key || clientByKarbonKey.has(key)) continue // contacts win on collision
+      clientByKarbonKey.set(key, {
+        type: "organization",
+        id: (o as any).id,
+        name: (o as any).name || "(unnamed organization)",
+      })
+    }
+  }
+
+  // Resolved lookup helpers. These are the single source of truth for
+  // the four breakdowns below — every call site uses them so the
+  // "Unknown" fallback only fires when a Karbon key has truly never
+  // been imported into the Hub.
+  function resolveMemberName(userKey: string | null, fallback: string | null): string {
+    if (userKey && memberByKarbonKey.has(userKey)) return memberByKarbonKey.get(userKey)!.name
+    if (fallback) return fallback
+    if (userKey) return `Unmapped (${userKey})`
+    return "Unknown"
+  }
+  function resolveMemberId(userKey: string | null): string | null {
+    return userKey && memberByKarbonKey.has(userKey) ? memberByKarbonKey.get(userKey)!.id : null
+  }
+  function resolveClientName(clientKey: string | null, fallback: string | null): string {
+    if (clientKey && clientByKarbonKey.has(clientKey)) return clientByKarbonKey.get(clientKey)!.name
+    if (fallback) return fallback
+    if (clientKey) return `Unmapped (${clientKey})`
+    return "Unknown client"
+  }
+  function resolveClient(clientKey: string | null): ClientInfo | null {
+    return clientKey ? clientByKarbonKey.get(clientKey) ?? null : null
+  }
+
   // ---- Date buckets (server-local; close enough for ET-based firm) ----
   const today = new Date()
   const weekStart = new Date(today)
@@ -141,6 +244,8 @@ export async function GET(request: NextRequest) {
     {
       userKey: string | null
       userName: string
+      teamMemberId: string | null
+      avatarUrl: string | null
       minutes: number
       billableMinutes: number
       billed: number
@@ -148,10 +253,15 @@ export async function GET(request: NextRequest) {
     }
   >()
   for (const e of recent) {
-    const key = e.user_key || e.user_name || "unknown"
-    const cur = byMemberMap.get(key) || {
+    // Group by Karbon user_key first (stable), falling back to the
+    // resolved Hub display name so two unmapped keys don't collide.
+    const groupKey = e.user_key || resolveMemberName(null, e.user_name)
+    const member = e.user_key ? memberByKarbonKey.get(e.user_key) : null
+    const cur = byMemberMap.get(groupKey) || {
       userKey: e.user_key,
-      userName: e.user_name || "Unknown",
+      userName: resolveMemberName(e.user_key, e.user_name),
+      teamMemberId: member?.id ?? null,
+      avatarUrl: member?.avatarUrl ?? null,
       minutes: 0,
       billableMinutes: 0,
       billed: 0,
@@ -161,13 +271,15 @@ export async function GET(request: NextRequest) {
     if (e.is_billable) cur.billableMinutes += e.minutes || 0
     cur.billed += e.billed_amount || 0
     cur.entryCount += 1
-    byMemberMap.set(key, cur)
+    byMemberMap.set(groupKey, cur)
   }
   const byMember = [...byMemberMap.values()]
     .sort((a, b) => b.minutes - a.minutes)
     .map((m) => ({
       userKey: m.userKey,
       userName: m.userName,
+      teamMemberId: m.teamMemberId,
+      avatarUrl: m.avatarUrl,
       hours: round1(m.minutes / 60),
       billableHours: round1(m.billableMinutes / 60),
       billedAmount: round2(m.billed),
@@ -178,13 +290,24 @@ export async function GET(request: NextRequest) {
   // By client — top 15 in the window.
   const byClientMap = new Map<
     string,
-    { clientKey: string | null; clientName: string; minutes: number; billableMinutes: number; billed: number }
+    {
+      clientKey: string | null
+      clientName: string
+      hubClientType: "contact" | "organization" | null
+      hubClientId: string | null
+      minutes: number
+      billableMinutes: number
+      billed: number
+    }
   >()
   for (const e of recent) {
-    const key = e.client_key || e.client_name || "unknown"
-    const cur = byClientMap.get(key) || {
+    const groupKey = e.client_key || resolveClientName(null, e.client_name)
+    const linked = resolveClient(e.client_key)
+    const cur = byClientMap.get(groupKey) || {
       clientKey: e.client_key,
-      clientName: e.client_name || "Unknown client",
+      clientName: resolveClientName(e.client_key, e.client_name),
+      hubClientType: linked?.type ?? null,
+      hubClientId: linked?.id ?? null,
       minutes: 0,
       billableMinutes: 0,
       billed: 0,
@@ -192,7 +315,7 @@ export async function GET(request: NextRequest) {
     cur.minutes += e.minutes || 0
     if (e.is_billable) cur.billableMinutes += e.minutes || 0
     cur.billed += e.billed_amount || 0
-    byClientMap.set(key, cur)
+    byClientMap.set(groupKey, cur)
   }
   const byClient = [...byClientMap.values()]
     .sort((a, b) => b.minutes - a.minutes)
@@ -200,6 +323,8 @@ export async function GET(request: NextRequest) {
     .map((c) => ({
       clientKey: c.clientKey,
       clientName: c.clientName,
+      hubClientType: c.hubClientType,
+      hubClientId: c.hubClientId,
       hours: round1(c.minutes / 60),
       billableHours: round1(c.billableMinutes / 60),
       billedAmount: round2(c.billed),
@@ -223,6 +348,14 @@ export async function GET(request: NextRequest) {
     .limit(1)
     .maybeSingle()
 
+  // Diagnostic surface for leadership: which Karbon user_keys appear
+  // in time entries but have no matching team_members row? This is
+  // the only data-quality issue that produces an "Unmapped" row in
+  // the dashboard, and admins can resolve it by setting
+  // `team_members.karbon_user_key` to the listed value.
+  const unmappedUserKeys = distinctUserKeys.filter((k) => !memberByKarbonKey.has(k))
+  const unmappedClientKeys = distinctClientKeys.filter((k) => !clientByKarbonKey.has(k))
+
   return NextResponse.json({
     summary,
     weeklyTrend,
@@ -231,6 +364,12 @@ export async function GET(request: NextRequest) {
     byWorkType,
     lastSyncedAt: syncRow?.last_synced_at || null,
     windowDays: days,
+    diagnostics: {
+      unmappedUserKeyCount: unmappedUserKeys.length,
+      unmappedUserKeys: unmappedUserKeys.slice(0, 25),
+      unmappedClientKeyCount: unmappedClientKeys.length,
+      unmappedClientKeys: unmappedClientKeys.slice(0, 25),
+    },
   })
 }
 

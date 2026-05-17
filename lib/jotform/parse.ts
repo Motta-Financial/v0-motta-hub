@@ -204,6 +204,14 @@ export type ParsedIntakeFields = {
   // prospect actually asked for. The team_members lookup happens
   // downstream in `resolvePreferredTeamMember`.
   preferred_team_member: string | null
+
+  // Free-text answer to "Who sent you our way? Any shoutouts to your
+  // referral?" (raw answer `whoSent`). Surfaced as a denormalized
+  // column so the Intake list page can both display it and filter on
+  // it without parsing `raw_answers` per row. The form makes the
+  // question optional, so most pre-2025 submissions and a handful of
+  // recent ones leave this null.
+  referral_source: string | null
 }
 
 export function parseIntakeAnswers(answers: AnswerMap): ParsedIntakeFields {
@@ -272,6 +280,13 @@ export function parseIntakeAnswers(answers: AnswerMap): ParsedIntakeFields {
     // `lastlyTo53` (control_radio) — values look like "Mark Dwyer" or
     // "Dat Le". Null when the prospect skipped the question.
     preferred_team_member: strAnswer(findByName(answers, "lastlyTo53")),
+
+    // Form field name `whoSent` (control_textbox) — full prompt:
+    // "Who sent you our way? Any shoutouts to your referral?". Free
+    // text, often comma-separated when the prospect lists multiple
+    // people. Stored verbatim and surfaced as the "Referral Source"
+    // filter on the Intake list.
+    referral_source: strAnswer(findByName(answers, "whoSent")),
   }
 }
 

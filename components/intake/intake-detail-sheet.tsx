@@ -69,6 +69,7 @@ import {
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import { IntakeClientLink } from "@/components/intake/intake-client-link"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -141,6 +142,30 @@ interface SubmissionDetail {
   // to decide whether the button is enabled.
   contact_id: string | null
   organization_id: string | null
+  /** Hydrated by GET /api/jotform/intake/[id] for display. */
+  linkedClient: {
+    type: "contact" | "organization"
+    id: string
+    name: string
+    email: string | null
+  } | null
+
+  // ── Referral side ─────────────────────────────────────────────
+  // The Jotform "Who sent you our way?" answer is denormalized into
+  // `referral_source`, then resolved against the Hub client book
+  // (best-effort exact-name match at ingest time, or manually via
+  // the detail sheet) into `referral_contact_id` /
+  // `referral_organization_id`. The hydrated `referralLinkedClient`
+  // mirrors `linkedClient`'s shape.
+  referral_source: string | null
+  referral_contact_id: string | null
+  referral_organization_id: string | null
+  referralLinkedClient: {
+    type: "contact" | "organization"
+    id: string
+    name: string
+    email: string | null
+  } | null
 
   // ── Karbon work-item action result ────────────────────────────
   // Populated when a teammate has already clicked "Create Karbon
@@ -453,6 +478,64 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                   <ContactLine icon={Building2} value={submission.business_name} />
                 )}
               </div>
+
+              {/* Hub client link for the prospect. Auto-resolved by
+                  the ingest pipeline when an exact match exists; if
+                  not, the picker lets the triager attach an existing
+                  client or spin up a new one (and optionally Karbon
+                  contact) without leaving the sheet. The Karbon
+                  work-item action above keys off the same FK pair,
+                  so resolving the link here unblocks that flow. */}
+              <div className="mt-3 space-y-1">
+                <Label className="text-xs text-muted-foreground">
+                  Linked Hub client (prospect)
+                </Label>
+                <IntakeClientLink
+                  submissionId={submission.id}
+                  slot="submitter"
+                  linked={submission.linkedClient}
+                  fallbackLabel={
+                    submission.submitter_full_name ?? submission.business_name ?? null
+                  }
+                  defaults={{
+                    firstName: submission.submitter_first_name,
+                    lastName: submission.submitter_last_name,
+                    fullName: submission.submitter_full_name,
+                    organizationName: submission.business_name,
+                    email: submission.submitter_email ?? submission.business_email,
+                    phone: submission.submitter_phone ?? submission.business_phone,
+                  }}
+                  onLinked={() => {
+                    mutate()
+                    onChanged?.()
+                  }}
+                />
+              </div>
+
+              {/* Hub client link for the referrer ("Who sent you our
+                  way?"). The raw `referral_source` answer is shown as
+                  a fallback label so the triager always sees the name
+                  the prospect typed even when no client matches yet.
+                  Section is hidden entirely when there is neither a
+                  resolved link nor a raw answer to surface. */}
+              {(submission.referralLinkedClient || submission.referral_source) && (
+                <div className="mt-2 space-y-1">
+                  <Label className="text-xs text-muted-foreground">Referred by</Label>
+                  <IntakeClientLink
+                    submissionId={submission.id}
+                    slot="referral"
+                    linked={submission.referralLinkedClient}
+                    fallbackLabel={submission.referral_source}
+                    defaults={{
+                      fullName: submission.referral_source,
+                    }}
+                    onLinked={() => {
+                      mutate()
+                      onChanged?.()
+                    }}
+                  />
+                </div>
+              )}
             </section>
 
             {/* ───── Triage controls ───── */}

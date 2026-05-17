@@ -1,14 +1,24 @@
 "use client"
 
+import Link from "next/link"
 import { useState } from "react"
 import useSWR from "swr"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Clock, DollarSign, Users, RefreshCw, AlertCircle, TrendingUp } from "lucide-react"
+import {
+  Clock,
+  DollarSign,
+  Users,
+  RefreshCw,
+  AlertCircle,
+  TrendingUp,
+  Info,
+} from "lucide-react"
 import {
   Bar,
   BarChart,
@@ -53,6 +63,9 @@ interface FirmHoursResponse {
   byMember: Array<{
     userKey: string | null
     userName: string
+    /** Hub team_members.id when resolved via karbon_user_key. */
+    teamMemberId: string | null
+    avatarUrl: string | null
     hours: number
     billableHours: number
     billedAmount: number
@@ -62,6 +75,10 @@ interface FirmHoursResponse {
   byClient: Array<{
     clientKey: string | null
     clientName: string
+    /** Resolved Hub record type/id when contacts.karbon_contact_key
+     * or organizations.karbon_organization_key matches. */
+    hubClientType: "contact" | "organization" | null
+    hubClientId: string | null
     hours: number
     billableHours: number
     billedAmount: number
@@ -69,6 +86,12 @@ interface FirmHoursResponse {
   byWorkType: Array<{ taskTypeName: string; hours: number }>
   lastSyncedAt: string | null
   windowDays: number
+  diagnostics?: {
+    unmappedUserKeyCount: number
+    unmappedUserKeys: string[]
+    unmappedClientKeyCount: number
+    unmappedClientKeys: string[]
+  }
 }
 
 const fetcher = async (url: string): Promise<FirmHoursResponse> => {
@@ -127,7 +150,7 @@ export function FirmHoursDashboard() {
     return <SkeletonState />
   }
 
-  const { summary, weeklyTrend, byMember, byClient, byWorkType, lastSyncedAt, windowDays } = data
+  const { summary, weeklyTrend, byMember, byClient, byWorkType, lastSyncedAt, windowDays, diagnostics } = data
 
   return (
     <div className="space-y-6">
@@ -217,6 +240,45 @@ export function FirmHoursDashboard() {
         </CardContent>
       </Card>
 
+      {/* Karbon ↔ Hub mapping diagnostics. Surfaces only when the
+          firm has Karbon time entries whose user_key/client_key
+          doesn't yet correspond to a `team_members.karbon_user_key`
+          or `contacts.karbon_contact_key` / `organizations
+          .karbon_organization_key`. The fix is a one-time data
+          stitch — admins set the column on the Hub side and these
+          rows immediately stop saying "Unmapped". */}
+      {diagnostics &&
+        (diagnostics.unmappedUserKeyCount > 0 || diagnostics.unmappedClientKeyCount > 0) && (
+          <Card className="border-amber-200 bg-amber-50/60">
+            <CardContent className="flex items-start gap-3 py-4">
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+              <div className="space-y-1 text-sm">
+                <p className="font-medium text-amber-900">
+                  Karbon records not yet linked to Hub
+                </p>
+                {diagnostics.unmappedUserKeyCount > 0 && (
+                  <p className="text-amber-900/80">
+                    {diagnostics.unmappedUserKeyCount}{" "}
+                    {diagnostics.unmappedUserKeyCount === 1 ? "user" : "users"} in Karbon
+                    timesheets have no matching team member. Set{" "}
+                    <code className="rounded bg-amber-100 px-1 py-0.5 text-[11px]">
+                      team_members.karbon_user_key
+                    </code>{" "}
+                    for: {diagnostics.unmappedUserKeys.join(", ")}
+                  </p>
+                )}
+                {diagnostics.unmappedClientKeyCount > 0 && (
+                  <p className="text-amber-900/80">
+                    {diagnostics.unmappedClientKeyCount}{" "}
+                    {diagnostics.unmappedClientKeyCount === 1 ? "client" : "clients"} in Karbon
+                    timesheets have no matching contact or organization.
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
       {/* By member — the table leadership came here for */}
       <Card>
         <CardHeader>
@@ -245,7 +307,28 @@ export function FirmHoursDashboard() {
               ) : (
                 byMember.map((m) => (
                   <TableRow key={m.userKey || m.userName}>
-                    <TableCell className="font-medium">{m.userName}</TableCell>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-2">
+                        <Avatar className="h-7 w-7">
+                          {m.avatarUrl ? <AvatarImage src={m.avatarUrl} alt={m.userName} /> : null}
+                          <AvatarFallback className="text-[10px]">
+                            {initialsOf(m.userName)}
+                          </AvatarFallback>
+                        </Avatar>
+                        {m.teamMemberId ? (
+                          <Link
+                            href={`/teammates?member=${m.teamMemberId}`}
+                            className="hover:underline"
+                          >
+                            {m.userName}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground" title={m.userKey ?? undefined}>
+                            {m.userName}
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell className="text-right tabular-nums">{m.hours.toFixed(1)}</TableCell>
                     <TableCell className="text-right tabular-nums">{m.billableHours.toFixed(1)}</TableCell>
                     <TableCell className="text-right tabular-nums">
@@ -287,7 +370,24 @@ export function FirmHoursDashboard() {
                 ) : (
                   byClient.map((c) => (
                     <TableRow key={c.clientKey || c.clientName}>
-                      <TableCell className="font-medium truncate max-w-[260px]">{c.clientName}</TableCell>
+                      <TableCell className="font-medium truncate max-w-[260px]">
+                        {c.hubClientId && c.hubClientType ? (
+                          <Link
+                            href={
+                              c.hubClientType === "organization"
+                                ? `/organizations/${c.hubClientId}`
+                                : `/contacts/${c.hubClientId}`
+                            }
+                            className="hover:underline"
+                          >
+                            {c.clientName}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground" title={c.clientKey ?? undefined}>
+                            {c.clientName}
+                          </span>
+                        )}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">{c.hours.toFixed(1)}</TableCell>
                       <TableCell className="text-right tabular-nums">${c.billedAmount.toLocaleString()}</TableCell>
                     </TableRow>
@@ -398,4 +498,14 @@ function formatRelative(iso: string) {
   if (hr < 24) return `${hr}h ago`
   const d = Math.round(hr / 24)
   return `${d}d ago`
+}
+
+function initialsOf(name: string): string {
+  if (!name) return "?"
+  // Strip any "Unmapped (key)" prefix so the avatar fallback isn't
+  // just "U" for every unresolved row — show the key instead.
+  const cleaned = name.replace(/^Unmapped \(([^)]+)\)$/, "$1")
+  const parts = cleaned.trim().split(/\s+/)
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
 }
