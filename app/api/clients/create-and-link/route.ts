@@ -11,7 +11,13 @@ interface CreateClientBody {
   phone?: string
   createInKarbon?: boolean
   linkToRecord?: {
-    type: "ignition_client" | "ignition_proposal" | "calendly_invitee" | "debrief"
+    type:
+      | "ignition_client"
+      | "ignition_proposal"
+      | "calendly_invitee"
+      | "debrief"
+      | "jotform_intake_submitter"
+      | "jotform_intake_referral"
     id: string
   }
 }
@@ -175,8 +181,17 @@ export async function POST(request: NextRequest) {
           ? { organization_id: clientId, contact_id: null }
           : { contact_id: clientId, organization_id: null }
 
+      // Same shape, but for the referral side of an intake — keeps the
+      // prospect-side link untouched and only writes the `referral_*`
+      // FK pair instead.
+      const referralUpdateData =
+        type === "organization"
+          ? { referral_organization_id: clientId, referral_contact_id: null }
+          : { referral_contact_id: clientId, referral_organization_id: null }
+
       let tableName: string
       let idColumn: string
+      let payload: Record<string, unknown> = updateData
 
       switch (linkToRecord.type) {
         case "ignition_client":
@@ -195,6 +210,15 @@ export async function POST(request: NextRequest) {
           tableName = "debriefs"
           idColumn = "id"
           break
+        case "jotform_intake_submitter":
+          tableName = "jotform_intake_submissions"
+          idColumn = "id"
+          break
+        case "jotform_intake_referral":
+          tableName = "jotform_intake_submissions"
+          idColumn = "id"
+          payload = referralUpdateData
+          break
         default:
           console.warn("Unknown record type for linking:", linkToRecord.type)
           tableName = ""
@@ -204,7 +228,7 @@ export async function POST(request: NextRequest) {
       if (tableName) {
         await supabase
           .from(tableName)
-          .update(updateData)
+          .update(payload)
           .eq(idColumn, linkToRecord.id)
       }
     }

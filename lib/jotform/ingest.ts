@@ -227,6 +227,9 @@ export async function runIntakePostProcessing(
         "assigned_to_id",
         "contact_id",
         "organization_id",
+        "referral_source",
+        "referral_contact_id",
+        "referral_organization_id",
         "enrichment",
         "question_research",
         "notified_at",
@@ -264,6 +267,9 @@ export async function runIntakePostProcessing(
     assigned_to_id: string | null
     contact_id: string | null
     organization_id: string | null
+    referral_source: string | null
+    referral_contact_id: string | null
+    referral_organization_id: string | null
     enrichment: Record<string, unknown> | null
     question_research: Record<string, unknown> | null
     notified_at: string | null
@@ -314,6 +320,69 @@ export async function runIntakePostProcessing(
       }
     } catch (err) {
       console.log("[Jotform] auto-assign error:", (err as Error).message)
+    }
+  }
+
+  // ── 1b. Auto-resolve referral_source → contact/org FK ─────────────
+  // The "Who sent you our way?" answer is almost always the name of an
+  // existing client. Resolving it to a real Hub record at ingest time
+  // gives us:
+  //   • clickable referrer cells in the Intake list (deep-link to the
+  //     client profile),
+  //   • per-client referral counts on the client profile,
+  //   • a foundation for "auto-thank the referrer on conversion".
+  //
+  // Conservative match policy: only write the FK on a SINGLE exact
+  // (case-insensitive) name match. Ambiguous or unmatched strings are
+  // left for the triager to resolve manually in the detail sheet — a
+  // wrong link is worse than no link because it implies a referral
+  // relationship that doesn't exist.
+  if (
+    submissionRow.referral_source &&
+    !submissionRow.referral_contact_id &&
+    !submissionRow.referral_organization_id
+  ) {
+    try {
+      const needle = (submissionRow.referral_source || "")
+        .split(/[,/&]+/)[0]
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+      if (needle && needle.length >= 3) {
+        const { data: contacts } = await supabase
+          .from("contacts")
+          .select("id, full_name")
+          .ilike("full_name", needle)
+          .limit(2)
+        if (contacts && contacts.length === 1) {
+          await supabase
+            .from("jotform_intake_submissions")
+            .update({ referral_contact_id: contacts[0].id })
+            .eq("id", submissionRow.id)
+          submissionRow.referral_contact_id = contacts[0].id
+          console.log(
+            `[Jotform] resolved referral "${submissionRow.referral_source}" → contact ${contacts[0].id}`,
+          )
+        } else if (!contacts || contacts.length === 0) {
+          const { data: orgs } = await supabase
+            .from("organizations")
+            .select("id, name")
+            .ilike("name", needle)
+            .limit(2)
+          if (orgs && orgs.length === 1) {
+            await supabase
+              .from("jotform_intake_submissions")
+              .update({ referral_organization_id: orgs[0].id })
+              .eq("id", submissionRow.id)
+            submissionRow.referral_organization_id = orgs[0].id
+            console.log(
+              `[Jotform] resolved referral "${submissionRow.referral_source}" → organization ${orgs[0].id}`,
+            )
+          }
+        }
+      }
+    } catch (err) {
+      console.log("[Jotform] referral auto-resolve error:", (err as Error).message)
     }
   }
 
