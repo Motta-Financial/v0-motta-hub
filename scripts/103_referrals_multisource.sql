@@ -12,7 +12,26 @@
 ALTER TABLE referrals
   ADD COLUMN IF NOT EXISTS referee_jotform_submission_id uuid
     REFERENCES jotform_intake_submissions(id) ON DELETE CASCADE,
-  ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'contacts_referred_by';
+  ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'contacts_referred_by',
+  ADD COLUMN IF NOT EXISTS match_confidence numeric,
+  ADD COLUMN IF NOT EXISTS candidate_contact_ids jsonb;
+
+-- Widen the match_status enum to match the §4 state machine in
+-- motta-hub-data-model.md. The original 102 migration shipped a
+-- shorter list — drop and re-add the check.
+ALTER TABLE referrals DROP CONSTRAINT IF EXISTS referrals_match_status_check;
+ALTER TABLE referrals
+  ADD CONSTRAINT referrals_match_status_check
+  CHECK (match_status IN (
+    'matched',
+    'matched_existing',
+    'unmatched_not_in_hub',
+    'unmatched_format',
+    'unmatched_ambiguous',
+    'unmatched_external',
+    'external_referrer',
+    'no_referral'
+  ));
 
 -- referee_contact_id must now be nullable (jotform-only referrals
 -- have no contact yet). Drop NOT NULL if it was set.
