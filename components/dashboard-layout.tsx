@@ -57,6 +57,7 @@ import {
   Sparkles,
   Layers,
   Network,
+  Share2,
   BookOpen,
   Palette,
   Wallet,
@@ -312,6 +313,7 @@ const navigation = [
           { name: "ALFRED AI", href: "/admin/alfred-ai", icon: Sparkles },
           { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
           { name: "Webhooks", href: "/admin/webhooks", icon: Webhook },
+          { name: "Referrals", href: "/admin/referrals", icon: Share2 },
           {
             name: "Master Client Mapping",
             href: "/admin/master-client-mapping",

@@ -122,8 +122,8 @@ async function main() {
   // ─── Step 1: load all contacts (lookup tables) ───────────────────
   const contactsRes = await c.query(`
     select id, first_name, last_name,
-           coalesce(nullif(trim(concat_ws(' ', first_name, last_name)),''), email) as full_name,
-           email, business_name, legacy_motta_client_id
+           coalesce(nullif(trim(concat_ws(' ', first_name, last_name)),''), primary_email) as full_name,
+           primary_email as email, legal_firm_name as business_name, legacy_motta_client_id
       from contacts
   `)
   const contacts = contactsRes.rows
