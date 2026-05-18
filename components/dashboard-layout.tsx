@@ -923,28 +923,26 @@ function Sidebar() {
   const [hydrated, setHydrated] = useState(false)
 
   // Once mounted on the client, seed expanded sections from localStorage
-  // and the active route. This runs only once after hydration so the
-  // server/client first-render is identical (empty → avoids mismatch).
+  // ONLY. We deliberately do NOT pre-expand the active route's ancestors
+  // — the user asked for the nav to start fully collapsed every load,
+  // and to only open sections when they explicitly click them. Persisted
+  // choices still win so a section the user opened earlier stays open
+  // across reloads.
   useEffect(() => {
-    const seed = buildInitialExpandedState(navigation, pathname)
-    let initial = seed
+    let initial: Record<string, boolean> = {}
     try {
       const raw = window.localStorage.getItem(SIDEBAR_EXPANDED_STORAGE_KEY)
       if (raw) {
         const parsed = JSON.parse(raw)
         if (parsed && typeof parsed === "object") {
-          // Merge persisted choices over active-ancestor seed — this way
-          // an explicitly-collapsed section the user closed earlier stays
-          // closed unless it's an ancestor of the current page.
-          initial = { ...parsed, ...seed }
+          initial = parsed as Record<string, boolean>
         }
       }
     } catch {
-      // Storage can throw in private mode; continue with seed.
+      // Storage can throw in private mode; fall through to fully-collapsed.
     }
     setExpandedSections(initial)
     setHydrated(true)
-    // Only run on mount — pathname changes are handled by a separate effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -966,26 +964,12 @@ function Sidebar() {
     }
   }, [expandedSections, hydrated])
 
-  // When the user navigates between pages we want the new active section to
-  // auto-open, but we deliberately MERGE rather than replace so that any
-  // sibling sections the user manually opened stay open. The only thing we
-  // ever flip here is `true` for ancestors of the new pathname — never
-  // `false`, so the sidebar never yanks something closed underneath them.
-  useEffect(() => {
-    const activeAncestors = buildInitialExpandedState(navigation, pathname)
-    if (Object.keys(activeAncestors).length === 0) return
-    setExpandedSections((prev) => {
-      let changed = false
-      const next = { ...prev }
-      for (const key of Object.keys(activeAncestors)) {
-        if (!next[key]) {
-          next[key] = true
-          changed = true
-        }
-      }
-      return changed ? next : prev
-    })
-  }, [pathname])
+  // Intentionally NO pathname auto-expand effect: the user asked for the
+  // sidebar to stay collapsed on navigation. Active routes still get the
+  // highlighted-ancestor styling via `branchContainsActive`, which works
+  // independently of the expanded/collapsed state. To re-enable
+  // auto-expand on nav, restore the previous effect that called
+  // buildInitialExpandedState(navigation, pathname) and merged it in.
 
   const toggleSection = (name: string) => {
     setExpandedSections((prev) => ({
