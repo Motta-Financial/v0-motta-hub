@@ -352,8 +352,7 @@ interface ClientBundle {
    */
   intakeSubmissions: Array<{
     id: string
-    jotform_submission_id: string
-    jotform_created_at: string | null
+    created_at: string | null
     submitter_full_name: string | null
     submitter_email: string | null
     submitter_phone: string | null
@@ -361,14 +360,17 @@ interface ClientBundle {
     services_requested: string[] | null
     business_name: string | null
     business_state: string | null
-    filing_status: string | null
-    dependents_count: number | null
-    primary_residence_state: string | null
-    hear_about_us: string | null
+    business_situation: string | null
+    entity_types: string[] | null
     questions_or_concerns: string | null
+    additional_notes: string | null
+    referral_source: string | null
     lead_status: string | null
     link_method: "auto_email" | "auto_business_name" | "auto_name" | "manual" | null
     linked_at: string | null
+    karbon_work_item_key: string | null
+    karbon_work_item_title: string | null
+    karbon_work_item_url: string | null
     raw_answers: Record<string, unknown> | null
   }>
   clientGroups: Array<{
@@ -1860,7 +1862,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                 <ul className="divide-y">
                   {intakeSubmissions.map((sub) => {
                     const isOpen = expandedIntakeIds.has(sub.id)
-                    const submittedAt = sub.jotform_created_at
+                    const submittedAt = sub.created_at
                     // Surface a brief one-line preview when the row is
                     // collapsed. Prefer the free-text "questions or
                     // concerns" field because it's where prospects say
@@ -1961,28 +1963,22 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                                   ) : null}
                                 </div>
                               ) : null}
-                              {sub.filing_status ? (
+                              {sub.business_situation ? (
                                 <div>
-                                  <span className="text-muted-foreground">Filing status: </span>
-                                  <span className="font-medium">{sub.filing_status}</span>
+                                  <span className="text-muted-foreground">Situation: </span>
+                                  <span className="font-medium">{sub.business_situation}</span>
                                 </div>
                               ) : null}
-                              {sub.dependents_count != null ? (
+                              {sub.entity_types && sub.entity_types.length > 0 ? (
                                 <div>
-                                  <span className="text-muted-foreground">Dependents: </span>
-                                  <span className="font-medium">{sub.dependents_count}</span>
+                                  <span className="text-muted-foreground">Entity types: </span>
+                                  <span className="font-medium">{sub.entity_types.join(", ")}</span>
                                 </div>
                               ) : null}
-                              {sub.primary_residence_state ? (
-                                <div>
-                                  <span className="text-muted-foreground">Residence state: </span>
-                                  <span className="font-medium">{sub.primary_residence_state}</span>
-                                </div>
-                              ) : null}
-                              {sub.hear_about_us ? (
+                              {sub.referral_source ? (
                                 <div>
                                   <span className="text-muted-foreground">Heard about us: </span>
-                                  <span className="font-medium">{sub.hear_about_us}</span>
+                                  <span className="font-medium">{sub.referral_source}</span>
                                 </div>
                               ) : null}
                             </div>
@@ -2023,7 +2019,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                               </Link>
                               <span>·</span>
                               <span>
-                                Submission {sub.jotform_submission_id}
+                                Submission {sub.id.slice(0, 8)}
                               </span>
                               {sub.linked_at ? (
                                 <>
@@ -2580,7 +2576,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
   )
 }
 
-// ───────────────────────────────────────────────────���─────────────────────────
+// ───────────────────────────────────────────────────���─��───────────────────────
 // Sub-components
 // ─────────────────────────────────────────────────────────────────────────────
 
