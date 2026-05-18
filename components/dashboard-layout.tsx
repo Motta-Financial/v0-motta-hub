@@ -127,7 +127,6 @@ const navigation = [
         icon: Users,
         children: [
           { name: "Intake", href: "/sales/intake", icon: Inbox },
-          { name: "Intake Dashboard", href: "/sales/intake/dashboard", icon: BarChart3 },
           { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
         ],
       },
