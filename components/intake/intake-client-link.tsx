@@ -27,6 +27,7 @@ import {
   ExternalLink,
   Link2,
   Loader2,
+  Pencil,
   Plus,
   Search,
   User,
@@ -76,6 +77,14 @@ interface Props {
     email?: string | null
     phone?: string | null
   }
+  /**
+   * Allow the triager to edit the underlying name (prospect name or
+   * referral_source string) directly from the picker. When editing,
+   * the new value is persisted via PATCH /api/jotform/intake/[id] so
+   * the next sync, briefing, or Karbon note also reflects the
+   * correction. When omitted (or false) the edit affordance is hidden.
+   */
+  editable?: boolean
   /** Re-fetch the parent after a successful mutation. */
   onLinked?: () => void
 }
@@ -86,6 +95,7 @@ export function IntakeClientLink({
   linked,
   fallbackLabel,
   defaults,
+  editable,
   onLinked,
 }: Props) {
   if (linked) {
@@ -104,6 +114,7 @@ export function IntakeClientLink({
       slot={slot}
       fallbackLabel={fallbackLabel}
       defaults={defaults}
+      editable={editable}
       onLinked={onLinked}
     />
   )
@@ -189,32 +200,76 @@ function Unlinked({
   slot,
   fallbackLabel,
   defaults,
+  editable,
   onLinked,
 }: {
   submissionId: string
   slot: LinkSlot
   fallbackLabel?: string | null
   defaults?: Props["defaults"]
+  editable?: boolean
   onLinked?: () => void
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  // Inline name editor — the triager can correct a typo in the
+  // submitted name (e.g. "Ryan Ciracello" → "Ryan Cirasiello") so the
+  // search picker actually finds the underlying client record. The
+  // edited value persists to the intake row, so downstream workflows
+  // (Karbon note, briefing) also see the corrected spelling.
+  const [editing, setEditing] = useState(false)
+  // What we should *display* and *seed the search with* now.
+  // Starts as fallbackLabel and gets replaced in-place when the user
+  // saves an edit. We can't read it from the parent because parent
+  // re-fetch lags behind the optimistic UI moment.
+  const [displayLabel, setDisplayLabel] = useState<string | null>(fallbackLabel ?? null)
+  // Keep the local state in sync if the parent SWR cache refreshes
+  // with a new fallbackLabel (e.g. after another tab edited the row).
+  useEffect(() => {
+    setDisplayLabel(fallbackLabel ?? null)
+  }, [fallbackLabel])
 
   return (
     <div className="space-y-2 rounded-md border border-dashed border-amber-300 bg-amber-50/50 px-3 py-2">
       <div className="flex items-center gap-2 text-xs text-amber-900">
         <Link2 className="h-3.5 w-3.5 shrink-0" />
         <span className="flex-1 truncate">
-          {fallbackLabel ? (
+          {displayLabel ? (
             <>
-              <span className="font-medium">{fallbackLabel}</span>
+              <span className="font-medium">{displayLabel}</span>
               <span className="ml-1 text-amber-900/70">— not linked to a client yet</span>
             </>
           ) : (
             <span>No client linked</span>
           )}
         </span>
+        {editable && !editing && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-6 gap-1 px-1.5 text-[11px] text-amber-900 hover:bg-amber-100"
+            onClick={() => setEditing(true)}
+          >
+            <Pencil className="h-3 w-3" />
+            Edit name
+          </Button>
+        )}
       </div>
+
+      {editing && (
+        <NameEditor
+          submissionId={submissionId}
+          slot={slot}
+          initialValue={displayLabel ?? ""}
+          onSaved={(newLabel) => {
+            setDisplayLabel(newLabel)
+            setEditing(false)
+            onLinked?.()
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      )}
 
       <div className="flex flex-wrap gap-1.5">
         <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
@@ -227,7 +282,9 @@ function Unlinked({
             <SearchPicker
               submissionId={submissionId}
               slot={slot}
-              initialQuery={fallbackLabel ?? defaults?.fullName ?? defaults?.organizationName ?? ""}
+              initialQuery={
+                displayLabel ?? defaults?.fullName ?? defaults?.organizationName ?? ""
+              }
               onPicked={() => {
                 setPickerOpen(false)
                 onLinked?.()
@@ -252,14 +309,126 @@ function Unlinked({
         <CreateClientForm
           submissionId={submissionId}
           slot={slot}
-          defaults={defaults}
-          fallbackLabel={fallbackLabel}
+          defaults={{ ...defaults, fullName: displayLabel ?? defaults?.fullName ?? null }}
+          fallbackLabel={displayLabel}
           onCreated={() => {
             setCreateOpen(false)
             onLinked?.()
           }}
         />
       )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inline name editor — corrects typos in the submitted name / referral
+// source. Sends a PATCH to /api/jotform/intake/[id] so the change
+// sticks across reloads.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function NameEditor({
+  submissionId,
+  slot,
+  initialValue,
+  onSaved,
+  onCancel,
+}: {
+  submissionId: string
+  slot: LinkSlot
+  initialValue: string
+  onSaved: (newLabel: string) => void
+  onCancel: () => void
+}) {
+  const [value, setValue] = useState(initialValue)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function save() {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      setError("Name can't be empty")
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      // For the prospect slot we update the canonical first/last/full
+      // triple together so downstream consumers (Karbon notes, briefing,
+      // initials avatar) all see the corrected spelling. For the
+      // referral slot we update `referral_source` only — there is no
+      // first/last decomposition.
+      const body: Record<string, string | null> =
+        slot === "submitter"
+          ? (() => {
+              const parts = trimmed.split(/\s+/)
+              const first = parts[0] ?? ""
+              const last = parts.slice(1).join(" ")
+              return {
+                submitter_full_name: trimmed,
+                submitter_first_name: first || null,
+                submitter_last_name: last || null,
+              }
+            })()
+          : { referral_source: trimmed }
+
+      const res = await fetch(`/api/jotform/intake/${submissionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      onSaved(trimmed)
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to save")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-amber-300 bg-background p-2">
+      <div className="flex items-center gap-2">
+        <Input
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save()
+            if (e.key === "Escape") onCancel()
+          }}
+          placeholder={slot === "submitter" ? "Prospect's full name" : "Referral source name"}
+          className="h-8 text-sm"
+          disabled={saving}
+        />
+        <Button
+          type="button"
+          size="sm"
+          className="h-8 px-2 text-xs"
+          onClick={save}
+          disabled={saving}
+        >
+          {saving ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Check className="h-3 w-3" />
+          )}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-8 px-2 text-xs"
+          onClick={onCancel}
+          disabled={saving}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+      {error && <p className="text-[11px] text-red-600">{error}</p>}
+      <p className="text-[11px] text-muted-foreground">
+        Saving updates the intake record so the search and Karbon note use the corrected name.
+      </p>
     </div>
   )
 }

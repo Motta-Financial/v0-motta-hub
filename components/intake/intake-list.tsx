@@ -19,6 +19,7 @@ import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import { JotformStatusCard } from "./jotform-status-card"
 import {
+  BarChart3,
   Building2,
   CalendarDays,
   Inbox,
@@ -304,15 +305,23 @@ export function IntakeList() {
             contacts.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => mutate()}
-          className="gap-2 self-start md:self-auto"
-        >
-          <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-          Refresh
-        </Button>
+        <div className="flex flex-wrap items-center gap-2 self-start md:self-auto">
+          <Button asChild variant="outline" size="sm" className="gap-2">
+            <a href="/sales/intake/dashboard">
+              <BarChart3 className="h-4 w-4" />
+              View dashboard
+            </a>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => mutate()}
+            className="gap-2"
+          >
+            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
+            Refresh
+          </Button>
+        </div>
       </header>
 
       {/*
@@ -473,21 +482,49 @@ export function IntakeList() {
       </Card>
 
       {/* ───────────────────────── Table ───────────────────────── */}
+      {/*
+       * The intake table mixes very different content widths: the
+       * Submitter cell carries an avatar + email so it needs ~240px,
+       * while State / Status are short single-word values that look
+       * lonely at 200px. Browser auto-layout reads the literal cell
+       * content and ends up squeezing whichever cell happens to be
+       * shortest in the visible page (in our screenshots: Status and
+       * Owner). `table-fixed` + an explicit `<colgroup>` tells the
+       * browser the proportional widths upfront so columns stay
+       * stable regardless of which rows are scrolled into view.
+       *
+       * Numbers chosen to total a 1320px ideal width (matches the
+       * 8-col main content area in our shell). At smaller viewports
+       * the parent's `overflow-x-auto` lets users scroll horizontally
+       * rather than collapse columns.
+       */}
       <Card className="overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[1180px] table-fixed text-sm">
+            <colgroup>
+              <col className="w-[240px]" /> {/* Submitter */}
+              <col className="w-[150px]" /> {/* Client */}
+              <col className="w-[110px]" /> {/* State */}
+              <col className="w-[110px]" /> {/* Focus */}
+              <col className="w-[200px]" /> {/* Services */}
+              <col className="w-[150px]" /> {/* Referral Source */}
+              <col className="w-[150px]" /> {/* Motta Professional */}
+              <col className="w-[100px]" /> {/* Status */}
+              <col className="w-[140px]" /> {/* Owner */}
+              <col className="w-[110px]" /> {/* Date */}
+            </colgroup>
             <thead className="border-b bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
-                <th className="px-4 py-3 font-medium">Submitter</th>
-                <th className="px-4 py-3 font-medium">Client</th>
-                <th className="px-4 py-3 font-medium">State</th>
-                <th className="px-4 py-3 font-medium">Focus</th>
-                <th className="px-4 py-3 font-medium">Services</th>
-                <th className="px-4 py-3 font-medium">Referral Source</th>
-                <th className="px-4 py-3 font-medium">Motta Professional</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Owner</th>
-                <th className="px-4 py-3 font-medium text-right">Date</th>
+                <th className="px-3 py-3 font-medium">Submitter</th>
+                <th className="px-3 py-3 font-medium">Client</th>
+                <th className="px-3 py-3 font-medium">State</th>
+                <th className="px-3 py-3 font-medium">Focus</th>
+                <th className="px-3 py-3 font-medium">Services</th>
+                <th className="px-3 py-3 font-medium">Referral Source</th>
+                <th className="px-3 py-3 font-medium">Motta Professional</th>
+                <th className="px-3 py-3 font-medium">Status</th>
+                <th className="px-3 py-3 font-medium">Owner</th>
+                <th className="px-3 py-3 font-medium text-right">Date</th>
               </tr>
             </thead>
             <tbody>
@@ -511,9 +548,9 @@ export function IntakeList() {
                   onClick={() => setSelectedId(row.id)}
                   className="cursor-pointer border-b transition-colors hover:bg-muted/40 last:border-b-0"
                 >
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     <div className="flex items-center gap-3">
-                      <Avatar className="h-8 w-8">
+                      <Avatar className="h-8 w-8 shrink-0">
                         <AvatarFallback className="bg-muted text-xs font-medium">
                           {initialsFor(row)}
                         </AvatarFallback>
@@ -523,13 +560,13 @@ export function IntakeList() {
                           {row.submitter_full_name ?? row.business_name ?? "Unknown"}
                         </div>
                         <div className="flex items-center gap-1 truncate text-xs text-muted-foreground">
-                          <Mail className="h-3 w-3" />
-                          {row.submitter_email ?? "no email"}
+                          <Mail className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{row.submitter_email ?? "no email"}</span>
                         </div>
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     {row.linkedClient ? (
                       <a
                         href={
@@ -541,7 +578,7 @@ export function IntakeList() {
                         // chip jumps to the client profile instead of
                         // opening the side sheet.
                         onClick={(e) => e.stopPropagation()}
-                        className="inline-flex max-w-[180px] items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                        className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
                         title={`Linked via ${row.link_method ?? "manual"}`}
                       >
                         <Link2 className="h-3 w-3 shrink-0" />
@@ -551,7 +588,7 @@ export function IntakeList() {
                       <span className="text-xs text-muted-foreground">Unlinked</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground">
+                  <td className="px-3 py-3 text-muted-foreground">
                     {row.submitter_state ? (
                       <div className="flex items-center gap-1.5">
                         <MapPin className="h-3.5 w-3.5 shrink-0" />
@@ -561,18 +598,27 @@ export function IntakeList() {
                       "—"
                     )}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground">{row.service_focus ?? "—"}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3 text-muted-foreground">
+                    <span className="block truncate" title={row.service_focus ?? undefined}>
+                      {row.service_focus ?? "—"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3">
                     {row.services_requested && row.services_requested.length > 0 ? (
-                      <div className="flex max-w-[260px] flex-wrap gap-1">
-                        {row.services_requested.slice(0, 3).map((s) => (
-                          <Badge key={s} variant="secondary" className="font-normal">
+                      <div className="flex max-w-full flex-wrap gap-1">
+                        {row.services_requested.slice(0, 2).map((s) => (
+                          <Badge
+                            key={s}
+                            variant="secondary"
+                            className="max-w-full truncate font-normal"
+                            title={s}
+                          >
                             {s}
                           </Badge>
                         ))}
-                        {row.services_requested.length > 3 && (
+                        {row.services_requested.length > 2 && (
                           <Badge variant="secondary" className="font-normal">
-                            +{row.services_requested.length - 3}
+                            +{row.services_requested.length - 2}
                           </Badge>
                         )}
                       </div>
@@ -580,10 +626,10 @@ export function IntakeList() {
                       <span className="text-muted-foreground">—</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground">
+                  <td className="px-3 py-3 text-muted-foreground">
                     {row.referral_source ? (
                       <span
-                        className="block max-w-[200px] truncate"
+                        className="block max-w-full truncate"
                         title={row.referral_source}
                       >
                         {row.referral_source}
@@ -592,7 +638,7 @@ export function IntakeList() {
                       <span className="text-xs">—</span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     {/* Motta Professional column. Three render branches:
                         (1) resolved FK → green chip linking to the
                             teammate directory (no per-teammate route
@@ -606,7 +652,7 @@ export function IntakeList() {
                       <a
                         href="/teammates"
                         onClick={(e) => e.stopPropagation()}
-                        className="inline-flex max-w-[180px] items-center gap-1.5 rounded-md border border-[#A8C566]/40 bg-[#A8C566]/10 px-2 py-0.5 text-xs font-medium text-[#5b7028] hover:bg-[#A8C566]/20"
+                        className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#A8C566]/40 bg-[#A8C566]/10 px-2 py-0.5 text-xs font-medium text-[#5b7028] hover:bg-[#A8C566]/20"
                         title={`Prospect requested ${row.preferredProfessional.name}`}
                       >
                         <UserCheck className="h-3 w-3 shrink-0" />
@@ -614,7 +660,7 @@ export function IntakeList() {
                       </a>
                     ) : row.preferred_team_member ? (
                       <span
-                        className="block max-w-[180px] truncate text-xs italic text-muted-foreground"
+                        className="block max-w-full truncate text-xs italic text-muted-foreground"
                         title={`Prospect typed "${row.preferred_team_member}" — no match`}
                       >
                         {row.preferred_team_member}
@@ -623,11 +669,11 @@ export function IntakeList() {
                       <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </td>
-                  <td className="px-4 py-3">{statusBadge(row.lead_status)}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">{statusBadge(row.lead_status)}</td>
+                  <td className="px-3 py-3">
                     {row.assignedTo ? (
                       <div className="flex items-center gap-2">
-                        <Avatar className="h-6 w-6">
+                        <Avatar className="h-6 w-6 shrink-0">
                           {row.assignedTo.avatarUrl ? (
                             <AvatarImage src={row.assignedTo.avatarUrl} alt={row.assignedTo.name} />
                           ) : null}
@@ -640,13 +686,13 @@ export function IntakeList() {
                               .join("")}
                           </AvatarFallback>
                         </Avatar>
-                        <span className="text-sm">{row.assignedTo.name}</span>
+                        <span className="truncate text-sm">{row.assignedTo.name}</span>
                       </div>
                     ) : (
                       <span className="text-muted-foreground">Unassigned</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-3 py-3 text-right">
                     <div className="text-sm text-foreground">{formatDate(row.jotform_created_at)}</div>
                     <div className="text-xs text-muted-foreground">{formatRelative(row.jotform_created_at)}</div>
                   </td>

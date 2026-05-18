@@ -158,6 +158,32 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       updates.referral_organization_id = body.referral_organization_id || null
     }
 
+    // ── Identity overrides ─────────────────────────────────────────
+    // Triagers can correct typos in the prospect's submitted name or
+    // the free-text referral source so subsequent client-link search
+    // queries actually find the underlying Hub record. We deliberately
+    // overwrite the original Jotform values rather than tracking
+    // overrides separately: the form's raw payload still lives in
+    // `raw_answers` for audit, and downstream consumers (Karbon notes,
+    // Daily Briefing) want the corrected name. Keeping
+    // `submitter_full_name` consistent with the first/last pair is
+    // the caller's responsibility — the UI sends both together.
+    if (body.submitter_first_name !== undefined) {
+      updates.submitter_first_name = body.submitter_first_name || null
+    }
+    if (body.submitter_last_name !== undefined) {
+      updates.submitter_last_name = body.submitter_last_name || null
+    }
+    if (body.submitter_full_name !== undefined) {
+      updates.submitter_full_name = body.submitter_full_name || null
+    }
+    if (body.business_name !== undefined) {
+      updates.business_name = body.business_name || null
+    }
+    if (body.referral_source !== undefined) {
+      updates.referral_source = body.referral_source || null
+    }
+
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "No updatable fields supplied" }, { status: 400 })
     }

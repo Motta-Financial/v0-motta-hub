@@ -494,6 +494,7 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                   submissionId={submission.id}
                   slot="submitter"
                   linked={submission.linkedClient}
+                  editable
                   fallbackLabel={
                     submission.submitter_full_name ?? submission.business_name ?? null
                   }
@@ -525,6 +526,7 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                     submissionId={submission.id}
                     slot="referral"
                     linked={submission.referralLinkedClient}
+                    editable
                     fallbackLabel={submission.referral_source}
                     defaults={{
                       fullName: submission.referral_source,
