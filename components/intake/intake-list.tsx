@@ -17,9 +17,7 @@
 import { useMemo, useState, useEffect } from "react"
 import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
-import { JotformStatusCard } from "./jotform-status-card"
 import {
-  BarChart3,
   Building2,
   CalendarDays,
   Inbox,
@@ -306,12 +304,6 @@ export function IntakeList() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 self-start md:self-auto">
-          <Button asChild variant="outline" size="sm" className="gap-2">
-            <a href="/sales/intake/dashboard">
-              <BarChart3 className="h-4 w-4" />
-              View dashboard
-            </a>
-          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -325,14 +317,11 @@ export function IntakeList() {
       </header>
 
       {/*
-       * Jotform Integration status — sits between the page header
-       * and the KPIs so an admin opening this page can confirm in
-       * one glance that the webhook is registered, deliveries are
-       * landing, and there are no rogue endpoints attached to the
-       * form (the n8n one was deleted, but if anyone re-adds a test
-       * webhook later this card will flag it in amber).
+       * Jotform integration health (the JotformStatusCard) used to
+       * render here. It now lives on /admin/webhooks alongside the
+       * other inbound integrations, so the queue can stay focused on
+       * the sales workflow.
        */}
-      <JotformStatusCard />
 
       {/* ───────────────────────── KPIs ───────────────────────── */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

@@ -67,9 +67,10 @@ const categories: AdminCategory[] = [
         icon: Sparkles,
       },
       {
-        name: "Webhooks",
-        description: "Configure outbound webhook endpoints for real-time sync.",
-        href: "/settings/webhooks",
+        name: "Webhook Integrations",
+        description:
+          "Jotform, Karbon, Calendly, Zoom, and Ignition webhook health in one console.",
+        href: "/admin/webhooks",
         icon: Webhook,
       },
       {
