@@ -339,16 +339,18 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       supabase
         .from("jotform_intake_submissions")
         .select(
-          `id, jotform_submission_id, jotform_created_at,
+          `id, created_at,
            submitter_full_name, submitter_email, submitter_phone,
            service_focus, services_requested, business_name, business_state,
-           filing_status, dependents_count, primary_residence_state,
-           hear_about_us, questions_or_concerns,
+           business_situation, entity_types,
+           questions_or_concerns, additional_notes,
+           referral_source,
            lead_status, link_method, linked_at,
+           karbon_work_item_key, karbon_work_item_title, karbon_work_item_url,
            raw_answers`,
         )
         .or(`${idCol}.eq.${entityId}`)
-        .order("jotform_created_at", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false, nullsFirst: false })
         .limit(20),
 
       // Ignition payments — the source of truth for client payments. Has
