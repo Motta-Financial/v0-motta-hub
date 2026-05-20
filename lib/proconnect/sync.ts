@@ -25,6 +25,13 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 // Tax years to sync (inclusive)
 const TAX_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 
+// Batch size for client processing (to avoid timeouts)
+const CLIENT_BATCH_SIZE = 20
+
+// Max execution time before we gracefully stop (Vercel timeout is 60s for hobby, 300s for pro)
+// Leave 10s buffer for cleanup
+const MAX_EXECUTION_MS = 50_000
+
 interface SyncResult {
   success: boolean
   syncLogId: string
@@ -33,6 +40,7 @@ interface SyncResult {
   customStatusesSynced: number
   errors: string[]
   duration: number
+  timedOut?: boolean
 }
 
 interface SyncLog {
@@ -213,11 +221,13 @@ async function syncClients(
 }
 
 /**
- * Sync engagements for all clients across all tax years
+ * Sync engagements for all clients across all tax years.
+ * Processes in batches with timeout awareness to avoid serverless timeouts.
  */
 async function syncEngagements(
-  supabase: SupabaseClient
-): Promise<{ count: number; errors: string[] }> {
+  supabase: SupabaseClient,
+  startTime: number
+): Promise<{ count: number; errors: string[]; timedOut: boolean }> {
   console.log("[ProConnect Sync] Fetching engagements...")
 
   // Get all client IDs
@@ -229,14 +239,27 @@ async function syncEngagements(
     return {
       count: 0,
       errors: [clientError?.message || "Failed to get client IDs"],
+      timedOut: false,
     }
   }
 
   let count = 0
   const errors: string[] = []
+  let timedOut = false
 
-  // Sequential sync (no documented rate limits, but being cautious)
-  for (const client of clients) {
+  // Process clients in batches
+  for (let i = 0; i < clients.length; i++) {
+    // Check timeout before processing each client
+    const elapsed = Date.now() - startTime
+    if (elapsed > MAX_EXECUTION_MS) {
+      console.log(
+        `[ProConnect Sync] Timeout approaching after ${i} clients, stopping gracefully`
+      )
+      timedOut = true
+      break
+    }
+
+    const client = clients[i]
     const clientId = client.proconnect_client_id
 
     for (const year of TAX_YEARS) {
@@ -299,10 +322,17 @@ async function syncEngagements(
         )
       }
     }
+
+    // Log progress every batch
+    if ((i + 1) % CLIENT_BATCH_SIZE === 0) {
+      console.log(
+        `[ProConnect Sync] Progress: ${i + 1}/${clients.length} clients, ${count} engagements`
+      )
+    }
   }
 
-  console.log(`[ProConnect Sync] Synced ${count} engagements`)
-  return { count, errors }
+  console.log(`[ProConnect Sync] Synced ${count} engagements${timedOut ? " (timed out)" : ""}`)
+  return { count, errors, timedOut }
 }
 
 /**
@@ -369,7 +399,7 @@ async function syncCustomStatuses(
 }
 
 /**
- * Run the full sync
+ * Run the full sync with timeout awareness
  */
 export async function runFullSync(
   syncType: "full" | "manual" | "webhook" = "full"
@@ -377,6 +407,7 @@ export async function runFullSync(
   const startTime = Date.now()
   const supabase = getSupabaseAdmin()
   const errors: string[] = []
+  let timedOut = false
 
   // Create sync log
   const syncLogId = await createSyncLog(supabase, syncType)
@@ -386,24 +417,42 @@ export async function runFullSync(
     const clientResult = await syncClients(supabase)
     errors.push(...clientResult.errors)
 
-    // 2. Sync engagements
-    const engagementResult = await syncEngagements(supabase)
+    // Check timeout after clients
+    if (Date.now() - startTime > MAX_EXECUTION_MS) {
+      timedOut = true
+      throw new Error("Timeout after syncing clients")
+    }
+
+    // 2. Sync engagements (this is the slow part)
+    const engagementResult = await syncEngagements(supabase, startTime)
     errors.push(...engagementResult.errors)
+    timedOut = engagementResult.timedOut
 
-    // 3. Sync custom statuses
-    const statusResult = await syncCustomStatuses(supabase)
-    errors.push(...statusResult.errors)
+    // 3. Sync custom statuses (only if we have time)
+    let statusResult = { count: 0, errors: [] as string[] }
+    if (!timedOut && Date.now() - startTime < MAX_EXECUTION_MS) {
+      statusResult = await syncCustomStatuses(supabase)
+      errors.push(...statusResult.errors)
+    }
 
-    const success = errors.length === 0
+    const success = !timedOut && errors.length === 0
 
     // Update sync log
     await updateSyncLog(supabase, syncLogId, {
-      status: success ? "success" : "failed",
+      status: timedOut ? "failed" : success ? "success" : "failed",
       clients_synced: clientResult.count,
       engagements_synced: engagementResult.count,
       custom_statuses_synced: statusResult.count,
-      error_message: success ? null : `${errors.length} errors occurred`,
-      error_details: success ? null : { errors: errors.slice(0, 50) },
+      error_message: timedOut
+        ? `Timed out after ${Math.round((Date.now() - startTime) / 1000)}s - partial sync completed`
+        : success
+          ? null
+          : `${errors.length} errors occurred`,
+      error_details: timedOut
+        ? { timedOut: true, errors: errors.slice(0, 20) }
+        : success
+          ? null
+          : { errors: errors.slice(0, 50) },
     })
 
     return {
@@ -414,14 +463,20 @@ export async function runFullSync(
       customStatusesSynced: statusResult.count,
       errors,
       duration: Date.now() - startTime,
+      timedOut,
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error"
 
     await updateSyncLog(supabase, syncLogId, {
       status: "failed",
-      error_message: errorMessage,
-      error_details: { stack: err instanceof Error ? err.stack : null },
+      error_message: timedOut
+        ? `Timed out: ${errorMessage}`
+        : errorMessage,
+      error_details: { 
+        stack: err instanceof Error ? err.stack : null,
+        timedOut,
+      },
     })
 
     return {
@@ -432,6 +487,7 @@ export async function runFullSync(
       customStatusesSynced: 0,
       errors: [errorMessage],
       duration: Date.now() - startTime,
+      timedOut,
     }
   }
 }
