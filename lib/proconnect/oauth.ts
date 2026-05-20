@@ -86,31 +86,52 @@ async function refreshAccessToken(
 }
 
 /**
- * Store tokens in Supabase using proper upsert on singleton index
+ * Store tokens in Supabase using insert-or-update pattern.
+ * The Supabase JS SDK doesn't support partial indexes for upsert conflict
+ * resolution, so we try insert first and fall back to update on conflict.
  */
 async function storeTokens(tokens: TokenResponse): Promise<void> {
   const supabase = getSupabaseAdmin()
 
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+  const now = new Date().toISOString()
 
-  // Use upsert with the singleton index (is_singleton = true)
-  // This is atomic — no window where the token row is missing
-  const { error } = await supabase.from("proconnect_oauth_tokens").upsert(
-    {
-      is_singleton: true,
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      token_type: tokens.token_type,
-      expires_at: expiresAt,
-      scope: "com.intuit.proconnect.taxreturns",
-      realm_id: PROCONNECT_REALM_ID,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "is_singleton" }
-  )
+  const payload = {
+    is_singleton: true,
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,
+    token_type: tokens.token_type,
+    expires_at: expiresAt,
+    scope: "com.intuit.proconnect.taxreturns",
+    realm_id: PROCONNECT_REALM_ID,
+    updated_at: now,
+  }
 
-  if (error) {
-    throw new Error(`Failed to store tokens: ${error.message}`)
+  // Try insert first
+  const { error: insertError } = await supabase
+    .from("proconnect_oauth_tokens")
+    .insert(payload)
+
+  if (insertError) {
+    // If unique violation (code 23505), update instead
+    if (insertError.code === "23505") {
+      const { error: updateError } = await supabase
+        .from("proconnect_oauth_tokens")
+        .update({
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          token_type: tokens.token_type,
+          expires_at: expiresAt,
+          updated_at: now,
+        })
+        .eq("is_singleton", true)
+
+      if (updateError) {
+        throw new Error(`Failed to update tokens: ${updateError.message}`)
+      }
+    } else {
+      throw new Error(`Failed to insert tokens: ${insertError.message}`)
+    }
   }
 }
 
