@@ -129,6 +129,11 @@ export async function middleware(request: NextRequest) {
     // state OR returns a friendly error.
     pathname.startsWith("/api/zoom/oauth/")
 
+  // ProConnect Tax (Intuit) POSTs real-time webhook notifications for
+  // Client, TaxReturn, and TaxReturnWorkStatus events. The route handler
+  // will verify payloads once Intuit documents their signing mechanism.
+  const isProConnectWebhook = pathname === "/api/proconnect/webhooks"
+
   // The Zoom App "Surface" (Marketplace > Features > Surface) iframes
   // /zoom/embed inside the Zoom desktop / web client. The Hub user is
   // not necessarily logged in to motta.cpa at that moment — the page
@@ -204,6 +209,7 @@ export async function middleware(request: NextRequest) {
     isAuthCallback ||
     isPublicApi ||
     isWebhook ||
+    isProConnectWebhook ||
     isCron ||
     isCalendlyOAuthCallback ||
     isInternalCall ||
