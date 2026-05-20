@@ -162,7 +162,9 @@ export async function GET() {
       }
 
       // Group by form type (1040, 1065, 1120, 1120S, 990)
-      const formType = eng.form_type || eng.return_type || "Unknown"
+      // Extract from raw_json.type since form_type column may not be populated
+      const formFromJson = (rawJson?.type as string) || null
+      const formType = formFromJson || eng.form_type || eng.return_type || "Unknown"
       const existingForm = rollup.forms.find((f) => f.form === formType)
 
       if (existingForm) {

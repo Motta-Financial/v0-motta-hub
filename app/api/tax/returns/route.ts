@@ -41,32 +41,18 @@ export async function GET(req: Request) {
     const supabase = createAdminClient()
 
     // Build the query on proconnect_engagements
+    // Note: We don't filter by form_type in the DB query because the column
+    // may not be populated. We extract form type from raw_json.type and filter
+    // in JavaScript after transformation.
     let query = supabase
       .from("proconnect_engagements")
       .select("*")
       .order("updated_at", { ascending: false })
-      .limit(limit)
+      .limit(limit * 2) // Fetch more to account for post-filter
 
     // Filter by tax year if provided
     if (taxYear) {
       query = query.eq("tax_year", Number(taxYear))
-    }
-
-    // Filter by form type
-    if (form !== "all") {
-      let formTypes: string[] = []
-
-      if (form === "business") {
-        formTypes = ["1065", "1120", "1120S"]
-      } else if (form === "individual") {
-        formTypes = ["1040"]
-      } else if (form === "nonprofit") {
-        formTypes = ["990"]
-      } else {
-        formTypes = [form]
-      }
-
-      query = query.in("form_type", formTypes)
     }
 
     const { data: engagements, error: engError } = await query
@@ -97,13 +83,24 @@ export async function GET(req: Request) {
       }
     }
 
-    // Transform to unified format
+    // Transform to unified format - extract form type from raw_json.type
+    // since the form_type column may not be populated yet
     const unified: UnifiedReturn[] = (engagements || []).map((eng) => {
       const rawJson = eng.raw_json as Record<string, unknown> | null
       const assignee = rawJson?.assignee as Record<string, unknown> | null
       const modifiedBy = rawJson?.modifiedBy as Record<string, unknown> | null
 
-      // Try to extract preparer name
+      // Extract form type from raw_json.type (e.g., "1040", "1065", "1120S")
+      // Fall back to form_type column, then return_type mapping
+      const formFromJson = (rawJson?.type as string) || null
+      const formType =
+        formFromJson ||
+        eng.form_type ||
+        RETURN_TYPE_TO_FORM[eng.return_type || ""] ||
+        eng.return_type ||
+        "Unknown"
+
+      // Try to extract preparer name from raw_json
       const preparerName =
         (rawJson?.name as string) ||
         (assignee?.profileId as string) ||
@@ -118,7 +115,7 @@ export async function GET(req: Request) {
           ? clientNames.get(eng.proconnect_client_id) || null
           : null,
         tax_year: eng.tax_year,
-        form: eng.form_type || RETURN_TYPE_TO_FORM[eng.return_type || ""] || eng.return_type || "Unknown",
+        form: formType,
         return_type: eng.return_type,
         status: eng.status,
         efile_status: eng.efile_status,
@@ -130,9 +127,30 @@ export async function GET(req: Request) {
       }
     })
 
-    // Build stats
+    // Filter by form type in JavaScript (since form_type column may be null)
+    let filteredUnified = unified
+    if (form !== "all") {
+      let formTypes: string[] = []
+
+      if (form === "business") {
+        formTypes = ["1065", "1120", "1120S"]
+      } else if (form === "individual") {
+        formTypes = ["1040"]
+      } else if (form === "nonprofit") {
+        formTypes = ["990"]
+      } else {
+        formTypes = [form]
+      }
+
+      filteredUnified = unified.filter((r) => formTypes.includes(r.form))
+    }
+
+    // Apply limit after filtering
+    filteredUnified = filteredUnified.slice(0, limit)
+
+    // Build stats from filtered data
     const stats = {
-      totalReturns: unified.length,
+      totalReturns: filteredUnified.length,
       byForm: {} as Record<string, { count: number }>,
       byYear: {} as Record<string, number>,
       byEfileStatus: {} as Record<string, number>,
@@ -140,7 +158,7 @@ export async function GET(req: Request) {
       byPreparer: {} as Record<string, number>,
     }
 
-    for (const r of unified) {
+    for (const r of filteredUnified) {
       // By form
       const fb = stats.byForm[r.form] ?? (stats.byForm[r.form] = { count: 0 })
       fb.count += 1
@@ -177,7 +195,7 @@ export async function GET(req: Request) {
     }
 
     return NextResponse.json({
-      returns: unified,
+      returns: filteredUnified,
       stats,
       forms: formsQueried,
     })

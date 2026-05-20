@@ -285,9 +285,10 @@ async function syncEngagements(
             (eng.engagementId as string) ||
             `${clientId}-${year}`
 
-          // Extract return type
-          const returnType = (eng.returnType as string) || null
-          const formType = returnType ? RETURN_TYPE_MAP[returnType] : null
+          // Extract form type - the API returns it as "type" (e.g., "1040", "1065", "1120", "1120S", "990")
+          // This is the actual form type, not a code that needs mapping
+          const formType = (eng.type as string) || null
+          const returnType = formType // Store same value in return_type for backwards compat
 
           const { error } = await supabase
             .from("proconnect_engagements")
