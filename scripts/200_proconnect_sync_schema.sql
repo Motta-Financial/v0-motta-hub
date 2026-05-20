@@ -18,6 +18,7 @@ DROP TABLE IF EXISTS proconnect_1120_returns CASCADE;
 
 CREATE TABLE IF NOT EXISTS proconnect_oauth_tokens (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  is_singleton boolean NOT NULL DEFAULT true,
   access_token text NOT NULL,
   refresh_token text NOT NULL,
   token_type text DEFAULT 'Bearer',
@@ -28,9 +29,10 @@ CREATE TABLE IF NOT EXISTS proconnect_oauth_tokens (
   updated_at timestamptz DEFAULT now()
 );
 
--- Ensure only one row exists
+-- Ensure only one row exists via the singleton column
 CREATE UNIQUE INDEX IF NOT EXISTS proconnect_oauth_tokens_singleton
-  ON proconnect_oauth_tokens ((true));
+  ON proconnect_oauth_tokens (is_singleton)
+  WHERE is_singleton = true;
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- 3. Clients (from GET /v1/clients)

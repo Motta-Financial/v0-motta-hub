@@ -86,25 +86,28 @@ async function refreshAccessToken(
 }
 
 /**
- * Store tokens in Supabase (upsert pattern - single row)
+ * Store tokens in Supabase using proper upsert on singleton index
  */
 async function storeTokens(tokens: TokenResponse): Promise<void> {
   const supabase = getSupabaseAdmin()
 
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
 
-  // Delete existing and insert new (ensures single row)
-  await supabase.from("proconnect_oauth_tokens").delete().neq("id", "00000000-0000-0000-0000-000000000000")
-
-  const { error } = await supabase.from("proconnect_oauth_tokens").insert({
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    token_type: tokens.token_type,
-    expires_at: expiresAt,
-    scope: "com.intuit.proconnect.taxreturns",
-    realm_id: PROCONNECT_REALM_ID,
-    updated_at: new Date().toISOString(),
-  })
+  // Use upsert with the singleton index (is_singleton = true)
+  // This is atomic — no window where the token row is missing
+  const { error } = await supabase.from("proconnect_oauth_tokens").upsert(
+    {
+      is_singleton: true,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      token_type: tokens.token_type,
+      expires_at: expiresAt,
+      scope: "com.intuit.proconnect.taxreturns",
+      realm_id: PROCONNECT_REALM_ID,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "is_singleton" }
+  )
 
   if (error) {
     throw new Error(`Failed to store tokens: ${error.message}`)
