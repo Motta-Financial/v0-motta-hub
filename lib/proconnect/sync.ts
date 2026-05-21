@@ -25,8 +25,11 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 // Tax years to sync (inclusive)
 const TAX_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 
-// Batch size for client processing (to avoid timeouts)
-const CLIENT_BATCH_SIZE = 20
+// Number of clients to process in parallel
+const PARALLEL_CLIENTS = 3
+
+// Skip clients synced within this many hours (unless full reset)
+const SKIP_IF_SYNCED_WITHIN_HOURS = 24
 
 // Max execution time before we gracefully stop (Vercel timeout is 60s for hobby, 300s for pro)
 // Leave 20s buffer for cleanup and slow API calls
@@ -249,28 +252,104 @@ async function syncClients(
 }
 
 /**
+ * Sync engagements for a single client across all tax years.
+ * Returns the count and any errors.
+ */
+async function syncClientEngagements(
+  supabase: SupabaseClient,
+  clientId: string
+): Promise<{ count: number; errors: string[] }> {
+  let count = 0
+  const errors: string[] = []
+
+  for (const year of TAX_YEARS) {
+    try {
+      const response = await fetchEngagements(clientId, year)
+
+      if (!response.ok) {
+        // 404 is expected if client has no engagements for that year
+        if (response.status !== 404) {
+          errors.push(`Engagements ${clientId}/${year}: ${response.error}`)
+        }
+        continue
+      }
+
+      if (!response.data || response.data.length === 0) continue
+
+      for (const engagement of response.data) {
+        const eng = engagement as Record<string, unknown>
+        const engagementId =
+          (eng.id as string) ||
+          (eng.engagementId as string) ||
+          `${clientId}-${year}`
+
+        // Extract form type from raw API response
+        const formType = (eng.type as string) || null
+        const returnType = formType
+
+        const { error } = await supabase.from("proconnect_engagements").upsert(
+          {
+            engagement_id: engagementId,
+            proconnect_client_id: clientId,
+            tax_year: year,
+            return_type: returnType,
+            form_type: formType,
+            status: (eng.status as string) || null,
+            efile_status: (eng.efileStatus as string) || null,
+            work_status: (eng.workStatus as string) || null,
+            raw_json: engagement,
+            synced_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "proconnect_client_id,tax_year,return_type",
+          }
+        )
+
+        if (error) {
+          errors.push(`Engagement ${engagementId}: ${error.message}`)
+        } else {
+          count++
+        }
+      }
+    } catch (err) {
+      errors.push(
+        `Engagement ${clientId}/${year}: ${err instanceof Error ? err.message : "Unknown"}`
+      )
+    }
+  }
+
+  return { count, errors }
+}
+
+/**
  * Sync engagements for all clients across all tax years.
  * Supports resumable sync - starts from startIndex and tracks progress.
- * Returns the last processed index so the next run can resume.
+ * Processes clients in parallel batches of PARALLEL_CLIENTS.
+ * Skips clients synced within SKIP_IF_SYNCED_WITHIN_HOURS unless forceFullSync.
  */
 async function syncEngagements(
   supabase: SupabaseClient,
   startTime: number,
-  startIndex: number = 0
+  startIndex: number = 0,
+  forceFullSync: boolean = false
 ): Promise<{
   count: number
   errors: string[]
   timedOut: boolean
   lastClientIndex: number
   totalClients: number
+  skippedClients: number
 }> {
-  console.log(`[ProConnect Sync] Fetching engagements (starting from client index ${startIndex})...`)
+  console.log(
+    `[v0] syncEngagements start (index ${startIndex}, forceFullSync=${forceFullSync})`
+  )
 
-  // Get all client IDs
+  // Get all client IDs with their last sync time
   const { data: clients, error: clientError } = await supabase
     .from("proconnect_clients")
-    .select("proconnect_client_id")
-    .order("proconnect_client_id", { ascending: true }) // Consistent ordering for resume
+    .select("proconnect_client_id, updated_at")
+    .order("proconnect_client_id", { ascending: true })
 
   if (clientError || !clients) {
     return {
@@ -279,101 +358,91 @@ async function syncEngagements(
       timedOut: false,
       lastClientIndex: startIndex,
       totalClients: 0,
+      skippedClients: 0,
     }
   }
+
+  // Get the last engagement sync time per client
+  const { data: lastSyncs } = await supabase
+    .from("proconnect_engagements")
+    .select("proconnect_client_id, synced_at")
+    .order("synced_at", { ascending: false })
+
+  // Build a map of client_id -> last synced time
+  const lastSyncMap = new Map<string, string>()
+  for (const row of lastSyncs || []) {
+    if (row.proconnect_client_id && !lastSyncMap.has(row.proconnect_client_id)) {
+      lastSyncMap.set(row.proconnect_client_id, row.synced_at)
+    }
+  }
+
+  const cutoffTime = Date.now() - SKIP_IF_SYNCED_WITHIN_HOURS * 60 * 60 * 1000
 
   let count = 0
   const errors: string[] = []
   let timedOut = false
   let lastClientIndex = startIndex
+  let skippedClients = 0
 
-  // Process clients starting from startIndex
-  for (let i = startIndex; i < clients.length; i++) {
-    // Check timeout before processing each client
+  // Process clients in parallel batches starting from startIndex
+  for (let i = startIndex; i < clients.length; i += PARALLEL_CLIENTS) {
+    // Check timeout before processing each batch
     const elapsed = Date.now() - startTime
     if (elapsed > MAX_EXECUTION_MS) {
       console.log(
-        `[ProConnect Sync] Timeout approaching after ${i - startIndex} clients (index ${i}), stopping gracefully`
+        `[v0] Timeout after ${i - startIndex} clients (index ${i}), ${elapsed}ms elapsed`
       )
       timedOut = true
-      lastClientIndex = i // Save where we stopped
+      lastClientIndex = i
       break
     }
 
-    const client = clients[i]
-    const clientId = client.proconnect_client_id
+    // Get the next batch of clients
+    const batch = clients.slice(i, Math.min(i + PARALLEL_CLIENTS, clients.length))
 
-    for (const year of TAX_YEARS) {
-      try {
-        const response = await fetchEngagements(clientId, year)
+    // Filter out recently synced clients (unless force full sync)
+    const clientsToSync: string[] = []
+    for (const client of batch) {
+      const clientId = client.proconnect_client_id
+      if (!clientId) continue
 
-        if (!response.ok) {
-          // 404 is expected if client has no engagements for that year
-          if (response.status !== 404) {
-            errors.push(
-              `Engagements ${clientId}/${year}: ${response.error}`
-            )
-          }
+      if (!forceFullSync) {
+        const lastSync = lastSyncMap.get(clientId)
+        if (lastSync && Date.parse(lastSync) > cutoffTime) {
+          skippedClients++
           continue
         }
-
-        if (!response.data || response.data.length === 0) continue
-
-        for (const engagement of response.data) {
-          const eng = engagement as Record<string, unknown>
-          const engagementId =
-            (eng.id as string) ||
-            (eng.engagementId as string) ||
-            `${clientId}-${year}`
-
-          // Extract form type - the API returns it as "type" (e.g., "1040", "1065", "1120", "1120S", "990")
-          // This is the actual form type, not a code that needs mapping
-          const formType = (eng.type as string) || null
-          const returnType = formType // Store same value in return_type for backwards compat
-
-          const { error } = await supabase
-            .from("proconnect_engagements")
-            .upsert(
-              {
-                engagement_id: engagementId,
-                proconnect_client_id: clientId,
-                tax_year: year,
-                return_type: returnType,
-                form_type: formType,
-                status: (eng.status as string) || null,
-                efile_status: (eng.efileStatus as string) || null,
-                work_status: (eng.workStatus as string) || null,
-                raw_json: engagement,
-                synced_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-              },
-              {
-                onConflict: "proconnect_client_id,tax_year,return_type",
-              }
-            )
-
-          if (error) {
-            errors.push(`Engagement ${engagementId}: ${error.message}`)
-          } else {
-            count++
-          }
-        }
-      } catch (err) {
-        errors.push(
-          `Engagement ${clientId}/${year}: ${err instanceof Error ? err.message : "Unknown"}`
-        )
       }
+
+      clientsToSync.push(clientId)
     }
 
-    // Update last processed index after each client
-    lastClientIndex = i + 1
-
-    // Log progress every batch
-    if ((i - startIndex + 1) % CLIENT_BATCH_SIZE === 0) {
-      console.log(
-        `[ProConnect Sync] Progress: ${i + 1}/${clients.length} clients, ${count} engagements this run`
-      )
+    if (clientsToSync.length === 0) {
+      lastClientIndex = i + batch.length
+      continue
     }
+
+    // Process this batch in parallel
+    console.log(
+      `[v0] Processing batch of ${clientsToSync.length} clients at index ${i}, ${Date.now() - startTime}ms elapsed`
+    )
+
+    const results = await Promise.all(
+      clientsToSync.map((clientId) => syncClientEngagements(supabase, clientId))
+    )
+
+    // Aggregate results
+    for (const result of results) {
+      count += result.count
+      errors.push(...result.errors)
+    }
+
+    // Update last processed index after each batch
+    lastClientIndex = i + batch.length
+
+    console.log(
+      `[v0] Batch done: ${count} total engagements, ${Date.now() - startTime}ms elapsed`
+    )
   }
 
   // If we processed all clients, reset to 0
@@ -382,9 +451,17 @@ async function syncEngagements(
   }
 
   console.log(
-    `[ProConnect Sync] Synced ${count} engagements${timedOut ? ` (stopped at index ${lastClientIndex})` : " (complete)"}`
+    `[v0] syncEngagements done: ${count} engagements, ${skippedClients} skipped, timedOut=${timedOut}`
   )
-  return { count, errors, timedOut, lastClientIndex, totalClients: clients.length }
+
+  return {
+    count,
+    errors,
+    timedOut,
+    lastClientIndex,
+    totalClients: clients.length,
+    skippedClients,
+  }
 }
 
 /**
@@ -496,10 +573,12 @@ export async function runFullSync(
       }
     }
 
-    // 2. Sync engagements (this is the slow part - resumable)
+    // 2. Sync engagements (this is the slow part - resumable, parallel, skip recent)
+    // Force full sync on manual runs; incremental on cron/webhook
+    const forceFullSync = syncType === "manual"
     console.log("[v0] Step 4 start - syncEngagements", Date.now() - startTime, "ms elapsed")
-    const engagementResult = await syncEngagements(supabase, startTime, resumeIndex)
-    console.log("[v0] Step 4 done - syncEngagements", Date.now() - startTime, "ms elapsed, count:", engagementResult.count)
+    const engagementResult = await syncEngagements(supabase, startTime, resumeIndex, forceFullSync)
+    console.log("[v0] Step 4 done - syncEngagements", Date.now() - startTime, "ms elapsed, count:", engagementResult.count, "skipped:", engagementResult.skippedClients)
     errors.push(...engagementResult.errors)
     timedOut = engagementResult.timedOut
 
@@ -534,19 +613,20 @@ export async function runFullSync(
       custom_statuses_synced: statusResult.count,
       last_client_index: engagementResult.lastClientIndex,
       error_message: isPartial
-        ? `Partial sync: processed ${engagementResult.lastClientIndex}/${engagementResult.totalClients} clients in ${Math.round((Date.now() - startTime) / 1000)}s`
+        ? `Partial sync: processed ${engagementResult.lastClientIndex}/${engagementResult.totalClients} clients (${engagementResult.skippedClients} skipped) in ${Math.round((Date.now() - startTime) / 1000)}s`
         : success
-          ? null
+          ? `Synced ${engagementResult.count} engagements (${engagementResult.skippedClients} clients skipped - already synced)`
           : `${errors.length} errors occurred`,
       error_details: isPartial
         ? {
             partial: true,
             lastClientIndex: engagementResult.lastClientIndex,
             totalClients: engagementResult.totalClients,
+            skippedClients: engagementResult.skippedClients,
             errors: errors.slice(0, 20),
           }
         : success
-          ? null
+          ? { skippedClients: engagementResult.skippedClients }
           : { errors: errors.slice(0, 50) },
     })
 
