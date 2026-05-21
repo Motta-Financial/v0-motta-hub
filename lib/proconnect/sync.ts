@@ -145,18 +145,34 @@ async function getConsecutiveFailureCount(
 async function getResumeIndex(supabase: SupabaseClient): Promise<number> {
   const { data, error } = await supabase
     .from("proconnect_sync_logs")
-    .select("status, last_client_index")
+    .select("status, last_client_index, started_at")
     .order("started_at", { ascending: false })
     .limit(1)
     .single()
 
-  if (error || !data) return 0
+  console.log("[v0] getResumeIndex query result:", {
+    error: error?.message,
+    status: data?.status,
+    last_client_index: data?.last_client_index,
+    started_at: data?.started_at,
+  })
 
-  // Only resume if the last run was partial
-  if (data.status === "partial" && typeof data.last_client_index === "number") {
+  if (error || !data) {
+    console.log("[v0] getResumeIndex returning 0 (no data or error)")
+    return 0
+  }
+
+  // Only resume if the last run was partial AND has a valid index > 0
+  if (
+    data.status === "partial" &&
+    typeof data.last_client_index === "number" &&
+    data.last_client_index > 0
+  ) {
+    console.log("[v0] getResumeIndex returning", data.last_client_index, "(resuming from partial)")
     return data.last_client_index
   }
 
+  console.log("[v0] getResumeIndex returning 0 (last run was not partial or index was 0)")
   return 0
 }
 
