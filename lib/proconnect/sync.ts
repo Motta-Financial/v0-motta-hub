@@ -183,16 +183,19 @@ async function matchClientToContact(
 async function syncClients(
   supabase: SupabaseClient
 ): Promise<{ count: number; errors: string[] }> {
-  console.log("[ProConnect Sync] Fetching clients...")
+  const fnStart = Date.now()
+  console.log("[v0] syncClients start")
 
+  console.log("[v0] syncClients - calling fetchClients API", Date.now() - fnStart, "ms")
   const response = await fetchClients()
+  console.log("[v0] syncClients - fetchClients API done", Date.now() - fnStart, "ms")
 
   if (!response.ok || !response.data) {
     return { count: 0, errors: [response.error || "Failed to fetch clients"] }
   }
 
   const clients = response.data
-  console.log(`[ProConnect Sync] Found ${clients.length} clients`)
+  console.log(`[v0] syncClients - got ${clients.length} clients`, Date.now() - fnStart, "ms")
 
   let count = 0
   const errors: string[] = []
@@ -455,12 +458,17 @@ export async function runFullSync(
   syncType: "full" | "manual" | "webhook" = "full"
 ): Promise<SyncResult> {
   const startTime = Date.now()
+  console.log("[v0] Sync started at", startTime)
+
   const supabase = getSupabaseAdmin()
   const errors: string[] = []
   let timedOut = false
 
   // Check if we should resume from a previous partial run
+  console.log("[v0] Step 1 start - getResumeIndex", Date.now() - startTime, "ms elapsed")
   const resumeIndex = await getResumeIndex(supabase)
+  console.log("[v0] Step 1 done - getResumeIndex", Date.now() - startTime, "ms elapsed, resumeIndex:", resumeIndex)
+
   const isResuming = resumeIndex > 0
 
   if (isResuming) {
@@ -468,13 +476,17 @@ export async function runFullSync(
   }
 
   // Create sync log
+  console.log("[v0] Step 2 start - createSyncLog", Date.now() - startTime, "ms elapsed")
   const syncLogId = await createSyncLog(supabase, syncType)
+  console.log("[v0] Step 2 done - createSyncLog", Date.now() - startTime, "ms elapsed")
 
   try {
     // 1. Sync clients (only on fresh runs, not resumes)
     let clientResult = { count: 0, errors: [] as string[] }
     if (!isResuming) {
+      console.log("[v0] Step 3 start - syncClients", Date.now() - startTime, "ms elapsed")
       clientResult = await syncClients(supabase)
+      console.log("[v0] Step 3 done - syncClients", Date.now() - startTime, "ms elapsed, count:", clientResult.count)
       errors.push(...clientResult.errors)
 
       // Check timeout after clients
@@ -485,7 +497,9 @@ export async function runFullSync(
     }
 
     // 2. Sync engagements (this is the slow part - resumable)
+    console.log("[v0] Step 4 start - syncEngagements", Date.now() - startTime, "ms elapsed")
     const engagementResult = await syncEngagements(supabase, startTime, resumeIndex)
+    console.log("[v0] Step 4 done - syncEngagements", Date.now() - startTime, "ms elapsed, count:", engagementResult.count)
     errors.push(...engagementResult.errors)
     timedOut = engagementResult.timedOut
 

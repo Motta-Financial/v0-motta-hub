@@ -169,11 +169,17 @@ function needsRefresh(expiresAt: string): boolean {
  * This is the main entry point for other modules.
  */
 export async function getAccessToken(): Promise<string> {
+  const fnStart = Date.now()
+  console.log("[v0] getAccessToken start")
+
   // Check for stored token
+  console.log("[v0] getAccessToken - fetching stored tokens", Date.now() - fnStart, "ms")
   const stored = await getStoredTokens()
+  console.log("[v0] getAccessToken - got stored tokens", Date.now() - fnStart, "ms, hasToken:", !!stored)
 
   if (stored && !needsRefresh(stored.expires_at)) {
     // Token is still valid
+    console.log("[v0] getAccessToken - using cached token", Date.now() - fnStart, "ms")
     return stored.access_token
   }
 
@@ -186,12 +192,12 @@ export async function getAccessToken(): Promise<string> {
     )
   }
 
-  console.log("[ProConnect] Refreshing access token...")
-
+  console.log("[v0] getAccessToken - refreshing token", Date.now() - fnStart, "ms")
   const newTokens = await refreshAccessToken(refreshToken)
-  await storeTokens(newTokens)
+  console.log("[v0] getAccessToken - got new tokens", Date.now() - fnStart, "ms")
 
-  console.log("[ProConnect] Token refreshed successfully")
+  await storeTokens(newTokens)
+  console.log("[v0] getAccessToken - stored tokens", Date.now() - fnStart, "ms")
 
   return newTokens.access_token
 }
