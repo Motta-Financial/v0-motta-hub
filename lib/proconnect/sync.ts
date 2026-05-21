@@ -29,8 +29,8 @@ const TAX_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 const CLIENT_BATCH_SIZE = 20
 
 // Max execution time before we gracefully stop (Vercel timeout is 60s for hobby, 300s for pro)
-// Leave 10s buffer for cleanup
-const MAX_EXECUTION_MS = 50_000
+// Leave 20s buffer for cleanup and slow API calls
+const MAX_EXECUTION_MS = 40_000
 
 interface SyncResult {
   success: boolean
@@ -551,15 +551,48 @@ export async function runFullSync(
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error"
 
+    // Check if this was a timeout - treat as partial, not failed
+    const isTimeoutError =
+      timedOut ||
+      errorMessage.toLowerCase().includes("timeout") ||
+      errorMessage.toLowerCase().includes("timed out")
+
+    if (isTimeoutError) {
+      // Timeout should be partial, not failed - so it doesn't trigger 3-strike alerts
+      await updateSyncLog(supabase, syncLogId, {
+        status: "partial",
+        last_client_index: resumeIndex > 0 ? resumeIndex : 1, // Save progress for resume
+        error_message: `Partial sync: timed out after ${Math.round((Date.now() - startTime) / 1000)}s - will resume on next run`,
+        error_details: {
+          partial: true,
+          timedOut: true,
+          resumeIndex,
+          stack: err instanceof Error ? err.stack : null,
+        },
+      })
+
+      return {
+        success: false,
+        syncLogId,
+        clientsSynced: 0,
+        engagementsSynced: 0,
+        customStatusesSynced: 0,
+        errors: [errorMessage],
+        duration: Date.now() - startTime,
+        timedOut: true,
+        partial: true,
+        lastClientIndex: resumeIndex,
+      }
+    }
+
+    // Actual failure (not timeout)
     await updateSyncLog(supabase, syncLogId, {
       status: "failed",
       last_client_index: resumeIndex, // Preserve resume point on failure
-      error_message: timedOut
-        ? `Timed out: ${errorMessage}`
-        : errorMessage,
+      error_message: errorMessage,
       error_details: { 
         stack: err instanceof Error ? err.stack : null,
-        timedOut,
+        timedOut: false,
         resumeIndex,
       },
     })
@@ -572,7 +605,7 @@ export async function runFullSync(
       customStatusesSynced: 0,
       errors: [errorMessage],
       duration: Date.now() - startTime,
-      timedOut,
+      timedOut: false,
     }
   }
 }
