@@ -21,8 +21,7 @@
  *   }]
  * }
  *
- * Note: No webhook verification is implemented yet.
- * Add HMAC/signature validation when Intuit provides documentation.
+ * Webhook verification uses the PROCONNECT_WEBHOOK_VERIFIER_TOKEN env var.
  */
 
 import { NextRequest, NextResponse } from "next/server"
@@ -196,6 +195,17 @@ async function processEntity(
 
 export async function POST(request: NextRequest) {
   try {
+    // Verify webhook signature using Intuit verifier token
+    const verifierToken =
+      request.headers.get("intuit-webhook-signature") ||
+      request.headers.get("verifier-token")
+    const expectedToken = process.env.PROCONNECT_WEBHOOK_VERIFIER_TOKEN
+
+    if (expectedToken && verifierToken !== expectedToken) {
+      console.warn("[ProConnect Webhook] Unauthorized request - invalid verifier token")
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
     const payload = (await request.json()) as WebhookPayload
 
     console.log(
