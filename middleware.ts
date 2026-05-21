@@ -134,6 +134,9 @@ export async function middleware(request: NextRequest) {
   // will verify payloads once Intuit documents their signing mechanism.
   const isProConnectWebhook = pathname === "/api/proconnect/webhooks"
 
+  // ProConnect sync endpoint - uses CRON_SECRET Bearer auth in the handler
+  const isProConnectSync = pathname === "/api/proconnect/sync"
+
   // The Zoom App "Surface" (Marketplace > Features > Surface) iframes
   // /zoom/embed inside the Zoom desktop / web client. The Hub user is
   // not necessarily logged in to motta.cpa at that moment — the page
@@ -210,6 +213,7 @@ export async function middleware(request: NextRequest) {
     isPublicApi ||
     isWebhook ||
     isProConnectWebhook ||
+    isProConnectSync ||
     isCron ||
     isCalendlyOAuthCallback ||
     isInternalCall ||

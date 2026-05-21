@@ -56,6 +56,13 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  // Verify CRON_SECRET auth
+  const authHeader = request.headers.get("authorization")
+  const cronSecret = process.env.CRON_SECRET
+  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   const url = new URL(request.url)
   const fullLoop = url.searchParams.get("full") === "true"
 
