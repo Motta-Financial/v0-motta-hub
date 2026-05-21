@@ -41,6 +41,8 @@ interface SyncResult {
   errors: string[]
   duration: number
   timedOut?: boolean
+  partial?: boolean
+  lastClientIndex?: number
 }
 
 interface SyncLog {
@@ -54,6 +56,7 @@ interface SyncLog {
   error_details: unknown
   started_at: string
   completed_at: string | null
+  last_client_index: number
 }
 
 /**
@@ -130,6 +133,28 @@ async function getConsecutiveFailureCount(
     }
   }
   return count
+}
+
+/**
+ * Get the resume index from the most recent partial sync.
+ * Returns 0 if the last sync was complete or successful.
+ */
+async function getResumeIndex(supabase: SupabaseClient): Promise<number> {
+  const { data, error } = await supabase
+    .from("proconnect_sync_logs")
+    .select("status, last_client_index")
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .single()
+
+  if (error || !data) return 0
+
+  // Only resume if the last run was partial
+  if (data.status === "partial" && typeof data.last_client_index === "number") {
+    return data.last_client_index
+  }
+
+  return 0
 }
 
 /**
@@ -222,40 +247,53 @@ async function syncClients(
 
 /**
  * Sync engagements for all clients across all tax years.
- * Processes in batches with timeout awareness to avoid serverless timeouts.
+ * Supports resumable sync - starts from startIndex and tracks progress.
+ * Returns the last processed index so the next run can resume.
  */
 async function syncEngagements(
   supabase: SupabaseClient,
-  startTime: number
-): Promise<{ count: number; errors: string[]; timedOut: boolean }> {
-  console.log("[ProConnect Sync] Fetching engagements...")
+  startTime: number,
+  startIndex: number = 0
+): Promise<{
+  count: number
+  errors: string[]
+  timedOut: boolean
+  lastClientIndex: number
+  totalClients: number
+}> {
+  console.log(`[ProConnect Sync] Fetching engagements (starting from client index ${startIndex})...`)
 
   // Get all client IDs
   const { data: clients, error: clientError } = await supabase
     .from("proconnect_clients")
     .select("proconnect_client_id")
+    .order("proconnect_client_id", { ascending: true }) // Consistent ordering for resume
 
   if (clientError || !clients) {
     return {
       count: 0,
       errors: [clientError?.message || "Failed to get client IDs"],
       timedOut: false,
+      lastClientIndex: startIndex,
+      totalClients: 0,
     }
   }
 
   let count = 0
   const errors: string[] = []
   let timedOut = false
+  let lastClientIndex = startIndex
 
-  // Process clients in batches
-  for (let i = 0; i < clients.length; i++) {
+  // Process clients starting from startIndex
+  for (let i = startIndex; i < clients.length; i++) {
     // Check timeout before processing each client
     const elapsed = Date.now() - startTime
     if (elapsed > MAX_EXECUTION_MS) {
       console.log(
-        `[ProConnect Sync] Timeout approaching after ${i} clients, stopping gracefully`
+        `[ProConnect Sync] Timeout approaching after ${i - startIndex} clients (index ${i}), stopping gracefully`
       )
       timedOut = true
+      lastClientIndex = i // Save where we stopped
       break
     }
 
@@ -324,16 +362,26 @@ async function syncEngagements(
       }
     }
 
+    // Update last processed index after each client
+    lastClientIndex = i + 1
+
     // Log progress every batch
-    if ((i + 1) % CLIENT_BATCH_SIZE === 0) {
+    if ((i - startIndex + 1) % CLIENT_BATCH_SIZE === 0) {
       console.log(
-        `[ProConnect Sync] Progress: ${i + 1}/${clients.length} clients, ${count} engagements`
+        `[ProConnect Sync] Progress: ${i + 1}/${clients.length} clients, ${count} engagements this run`
       )
     }
   }
 
-  console.log(`[ProConnect Sync] Synced ${count} engagements${timedOut ? " (timed out)" : ""}`)
-  return { count, errors, timedOut }
+  // If we processed all clients, reset to 0
+  if (lastClientIndex >= clients.length) {
+    lastClientIndex = 0
+  }
+
+  console.log(
+    `[ProConnect Sync] Synced ${count} engagements${timedOut ? ` (stopped at index ${lastClientIndex})` : " (complete)"}`
+  )
+  return { count, errors, timedOut, lastClientIndex, totalClients: clients.length }
 }
 
 /**
@@ -400,7 +448,8 @@ async function syncCustomStatuses(
 }
 
 /**
- * Run the full sync with timeout awareness
+ * Run the full sync with timeout awareness and resumable progress.
+ * If a previous run was partial, this will resume from where it left off.
  */
 export async function runFullSync(
   syncType: "full" | "manual" | "webhook" = "full"
@@ -410,47 +459,78 @@ export async function runFullSync(
   const errors: string[] = []
   let timedOut = false
 
+  // Check if we should resume from a previous partial run
+  const resumeIndex = await getResumeIndex(supabase)
+  const isResuming = resumeIndex > 0
+
+  if (isResuming) {
+    console.log(`[ProConnect Sync] Resuming from client index ${resumeIndex}`)
+  }
+
   // Create sync log
   const syncLogId = await createSyncLog(supabase, syncType)
 
   try {
-    // 1. Sync clients
-    const clientResult = await syncClients(supabase)
-    errors.push(...clientResult.errors)
+    // 1. Sync clients (only on fresh runs, not resumes)
+    let clientResult = { count: 0, errors: [] as string[] }
+    if (!isResuming) {
+      clientResult = await syncClients(supabase)
+      errors.push(...clientResult.errors)
 
-    // Check timeout after clients
-    if (Date.now() - startTime > MAX_EXECUTION_MS) {
-      timedOut = true
-      throw new Error("Timeout after syncing clients")
+      // Check timeout after clients
+      if (Date.now() - startTime > MAX_EXECUTION_MS) {
+        timedOut = true
+        throw new Error("Timeout after syncing clients")
+      }
     }
 
-    // 2. Sync engagements (this is the slow part)
-    const engagementResult = await syncEngagements(supabase, startTime)
+    // 2. Sync engagements (this is the slow part - resumable)
+    const engagementResult = await syncEngagements(supabase, startTime, resumeIndex)
     errors.push(...engagementResult.errors)
     timedOut = engagementResult.timedOut
 
-    // 3. Sync custom statuses (only if we have time)
+    // Determine if this was a partial or complete run
+    const isPartial = timedOut && engagementResult.lastClientIndex > 0
+    const isComplete = engagementResult.lastClientIndex === 0 && !timedOut
+
+    // 3. Sync custom statuses (only if we completed all clients and have time)
     let statusResult = { count: 0, errors: [] as string[] }
-    if (!timedOut && Date.now() - startTime < MAX_EXECUTION_MS) {
+    if (isComplete && Date.now() - startTime < MAX_EXECUTION_MS) {
       statusResult = await syncCustomStatuses(supabase)
       errors.push(...statusResult.errors)
     }
 
-    const success = !timedOut && errors.length === 0
+    const success = isComplete && errors.length === 0
+
+    // Determine status
+    let status: string
+    if (isPartial) {
+      status = "partial"
+    } else if (success) {
+      status = "success"
+    } else {
+      status = "failed"
+    }
 
     // Update sync log
     await updateSyncLog(supabase, syncLogId, {
-      status: timedOut ? "failed" : success ? "success" : "failed",
+      status,
       clients_synced: clientResult.count,
       engagements_synced: engagementResult.count,
       custom_statuses_synced: statusResult.count,
-      error_message: timedOut
-        ? `Timed out after ${Math.round((Date.now() - startTime) / 1000)}s - partial sync completed`
+      last_client_index: engagementResult.lastClientIndex,
+      error_message: isPartial
+        ? `Partial sync: processed ${engagementResult.lastClientIndex}/${engagementResult.totalClients} clients in ${Math.round((Date.now() - startTime) / 1000)}s`
         : success
           ? null
           : `${errors.length} errors occurred`,
-      error_details: timedOut
-        ? { timedOut: true, errors: errors.slice(0, 20) }
+      error_details: isPartial
+        ? {
+            partial: true,
+            lastClientIndex: engagementResult.lastClientIndex,
+            totalClients: engagementResult.totalClients,
+            errors: errors.slice(0, 20),
+          }
         : success
           ? null
           : { errors: errors.slice(0, 50) },
@@ -465,18 +545,22 @@ export async function runFullSync(
       errors,
       duration: Date.now() - startTime,
       timedOut,
+      partial: isPartial,
+      lastClientIndex: engagementResult.lastClientIndex,
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error"
 
     await updateSyncLog(supabase, syncLogId, {
       status: "failed",
+      last_client_index: resumeIndex, // Preserve resume point on failure
       error_message: timedOut
         ? `Timed out: ${errorMessage}`
         : errorMessage,
       error_details: { 
         stack: err instanceof Error ? err.stack : null,
         timedOut,
+        resumeIndex,
       },
     })
 
