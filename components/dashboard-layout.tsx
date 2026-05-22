@@ -197,6 +197,7 @@ const navigation = [
           },
           { name: "Nonprofit (990)", href: "/tax/nonprofit", icon: Landmark },
           { name: "Clients", href: "/tax/clients", icon: UserCircle },
+          { name: "Settings", href: "/tax/settings", icon: Settings },
         ],
       },
       { name: "Special Teams", href: "/special-teams", icon: Flame },

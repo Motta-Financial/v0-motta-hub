@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSyncStats } from "@/lib/proconnect/sync"
 import { getTokenStatus } from "@/lib/proconnect/oauth"
+import { requireLeadership } from "@/lib/auth/require-leadership"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -67,11 +68,20 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  // Verify CRON_SECRET auth
+  // Authorise via either:
+  //   1) CRON_SECRET bearer header (used by Vercel cron + scripts)
+  //   2) A leadership-role Supabase session (used by /tax/settings UI)
+  // This lets ops trigger a manual import from the Hub without exposing
+  // the service-role secret to the browser.
   const authHeader = request.headers.get("authorization")
   const cronSecret = process.env.CRON_SECRET
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const cronOk = !!cronSecret && authHeader === `Bearer ${cronSecret}`
+
+  if (!cronOk) {
+    const auth = await requireLeadership()
+    if (!auth.ok) {
+      return auth.response
+    }
   }
 
   console.log("[ProConnect API] Manual sync triggered - delegating to Edge Function")

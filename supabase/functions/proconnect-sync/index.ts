@@ -39,7 +39,7 @@ const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 const CLIENT_SERVICE_URL = "https://client.accountant.intuit.com"
 const ENGAGEMENT_SERVICE_URL = "https://engagement.accountant.intuit.com"
 
-const TAX_YEARS = [2023, 2024, 2025]
+const TAX_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 const PARALLEL_CLIENTS = 3 // Reduced from 5 to avoid 429s when multiplied by TAX_YEARS
 const REFRESH_BUFFER_SECONDS = 300
 
