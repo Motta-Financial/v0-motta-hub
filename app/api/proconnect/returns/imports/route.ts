@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
     let q = sb
       .from("proconnect_import_jobs")
       .select(
-        "id, return_id, proconnect_client_id, series_id, status, dry_run, entries_count, total_imported, total_errors, version_in, version_out, error_kind, error_status, intuit_tid, requested_by, reason, started_at, completed_at",
+        "id, return_id, proconnect_client_id, series_id, status, dry_run, entry_count_requested, imported_count, error_count, request_version, response_version, http_status, error_message, intuit_tid, triggered_by, trigger_context, started_at, completed_at",
       )
       .order("started_at", { ascending: false })
       .limit(limit)

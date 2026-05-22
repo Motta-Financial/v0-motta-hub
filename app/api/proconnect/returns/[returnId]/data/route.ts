@@ -35,41 +35,44 @@ async function loadAndPersist(clientId: string, returnId: string) {
 
   const sb = admin()
   const exp = result.data
-
-  // 1. Upsert the snapshot row. `proconnect_client_id` is the numeric
-  //    client id ProConnect returns; `return_id` is the UUID. Both are
-  //    part of the natural key so the same return for two different
-  //    clients (which shouldn't happen but guards against UUID reuse)
-  //    won't collide.
   const flatCells = flattenSeriesMap(exp.data)
 
-  const { error: snapErr } = await sb.from("proconnect_return_snapshots").upsert(
-    {
-      return_id: returnId,
-      proconnect_client_id: clientId,
-      client_name: exp.clientName ?? null,
-      tax_year: exp.year ?? null,
-      return_type: exp.type ?? null,
-      version: exp.version ?? null,
-      series_versions: exp.seriesVersion ?? [],
-      efile_items: exp.efileItems ?? [],
-      agencies: exp.agency ?? [],
-      firm_id: exp.id_firm ?? null,
-      created_by: exp.createdBy ?? null,
-      created_time_ms: exp.createdTime ?? null,
-      cell_count: flatCells.length,
-      raw_export: exp,
-      last_exported_at: new Date().toISOString(),
-      intuit_tid: result.intuitTid,
-    },
-    { onConflict: "return_id" },
-  )
+  // 1. Upsert the snapshot row. Column names match scripts/130 — we
+  //    persist `raw_data` (the full nested response) for forensics, but
+  //    every queryable field is hoisted into proconnect_return_field_cells.
+  const { data: snap, error: snapErr } = await sb
+    .from("proconnect_return_snapshots")
+    .upsert(
+      {
+        return_id: returnId,
+        proconnect_client_id: clientId,
+        return_name: exp.name ?? null,
+        client_name: exp.clientName ?? null,
+        tax_year: exp.year ?? null,
+        return_type: exp.type ?? null,
+        version: exp.version ?? null,
+        series_versions: exp.seriesVersion ?? [],
+        efile_items: exp.efileItems ?? [],
+        agencies: exp.agency ?? [],
+        firm_id: exp.id_firm ?? null,
+        proconnect_created_by: exp.createdBy ?? null,
+        proconnect_created_time: exp.createdTime
+          ? new Date(exp.createdTime).toISOString()
+          : null,
+        raw_data: exp.data ?? null,
+        exported_at: new Date().toISOString(),
+        deleted_at: null,
+      },
+      { onConflict: "proconnect_client_id,return_id" },
+    )
+    .select("id")
+    .single()
   if (snapErr) throw snapErr
+  const snapshotId = snap.id as string
 
-  // 2. Replace flat cells. We delete-then-insert in a single transaction
-  //    so partial replacements never leave the table in a half-state.
-  //    For 100k+ cell returns we'd want a smarter diff — kept simple
-  //    for Phase 1 (typical IND return is well under 5k cells).
+  // 2. Replace flat cells. We delete-then-insert so partial replacements
+  //    never leave the table in a half-state. Typical IND return runs
+  //    well under 5k cells; we chunk inserts at 1000 rows.
   const { error: delErr } = await sb
     .from("proconnect_return_field_cells")
     .delete()
@@ -78,26 +81,26 @@ async function loadAndPersist(clientId: string, returnId: string) {
 
   if (flatCells.length > 0) {
     const rows = flatCells.map((c) => ({
+      snapshot_id: snapshotId,
       return_id: returnId,
-      proconnect_client_id: clientId,
       series_id: c.seriesId,
       prefix_id: c.prefixId,
       code_id: c.codeId,
       suffix_id: c.suffixId,
       val: c.cell.val ?? null,
-      desc: c.cell.desc ?? null,
+      description: c.cell.desc ?? null,   // `desc` is a SQL reserved word
       src: c.cell.src ?? null,
       tsj: c.cell.tsj ?? null,
       scope: c.cell.scope ?? null,
-      data_source: c.cell.source ?? null,
+      source: c.cell.source ?? null,
       city_abbrev: c.cell.cityAbbrev ?? null,
       import_source: c.cell.importSource ?? null,
-      cell: c.cell,
+      raw_cell: c.cell,
     }))
-    // Supabase caps insert payloads; 1000-row chunks are safely under.
     for (let i = 0; i < rows.length; i += 1000) {
-      const chunk = rows.slice(i, i + 1000)
-      const { error: insErr } = await sb.from("proconnect_return_field_cells").insert(chunk)
+      const { error: insErr } = await sb
+        .from("proconnect_return_field_cells")
+        .insert(rows.slice(i, i + 1000))
       if (insErr) throw insErr
     }
   }
@@ -127,7 +130,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ returnId: s
       if (cached) {
         // Stale-while-revalidate: return cached, kick off a background
         // refresh if older than 5 minutes. We don't await it.
-        const age = Date.now() - new Date(cached.last_exported_at).getTime()
+        const age = Date.now() - new Date(cached.exported_at).getTime()
         if (age > 5 * 60_000) {
           loadAndPersist(clientId, returnId).catch((err) =>
             console.error("[v0] background return-data refresh failed", err),

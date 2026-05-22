@@ -82,19 +82,22 @@ export async function POST(
 
   // ------------------------------------------------------------------ create audit row up-front
   const dryRun = Boolean(body.dryRun)
+  const trigger = body.actor ? `manual:${body.actor}` : "manual"
+  const triggerCtx: Record<string, unknown> = {}
+  if (body.reason) triggerCtx.reason = body.reason
   const { data: jobRow, error: jobErr } = await sb
     .from("proconnect_import_jobs")
     .insert({
       return_id: returnId,
       proconnect_client_id: body.clientId,
       series_id: seriesId,
-      version_in: body.version ?? null,
+      request_version: body.version ?? null,
       dry_run: dryRun,
-      entries_in: body.entries,
-      entries_count: body.entries.length,
+      entry_count_requested: body.entries.length,
+      entries_payload: { entries: body.entries },
       status: "pending",
-      requested_by: body.actor ?? null,
-      reason: body.reason ?? null,
+      triggered_by: trigger,
+      trigger_context: Object.keys(triggerCtx).length ? triggerCtx : null,
     })
     .select("id")
     .single()
@@ -120,11 +123,15 @@ export async function POST(
     await sb
       .from("proconnect_import_jobs")
       .update({
-        status: result.error.kind === "scope_missing" ? "scope_missing" : "failed",
-        error_kind: result.error.kind,
-        error_status: result.error.status,
-        error_body: result.error.body,
-        intuit_tid: result.intuitTid,
+        status: "failed",
+        http_status: result.error.status ?? null,
+        error_message:
+          (typeof result.error.body === "string"
+            ? result.error.body
+            : JSON.stringify(result.error.body ?? result.error.kind)) +
+          ` [${result.error.kind}]`,
+        response_raw: { error: result.error },
+        intuit_tid: result.intuitTid ?? null,
         completed_at: new Date().toISOString(),
       })
       .eq("id", jobId)
@@ -139,12 +146,14 @@ export async function POST(
   await sb
     .from("proconnect_import_jobs")
     .update({
-      status: result.data.summary.totalErrors > 0 ? "partial" : "success",
-      total_imported: result.data.summary.totalImported,
-      total_errors: result.data.summary.totalErrors,
-      version_out: seriesResult?.version ?? null,
-      response_body: result.data,
-      intuit_tid: result.intuitTid,
+      status: result.data.summary.totalErrors > 0 ? "partial" : "succeeded",
+      http_status: 200,
+      imported_count: result.data.summary.totalImported,
+      error_count: result.data.summary.totalErrors,
+      response_version: seriesResult?.version ?? null,
+      response_summary: result.data.summary,
+      response_raw: result.data,
+      intuit_tid: result.intuitTid ?? null,
       completed_at: new Date().toISOString(),
     })
     .eq("id", jobId)
@@ -158,8 +167,7 @@ export async function POST(
       prefix_id: e.prefixId,
       code_id: e.codeId,
       suffix_id: e.suffixId,
-      error_code: e.errorCode,
-      error_message: e.errorMessage,
+      error_details: { code: e.errorCode, message: e.errorMessage },
     }))
     const { error: errInsErr } = await sb.from("proconnect_import_entry_results").insert(rows)
     if (errInsErr) console.error("[v0] failed to write entry-results rows", errInsErr)
@@ -187,46 +195,54 @@ async function refreshSnapshot(clientId: string, returnId: string) {
   const exp = result.data
   const flatCells = flattenSeriesMap(exp.data)
 
-  await sb.from("proconnect_return_snapshots").upsert(
-    {
-      return_id: returnId,
-      proconnect_client_id: clientId,
-      client_name: exp.clientName ?? null,
-      tax_year: exp.year ?? null,
-      return_type: exp.type ?? null,
-      version: exp.version ?? null,
-      series_versions: exp.seriesVersion ?? [],
-      efile_items: exp.efileItems ?? [],
-      agencies: exp.agency ?? [],
-      firm_id: exp.id_firm ?? null,
-      created_by: exp.createdBy ?? null,
-      created_time_ms: exp.createdTime ?? null,
-      cell_count: flatCells.length,
-      raw_export: exp,
-      last_exported_at: new Date().toISOString(),
-      intuit_tid: result.intuitTid,
-    },
-    { onConflict: "return_id" },
-  )
+  const { data: snap, error: snapErr } = await sb
+    .from("proconnect_return_snapshots")
+    .upsert(
+      {
+        return_id: returnId,
+        proconnect_client_id: clientId,
+        return_name: exp.name ?? null,
+        client_name: exp.clientName ?? null,
+        tax_year: exp.year ?? null,
+        return_type: exp.type ?? null,
+        version: exp.version ?? null,
+        series_versions: exp.seriesVersion ?? [],
+        efile_items: exp.efileItems ?? [],
+        agencies: exp.agency ?? [],
+        firm_id: exp.id_firm ?? null,
+        proconnect_created_by: exp.createdBy ?? null,
+        proconnect_created_time: exp.createdTime
+          ? new Date(exp.createdTime).toISOString()
+          : null,
+        raw_data: exp.data ?? null,
+        exported_at: new Date().toISOString(),
+        deleted_at: null,
+      },
+      { onConflict: "proconnect_client_id,return_id" },
+    )
+    .select("id")
+    .single()
+  if (snapErr || !snap) return
+  const snapshotId = snap.id as string
 
   await sb.from("proconnect_return_field_cells").delete().eq("return_id", returnId)
   if (flatCells.length === 0) return
   const rows = flatCells.map((c) => ({
+    snapshot_id: snapshotId,
     return_id: returnId,
-    proconnect_client_id: clientId,
     series_id: c.seriesId,
     prefix_id: c.prefixId,
     code_id: c.codeId,
     suffix_id: c.suffixId,
     val: c.cell.val ?? null,
-    desc: c.cell.desc ?? null,
+    description: c.cell.desc ?? null,
     src: c.cell.src ?? null,
     tsj: c.cell.tsj ?? null,
     scope: c.cell.scope ?? null,
-    data_source: c.cell.source ?? null,
+    source: c.cell.source ?? null,
     city_abbrev: c.cell.cityAbbrev ?? null,
     import_source: c.cell.importSource ?? null,
-    cell: c.cell,
+    raw_cell: c.cell,
   }))
   for (let i = 0; i < rows.length; i += 1000) {
     await sb.from("proconnect_return_field_cells").insert(rows.slice(i, i + 1000))
