@@ -100,12 +100,11 @@ export async function GET(req: Request) {
         eng.return_type ||
         "Unknown"
 
-      // Try to extract preparer name from raw_json
-      const preparerName =
-        (rawJson?.name as string) ||
-        (assignee?.profileId as string) ||
-        (modifiedBy?.profileId as string) ||
-        null
+      // Extract preparer from assignee profile ID
+      // ProConnect only provides profile IDs, not human-readable names
+      // TODO: Create proconnect_profiles mapping table to resolve these to names
+      // For now, don't display raw profile IDs
+      const preparerName = null
 
       return {
         id: eng.id,
