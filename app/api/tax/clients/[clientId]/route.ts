@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { computeTaxProfile, getClientDocuments } from "@/lib/tax/profile"
 
 /**
  * GET /api/tax/clients/[clientId]
@@ -21,7 +22,7 @@ export async function GET(
     const supabase = createAdminClient()
 
     // Fetch client, their engagements, and profile mappings in parallel
-    const [clientRes, engagementsRes, mappingRes, profilesRes] = await Promise.all([
+    const [clientRes, engagementsRes, mappingRes, profilesRes, profileSummary, documents] = await Promise.all([
       supabase
         .from("proconnect_clients")
         .select("*")
@@ -40,6 +41,8 @@ export async function GET(
       supabase
         .from("proconnect_profiles")
         .select("profile_id, display_name, email, team_members(full_name, email)"),
+      computeTaxProfile(clientId),
+      getClientDocuments(clientId),
     ])
 
     if (clientRes.error) {
@@ -153,6 +156,50 @@ export async function GET(
             linkedSystems: mapping.linked_systems || [],
           }
         : null,
+      // Enhanced profile data for research and ALFRED
+      taxProfile: profileSummary
+        ? {
+            totalReturns: profileSummary.totalReturns,
+            taxYearsFiled: profileSummary.taxYearsFiled,
+            firstYearFiled: profileSummary.firstYearFiled,
+            lastYearFiled: profileSummary.lastYearFiled,
+            consecutiveYears: profileSummary.consecutiveYears,
+            primaryFilingStatus: profileSummary.primaryFilingStatus,
+            primaryReturnType: profileSummary.primaryReturnType,
+            hasScheduleC: profileSummary.hasScheduleC,
+            hasScheduleE: profileSummary.hasScheduleE,
+            hasScheduleF: profileSummary.hasScheduleF,
+            hasForeignAccounts: profileSummary.hasForeignAccounts,
+            incomeTrend: profileSummary.incomeTrend,
+            agiTrend: profileSummary.agiTrend,
+            taxTrend: profileSummary.taxTrend,
+            refundTrend: profileSummary.refundTrend,
+            latestTotalIncome: profileSummary.latestTotalIncome,
+            latestAgi: profileSummary.latestAgi,
+            latestTaxableIncome: profileSummary.latestTaxableIncome,
+            latestTotalTax: profileSummary.latestTotalTax,
+            latestEffectiveRate: profileSummary.latestEffectiveRate,
+            latestRefundOrOwed: profileSummary.latestRefundOrOwed,
+            primaryPreparerName: profileSummary.primaryPreparerName,
+            preparerHistory: profileSummary.preparerHistory,
+            profileCompleteness: profileSummary.profileCompleteness,
+            needsAttention: profileSummary.needsAttention,
+            attentionReasons: profileSummary.attentionReasons,
+            aiSummary: profileSummary.aiSummary,
+            aiKeywords: profileSummary.aiKeywords,
+          }
+        : null,
+      documents: documents.map((d) => ({
+        id: d.id,
+        taxYear: d.taxYear,
+        documentType: d.documentType,
+        documentSubtype: d.documentSubtype,
+        issuerName: d.issuerName,
+        reportedAmount: d.reportedAmount,
+        status: d.status,
+        fileName: d.fileName,
+        createdAt: d.createdAt,
+      })),
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

@@ -39,6 +39,14 @@ import {
 } from "@/components/ui/tooltip"
 import { KpiCard, FormBadge, EfileBadge, fmtMoney, fmtNumber } from "@/components/tax/tax-shared"
 import { cn } from "@/lib/utils"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 
 type TaxProfileResponse = {
   client: {
@@ -95,6 +103,47 @@ type TaxProfileResponse = {
     karbonUrl: string | null
     linkedSystems: string[]
   } | null
+  taxProfile: {
+    totalReturns: number
+    taxYearsFiled: number[]
+    firstYearFiled: number | null
+    lastYearFiled: number | null
+    consecutiveYears: number
+    primaryFilingStatus: string | null
+    primaryReturnType: string | null
+    hasScheduleC: boolean
+    hasScheduleE: boolean
+    hasScheduleF: boolean
+    hasForeignAccounts: boolean
+    incomeTrend: Record<string, number>
+    agiTrend: Record<string, number>
+    taxTrend: Record<string, number>
+    refundTrend: Record<string, number>
+    latestTotalIncome: number | null
+    latestAgi: number | null
+    latestTaxableIncome: number | null
+    latestTotalTax: number | null
+    latestEffectiveRate: number | null
+    latestRefundOrOwed: number | null
+    primaryPreparerName: string | null
+    preparerHistory: string[]
+    profileCompleteness: number
+    needsAttention: boolean
+    attentionReasons: string[]
+    aiSummary: string | null
+    aiKeywords: string[]
+  } | null
+  documents: Array<{
+    id: string
+    taxYear: number
+    documentType: string
+    documentSubtype: string | null
+    issuerName: string | null
+    reportedAmount: number | null
+    status: string
+    fileName: string | null
+    createdAt: string
+  }>
 }
 
 const fetcher = (url: string) =>
@@ -150,7 +199,7 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
     )
   }
 
-  const { client, engagements, summary, hubLinkage } = data
+  const { client, engagements, summary, hubLinkage, taxProfile, documents } = data
   const isSubEntity =
     client.proconnectEntityId &&
     client.topLevelEntityId &&
@@ -423,6 +472,118 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
           </CardContent>
         </Card>
       )}
+
+      {/* Documents on File */}
+      {documents && documents.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center justify-between">
+              <span>Documents on File</span>
+              <Badge variant="outline" className="text-xs">
+                {documents.length} document{documents.length !== 1 ? "s" : ""}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Year</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Issuer</TableHead>
+                    <TableHead className="text-right">Amount</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Received</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {documents.map((doc) => (
+                    <TableRow key={doc.id}>
+                      <TableCell className="font-medium">{doc.taxYear}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">
+                          {doc.documentType}
+                          {doc.documentSubtype && ` (${doc.documentSubtype})`}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {doc.issuerName || "—"}
+                      </TableCell>
+                      <TableCell className="text-right text-sm">
+                        {doc.reportedAmount ? fmtMoney(doc.reportedAmount) : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Badge 
+                          variant="outline" 
+                          className={cn(
+                            "text-xs",
+                            doc.status === "verified" && "bg-emerald-50 text-emerald-700 border-emerald-200",
+                            doc.status === "entered" && "bg-blue-50 text-blue-700 border-blue-200",
+                            doc.status === "received" && "bg-stone-50 text-stone-700 border-stone-200",
+                            doc.status === "pending" && "bg-amber-50 text-amber-700 border-amber-200",
+                            doc.status === "issue" && "bg-rose-50 text-rose-700 border-rose-200"
+                          )}
+                        >
+                          {doc.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {new Date(doc.createdAt).toLocaleDateString()}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Client Identifiers - For Research/Debugging */}
+      <Card className="border-stone-200 bg-stone-50">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base text-stone-600">Client Identifiers</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
+            <div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wide">ProConnect Client ID</div>
+              <div className="font-mono text-xs mt-1">{client.proconnectClientId}</div>
+            </div>
+            {client.proconnectEntityId && (
+              <div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide">Entity ID</div>
+                <div className="font-mono text-xs mt-1">{client.proconnectEntityId}</div>
+              </div>
+            )}
+            {client.topLevelEntityId && client.topLevelEntityId !== client.proconnectEntityId && (
+              <div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide">Top-Level Entity</div>
+                <div className="font-mono text-xs mt-1">{client.topLevelEntityId}</div>
+              </div>
+            )}
+            {hubLinkage?.internalClientId && (
+              <div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide">Hub Contact ID</div>
+                <div className="font-mono text-xs mt-1">{hubLinkage.internalClientId}</div>
+              </div>
+            )}
+            {hubLinkage?.karbonClientId && (
+              <div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide">Karbon Key</div>
+                <div className="font-mono text-xs mt-1">{hubLinkage.karbonClientId}</div>
+              </div>
+            )}
+            {client.taxId && (
+              <div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide">Tax ID (Last 4)</div>
+                <div className="font-mono text-xs mt-1">***-**-{client.taxId.slice(-4)}</div>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }
@@ -554,7 +715,7 @@ function ReturnCard({
             </div>
           </div>
         )}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
   )
 }
