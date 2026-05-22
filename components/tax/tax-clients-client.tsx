@@ -309,6 +309,7 @@ export function TaxClientsClient() {
                     <TableHead className="w-[130px]">Preparer(s)</TableHead>
                     <TableHead className="w-[120px]">Last activity</TableHead>
                     <TableHead>Hub linkage</TableHead>
+                    <TableHead className="w-[100px]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -325,9 +326,12 @@ export function TaxClientsClient() {
                     return (
                     <TableRow key={c.id}>
                       <TableCell>
-                        <div className="font-medium text-stone-900 text-sm">
+                        <Link
+                          href={`/tax/clients/${c.proconnect_client_id}`}
+                          className="font-medium text-stone-900 text-sm hover:text-blue-700 hover:underline transition-colors"
+                        >
                           {c.display_name || c.business_name || "—"}
-                        </div>
+                        </Link>
                         <TooltipProvider delayDuration={200}>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -534,6 +538,13 @@ export function TaxClientsClient() {
                             Unmapped
                           </Badge>
                         )}
+                      </TableCell>
+                      <TableCell>
+                        <Link href={`/tax/clients/${c.proconnect_client_id}`}>
+                          <Button variant="outline" size="sm" className="h-7 text-xs">
+                            View Profile
+                          </Button>
+                        </Link>
                       </TableCell>
                     </TableRow>
                     )
