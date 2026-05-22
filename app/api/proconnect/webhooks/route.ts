@@ -30,6 +30,7 @@ import {
   syncSingleClient,
   deleteClient,
 } from "@/lib/proconnect/sync"
+import { exportReturnData, flattenSeriesMap } from "@/lib/proconnect/data"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -126,20 +127,111 @@ async function processClientEvent(
 }
 
 /**
- * Process a TaxReturn event
- * For now, we re-sync the entire client's engagements
- * because the engagement ID structure isn't 1:1 with the webhook entity ID
+ * Process a TaxReturn event.
+ *
+ * The webhook delivers the return UUID as `entity.id`. We map it to a
+ * client id via `proconnect_engagements.engagement_id` (which IS the
+ * return UUID — confirmed against the live data model) and trigger a
+ * Phase 1 export so the snapshot stays consistent with PTO. Delete
+ * tombstones the snapshot row rather than dropping it, so the audit
+ * trail in proconnect_import_jobs still resolves.
  */
 async function processTaxReturnEvent(
   entity: WebhookEntity
 ): Promise<{ success: boolean; error?: string }> {
-  // TaxReturn webhooks contain the return ID, not the client ID
-  // For now, log it and rely on the nightly sync
-  // TODO: Implement mapping from return ID to client ID for real-time sync
-  console.log(
-    `[ProConnect Webhook] TaxReturn ${entity.operation}: ${entity.id} - will sync on next full sync`
-  )
-  return { success: true }
+  const sb = getSupabaseAdmin()
+  const { data: eng, error: engErr } = await sb
+    .from("proconnect_engagements")
+    .select("proconnect_client_id")
+    .eq("engagement_id", entity.id)
+    .maybeSingle()
+
+  if (engErr) {
+    return { success: false, error: `engagement lookup failed: ${engErr.message}` }
+  }
+  if (!eng) {
+    // Webhook may arrive before the engagement is synced. Engagement
+    // sync will pick it up on its own; we don't fail the webhook.
+    console.log(`[ProConnect Webhook] TaxReturn ${entity.id} not yet in proconnect_engagements; skipping snapshot refresh`)
+    return { success: true }
+  }
+  const clientId = eng.proconnect_client_id as string
+
+  if (entity.operation === "Delete") {
+    // Tombstone: keep snapshot row but null out cells. We don't delete
+    // because import_jobs.return_id references it and we want to keep
+    // that history queryable for compliance.
+    await sb
+      .from("proconnect_return_snapshots")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("return_id", entity.id)
+    await sb.from("proconnect_return_field_cells").delete().eq("return_id", entity.id)
+    return { success: true }
+  }
+
+  // Create / Update: refresh the snapshot. Errors here shouldn't fail
+  // the webhook (Intuit will retry the whole thing) — log and move on.
+  try {
+    const result = await exportReturnData(clientId, entity.id)
+    if (!result.ok) {
+      console.warn(
+        `[ProConnect Webhook] TaxReturn ${entity.id} export failed: ${result.error.kind} ${result.error.status}`
+      )
+      return { success: true } // soft-fail; nightly sync will retry
+    }
+    const exp = result.data
+    const flatCells = flattenSeriesMap(exp.data)
+
+    await sb.from("proconnect_return_snapshots").upsert(
+      {
+        return_id: entity.id,
+        proconnect_client_id: clientId,
+        client_name: exp.clientName ?? null,
+        tax_year: exp.year ?? null,
+        return_type: exp.type ?? null,
+        version: exp.version ?? null,
+        series_versions: exp.seriesVersion ?? [],
+        efile_items: exp.efileItems ?? [],
+        agencies: exp.agency ?? [],
+        firm_id: exp.id_firm ?? null,
+        created_by: exp.createdBy ?? null,
+        created_time_ms: exp.createdTime ?? null,
+        cell_count: flatCells.length,
+        raw_export: exp,
+        last_exported_at: new Date().toISOString(),
+        intuit_tid: result.intuitTid,
+        deleted_at: null,
+      },
+      { onConflict: "return_id" }
+    )
+
+    await sb.from("proconnect_return_field_cells").delete().eq("return_id", entity.id)
+    if (flatCells.length > 0) {
+      const rows = flatCells.map((c) => ({
+        return_id: entity.id,
+        proconnect_client_id: clientId,
+        series_id: c.seriesId,
+        prefix_id: c.prefixId,
+        code_id: c.codeId,
+        suffix_id: c.suffixId,
+        val: c.cell.val ?? null,
+        desc: c.cell.desc ?? null,
+        src: c.cell.src ?? null,
+        tsj: c.cell.tsj ?? null,
+        scope: c.cell.scope ?? null,
+        data_source: c.cell.source ?? null,
+        city_abbrev: c.cell.cityAbbrev ?? null,
+        import_source: c.cell.importSource ?? null,
+        cell: c.cell,
+      }))
+      for (let i = 0; i < rows.length; i += 1000) {
+        await sb.from("proconnect_return_field_cells").insert(rows.slice(i, i + 1000))
+      }
+    }
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 /**
