@@ -186,6 +186,12 @@ function formatCurrency(value: number | null | undefined, currency: string | nul
 
 export function WorkItemSearchTrigger({ className }: { className?: string }) {
   const [open, setOpen] = React.useState(false)
+  const [isMac, setIsMac] = React.useState(false)
+
+  // Detect platform after mount to avoid hydration mismatch
+  React.useEffect(() => {
+    setIsMac(/Mac|iPhone|iPod|iPad/i.test(navigator.platform))
+  }, [])
 
   // Cmd+K (Mac) / Ctrl+K (Windows) opens the palette globally.
   React.useEffect(() => {
@@ -217,11 +223,7 @@ export function WorkItemSearchTrigger({ className }: { className?: string }) {
           Search clients, work items, debriefs, invoices…
         </span>
         <kbd className="pointer-events-none hidden items-center gap-0.5 rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground sm:flex">
-          <span className="text-xs">
-            {typeof navigator !== "undefined" && /Mac|iPhone|iPod|iPad/i.test(navigator.platform)
-              ? "⌘"
-              : "Ctrl"}
-          </span>
+          <span className="text-xs">{isMac ? "⌘" : "Ctrl"}</span>
           K
         </kbd>
       </Button>

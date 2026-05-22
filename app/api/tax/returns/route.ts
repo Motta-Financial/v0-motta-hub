@@ -1,188 +1,34 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 
-// ── Form-type registry ────────────────────────────────────────────────
-// Each ProConnect return form lives in its own table with a slightly
-// different shape. The shared columns we always project are:
-//   id, proconnect_client_id, tax_year, return_type, return_status,
-//   efile_status, amended.
-// Beyond that, each form has its own "headline" numeric columns that
-// matter for the dashboard's KPIs and table — we declare them in this
-// registry so the route, the typing, and the UI all stay in sync.
-//
-// `nameField` is the column we surface as the client display name in
-// the unified list (1040 uses export_taxpayer_name, the others use
-// export_business_name).
-//
-// `revenueField` / `incomeField` / `taxField` / `refundField` are the
-// canonical money columns each form contributes to the aggregate KPI
-// strip on the unified Returns page. They normalize across forms so
-// e.g. "Income" means AGI on a 1040 and ordinary_business_income_loss
-// on a 1065, but the chart can stack them as one series.
-type FormDef = {
-  table: string
-  nameField: "export_taxpayer_name" | "export_business_name"
-  revenueField: string | null // gross receipts / total revenue
-  incomeField: string | null // taxable / ordinary biz income
-  taxField: string | null // total_tax or total_tax-equivalent
-  refundField: string | null // refund / overpayment
-  oweField: string | null // amount_owed / balance_due
-  // Wide-select column list specific to this form, used for the
-  // single-form drill-in queries.
-  selectColumns: string
+// ── Return type mapping ───────────────────────────────────────────────
+// ProConnect uses codes like IND, COR, PAR, etc. We map them to form
+// numbers for display.
+const RETURN_TYPE_TO_FORM: Record<string, string> = {
+  IND: "1040",
+  COR: "1120",
+  PAR: "1065",
+  SCO: "1120S",
+  FID: "1041",
+  EXM: "990",
 }
 
-const FORM_REGISTRY: Record<string, FormDef> = {
-  "1040": {
-    table: "proconnect_1040_returns",
-    nameField: "export_taxpayer_name",
-    revenueField: "wages_salaries_tips",
-    incomeField: "adjusted_gross_income",
-    taxField: "total_tax",
-    refundField: "refund",
-    oweField: "amount_owed",
-    // Every non-system column on proconnect_1040_returns is selected
-    // here. `raw_export_json` is intentionally excluded — it is the
-    // unmodified ProConnect export blob (10kb+ per row) and would
-    // bloat every list response. UI consumers that need an
-    // individual return's raw payload can fetch it through the
-    // client detail endpoint.
-    selectColumns: `id, proconnect_client_id, export_taxpayer_name, tax_year,
-      return_type, return_status, efile_status, amended, preparer,
-      filing_status, taxpayer_occupation,
-      adjusted_gross_income, agi, taxable_income, total_tax, refund, amount_owed,
-      federal_tax_withheld, wages_salaries_tips, schedule_c_income, schedule_k1_income,
-      child_tax_credit, earned_income_credit, qualified_business_income_deduction,
-      total_itemized_or_standard_deduction, total_itemized_deductions,
-      has_schedule_c, has_schedule_e,
-      qualifying_children_count, other_dependents_count,
-      created_at, updated_at`,
-  },
-  "1065": {
-    table: "proconnect_1065_returns",
-    nameField: "export_business_name",
-    revenueField: "gross_receipts_less_returns",
-    incomeField: "ordinary_business_income_loss",
-    taxField: null, // partnerships are pass-through — no entity-level tax
-    refundField: "overpayment",
-    oweField: "total_balance_due",
-    selectColumns: `id, proconnect_client_id, export_business_name, tax_year,
-      return_type, return_status, efile_status, amended, preparer,
-      business_activity_code, k1_count, has_8825,
-      foreign_partnership, partnership_representative,
-      is_domestic_general_partnership, is_domestic_limited_partnership,
-      is_domestic_llc, is_domestic_llp, is_other_entity,
-      gross_receipts_less_returns, cost_of_goods_sold, gross_profit,
-      total_income_loss, depreciation, total_deductions,
-      ordinary_business_income_loss, net_rental_real_estate_income,
-      net_earnings_from_self_employment,
-      total_balance_due, overpayment,
-      beginning_of_tax_year,
-      beginning_assets, ending_assets,
-      beginning_liabilities_and_capital, ending_liabilities_and_capital,
-      partners_beginning_capital, partners_ending_capital,
-      cash_contributions, cash_distributions,
-      created_at, updated_at`,
-  },
-  "1120": {
-    table: "proconnect_1120_returns",
-    nameField: "export_business_name",
-    revenueField: "gross_receipts_less_returns",
-    incomeField: "taxable_income",
-    taxField: "total_tax",
-    refundField: null, // 1120 stores net via refund_or_amount_due
-    oweField: "tax_due",
-    selectColumns: `id, proconnect_client_id, export_business_name, tax_year,
-      return_type, return_status, efile_status, amended, preparer,
-      business_activity_code,
-      gross_receipts_less_returns, gross_profit, gross_rent,
-      officer_compensation, charitable_contributions, depreciation,
-      total_deductions, nol_deduction, taxable_income,
-      total_tax, payments_and_credits, refund_or_amount_due, tax_due,
-      amount_paid_with_extension,
-      beginning_of_tax_year,
-      beginning_assets, ending_assets,
-      beginning_liabilities_and_equity, ending_liabilities_and_equity,
-      created_at, updated_at`,
-  },
-  "1120S": {
-    table: "proconnect_1120s_returns",
-    nameField: "export_business_name",
-    revenueField: "gross_receipts_less_returns",
-    incomeField: "ordinary_business_income_loss",
-    taxField: null, // S-corps are pass-through
-    refundField: "refund",
-    oweField: "balance_due",
-    selectColumns: `id, proconnect_client_id, export_business_name, tax_year,
-      return_type, return_status, efile_status, amended, preparer,
-      business_activity_code, k1_count, has_8825, extension_amount,
-      gross_receipts_less_returns, gross_profit, cost_of_goods_sold,
-      total_income_loss, compensation_of_officers, depreciation,
-      pension_profit_sharing, total_deductions,
-      ordinary_business_income_loss, net_rental_real_estate_income,
-      charitable_contributions, nondeductible_expenses,
-      income_loss_reconciliation,
-      overpayment, balance_due, refund,
-      beginning_of_tax_year,
-      beginning_assets, ending_assets,
-      beginning_liabilities_and_equity, ending_liabilities_and_equity,
-      created_at, updated_at`,
-  },
-  "990": {
-    table: "proconnect_990_returns",
-    nameField: "export_business_name",
-    revenueField: "total_revenue",
-    incomeField: "revenue_less_expenses",
-    taxField: "pf_tax_due", // only populated for private foundations
-    refundField: null,
-    oweField: null,
-    selectColumns: `id, proconnect_client_id, export_business_name, tax_year,
-      return_type, return_subtype, return_status, efile_status, amended, preparer,
-      ein,
-      total_revenue, total_expenses, revenue_less_expenses,
-      total_assets_end, total_liabilities_end, net_assets_end,
-      ez_contributions, ez_investment_income, ez_total_revenue,
-      ez_total_expenses, ez_excess_deficit, ez_net_assets_end,
-      pf_tax_due, pf_net_assets_end,
-      created_at, updated_at`,
-  },
-}
-
-const FORM_KEYS = Object.keys(FORM_REGISTRY) as Array<keyof typeof FORM_REGISTRY>
-
-// "Unified" row shape used for the cross-form Returns page and for the
-// per-form pages alike. Every form normalizes its headline numbers
-// into these aliased fields so the table can render a single column
-// set regardless of which form a row came from. The form-specific
-// numerics also stay on the row (under their native column names) for
-// pages that drill in to a single form.
+// Unified row shape for the Returns pages
 type UnifiedReturn = {
   id: string
+  engagement_id: string | null
   proconnect_client_id: string | null
   client_name: string | null
   tax_year: number | null
   form: string
-  return_status: string | null
+  return_type: string | null
+  status: string | null
   efile_status: string | null
-  amended: boolean | null
+  work_status: string | null
   preparer: string | null
-  // Normalized numeric fields. Null when the form doesn't track this
-  // concept (e.g. taxField on 1065).
-  revenue: number | null
-  income: number | null
-  tax: number | null
-  refund: number | null
-  amount_owed: number | null
-  created_at: string | null
+  synced_at: string | null
   updated_at: string | null
-  // The raw row data for use by drill-in pages.
-  raw: Record<string, any>
-}
-
-function num(v: unknown): number | null {
-  if (v == null) return null
-  const n = typeof v === "number" ? v : Number(v)
-  return Number.isFinite(n) ? n : null
+  raw: Record<string, unknown>
 }
 
 export async function GET(req: Request) {
@@ -194,128 +40,168 @@ export async function GET(req: Request) {
 
     const supabase = createAdminClient()
 
-    // Decide which form tables to query. "all" hits every table; a
-    // specific form hits just that one. We also support the group
-    // shortcuts "business" (1065+1120+1120S) and "individual" (1040)
-    // so the per-page UI can pass `?form=business` without listing
-    // each table.
-    let formsToQuery: string[]
-    if (form === "all") formsToQuery = FORM_KEYS
-    else if (form === "business") formsToQuery = ["1065", "1120", "1120S"]
-    else if (form === "individual") formsToQuery = ["1040"]
-    else if (form === "nonprofit") formsToQuery = ["990"]
-    else if (FORM_KEYS.includes(form as any)) formsToQuery = [form]
-    else
-      return NextResponse.json(
-        { error: `Unknown form '${form}'` },
-        { status: 400 },
-      )
+    // Build the query on proconnect_engagements
+    // Note: We don't filter by form_type in the DB query because the column
+    // may not be populated. We extract form type from raw_json.type and filter
+    // in JavaScript after transformation.
+    let query = supabase
+      .from("proconnect_engagements")
+      .select("*")
+      .order("updated_at", { ascending: false })
+      .limit(limit * 2) // Fetch more to account for post-filter
 
-    // Fetch each form table in parallel. The dataset is small (~hundreds
-    // of returns per form max) so we pull the whole filtered set in one
-    // round-trip and aggregate in memory.
-    const rowsByForm = await Promise.all(
-      formsToQuery.map(async (key) => {
-        const def = FORM_REGISTRY[key]
-        let q = supabase.from(def.table).select(def.selectColumns).limit(limit)
-        if (taxYear) q = q.eq("tax_year", Number(taxYear))
-        const { data, error } = await q
-        if (error) throw error
-        return { key, def, data: (data || []) as any[] }
-      }),
-    )
+    // Filter by tax year if provided
+    if (taxYear) {
+      query = query.eq("tax_year", Number(taxYear))
+    }
 
-    // Normalize into the unified row shape, preserving the raw row for
-    // drill-in UI consumers.
-    const unified: UnifiedReturn[] = []
-    for (const { key, def, data } of rowsByForm) {
-      for (const r of data) {
-        unified.push({
-          id: r.id,
-          proconnect_client_id: r.proconnect_client_id ?? null,
-          client_name: r[def.nameField] ?? null,
-          tax_year: r.tax_year ?? null,
-          form: key,
-          return_status: r.return_status ?? null,
-          efile_status: r.efile_status ?? null,
-          amended: r.amended ?? null,
-          preparer: r.preparer ?? null,
-          revenue: def.revenueField ? num(r[def.revenueField]) : null,
-          income: def.incomeField ? num(r[def.incomeField]) : null,
-          tax: def.taxField ? num(r[def.taxField]) : null,
-          refund: def.refundField ? num(r[def.refundField]) : null,
-          amount_owed: def.oweField ? num(r[def.oweField]) : null,
-          created_at: r.created_at ?? null,
-          updated_at: r.updated_at ?? null,
-          raw: r,
-        })
+    const { data: engagements, error: engError } = await query
+
+    if (engError) {
+      throw engError
+    }
+
+    // Get client names from proconnect_clients
+    const { data: clients, error: clientError } = await supabase
+      .from("proconnect_clients")
+      .select("proconnect_client_id, display_name, business_name, first_name, last_name")
+
+    if (clientError) {
+      throw clientError
+    }
+
+    // Build client name lookup
+    const clientNames = new Map<string, string>()
+    for (const c of clients || []) {
+      const name =
+        c.display_name ||
+        c.business_name ||
+        [c.first_name, c.last_name].filter(Boolean).join(" ") ||
+        "Unknown"
+      if (c.proconnect_client_id) {
+        clientNames.set(c.proconnect_client_id, name)
       }
     }
 
-    // Newest first feels right for tax review work — partners want to
-    // see the most recently touched return when they open the page.
-    unified.sort((a, b) => {
-      const ta = a.updated_at ? Date.parse(a.updated_at) : 0
-      const tb = b.updated_at ? Date.parse(b.updated_at) : 0
-      return tb - ta
+    // Transform to unified format - extract form type from raw_json.type
+    // since the form_type column may not be populated yet
+    const unified: UnifiedReturn[] = (engagements || []).map((eng) => {
+      const rawJson = eng.raw_json as Record<string, unknown> | null
+      const assignee = rawJson?.assignee as Record<string, unknown> | null
+      const modifiedBy = rawJson?.modifiedBy as Record<string, unknown> | null
+
+      // Extract form type from raw_json.type (e.g., "1040", "1065", "1120S")
+      // Fall back to form_type column, then return_type mapping
+      const formFromJson = (rawJson?.type as string) || null
+      const formType =
+        formFromJson ||
+        eng.form_type ||
+        RETURN_TYPE_TO_FORM[eng.return_type || ""] ||
+        eng.return_type ||
+        "Unknown"
+
+      // Try to extract preparer name from raw_json
+      const preparerName =
+        (rawJson?.name as string) ||
+        (assignee?.profileId as string) ||
+        (modifiedBy?.profileId as string) ||
+        null
+
+      return {
+        id: eng.id,
+        engagement_id: eng.engagement_id,
+        proconnect_client_id: eng.proconnect_client_id,
+        client_name: eng.proconnect_client_id
+          ? clientNames.get(eng.proconnect_client_id) || null
+          : null,
+        tax_year: eng.tax_year,
+        form: formType,
+        return_type: eng.return_type,
+        status: eng.status,
+        efile_status: eng.efile_status,
+        work_status: eng.work_status,
+        preparer: preparerName,
+        synced_at: eng.synced_at,
+        updated_at: eng.updated_at,
+        raw: rawJson || {},
+      }
     })
 
-    // ── Aggregate stats over the *returned* set ──────────────────────
-    // We surface the same six headline KPIs on every tax page; the
-    // pages decide which ones to display based on what's meaningful
-    // for their form. Pass-through forms (1065/1120S) contribute
-    // null tax — those nulls are skipped in the sum so we don't mix
-    // partnership distributions into "total tax collected".
-    const stats = {
-      totalReturns: unified.length,
-      totalRevenue: 0,
-      totalIncome: 0,
-      totalTax: 0,
-      totalRefunds: 0,
-      totalOwed: 0,
-      // Distribution by form makes the unified Returns page a useful
-      // "what's our book look like" reading at a glance.
-      byForm: {} as Record<string, { count: number; revenue: number; income: number }>,
-      // Distribution by tax year (single year today, but the schema
-      // supports historical years so we plan for them).
-      byYear: {} as Record<string, number>,
-      // efile status pie — null counts as "not filed yet".
-      byEfileStatus: {} as Record<string, number>,
-      // Returns by preparer — surfaces workload distribution. Null
-      // preparer values are bucketed as "(unassigned)" so a preparer
-      // gap is visible on the dashboard.
-      byPreparer: {} as Record<string, number>,
-      // Amended vs. original counts.
-      amendedCount: 0,
+    // Filter by form type in JavaScript (since form_type column may be null)
+    let filteredUnified = unified
+    if (form !== "all") {
+      let formTypes: string[] = []
+
+      if (form === "business") {
+        formTypes = ["1065", "1120", "1120S"]
+      } else if (form === "individual") {
+        formTypes = ["1040"]
+      } else if (form === "nonprofit") {
+        formTypes = ["990"]
+      } else {
+        formTypes = [form]
+      }
+
+      filteredUnified = unified.filter((r) => formTypes.includes(r.form))
     }
-    for (const r of unified) {
-      stats.totalRevenue += r.revenue ?? 0
-      stats.totalIncome += r.income ?? 0
-      stats.totalTax += r.tax ?? 0
-      stats.totalRefunds += r.refund ?? 0
-      stats.totalOwed += r.amount_owed ?? 0
-      if (r.amended) stats.amendedCount += 1
-      const fb =
-        stats.byForm[r.form] ??
-        (stats.byForm[r.form] = { count: 0, revenue: 0, income: 0 })
+
+    // Apply limit after filtering
+    filteredUnified = filteredUnified.slice(0, limit)
+
+    // Build stats from filtered data
+    const stats = {
+      totalReturns: filteredUnified.length,
+      byForm: {} as Record<string, { count: number }>,
+      byYear: {} as Record<string, number>,
+      byEfileStatus: {} as Record<string, number>,
+      byStatus: {} as Record<string, number>,
+      byPreparer: {} as Record<string, number>,
+    }
+
+    for (const r of filteredUnified) {
+      // By form
+      const fb = stats.byForm[r.form] ?? (stats.byForm[r.form] = { count: 0 })
       fb.count += 1
-      fb.revenue += r.revenue ?? 0
-      fb.income += r.income ?? 0
+
+      // By year
       const yKey = r.tax_year ? String(r.tax_year) : "(unknown)"
       stats.byYear[yKey] = (stats.byYear[yKey] || 0) + 1
+
+      // By efile status
       const eKey = r.efile_status ?? "(not filed)"
       stats.byEfileStatus[eKey] = (stats.byEfileStatus[eKey] || 0) + 1
+
+      // By status
+      const sKey = r.status ?? "(unknown)"
+      stats.byStatus[sKey] = (stats.byStatus[sKey] || 0) + 1
+
+      // By preparer
       const pKey = r.preparer || "(unassigned)"
       stats.byPreparer[pKey] = (stats.byPreparer[pKey] || 0) + 1
     }
 
+    // Determine which forms were queried
+    let formsQueried: string[]
+    if (form === "all") {
+      formsQueried = ["1040", "1065", "1120", "1120S", "990"]
+    } else if (form === "business") {
+      formsQueried = ["1065", "1120", "1120S"]
+    } else if (form === "individual") {
+      formsQueried = ["1040"]
+    } else if (form === "nonprofit") {
+      formsQueried = ["990"]
+    } else {
+      formsQueried = [form]
+    }
+
     return NextResponse.json({
-      returns: unified,
+      returns: filteredUnified,
       stats,
-      forms: formsToQuery,
+      forms: formsQueried,
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
+    console.error("[v0] Tax returns API error:", e)
     return NextResponse.json({ error: msg }, { status: 500 })
   }
 }
