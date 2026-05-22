@@ -115,7 +115,7 @@ SELECT
   tm.email            AS preparer_email,
   p.team_member_id    AS preparer_team_member_id,
   cs.name             AS user_defined_status_name,
-  cs.category         AS user_defined_status_category
+  cs.color            AS user_defined_status_color
 FROM proconnect_engagements e
 LEFT JOIN proconnect_clients c
   ON c.proconnect_client_id = e.proconnect_client_id
