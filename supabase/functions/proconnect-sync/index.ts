@@ -40,8 +40,14 @@ const CLIENT_SERVICE_URL = "https://client.accountant.intuit.com"
 const ENGAGEMENT_SERVICE_URL = "https://engagement.accountant.intuit.com"
 
 const TAX_YEARS = [2023, 2024, 2025]
-const PARALLEL_CLIENTS = 5 // Higher than Vercel since no timeout pressure
+const PARALLEL_CLIENTS = 3 // Reduced from 5 to avoid 429s when multiplied by TAX_YEARS
 const REFRESH_BUFFER_SECONDS = 300
+
+// Rate-limit handling: ProConnect returns 429 when we exceed ~10 req/sec sustained.
+// Each client requires TAX_YEARS.length serial calls (engagement.accountant.intuit.com),
+// so PARALLEL_CLIENTS=3 keeps the steady-state at ~3 req/sec which leaves headroom.
+const MAX_RETRIES = 5
+const RETRY_BASE_MS = 600 // exponential: 600, 1200, 2400, 4800, 9600 = ~18s max wait
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Supabase Admin
@@ -155,7 +161,8 @@ async function getAccessToken(supabase: SupabaseClient): Promise<string> {
 
 async function pcFetch(
   accessToken: string,
-  url: string
+  url: string,
+  attempt = 1
 ): Promise<{ ok: boolean; status: number; data: any; error: string | null }> {
   try {
     const response = await fetch(url, {
@@ -167,6 +174,18 @@ async function pcFetch(
         intuit_realmid: PROCONNECT_REALM_ID,
       },
     })
+
+    // Retry on 429 (rate limit), 423 (locked), and 5xx. Honour Retry-After when present.
+    if ((response.status === 429 || response.status === 423 || response.status >= 500) && attempt < MAX_RETRIES) {
+      const retryAfterHeader = response.headers.get("retry-after")
+      const retryAfterMs = retryAfterHeader
+        ? Number.parseInt(retryAfterHeader, 10) * 1000
+        : RETRY_BASE_MS * Math.pow(2, attempt - 1)
+      const jitter = Math.random() * 250
+      console.log(`[Edge] ${response.status} on ${url.slice(-60)} — retry ${attempt}/${MAX_RETRIES} in ${Math.round(retryAfterMs + jitter)}ms`)
+      await new Promise((resolve) => setTimeout(resolve, retryAfterMs + jitter))
+      return pcFetch(accessToken, url, attempt + 1)
+    }
 
     if (!response.ok) {
       const errorText = await response.text()
@@ -439,14 +458,17 @@ async function syncCustomStatuses(
 
     const { error } = await supabase.from("proconnect_custom_statuses").upsert(
       {
-        custom_status_id: statusId,
-        name: s.name || null,
-        category: s.category || null,
+        status_id: statusId,
+        name: s.name || "(unnamed)",
+        description: s.description || null,
+        color: s.color || s.colorCode || null,
+        sort_order: typeof s.sortOrder === "number" ? s.sortOrder : null,
+        is_active: s.isActive !== false,
         raw_json: status,
         synced_at: now,
         updated_at: now,
       },
-      { onConflict: "custom_status_id" }
+      { onConflict: "status_id" }
     )
 
     if (error) {
