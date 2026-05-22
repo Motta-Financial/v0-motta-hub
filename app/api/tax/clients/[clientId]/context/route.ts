@@ -51,10 +51,10 @@ export async function GET(
     // Fetch latest engagements for context
     const { data: recentEngagements } = await supabase
       .from("proconnect_engagements_enriched")
-      .select("tax_year, return_type, efile_status, preparer_name, custom_status_name")
+      .select("engagement_id, tax_year, return_type, efile_status, preparer_name, user_defined_status_name")
       .eq("proconnect_client_id", clientId)
       .order("tax_year", { ascending: false })
-      .limit(5)
+      .limit(10)
 
     // Build structured context for ALFRED
     const context = {
@@ -96,13 +96,26 @@ export async function GET(
         consecutiveYears: profile?.consecutiveYears || 0,
         primaryFilingStatus: profile?.primaryFilingStatus || null,
         primaryReturnType: profile?.primaryReturnType || null,
-        // Recent returns for context
+        // Recent returns for context with full details
         recentReturns: (recentEngagements || []).map(e => ({
+          engagementId: e.engagement_id,
           year: e.tax_year,
           type: e.return_type,
-          status: e.custom_status_name || e.efile_status || "unknown",
+          is1040: e.return_type === "1040" || e.return_type === "IND",
+          status: e.user_defined_status_name || e.efile_status || "unknown",
+          efileStatus: e.efile_status,
           preparer: e.preparer_name,
+          // Quick reference URLs
+          view1040Url: (e.return_type === "1040" || e.return_type === "IND") 
+            ? `/tax/returns/${e.engagement_id}/1040?clientId=${clientId}`
+            : null,
         })),
+        // Return type breakdown
+        returnTypeCounts: (recentEngagements || []).reduce((acc, e) => {
+          const type = e.return_type || "Unknown"
+          acc[type] = (acc[type] || 0) + 1
+          return acc
+        }, {} as Record<string, number>),
       },
 
       // Financial snapshot

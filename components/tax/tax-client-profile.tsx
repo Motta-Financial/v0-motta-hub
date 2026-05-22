@@ -4,23 +4,22 @@ import { useState } from "react"
 import useSWR from "swr"
 import Link from "next/link"
 import {
+  ArrowLeft,
+  Building2,
+  Calendar,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
-  User,
-  Building2,
-  Mail,
-  Phone,
-  MapPin,
-  FileText,
-  ExternalLink,
-  Calendar,
-  DollarSign,
-  CheckCircle2,
   Clock,
-  AlertCircle,
-  ArrowLeft,
-  Network,
+  ExternalLink,
+  FileText,
   Link2,
+  Mail,
+  MapPin,
+  Network,
+  Phone,
+  User,
+  AlertCircle,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -70,14 +69,19 @@ type TaxProfileResponse = {
   engagements: Array<{
     id: string
     engagement_id: string
+    proconnect_client_id: string
     tax_year: number | null
     return_type: string | null
     form_type: string | null
+    engagement_name: string | null
     engagement_state: string | null
     efile_status: string | null
+    work_status: string | null
     custom_status_name: string | null
     custom_status_color: string | null
     preparer_name: string | null
+    preparer_email: string | null
+    created_at: string | null
     updated_at: string | null
     is1040: boolean
     totalIncome: number | null
@@ -86,6 +90,9 @@ type TaxProfileResponse = {
     totalTax: number | null
     refundAmount: number | null
     amountOwed: number | null
+    filingStatus: string | null
+    hasScheduleC: boolean | null
+    hasScheduleE: boolean | null
   }>
   summary: {
     totalReturns: number
@@ -390,6 +397,67 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
           tone="stone"
         />
       </div>
+
+      {/* Client-Return Relationship Summary */}
+      <Card className="bg-gradient-to-r from-stone-50 to-stone-100 border-stone-200">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Link2 className="h-4 w-4" />
+            Tax Return Linkage
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">ProConnect Client</div>
+              <div className="font-medium">{client.displayName || client.businessName || "Unknown"}</div>
+              <div className="text-xs text-muted-foreground font-mono mt-0.5">{client.proconnectClientId}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Tax Years on File</div>
+              <div className="flex flex-wrap gap-1">
+                {summary.years.slice(0, 6).map((year) => (
+                  <Badge key={year} variant="outline" className="text-xs">
+                    {year} ({summary.byYear[year]})
+                  </Badge>
+                ))}
+                {summary.years.length > 6 && (
+                  <Badge variant="outline" className="text-xs bg-stone-100">
+                    +{summary.years.length - 6} more
+                  </Badge>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Return Types</div>
+              <div className="flex flex-wrap gap-1">
+                {Object.entries(summary.formCounts)
+                  .sort(([, a], [, b]) => b - a)
+                  .slice(0, 4)
+                  .map(([form, count]) => (
+                    <Badge key={form} variant="outline" className="text-xs">
+                      {form}: {count}
+                    </Badge>
+                  ))}
+              </div>
+            </div>
+          </div>
+          {hubLinkage && (
+            <div className="mt-3 pt-3 border-t border-stone-200 flex flex-wrap gap-3 text-xs">
+              <span className="text-muted-foreground">Also linked to:</span>
+              {hubLinkage.karbonClientId && (
+                <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700">Karbon</Badge>
+              )}
+              {hubLinkage.ignitionClientId && (
+                <Badge variant="outline" className="text-xs bg-violet-50 text-violet-700">Ignition</Badge>
+              )}
+              {hubLinkage.internalClientId && (
+                <Badge variant="outline" className="text-xs bg-emerald-50 text-emerald-700">Hub Contact</Badge>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Returns by Year - Expandable */}
       <Card>

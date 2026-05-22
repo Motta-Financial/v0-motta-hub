@@ -99,7 +99,22 @@ export async function GET(
     const enrichedEngagements = engagements.map((eng) => {
       const rawJson = eng.raw_json as Record<string, unknown> | null
       return {
-        ...eng,
+        id: eng.id,
+        engagement_id: eng.engagement_id,
+        proconnect_client_id: eng.proconnect_client_id,
+        tax_year: eng.tax_year,
+        return_type: eng.return_type,
+        form_type: eng.form_type,
+        engagement_name: eng.engagement_name,
+        engagement_state: eng.engagement_state,
+        efile_status: eng.efile_status,
+        work_status: eng.work_status,
+        preparer_name: eng.preparer_name,
+        preparer_email: eng.preparer_email,
+        custom_status_name: eng.user_defined_status_name,
+        custom_status_color: eng.user_defined_status_color,
+        created_at: eng.proconnect_created_at,
+        updated_at: eng.proconnect_modified_at,
         // Determine if this is a 1040 (viewable in 1040 viewer)
         is1040: eng.return_type === "1040" || eng.return_type === "IND",
         // Extract key financial data from raw_json if available
@@ -109,6 +124,10 @@ export async function GET(
         totalTax: rawJson?.totalTax as number | null,
         refundAmount: rawJson?.refundAmount as number | null,
         amountOwed: rawJson?.amountOwed as number | null,
+        // Additional metadata
+        filingStatus: rawJson?.filingStatus as string | null,
+        hasScheduleC: rawJson?.hasScheduleC as boolean | null,
+        hasScheduleE: rawJson?.hasScheduleE as boolean | null,
       }
     })
 
