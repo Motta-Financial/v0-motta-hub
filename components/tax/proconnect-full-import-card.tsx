@@ -74,6 +74,9 @@ type SyncRunResult = {
   errorCount?: number
   errors?: string[]
   duration?: string
+  partial?: boolean
+  timedOut?: boolean
+  lastClientIndex?: number
   error?: string
 }
 
@@ -119,7 +122,7 @@ export function ProconnectFullImportCard() {
     setRunning(true)
     setLastResult(null)
     const toastId = toast.loading(
-      "Running full ProConnect import — this may take 2–5 minutes...",
+      "Running ProConnect import — this can take a minute. Re-click after each batch until status reaches 'success'.",
       { duration: Infinity }
     )
 
@@ -128,7 +131,13 @@ export function ProconnectFullImportCard() {
       const json: SyncRunResult = await res.json()
       setLastResult(json)
 
-      if (!res.ok || !json.ok) {
+      if (json.partial) {
+        // Resumable partial — UX expectation is that the user clicks again.
+        toast.warning(
+          `Partial batch done (${json.engagementsSynced ?? 0} engagements). Click 'Run full import' again to resume from client ${json.lastClientIndex ?? "?"}.`,
+          { id: toastId, duration: 10_000 }
+        )
+      } else if (!res.ok || !json.ok) {
         toast.error(`Import failed: ${json.error ?? "unknown error"}`, {
           id: toastId,
           duration: 8000,
@@ -181,17 +190,18 @@ export function ProconnectFullImportCard() {
     )
   }
 
-  // Status pill for the most recent run
+  // Status pill for the most recent run.
+  // sync.ts statuses: "running" | "success" | "partial" | "failed"
   const lastStatusBadge = !lastSync ? (
     <Badge variant="outline" className="border-muted-foreground/30 text-muted-foreground gap-1">
       <Clock className="size-3" /> Never run
     </Badge>
-  ) : lastSync.status === "completed" ? (
+  ) : lastSync.status === "success" || lastSync.status === "completed" ? (
     <Badge
       variant="outline"
       className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 gap-1"
     >
-      <CheckCircle2 className="size-3" /> Last: completed
+      <CheckCircle2 className="size-3" /> Last: success
     </Badge>
   ) : lastSync.status === "running" ? (
     <Badge
@@ -199,6 +209,13 @@ export function ProconnectFullImportCard() {
       className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400 gap-1"
     >
       <Loader2 className="size-3 animate-spin" /> Running
+    </Badge>
+  ) : lastSync.status === "partial" ? (
+    <Badge
+      variant="outline"
+      className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400 gap-1"
+    >
+      <AlertTriangle className="size-3" /> Last: partial — re-run to resume
     </Badge>
   ) : (
     <Badge
@@ -219,8 +236,10 @@ export function ProconnectFullImportCard() {
           </CardTitle>
           <CardDescription>
             Pull every client, every engagement (TY 2021–2026), and every custom
-            status from ProConnect into the Hub. Use this once after connecting,
-            then let the nightly cron handle ongoing changes.
+            status from ProConnect into the Hub. Each click runs for ~40s and is
+            resumable — if the status comes back &quot;partial&quot;, click again to
+            resume from where it stopped. Use this after connecting, then let the
+            nightly cron handle ongoing changes.
           </CardDescription>
         </div>
         <div className="flex items-center gap-2 shrink-0">
