@@ -394,15 +394,30 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
     // pipeline routinely runs 3–5 minutes end to end — well past what
     // we want a Friday-noon email cron to wait for. We persist the
     // recap row WITHOUT the image, ship the email immediately, and
-    // then fire-and-forget a POST to /api/tommy-awards/generate-podium-image
+    // then fire-and-forget a POST to /api/cron/tommy-podium-image
     // which has its own 800s ceiling. That route updates
     // `tommy_weekly_recaps.podium_image_url` once gpt-image-2 returns,
     // so the Weekly Tommy's tab and any new email links pick it up.
     //
-    // `?skipImage=true` (manual QA) skips the async trigger entirely.
+    // `?skipImage=true` (manual QA / re-send) skips the async trigger
+    // entirely. In that case, if a previous run already persisted an
+    // image on the recap row, we reuse it for THIS email so the resend
+    // still embeds the podium artwork rather than going out plain.
     let podiumImageUrl: string | null = null
-    const podiumImagePrompt: string | null = null
-    const podiumImageModel: string | null = null
+    let podiumImagePrompt: string | null = null
+    let podiumImageModel: string | null = null
+    if (skipImage) {
+      const { data: existingRecap } = await supabase
+        .from("tommy_weekly_recaps")
+        .select("podium_image_url, podium_image_prompt, podium_image_model")
+        .eq("week_id", weekId)
+        .maybeSingle()
+      if (existingRecap?.podium_image_url) {
+        podiumImageUrl = existingRecap.podium_image_url
+        podiumImagePrompt = existingRecap.podium_image_prompt ?? null
+        podiumImageModel = existingRecap.podium_image_model ?? null
+      }
+    }
 
     // ── Generate the printable / shareable PDF ─────────────────────
     // The PDF mirrors what teammates see in the recap email — header,
@@ -498,28 +513,34 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
     // ── Persist the recap for future continuity context ─────────
     // Upsert by week_id so a re-run (e.g. after fixing a bug) replaces
     // the previous archive row instead of duplicating.
+    //
+    // IMPORTANT: when skipImage=true (or whenever this run did not
+    // produce its own image), we must NOT clobber an existing
+    // podium_image_url that the async /api/cron/tommy-podium-image
+    // route may have already populated. We therefore only write the
+    // image columns when we actually have a new value for them.
+    const persistRow: Record<string, unknown> = {
+      week_id: weekId,
+      week_date: latestWeek.week_date,
+      week_label: weekLabel,
+      total_ballots: ballots.length,
+      ai_summary: aiSummary,
+      ai_model: aiModelUsed,
+      podium_pdf_url: podiumPdfUrl,
+      top_three: topThree,
+      ytd_standings: ytdStandings ?? null,
+      email_sent_at: new Date().toISOString(),
+      email_sent_count: sent,
+      email_skipped_count: skipped,
+    }
+    if (podiumImageUrl) {
+      persistRow.podium_image_url = podiumImageUrl
+      persistRow.podium_image_prompt = podiumImagePrompt
+      persistRow.podium_image_model = podiumImageModel
+    }
     const { error: persistErr } = await supabase
       .from("tommy_weekly_recaps")
-      .upsert(
-        {
-          week_id: weekId,
-          week_date: latestWeek.week_date,
-          week_label: weekLabel,
-          total_ballots: ballots.length,
-          ai_summary: aiSummary,
-          ai_model: aiModelUsed,
-          podium_image_url: podiumImageUrl,
-          podium_image_prompt: podiumImagePrompt,
-          podium_image_model: podiumImageModel,
-          podium_pdf_url: podiumPdfUrl,
-          top_three: topThree,
-          ytd_standings: ytdStandings ?? null,
-          email_sent_at: new Date().toISOString(),
-          email_sent_count: sent,
-          email_skipped_count: skipped,
-        },
-        { onConflict: "week_id" },
-      )
+      .upsert(persistRow, { onConflict: "week_id" })
 
     if (persistErr) {
       console.error("[v0] tommy-weekly-recap: failed to persist recap row:", persistErr)
