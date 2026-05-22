@@ -26,6 +26,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { createHmac, timingSafeEqual } from "node:crypto"
 import {
   syncSingleClient,
   deleteClient,
@@ -294,20 +295,53 @@ async function processEntity(
   }
 }
 
+/**
+ * Verify Intuit webhook signature.
+ *
+ * Per Intuit Developer docs, webhooks include an `intuit-signature` header
+ * containing the base64-encoded HMAC-SHA256 of the raw request body, signed
+ * with the app's verifier token. We must compare that value against a
+ * locally-computed signature using the same verifier token.
+ *
+ * Reference: https://developer.intuit.com/app/developer/qbo/docs/develop/webhooks/manage-webhooks-notifications
+ */
+function verifyIntuitSignature(rawBody: string, signatureHeader: string | null, verifierToken: string): boolean {
+  if (!signatureHeader) return false
+  const expected = createHmac("sha256", verifierToken).update(rawBody, "utf8").digest("base64")
+  try {
+    const a = Buffer.from(signatureHeader)
+    const b = Buffer.from(expected)
+    if (a.length !== b.length) return false
+    return timingSafeEqual(a, b)
+  } catch {
+    return false
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    // Verify webhook signature using Intuit verifier token
-    const verifierToken =
-      request.headers.get("intuit-webhook-signature") ||
-      request.headers.get("verifier-token")
     const expectedToken = process.env.PROCONNECT_WEBHOOK_VERIFIER_TOKEN
 
-    if (expectedToken && verifierToken !== expectedToken) {
-      console.warn("[ProConnect Webhook] Unauthorized request - invalid verifier token")
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    // Read raw body once — we need it both for HMAC verification and JSON parsing.
+    const rawBody = await request.text()
+
+    // Verify webhook signature using HMAC-SHA256 of the raw body
+    if (expectedToken) {
+      const signature = request.headers.get("intuit-signature")
+      if (!verifyIntuitSignature(rawBody, signature, expectedToken)) {
+        console.warn("[ProConnect Webhook] Unauthorized — invalid HMAC signature")
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+      }
+    } else {
+      console.warn("[ProConnect Webhook] PROCONNECT_WEBHOOK_VERIFIER_TOKEN not set — webhook is UNVERIFIED")
     }
 
-    const payload = (await request.json()) as WebhookPayload
+    let payload: WebhookPayload
+    try {
+      payload = JSON.parse(rawBody) as WebhookPayload
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
+    }
 
     console.log(
       "[ProConnect Webhook] Received webhook:",
