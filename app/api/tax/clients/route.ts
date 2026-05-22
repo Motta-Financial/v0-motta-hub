@@ -57,6 +57,7 @@ type ProconnectEngagement = {
   status: string | null
   efile_status: string | null
   work_status: string | null
+  assignee_profile_id: string | null
   raw_json: Record<string, unknown> | null
   synced_at: string | null
   updated_at: string | null
@@ -67,7 +68,7 @@ export async function GET() {
     const supabase = createAdminClient()
 
     // Run the client query, the mapping query, and the engagements query in parallel
-    const [clientsRes, mappingRes, engagementsRes] = await Promise.all([
+    const [clientsRes, mappingRes, engagementsRes, profilesRes] = await Promise.all([
       supabase
         .from("proconnect_clients")
         .select(
@@ -83,17 +84,34 @@ export async function GET() {
       supabase
         .from("proconnect_engagements")
         .select(
-          "id, engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, work_status, raw_json, synced_at, updated_at",
+          "id, engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, work_status, assignee_profile_id, raw_json, synced_at, updated_at",
         ),
+      // Profile mapping: see scripts/120_proconnect_profiles_mapping.sql.
+      // Falls back to team_members(full_name) when display_name is null.
+      supabase
+        .from("proconnect_profiles")
+        .select("profile_id, display_name, team_members(full_name)"),
     ])
 
     if (clientsRes.error) throw clientsRes.error
     if (mappingRes.error) throw mappingRes.error
     if (engagementsRes.error) throw engagementsRes.error
+    if (profilesRes.error) throw profilesRes.error
 
     const clients = (clientsRes.data || []) as ProconnectClient[]
     const mappings = (mappingRes.data || []) as MasterMappingRow[]
     const engagements = (engagementsRes.data || []) as ProconnectEngagement[]
+
+    // profileId → human display name. Keep null when unmapped — never
+    // leak the raw GUID to the dashboard. Once an admin fills in the
+    // proconnect_profiles row (or links team_member_id), the next page
+    // refresh starts showing the name with no code change.
+    const preparerMap = new Map<string, string>()
+    for (const p of profilesRes.data || []) {
+      const tm = p.team_members as { full_name?: string | null } | null
+      const name = p.display_name || tm?.full_name || null
+      if (name) preparerMap.set(p.profile_id, name)
+    }
 
     // Build a lookup of mapping rows keyed on proconnect_client_id.
     const mappingByPc = new Map<string, MasterMappingRow>()
@@ -139,14 +157,18 @@ export async function GET() {
 
       rollup.total += 1
 
-      // Extract preparer from raw_json if available
-      // ProConnect only provides profile IDs, not names - needs a mapping table
-      const rawJson = eng.raw_json as Record<string, unknown> | null
-      const assignee = rawJson?.assignee as Record<string, unknown> | null
-      const preparerProfileId = assignee?.profileId as string | null
-      // TODO: Create proconnect_profiles table to map profileId -> team member name
-      // For now, skip adding preparers since we only have IDs, not names
-      // if (preparerProfileId) rollup.preparers.add(preparerProfileId)
+      // Resolve preparer profile_id → human name via the proconnect_profiles
+      // map (falls back to linked team_members.full_name). If the profileId
+      // hasn't been mapped yet, we just skip — never display a raw GUID.
+      const preparerProfileId =
+        eng.assignee_profile_id ||
+        ((eng.raw_json as Record<string, unknown> | null)?.assignee as Record<string, unknown> | null)?.profileId as
+          | string
+          | null
+          | undefined ||
+        null
+      const preparerName = preparerProfileId ? preparerMap.get(preparerProfileId) || null : null
+      if (preparerName) rollup.preparers.add(preparerName)
 
       // Track latest activity
       if (eng.updated_at || eng.synced_at) {
@@ -161,6 +183,7 @@ export async function GET() {
 
       // Group by form type (1040, 1065, 1120, 1120S, 990)
       // Extract from raw_json.type since form_type column may not be populated
+      const rawJson = eng.raw_json as Record<string, unknown> | null
       const formFromJson = (rawJson?.type as string) || null
       const formType = formFromJson || eng.form_type || eng.return_type || "Unknown"
       const existingForm = rollup.forms.find((f) => f.form === formType)
@@ -172,6 +195,7 @@ export async function GET() {
           existingForm.latestStatus = eng.status
           existingForm.latestEfile = eng.efile_status
           existingForm.latestUpdatedAt = eng.updated_at
+          existingForm.latestPreparer = preparerName
         }
       } else {
         rollup.forms.push({
@@ -180,7 +204,7 @@ export async function GET() {
           latestYear: eng.tax_year,
           latestStatus: eng.status,
           latestEfile: eng.efile_status,
-          latestPreparer: null, // TODO: map preparerProfileId to name
+          latestPreparer: preparerName,
           latestUpdatedAt: eng.updated_at,
         })
       }

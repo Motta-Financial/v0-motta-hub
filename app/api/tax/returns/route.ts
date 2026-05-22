@@ -26,6 +26,10 @@ type UnifiedReturn = {
   efile_status: string | null
   work_status: string | null
   preparer: string | null
+  preparer_profile_id: string | null
+  user_defined_status_name: string | null
+  user_defined_status_color: string | null
+  proconnect_modified_at: string | null
   synced_at: string | null
   updated_at: string | null
   raw: Record<string, unknown>
@@ -40,114 +44,70 @@ export async function GET(req: Request) {
 
     const supabase = createAdminClient()
 
-    // Build the query on proconnect_engagements
-    // Note: We don't filter by form_type in the DB query because the column
-    // may not be populated. We extract form type from raw_json.type and filter
-    // in JavaScript after transformation.
+    // Pull from the enriched view — it already joins client display_name,
+    // proconnect_profiles + team_members (preparer_name), and the
+    // custom-status name/color. One query, zero secondary lookups.
     let query = supabase
-      .from("proconnect_engagements")
+      .from("proconnect_engagements_enriched")
       .select("*")
-      .order("updated_at", { ascending: false })
-      .limit(limit * 2) // Fetch more to account for post-filter
+      .order("proconnect_modified_at", { ascending: false, nullsFirst: false })
+      .limit(limit * 2)
 
-    // Filter by tax year if provided
     if (taxYear) {
       query = query.eq("tax_year", Number(taxYear))
     }
 
     const { data: engagements, error: engError } = await query
+    if (engError) throw engError
 
-    if (engError) {
-      throw engError
-    }
-
-    // Get client names from proconnect_clients
-    const { data: clients, error: clientError } = await supabase
-      .from("proconnect_clients")
-      .select("proconnect_client_id, display_name, business_name, first_name, last_name")
-
-    if (clientError) {
-      throw clientError
-    }
-
-    // Build client name lookup
-    const clientNames = new Map<string, string>()
-    for (const c of clients || []) {
-      const name =
-        c.display_name ||
-        c.business_name ||
-        [c.first_name, c.last_name].filter(Boolean).join(" ") ||
-        "Unknown"
-      if (c.proconnect_client_id) {
-        clientNames.set(c.proconnect_client_id, name)
-      }
-    }
-
-    // Transform to unified format - extract form type from raw_json.type
-    // since the form_type column may not be populated yet
+    // Transform to unified shape. The view already gives us
+    // client_display_name + preparer_name, so no second lookup needed.
+    // The view does not include `id` or `raw_json` (kept on the base
+    // table for forensics) — engagement_id is the canonical identifier
+    // for downstream UI links.
     const unified: UnifiedReturn[] = (engagements || []).map((eng) => {
-      const rawJson = eng.raw_json as Record<string, unknown> | null
-      const assignee = rawJson?.assignee as Record<string, unknown> | null
-      const modifiedBy = rawJson?.modifiedBy as Record<string, unknown> | null
-
-      // Extract form type from raw_json.type (e.g., "1040", "1065", "1120S")
-      // Fall back to form_type column, then return_type mapping
-      const formFromJson = (rawJson?.type as string) || null
       const formType =
-        formFromJson ||
         eng.form_type ||
         RETURN_TYPE_TO_FORM[eng.return_type || ""] ||
         eng.return_type ||
         "Unknown"
 
-      // Extract preparer from assignee profile ID
-      // ProConnect only provides profile IDs, not human-readable names
-      // TODO: Create proconnect_profiles mapping table to resolve these to names
-      // For now, don't display raw profile IDs
-      const preparerName = null
-
       return {
-        id: eng.id,
+        id: eng.engagement_id,
         engagement_id: eng.engagement_id,
         proconnect_client_id: eng.proconnect_client_id,
-        client_name: eng.proconnect_client_id
-          ? clientNames.get(eng.proconnect_client_id) || null
-          : null,
+        client_name: eng.client_display_name || null,
         tax_year: eng.tax_year,
         form: formType,
         return_type: eng.return_type,
         status: eng.status,
         efile_status: eng.efile_status,
         work_status: eng.work_status,
-        preparer: preparerName,
+        preparer: eng.preparer_name || null,
+        preparer_profile_id: eng.assignee_profile_id,
+        user_defined_status_name: eng.user_defined_status_name,
+        user_defined_status_color: eng.user_defined_status_color,
+        proconnect_modified_at: eng.proconnect_modified_at,
         synced_at: eng.synced_at,
         updated_at: eng.updated_at,
-        raw: rawJson || {},
+        raw: {},
       }
     })
 
-    // Filter by form type in JavaScript (since form_type column may be null)
+    // Form filter (kept in JS because the source `type` is in raw_json
+    // for legacy rows — the form_type column isn't always populated).
     let filteredUnified = unified
     if (form !== "all") {
       let formTypes: string[] = []
-
-      if (form === "business") {
-        formTypes = ["1065", "1120", "1120S"]
-      } else if (form === "individual") {
-        formTypes = ["1040"]
-      } else if (form === "nonprofit") {
-        formTypes = ["990"]
-      } else {
-        formTypes = [form]
-      }
-
+      if (form === "business") formTypes = ["1065", "1120", "1120S"]
+      else if (form === "individual") formTypes = ["1040"]
+      else if (form === "nonprofit") formTypes = ["990"]
+      else formTypes = [form]
       filteredUnified = unified.filter((r) => formTypes.includes(r.form))
     }
 
-    // Apply limit after filtering
     filteredUnified = filteredUnified.slice(0, limit)
 
-    // Build stats from filtered data
     const stats = {
       totalReturns: filteredUnified.length,
       byForm: {} as Record<string, { count: number }>,
@@ -158,40 +118,24 @@ export async function GET(req: Request) {
     }
 
     for (const r of filteredUnified) {
-      // By form
       const fb = stats.byForm[r.form] ?? (stats.byForm[r.form] = { count: 0 })
       fb.count += 1
-
-      // By year
       const yKey = r.tax_year ? String(r.tax_year) : "(unknown)"
       stats.byYear[yKey] = (stats.byYear[yKey] || 0) + 1
-
-      // By efile status
       const eKey = r.efile_status ?? "(not filed)"
       stats.byEfileStatus[eKey] = (stats.byEfileStatus[eKey] || 0) + 1
-
-      // By status
-      const sKey = r.status ?? "(unknown)"
+      const sKey = r.user_defined_status_name ?? r.status ?? "(unknown)"
       stats.byStatus[sKey] = (stats.byStatus[sKey] || 0) + 1
-
-      // By preparer
       const pKey = r.preparer || "(unassigned)"
       stats.byPreparer[pKey] = (stats.byPreparer[pKey] || 0) + 1
     }
 
-    // Determine which forms were queried
     let formsQueried: string[]
-    if (form === "all") {
-      formsQueried = ["1040", "1065", "1120", "1120S", "990"]
-    } else if (form === "business") {
-      formsQueried = ["1065", "1120", "1120S"]
-    } else if (form === "individual") {
-      formsQueried = ["1040"]
-    } else if (form === "nonprofit") {
-      formsQueried = ["990"]
-    } else {
-      formsQueried = [form]
-    }
+    if (form === "all") formsQueried = ["1040", "1065", "1120", "1120S", "990"]
+    else if (form === "business") formsQueried = ["1065", "1120", "1120S"]
+    else if (form === "individual") formsQueried = ["1040"]
+    else if (form === "nonprofit") formsQueried = ["990"]
+    else formsQueried = [form]
 
     return NextResponse.json({
       returns: filteredUnified,

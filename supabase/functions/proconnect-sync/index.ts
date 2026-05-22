@@ -313,6 +313,19 @@ async function syncClientEngagements(
       const engagementId = eng.id || eng.engagementId || `${clientId}-${year}`
       const formType = eng.type || null
 
+      // Hoist nested raw_json fields into first-class columns so the
+      // /tax dashboard, enriched view, and ALFRED can query without
+      // unwrapping JSON. raw_json is still preserved for forensics.
+      const assigneeProfileId = eng.assignee?.profileId ?? null
+      const assigneeAuthId = eng.assignee?.authId ?? null
+      const createdByProfileId = eng.createdBy?.profileId ?? null
+      const modifiedByProfileId = eng.modifiedBy?.profileId ?? null
+      const userDefinedStatusId = eng.userDefinedStatus ?? null
+      const engagementName = eng.name ?? null
+      const engagementState = eng.state ?? null
+      const proconnectCreatedAt = eng.createdDate || null
+      const proconnectModifiedAt = eng.modifiedDate || null
+
       const { error } = await supabase.from("proconnect_engagements").upsert(
         {
           engagement_id: engagementId,
@@ -323,6 +336,15 @@ async function syncClientEngagements(
           status: eng.status || null,
           efile_status: eng.efileStatus || null,
           work_status: eng.workStatus || null,
+          assignee_profile_id: assigneeProfileId,
+          assignee_auth_id: assigneeAuthId,
+          created_by_profile_id: createdByProfileId,
+          modified_by_profile_id: modifiedByProfileId,
+          user_defined_status_id: userDefinedStatusId,
+          engagement_name: engagementName,
+          engagement_state: engagementState,
+          proconnect_created_at: proconnectCreatedAt,
+          proconnect_modified_at: proconnectModifiedAt,
           raw_json: engagement,
           synced_at: now,
           updated_at: now,
@@ -438,7 +460,7 @@ async function syncCustomStatuses(
   return { count, errors }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ───────────────��─────────────────────────────────────────────────────────────
 // Sync Logging
 // ─────────────────────────────────────────────────────────────────────────────
 
