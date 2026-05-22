@@ -54,17 +54,45 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
   // don't show a stale recap from a previous filter state while a
   // wider filter is loading.
   const [recap, setRecap] = useState<WeeklyRecap | null>(null)
+  // The selected week's `week_date` (Friday of that voting week) is
+  // returned by the recap API independently of whether a recap row
+  // exists yet. We use it below to decide whether the "Results
+  // Sealed" waiting screen applies — pre-recap-system weeks have no
+  // recap row but their standings should still be visible. See the
+  // `isAwaitingRecap` comment below.
+  const [selectedWeekDate, setSelectedWeekDate] = useState<string | null>(null)
 
   const is2026OrLater = filters.year !== "all" && Number.parseInt(filters.year) >= 2026
   // Once a single week is in scope we treat its recap as the source
-  // of truth: results are only revealed AFTER ALFRED's Friday recap
-  // email actually ships (`email_sent_at` is set on the persisted
-  // `tommy_weekly_recaps` row by the cron). Until then we render the
-  // ALFRED "results sealed" waiting screen instead of leaking the
-  // standings prematurely.
+  // of truth for the recap PANEL, but we ONLY seal the standings on
+  // weeks that are still in flight. A week is "in flight" when its
+  // Friday hasn't passed yet OR Friday has just arrived but the cron
+  // hasn't shipped the recap email yet. Older weeks (pre-recap-system
+  // and any week whose Friday + grace window has already passed) just
+  // show their leaderboard, with the recap panel only rendering when
+  // a recap row actually exists.
+  //
+  // Friday cutoff: the recap cron runs at 16:00 UTC (noon ET) on
+  // Friday. We give a generous 24h grace window after the week_date
+  // (which is itself the Friday) before un-sealing without a recap,
+  // so a Friday-evening look-up doesn't reveal results before the
+  // email lands but a Saturday or later look-up always does.
   const isSingleWeekView = filters.weekIds.length === 1
-  const isAwaitingRecap = isSingleWeekView && (!recap || !recap.email_sent_at)
-  const showRecap = isSingleWeekView && recap !== null && !!recap.email_sent_at
+  const recapEmailSent = !!recap?.email_sent_at
+  const isCurrentWeekStillSealed = (() => {
+    if (!isSingleWeekView) return false
+    if (recapEmailSent) return false
+    if (!selectedWeekDate) return false
+    const weekFriday = new Date(`${selectedWeekDate}T00:00:00Z`)
+    // Reveal threshold = Friday end-of-day UTC (24h after the week_date
+    // anchor). Past this point, even without a recap row, we show the
+    // standings — that covers historical weeks that pre-date the
+    // recap-row system.
+    const revealThreshold = weekFriday.getTime() + 24 * 60 * 60 * 1000
+    return Date.now() < revealThreshold
+  })()
+  const isAwaitingRecap = isCurrentWeekStillSealed
+  const showRecap = isSingleWeekView && recap !== null && recapEmailSent
 
   useEffect(() => {
     fetchLeaderboard()
@@ -88,11 +116,12 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
         fetch(`/api/tommy-awards?${recapParams}`),
       ])
       const lbData = await lbRes.json()
-      const recapData = await recapRes.json().catch(() => ({ recap: null }))
+      const recapData = await recapRes.json().catch(() => ({ recap: null, week_date: null }))
 
       setLeaderboard(lbData.leaderboard || [])
       setTotalBallots(lbData.total_ballots || 0)
       setRecap(recapData?.recap ?? null)
+      setSelectedWeekDate(recapData?.week_date ?? null)
     } catch (error) {
       console.error("Error fetching leaderboard:", error)
     } finally {

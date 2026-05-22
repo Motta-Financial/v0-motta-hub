@@ -31,9 +31,20 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ week_id: data?.week_id || null, week_date: data?.week_date || null })
     }
 
-    // Get weeks for filter dropdown
+    // Get weeks for filter dropdown.
+    //
+    // Weeks are pre-seeded years in advance (one row per Friday through
+    // 2026 etc.) so voting forms have a stable target — but we don't
+    // want those future placeholders cluttering the Weekly Leaderboard
+    // picker. Cap the result at today: any week dated after today is
+    // hidden from the dropdown until that Friday actually arrives.
     if (type === "weeks") {
-      let query = supabase.from("tommy_award_weeks").select("*").order("week_date", { ascending: false })
+      const todayIso = new Date().toISOString().slice(0, 10)
+      let query = supabase
+        .from("tommy_award_weeks")
+        .select("*")
+        .lte("week_date", todayIso)
+        .order("week_date", { ascending: false })
 
       if (year) {
         const startDate = `${year}-01-01`
@@ -94,20 +105,39 @@ export async function GET(request: NextRequest) {
     // We never collapse multi-week filters down to "the latest one"
     // because the resulting summary would describe a different week
     // than the leaderboard above it.
+    //
+    // We also return the selected week's `week_date` independently of
+    // whether a recap row exists. The leaderboard uses that date to
+    // decide whether to show the "Results Sealed" waiting screen — we
+    // ONLY seal the in-flight current week (Friday hasn't shipped its
+    // recap yet). Pre-recap-system weeks have no row but should still
+    // reveal their standings normally; without a date the component
+    // would over-eagerly seal those too.
     if (type === "weekly_recap") {
       if (weekIdList.length !== 1) {
-        return NextResponse.json({ recap: null })
+        return NextResponse.json({ recap: null, week_date: null })
       }
-      const { data, error } = await supabase
-        .from("tommy_weekly_recaps")
-        .select(
-          "week_id, week_date, week_label, total_ballots, ai_summary, podium_image_url, podium_pdf_url, top_three, email_sent_at, created_at",
-        )
-        .eq("week_id", weekIdList[0])
-        .maybeSingle()
+      const [{ data: recapRow, error: recapErr }, { data: weekRow }] =
+        await Promise.all([
+          supabase
+            .from("tommy_weekly_recaps")
+            .select(
+              "week_id, week_date, week_label, total_ballots, ai_summary, podium_image_url, podium_pdf_url, top_three, email_sent_at, created_at",
+            )
+            .eq("week_id", weekIdList[0])
+            .maybeSingle(),
+          supabase
+            .from("tommy_award_weeks")
+            .select("week_date")
+            .eq("id", weekIdList[0])
+            .maybeSingle(),
+        ])
 
-      if (error) throw error
-      return NextResponse.json({ recap: data || null })
+      if (recapErr) throw recapErr
+      return NextResponse.json({
+        recap: recapRow || null,
+        week_date: recapRow?.week_date ?? weekRow?.week_date ?? null,
+      })
     }
 
     // "all_recaps" — full archive of persisted Friday recaps, newest
