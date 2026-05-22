@@ -1,25 +1,23 @@
 /**
  * ProConnect Manual Sync Trigger
  *
- * POST /api/proconnect/sync - Trigger a manual full sync via Edge Function
+ * POST /api/proconnect/sync - Trigger a manual full sync (runs in Vercel)
  * GET /api/proconnect/sync - Get sync status and stats
  *
- * The actual sync work is delegated to the Supabase Edge Function at
- * supabase/functions/proconnect-sync/index.ts. This route is a thin
- * proxy that handles auth and stat lookups.
+ * The sync work runs inline via lib/proconnect/sync.runFullSync(). It is
+ * resumable — if the 40s self-timeout fires before all clients are
+ * processed, the run is marked "partial" with a last_client_index, and
+ * the next POST resumes from that point. Repeat until status === "success".
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { getSyncStats } from "@/lib/proconnect/sync"
+import { getSyncStats, runFullSync } from "@/lib/proconnect/sync"
 import { getTokenStatus } from "@/lib/proconnect/oauth"
 import { requireLeadership } from "@/lib/auth/require-leadership"
 
-const SUPABASE_URL = process.env.SUPABASE_URL!
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
-
-function getEdgeFunctionUrl(): string {
-  return `${SUPABASE_URL}/functions/v1/proconnect-sync`
-}
+export const dynamic = "force-dynamic"
+export const runtime = "nodejs"
+export const maxDuration = 60
 
 export async function GET() {
   try {
@@ -84,32 +82,10 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  console.log("[ProConnect API] Manual sync triggered - delegating to Edge Function")
+  console.log("[ProConnect API] Manual sync triggered - running inline")
 
   try {
-    const url = getEdgeFunctionUrl()
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ syncType: "manual" }),
-    })
-
-    const result = await response.json()
-
-    if (!response.ok) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: `Edge Function returned ${response.status}`,
-          details: result,
-        },
-        { status: response.status }
-      )
-    }
+    const result = await runFullSync("manual")
 
     return NextResponse.json({
       ok: result.success,
@@ -117,10 +93,12 @@ export async function POST(request: NextRequest) {
       clientsSynced: result.clientsSynced,
       engagementsSynced: result.engagementsSynced,
       customStatusesSynced: result.customStatusesSynced,
-      totalClients: result.totalClients,
-      errorCount: result.errorCount,
-      errors: (result.errors || []).slice(0, 20),
+      errorCount: result.errors.length,
+      errors: result.errors.slice(0, 20),
       duration: `${result.duration}ms`,
+      partial: result.partial,
+      timedOut: result.timedOut,
+      lastClientIndex: result.lastClientIndex,
     })
   } catch (err) {
     return NextResponse.json(
