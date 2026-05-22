@@ -535,7 +535,7 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
     // up automatically. `?skipImage=true` suppresses the trigger.
     if (!skipImage && topThree.length > 0) {
       const appUrlForTrigger = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
-      const triggerUrl = `${appUrlForTrigger}/api/tommy-awards/generate-podium-image`
+      const triggerUrl = `${appUrlForTrigger}/api/cron/tommy-podium-image`
       // Detached fetch — we don't await, don't read the body, don't
       // even keep the promise. A short connection timeout makes sure a
       // dead route can't keep the cron alive past its 60s budget.
