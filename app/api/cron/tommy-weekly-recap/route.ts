@@ -5,13 +5,18 @@ import { assignDenseRanks } from "@/lib/tommy-awards-ranking"
 import { generateText } from "ai"
 import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
-import { generatePodiumImage } from "@/lib/tommy-awards/generate-podium-image"
 import { generatePodiumPdf } from "@/lib/tommy-awards/generate-podium-pdf"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 
-// AI generation + image gen + Blob upload can take 30-60s end-to-end.
-export const maxDuration = 120
+// The recap pipeline runs the fast steps inline (AI prose, PDF render,
+// Resend send) and then fires the slow gpt-image-2 step asynchronously
+// against /api/tommy-awards/generate-podium-image — see that route for
+// rationale. The synchronous portion completes in ~10s end-to-end so we
+// keep the cron's own ceiling tight; the async image route owns its own
+// 800s budget. Setting `maxDuration = 60` here means a stuck cron fails
+// fast on Friday noon rather than silently chewing minutes.
+export const maxDuration = 60
 
 /**
  * Format a podium rank as "1st" / "2nd" / "3rd". Tied finishers share a
@@ -384,45 +389,20 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
         "Dispatch interrupted — ALFRED's transmitter took a hit composing this week's issue.\n\nThe podium below stands on its own, and the Alliance carries the win regardless."
     }
 
-    // ── Generate the F1-podium hero image ─────────────────────────
-    // Look up each winner's hero_profile_slug so the image prompt can
-    // reference the canonical Alliance design language for that hero.
+    // ── Defer the F1-podium hero image to an async job ────────────
+    // gpt-image-2 `quality:high` + the vision-grounded prompt-drafting
+    // pipeline routinely runs 3–5 minutes end to end — well past what
+    // we want a Friday-noon email cron to wait for. We persist the
+    // recap row WITHOUT the image, ship the email immediately, and
+    // then fire-and-forget a POST to /api/tommy-awards/generate-podium-image
+    // which has its own 800s ceiling. That route updates
+    // `tommy_weekly_recaps.podium_image_url` once gpt-image-2 returns,
+    // so the Weekly Tommy's tab and any new email links pick it up.
+    //
+    // `?skipImage=true` (manual QA) skips the async trigger entirely.
     let podiumImageUrl: string | null = null
-    let podiumImagePrompt: string | null = null
-    let podiumImageModel: string | null = null
-    if (!skipImage && topThree.length > 0) {
-      const { data: heroSlugRows } = await supabase
-        .from("team_members")
-        .select("full_name, hero_profile_slug")
-        .in(
-          "full_name",
-          topThree
-            .filter((t) => t.name !== "P24")
-            .map((t) => t.name),
-        )
-
-      const heroSlugByName = new Map(
-        (heroSlugRows ?? []).map((r) => [r.full_name, r.hero_profile_slug]),
-      )
-      // P24 is the combined Ganesh + Thameem alias — its hero slug is
-      // hard-coded since the team_members row uses individual names.
-      const result = await generatePodiumImage({
-        weekLabel,
-        winners: topThree.map((t) => ({
-          name: t.name,
-          rank: t.rank,
-          heroSlug:
-            t.name === "P24"
-              ? "p24-shadow-task-force"
-              : heroSlugByName.get(t.name) ?? null,
-        })),
-      })
-      if (result) {
-        podiumImageUrl = result.imageUrl
-        podiumImagePrompt = result.promptUsed
-        podiumImageModel = result.imageModel
-      }
-    }
+    const podiumImagePrompt: string | null = null
+    const podiumImageModel: string | null = null
 
     // ── Generate the printable / shareable PDF ─────────────────────
     // The PDF mirrors what teammates see in the recap email — header,
@@ -543,6 +523,37 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
 
     if (persistErr) {
       console.error("[v0] tommy-weekly-recap: failed to persist recap row:", persistErr)
+    }
+
+    // ── Fire-and-forget the async podium image render ───────────────
+    // gpt-image-2 quality:high + the vision-grounded prompt-drafting
+    // pipeline routinely runs 3–5 minutes — far past this cron's 60s
+    // ceiling. We POST to /api/tommy-awards/generate-podium-image
+    // (maxDuration=800) and DO NOT await the response. That route
+    // updates `tommy_weekly_recaps.podium_image_url` once gpt-image-2
+    // returns, so the Weekly Tommy's tab + future email reruns pick it
+    // up automatically. `?skipImage=true` suppresses the trigger.
+    if (!skipImage && topThree.length > 0) {
+      const appUrlForTrigger = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+      const triggerUrl = `${appUrlForTrigger}/api/cron/tommy-podium-image`
+      // Detached fetch — we don't await, don't read the body, don't
+      // even keep the promise. A short connection timeout makes sure a
+      // dead route can't keep the cron alive past its 60s budget.
+      void fetch(triggerUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.CRON_SECRET}`,
+        },
+        body: JSON.stringify({ weekId }),
+        signal: AbortSignal.timeout(5_000),
+      }).catch((err) => {
+        // The async route is doing the work — the cron just kicks it
+        // off. A failure here only means the kick-off didn't reach
+        // the route; the row exists and we can re-trigger manually.
+        console.error("[v0] tommy-weekly-recap: failed to trigger async image", err)
+      })
+      console.log("[v0] tommy-weekly-recap: dispatched async image render for week", weekId)
     }
 
     return NextResponse.json({
