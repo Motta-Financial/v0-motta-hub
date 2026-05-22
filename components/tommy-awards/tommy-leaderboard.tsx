@@ -92,7 +92,16 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
     return Date.now() < revealThreshold
   })()
   const isAwaitingRecap = isCurrentWeekStillSealed
-  const showRecap = isSingleWeekView && recap !== null && recapEmailSent
+  // Show the recap panel whenever there's persisted content for the
+  // selected week — `email_sent_at` only gates the "in-flight current
+  // week" reveal (handled above by `isCurrentWeekStillSealed`). Once
+  // a week is past its Friday cutoff, any backfilled `ai_summary`,
+  // `podium_image_url`, or `podium_pdf_url` should render even if the
+  // weekly email was never dispatched (e.g. the 21 historical 2026
+  // weeks summarised retroactively for ALFRED's continuity context).
+  const hasRecapContent =
+    !!recap && (!!recap.ai_summary || !!recap.podium_image_url || !!recap.podium_pdf_url)
+  const showRecap = isSingleWeekView && hasRecapContent && !isCurrentWeekStillSealed
 
   useEffect(() => {
     fetchLeaderboard()
