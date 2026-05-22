@@ -1,13 +1,24 @@
 /**
  * ProConnect Manual Sync Trigger
  *
- * POST /api/proconnect/sync - Trigger a manual full sync
+ * POST /api/proconnect/sync - Trigger a manual full sync via Edge Function
  * GET /api/proconnect/sync - Get sync status and stats
+ *
+ * The actual sync work is delegated to the Supabase Edge Function at
+ * supabase/functions/proconnect-sync/index.ts. This route is a thin
+ * proxy that handles auth and stat lookups.
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { runFullSync, getSyncStats } from "@/lib/proconnect/sync"
+import { getSyncStats } from "@/lib/proconnect/sync"
 import { getTokenStatus } from "@/lib/proconnect/oauth"
+
+const SUPABASE_URL = process.env.SUPABASE_URL!
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+
+function getEdgeFunctionUrl(): string {
+  return `${SUPABASE_URL}/functions/v1/proconnect-sync`
+}
 
 export async function GET() {
   try {
@@ -63,93 +74,43 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const url = new URL(request.url)
-  const fullLoop = url.searchParams.get("full") === "true"
-
-  console.log(`[ProConnect API] Manual sync triggered (fullLoop=${fullLoop})`)
+  console.log("[ProConnect API] Manual sync triggered - delegating to Edge Function")
 
   try {
-    if (!fullLoop) {
-      // Single sync run (original behavior)
-      const result = await runFullSync("manual")
+    const url = getEdgeFunctionUrl()
 
-      return NextResponse.json({
-        ok: result.success,
-        syncLogId: result.syncLogId,
-        clientsSynced: result.clientsSynced,
-        engagementsSynced: result.engagementsSynced,
-        customStatusesSynced: result.customStatusesSynced,
-        errorCount: result.errors.length,
-        errors: result.errors.slice(0, 20),
-        duration: `${result.duration}ms`,
-        partial: result.partial,
-        lastClientIndex: result.lastClientIndex,
-      })
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ syncType: "manual" }),
+    })
+
+    const result = await response.json()
+
+    if (!response.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Edge Function returned ${response.status}`,
+          details: result,
+        },
+        { status: response.status }
+      )
     }
-
-    // Full loop mode: keep calling sync until all clients are done
-    // This chains multiple partial syncs until lastClientIndex resets to 0
-    const runs: Array<{
-      run: number
-      syncLogId: string
-      engagementsSynced: number
-      lastClientIndex?: number
-      status: string
-      duration: number
-    }> = []
-
-    let totalEngagements = 0
-    let totalClients = 0
-    let runCount = 0
-    const maxRuns = 100 // Safety limit to prevent infinite loops
-    const startTime = Date.now()
-
-    while (runCount < maxRuns) {
-      runCount++
-      console.log(`[ProConnect API] Full sync loop - run ${runCount}`)
-
-      const result = await runFullSync("manual")
-
-      runs.push({
-        run: runCount,
-        syncLogId: result.syncLogId,
-        engagementsSynced: result.engagementsSynced,
-        lastClientIndex: result.lastClientIndex,
-        status: result.partial ? "partial" : result.success ? "success" : "failed",
-        duration: result.duration,
-      })
-
-      totalEngagements += result.engagementsSynced
-      totalClients += result.clientsSynced
-
-      // Stop conditions:
-      // 1. Sync completed successfully (lastClientIndex === 0 means all clients done)
-      // 2. Actual failure (not partial)
-      // 3. No progress made (safety check)
-      if (result.success && result.lastClientIndex === 0) {
-        console.log(`[ProConnect API] Full sync complete after ${runCount} runs`)
-        break
-      }
-
-      if (!result.partial && !result.success) {
-        console.log(`[ProConnect API] Sync failed (not partial), stopping loop`)
-        break
-      }
-
-      // Continue to next run for partial syncs
-      console.log(`[ProConnect API] Partial sync completed, continuing... (lastClientIndex=${result.lastClientIndex})`)
-    }
-
-    const totalDuration = Date.now() - startTime
 
     return NextResponse.json({
-      ok: runs[runs.length - 1]?.status === "success",
-      mode: "full_loop",
-      totalRuns: runCount,
-      totalEngagementsSynced: totalEngagements,
-      totalClientsSynced: totalClients,
-      totalDuration: `${totalDuration}ms`,
-      runs,
+      ok: result.success,
+      syncLogId: result.syncLogId,
+      clientsSynced: result.clientsSynced,
+      engagementsSynced: result.engagementsSynced,
+      customStatusesSynced: result.customStatusesSynced,
+      totalClients: result.totalClients,
+      errorCount: result.errorCount,
+      errors: (result.errors || []).slice(0, 20),
+      duration: `${result.duration}ms`,
     })
   } catch (err) {
     return NextResponse.json(
