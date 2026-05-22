@@ -140,15 +140,13 @@ export async function GET() {
       rollup.total += 1
 
       // Extract preparer from raw_json if available
+      // ProConnect only provides profile IDs, not names - needs a mapping table
       const rawJson = eng.raw_json as Record<string, unknown> | null
       const assignee = rawJson?.assignee as Record<string, unknown> | null
-      const modifiedBy = rawJson?.modifiedBy as Record<string, unknown> | null
-      const preparerName =
-        (rawJson?.name as string) ||
-        (assignee?.profileId as string) ||
-        (modifiedBy?.profileId as string) ||
-        null
-      if (preparerName) rollup.preparers.add(preparerName)
+      const preparerProfileId = assignee?.profileId as string | null
+      // TODO: Create proconnect_profiles table to map profileId -> team member name
+      // For now, skip adding preparers since we only have IDs, not names
+      // if (preparerProfileId) rollup.preparers.add(preparerProfileId)
 
       // Track latest activity
       if (eng.updated_at || eng.synced_at) {
@@ -182,7 +180,7 @@ export async function GET() {
           latestYear: eng.tax_year,
           latestStatus: eng.status,
           latestEfile: eng.efile_status,
-          latestPreparer: preparerName,
+          latestPreparer: null, // TODO: map preparerProfileId to name
           latestUpdatedAt: eng.updated_at,
         })
       }

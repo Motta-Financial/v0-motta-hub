@@ -10,8 +10,14 @@ import { generatePodiumPdf } from "@/lib/tommy-awards/generate-podium-pdf"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 
-// AI generation + image gen + Blob upload can take 30-60s end-to-end.
-export const maxDuration = 120
+// AI generation + vision-grounded image-prompt drafting + gpt-image-2
+// "high" rendering + Blob upload + PDF render + Resend send to the
+// whole firm runs ~90-180s in practice. The earlier 120s budget left
+// no headroom and was hitting FUNCTION_INVOCATION_TIMEOUT on Friday
+// noon. Vercel Fluid Compute supports up to 800s; we use 300s which
+// is well above the observed p99 while still keeping the failure
+// window short.
+export const maxDuration = 300
 
 /**
  * Format a podium rank as "1st" / "2nd" / "3rd". Tied finishers share a
