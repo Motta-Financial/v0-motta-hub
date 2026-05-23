@@ -59,8 +59,15 @@ import type { TeamCalendarEvent } from "./types"
 
 interface ClientTag {
   id: string
-  link_source: "auto" | "manual"
+  /** "alfred" rows come from lib/alfred/calendly-triage.ts. */
+  link_source: "auto" | "manual" | "alfred"
   match_method?: string | null
+  /** ALFRED's self-reported confidence (0..1). Null for non-ALFRED. */
+  confidence?: number | null
+  /** ALFRED's one-sentence justification — surfaced as a tooltip. */
+  alfred_reason?: string | null
+  /** True when ALFRED's confidence is below the auto-accept threshold. */
+  needs_review?: boolean | null
   contact?: { id: string; full_name: string | null; primary_email: string | null } | null
   organization?: { id: string; name: string | null } | null
 }
@@ -473,10 +480,12 @@ export function EventDetailDialog({ event, open, onOpenChange, timeZone, current
               <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold">
                 <User className="h-4 w-4" />
                 Clients
-                {clients.some((c) => c.link_source === "auto") && (
+                {clients.some((c) => c.link_source === "auto" || c.link_source === "alfred") && (
                   <span className="ml-auto inline-flex items-center gap-1 text-xs font-normal text-muted-foreground">
                     <Sparkles className="h-3 w-3" />
-                    auto-matched from invitee
+                    {clients.some((c) => c.link_source === "alfred")
+                      ? "ALFRED-tagged"
+                      : "auto-matched from invitee"}
                   </span>
                 )}
               </h4>
@@ -489,15 +498,48 @@ export function EventDetailDialog({ event, open, onOpenChange, timeZone, current
                   {clients.map((c) => {
                     const label = c.contact?.full_name || c.organization?.name || "Unknown"
                     const Icon = c.organization ? Building2 : User
+                    // Chip variant by source:
+                    //   • auto                       → solid (deterministic email/name+phone match)
+                    //   • alfred (auto-accepted)     → solid + sparkle
+                    //   • alfred (needs_review)      → outlined + amber ring + "review" pill
+                    //   • manual                     → secondary
+                    const isAlfred = c.link_source === "alfred"
+                    const needsReview = !!c.needs_review
+                    const variant: "default" | "secondary" | "outline" =
+                      c.link_source === "auto"
+                        ? "default"
+                        : isAlfred
+                          ? needsReview
+                            ? "outline"
+                            : "default"
+                          : "secondary"
+                    const tooltip = isAlfred && c.alfred_reason
+                      ? `ALFRED · ${(c.confidence ?? 0).toFixed(2)} · ${c.alfred_reason}`
+                      : c.link_source === "auto"
+                        ? `Auto-matched (${c.match_method ?? "?"})`
+                        : undefined
                     return (
                       <Badge
                         key={c.id}
-                        variant={c.link_source === "auto" ? "default" : "secondary"}
-                        className="gap-1.5 pr-1"
+                        variant={variant}
+                        title={tooltip}
+                        className={
+                          "gap-1.5 pr-1 " +
+                          (isAlfred && needsReview
+                            ? "border-amber-400 ring-1 ring-amber-300/60 text-amber-900 dark:text-amber-100"
+                            : "")
+                        }
                       >
                         <Icon className="h-3 w-3" />
                         {label}
-                        {c.link_source === "auto" && <Sparkles className="h-3 w-3 opacity-70" />}
+                        {(c.link_source === "auto" || isAlfred) && (
+                          <Sparkles className="h-3 w-3 opacity-70" />
+                        )}
+                        {isAlfred && needsReview && (
+                          <span className="text-[10px] font-medium uppercase tracking-wide">
+                            review
+                          </span>
+                        )}
                         <button
                           type="button"
                           aria-label="Remove client tag"

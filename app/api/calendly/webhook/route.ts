@@ -11,6 +11,7 @@ import {
   matchInviteeToContact,
   upsertAutoClientLink,
 } from "@/lib/calendly-invitee-match"
+import { runAlfredCalendlyTriage } from "@/lib/alfred/calendly-triage"
 
 /**
  * Calendly webhook receiver.
@@ -190,9 +191,18 @@ async function upsertInvitee(
   invitee: any,
   eventId: string,
   eventUuid: string,
-) {
+): Promise<{
+  inviteeUuid: string | null
+  deterministicMatch: { contactId: string | null; matchMethod: "email" | "name_phone" | "name" | null }
+  invitee: any
+}> {
   const uuid = extractUuid(invitee.uri)
-  if (!uuid) return null
+  if (!uuid)
+    return {
+      inviteeUuid: null,
+      deterministicMatch: { contactId: null, matchMethod: null },
+      invitee,
+    }
 
   // Match invitee → CRM contact using email → name+phone → name. The
   // helper returns null when nothing matches, in which case the invitee
@@ -247,7 +257,14 @@ async function upsertInvitee(
     { onConflict: "calendly_uuid" },
   )
   if (error) console.error("[calendly] invitee upsert failed:", error)
-  return uuid
+  return {
+    inviteeUuid: uuid,
+    deterministicMatch: {
+      contactId: match?.contactId ?? null,
+      matchMethod: match?.matchMethod ?? null,
+    },
+    invitee,
+  }
 }
 
 /**
@@ -333,13 +350,47 @@ async function handleInviteeCreated(payload: any) {
   const saved = await upsertEvent(supabase, event, "active", connection)
   if (!saved) return { success: false, error: "event upsert failed" }
 
+  // Track every invitee we processed so ALFRED can run a triage pass
+  // per invitee. The deterministic matcher already wrote a contact tag
+  // (when it found one); ALFRED supplements with org / work / service
+  // tags and can upgrade an unmatched invitee to a confident contact.
+  const processed: Array<Awaited<ReturnType<typeof upsertInvitee>>> = []
   if (invitee?.uri) {
-    await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid)
+    processed.push(await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid))
   } else if (connection) {
     const fetched = await calendlyListAll<any>(connection, supabase, `${event.uri}/invitees`, {
       query: { count: 100 },
     }).catch(() => [])
-    for (const i of fetched) await upsertInvitee(supabase, i, saved.id, saved.calendly_uuid)
+    for (const i of fetched) {
+      processed.push(await upsertInvitee(supabase, i, saved.id, saved.calendly_uuid))
+    }
+  }
+
+  // Run ALFRED triage for each invitee. We deliberately do NOT block
+  // the webhook response on this — model latency on a slow link can
+  // exceed Calendly's webhook timeout. Fire-and-forget with a top-level
+  // try/catch inside the helper so any failure stays out of the
+  // critical path. The audit row in calendly_alfred_triage_log is the
+  // durable record either way.
+  for (const p of processed) {
+    if (!p?.inviteeUuid) continue
+    void runAlfredCalendlyTriage(supabase, {
+      calendlyEventId: saved.id,
+      calendlyEventUuid: saved.calendly_uuid,
+      calendlyInviteeUuid: p.inviteeUuid,
+      eventName: event?.name ?? null,
+      eventTypeName: event?.name ?? null,
+      startTime: event?.start_time ?? null,
+      invitee: {
+        name: p.invitee?.name ?? null,
+        email: p.invitee?.email ?? null,
+        phone: extractPhoneFromInvitee(p.invitee),
+        questionsAndAnswers: p.invitee?.questions_and_answers ?? null,
+      },
+      deterministicMatch: p.deterministicMatch,
+    }).catch((err) => {
+      console.error("[calendly] alfred triage failed (non-blocking):", err)
+    })
   }
 
   await notifyTeamMembers(supabase, event, invitee, "created", connection)
