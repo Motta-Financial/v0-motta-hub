@@ -1,64 +1,84 @@
 "use client"
 
 /**
- * ClientProfile — comprehensive client detail view backed by Supabase.
+ * ClientProfile — Hub-as-Master rewrite (v2)
  *
- * Consumes /api/clients/[id] which bundles the contact/organization plus
- * every related Karbon entity (work items, notes, emails, tasks, invoices,
- * timesheets, documents, meetings, debriefs, related contacts/orgs, team
- * members, service lines, stats) in a single request.
+ * Replaces the old Karbon-shaped profile (3.4k lines, 8 tabs, three
+ * near-duplicate render branches for org / contact-with-org /
+ * individual). The mental model is now:
+ *
+ *   "The Hub contact / organization IS the client. Karbon, ProConnect,
+ *    Ignition, Calendly, Zoom, and Jotform are just systems that hold
+ *    facts about that client."
+ *
+ * Tabs:
+ *   1. Overview         — at-a-glance: key facts + recent activity
+ *   2. Communications   — Emails | Notes | Meetings | Intakes & Debriefs
+ *                          (sub-tabs; merges Karbon + Hub sources with
+ *                           provenance chips so users always know where
+ *                           a record came from)
+ *   3. Projects         — Karbon work items with rich status/blocking
+ *                          info, time logged, assignee, due date.
+ *   4. Finance          — Proposals + unified invoices + payment
+ *                          history, all rolled up into one money tab.
+ *   5. Tax              — Year-grouped ProConnect returns with
+ *                          status + key totals; degrades cleanly when
+ *                          Phase 1 data isn't imported yet.
+ *   6. Documents        — Files uploaded to the Hub + Karbon docs.
+ *   7. People           — Related contacts / orgs / client groups,
+ *                          plus PlatformLinksCard for cross-system IDs.
+ *
+ * Backed by `/api/clients/[id]` — that response shape is untouched and
+ * the type definitions for the bundle are preserved verbatim from the
+ * old file so other code that imports from here keeps compiling.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import Link from "next/link"
 import { format, formatDistanceToNow, parseISO } from "date-fns"
 import {
+  AlertTriangle,
+  ArrowUpRight,
   Briefcase,
   Building2,
   Calendar,
   CheckCircle2,
-  CheckSquare,
-  ChevronDown,
-  ChevronRight,
-  ClipboardList,
   Clock,
   DollarSign,
   ExternalLink,
-  Facebook,
   FileText,
-  Flame,
+  Files,
   Globe,
-  Inbox,
-  Landmark,
   Linkedin,
   Mail,
   MapPin,
   MessageSquare,
   Phone,
+  PiggyBank,
+  Receipt,
   RefreshCw,
   StickyNote,
-  TrendingUp,
-  Twitter,
+  Tag,
   User,
   Users,
   Video,
-  Wallet,
 } from "lucide-react"
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+
 import { summarizePayments, isPaid } from "@/lib/ignition/payments"
 import { cn } from "@/lib/utils"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
@@ -70,7 +90,7 @@ import { clientTypeBadgeClass, type ClientType } from "@/lib/client-type"
 // Types matching /api/clients/[id] response
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface ClientBundle {
+export interface ClientBundle {
   client: {
     id: string
     kind: "contact" | "organization"
@@ -87,8 +107,7 @@ interface ClientBundle {
      * `lib/client-type.getClientType()`. The full structured object — not
      * just a string — so the badge can pick a colour variant (.variant)
      * and the rest of the app can filter by .code without having to
-     * re-parse a label. Examples of .labelWithForm: "Individual (1040)",
-     * "Partnership (1065)", "S-Corp (1120-S)", "Trust (1041)".
+     * re-parse a label.
      */
     clientType: ClientType
     status: string | null
@@ -210,11 +229,6 @@ interface ClientBundle {
     work_item_title: string | null
     karbon_url: string | null
   }>
-  /**
-   * Server-merged invoice list spanning Karbon, Ignition, and the legacy
-   * HubSpot import. Use this in the Invoices tab — the source-specific
-   * arrays (karbonInvoices) remain available only for backward compat.
-   */
   unifiedInvoices: Array<{
     id: string
     source: "karbon" | "ignition" | "hubspot"
@@ -258,11 +272,6 @@ interface ClientBundle {
     last_event_at: string | null
     created_at: string | null
     updated_at: string | null
-    /**
-     * Live recurring service line items from ignition_proposal_services. Only
-     * present on accepted proposals — drafts/sent proposals don't yet have an
-     * "active services" snapshot in Ignition.
-     */
     services?: Array<{
       id: string
       service_name: string
@@ -277,10 +286,6 @@ interface ClientBundle {
       ordinal: number | null
     }> | null
   }>
-  /**
-   * Ignition billing records linked to this client. Contains contact info
-   * from the billing platform which may differ from Karbon-sourced data.
-   */
   ignitionClients: Array<{
     ignition_client_id: string
     name: string | null
@@ -322,13 +327,6 @@ interface ClientBundle {
     scheduled_end: string | null
     duration_minutes: number | null
   }>
-  /**
-   * Calendly events linked to this client via `calendly_event_clients`.
-   * Hydrated server-side from `calendly_events` (so the Meetings tab
-   * can render topic / time / status / join URL without a follow-up
-   * request). `link_source` distinguishes auto-match from
-   * calendly_bridge / alfred / manual tags.
-   */
   calendlyEvents?: Array<{
     id: string
     name: string | null
@@ -350,11 +348,6 @@ interface ClientBundle {
     needs_review: boolean
     link_id: string | null
   }>
-  /**
-   * Zoom meetings linked to this client via `zoom_meeting_clients`.
-   * Set by the Zoom participant sweep, the Calendly→Zoom bridge,
-   * ALFRED triage, and manual tagging.
-   */
   zoomMeetings?: Array<{
     id: string
     zoom_meeting_id: number | string | null
@@ -386,23 +379,13 @@ interface ClientBundle {
     client_owner_name: string | null
     client_manager_name: string | null
     work_item_id: string | null
-    /** From debriefs_full view: title of the linked work_items row */
     work_item_title: string | null
-    /** Direct Karbon URL on the joined work item (canonical, prefer this) */
     work_item_karbon_url: string | null
-    /** User-pasted Karbon URL on the debrief itself (legacy fallback) */
     karbon_work_url: string | null
     team_member_id: string | null
     team_member_full_name: string | null
     created_at: string | null
   }>
-  /**
-   * Jotform intake submissions linked to this client by the
-   * auto-matcher in lib/jotform/match-client.ts (or pinned manually
-   * via the intake admin queue). Renders in the Intakes tab as a
-   * collapsible list mirroring the Debriefs section, since both are
-   * "client said something to us in their own words" artifacts.
-   */
   intakeSubmissions: Array<{
     id: string
     created_at: string | null
@@ -475,12 +458,6 @@ interface ClientBundle {
     acceptedProposals: number
     totalProposalValue: number
   }
-  /**
-   * Every `payment_status='collected'` payment we have for this
-   * client, sorted newest first. Rolled-up totals live on
-   * `paymentsSummary` below — use that for the KPI strip, this
-   * array for the Payments tab table.
-   */
   ignitionPayments: Array<{
     ignition_payment_id: string
     ignition_invoice_id: string | null
@@ -497,7 +474,6 @@ interface ClientBundle {
     stripe_charge_id: string | null
     stripe_payment_intent_id: string | null
   }>
-  /** Aggregate roll-up of ignitionPayments. */
   paymentsSummary: {
     totalAmount: number
     totalFees: number
@@ -508,11 +484,6 @@ interface ClientBundle {
     refundCount: number
     mostRecentPaidAt: string | null
   }
-  /**
-   * ProConnect data, present only when this client is linked in
-   * `client_mapping`. `returns` collapses all five form-specific
-   * schemas into one normalized row shape for table rendering.
-   */
   proconnect: {
     clientId: string
     client: Record<string, unknown> | null
@@ -538,7 +509,7 @@ interface ClientBundle {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
-// ────────────────────────────────────────���────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string | null | undefined, pattern = "MMM d, yyyy"): string | null {
   if (!iso) return null
@@ -567,6 +538,11 @@ function formatCurrency(amount: number | null | undefined, currency = "USD"): st
   }
 }
 
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).slice(0, 2)
+  return parts.map((p) => p.charAt(0).toUpperCase()).join("") || "?"
+}
+
 function formatBytes(bytes: number | null | undefined): string {
   if (bytes == null) return "—"
   if (bytes < 1024) return `${bytes} B`
@@ -575,20 +551,43 @@ function formatBytes(bytes: number | null | undefined): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).slice(0, 2)
-  return parts.map((p) => p.charAt(0).toUpperCase()).join("") || "?"
+/**
+ * Map a domain link_source value (set by ALFRED / Calendly bridge /
+ * participant sweep / manual tagging) to a stable, human-readable
+ * provenance label. We only render a chip when the source is
+ * non-default — manual tags are the unstated baseline, so a missing
+ * chip just means "a teammate did this".
+ */
+function provenanceLabel(source: string | null | undefined): {
+  label: string
+  className: string
+} | null {
+  if (!source || source === "manual") return null
+  switch (source) {
+    case "auto":
+      return { label: "auto", className: "bg-muted text-muted-foreground" }
+    case "calendly_bridge":
+      return {
+        label: "Calendly",
+        className: "bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300",
+      }
+    case "alfred":
+      return {
+        label: "ALFRED",
+        className:
+          "bg-violet-50 text-violet-700 dark:bg-violet-950 dark:text-violet-300",
+      }
+    default:
+      return { label: source, className: "bg-muted text-muted-foreground" }
+  }
 }
 
-function statusVariant(
-  status: string | null | undefined,
-): "default" | "secondary" | "outline" | "destructive" {
-  if (!status) return "secondary"
-  const s = status.toLowerCase()
-  if (s === "completed" || s === "paid") return "default"
-  if (s === "in progress" || s === "ready to start") return "default"
-  if (s === "waiting" || s === "blocked" || s === "overdue") return "destructive"
-  return "secondary"
+const FORM_LABELS: Record<string, string> = {
+  "1040": "Individual (1040)",
+  "1065": "Partnership (1065)",
+  "1120": "C-Corp (1120)",
+  "1120S": "S-Corp (1120-S)",
+  "990": "Nonprofit (990)",
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -606,20 +605,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
   const [syncing, setSyncing] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("overview")
-  // Two layers of expand-state for the Debriefs tab. Work-item groups default
-  // to expanded so users land on a fully-visible list; individual debrief
-  // cards default to collapsed (only date + type visible) so a client with
-  // many debriefs doesn't drown the view in walls of notes text.
-  const [collapsedDebriefGroups, setCollapsedDebriefGroups] = useState<Set<string>>(
-    () => new Set(),
-  )
-  // Each intake submission is collapsible — default-collapsed so a
-  // long history of submissions doesn't dominate the tab. The Set
-  // shape mirrors expandedDebriefIds for symmetry / muscle-memory.
-  const [expandedIntakeIds, setExpandedIntakeIds] = useState<Set<string>>(() => new Set())
-  const [expandedDebriefIds, setExpandedDebriefIds] = useState<Set<string>>(
-    () => new Set(),
-  )
+  const [communicationsTab, setCommunicationsTab] = useState("emails")
 
   const fetchClient = useCallback(async () => {
     if (!clientId) return
@@ -652,15 +638,16 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     try {
       setSyncing(true)
       setSyncMessage(null)
-      const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/sync`, {
-        method: "POST",
-      })
+      const res = await fetch(
+        `/api/clients/${encodeURIComponent(clientId)}/sync`,
+        { method: "POST" },
+      )
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        throw new Error(json?.error || `HTTP ${res.status}`)
-      }
+      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`)
       setSyncMessage(
-        json?.synced ? `Synced from Karbon at ${new Date().toLocaleTimeString()}` : "Sync queued",
+        json?.synced
+          ? `Synced from Karbon at ${new Date().toLocaleTimeString()}`
+          : "Sync queued",
       )
       await fetchClient()
     } catch (err) {
@@ -672,2600 +659,1484 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     }
   }
 
-  // Build a unified communications timeline: emails + karbon notes
-  const communicationsTimeline = useMemo(() => {
-    if (!data) return []
-    const items: Array<{
-      id: string
-      kind: "email" | "note"
-      timestamp: string | null
-      subject: string | null
-      preview: string
-      author: string | null
-      direction?: string | null
-      isPinned?: boolean
-      url?: string | null
-    }> = []
-    // NOTE: this useMemo runs during render, BEFORE the destructure below
-    // that pulls `karbonNotes` etc. off `data`. We must read those fields
-    // straight off `data` here -- referencing the destructured const names
-    // would hit a Temporal Dead Zone error ("Cannot access 'X' before
-    // initialization") because the const bindings are hoisted into the
-    // function scope but not yet initialized at this point in execution.
-    // Each `?? []` also defends against older API responses that omit a
-    // collection entirely (the cause of the original blank-page crash).
-    for (const e of data.emails ?? []) {
-      items.push({
-        id: `email-${e.id}`,
-        kind: "email",
-        timestamp: e.sent_at || e.received_at,
-        subject: e.subject,
-        preview: (e.body_text || "").slice(0, 200),
-        author: e.from_name || e.from_email,
-        direction: e.direction,
-      })
-    }
-    for (const n of data.karbonNotes ?? []) {
-      items.push({
-        id: `note-${n.id}`,
-        kind: "note",
-        timestamp: n.karbon_created_at,
-        subject: n.subject || "(no subject)",
-        preview: (n.body || "").replace(/<[^>]+>/g, " ").slice(0, 200),
-        author: n.author_name,
-        isPinned: !!n.is_pinned,
-        url: n.karbon_url,
-      })
-    }
-    return items
-      .filter((i) => i.timestamp)
-      .sort((a, b) => new Date(b.timestamp!).getTime() - new Date(a.timestamp!).getTime())
-  }, [data])
-
-  // Group debriefs by their linked Karbon work item so users can scan past
-  // debriefs in the context of the engagement they belong to. Debriefs with
-  // no linked work item land in a synthetic "(No Work Item)" bucket — these
-  // are the residual cases the Karbon webhook backfill couldn't resolve.
-  const debriefsByWorkItem = useMemo(() => {
-    if (!data) return [] as Array<{
-      key: string
-      workItemId: string | null
-      title: string
-      karbonUrl: string | null
-      latestDate: string | null
-      debriefs: ClientBundle["debriefs"]
-    }>
-    const groups = new Map<
-      string,
-      {
-        key: string
-        workItemId: string | null
-        title: string
-        karbonUrl: string | null
-        latestDate: string | null
-        debriefs: ClientBundle["debriefs"]
-      }
-    >()
-    for (const d of data.debriefs ?? []) {
-      const key = d.work_item_id || "__none__"
-      if (!groups.has(key)) {
-        groups.set(key, {
-          key,
-          workItemId: d.work_item_id,
-          title: d.work_item_title || "(No Work Item)",
-          karbonUrl: d.work_item_karbon_url || d.karbon_work_url || null,
-          latestDate: null,
-          debriefs: [],
-        })
-      }
-      const g = groups.get(key)!
-      g.debriefs.push(d)
-      // Track the most-recent date in the group for sorting groups by recency.
-      const ts = d.debrief_date || d.created_at
-      if (ts && (!g.latestDate || new Date(ts) > new Date(g.latestDate))) {
-        g.latestDate = ts
-      }
-    }
-    // Each group: most-recent debrief first.
-    for (const g of groups.values()) {
-      g.debriefs.sort((a, b) => {
-        const at = new Date(a.debrief_date || a.created_at || 0).getTime()
-        const bt = new Date(b.debrief_date || b.created_at || 0).getTime()
-        return bt - at
-      })
-    }
-    // Groups sorted by most-recent activity, "(No Work Item)" pinned to the
-    // bottom regardless of recency so it doesn't visually swamp the real
-    // engagements.
-    return Array.from(groups.values()).sort((a, b) => {
-      if (a.key === "__none__") return 1
-      if (b.key === "__none__") return -1
-      const at = a.latestDate ? new Date(a.latestDate).getTime() : 0
-      const bt = b.latestDate ? new Date(b.latestDate).getTime() : 0
-      return bt - at
-    })
-  }, [data])
-
-  // ───────────────────────────────────────────────────────────────────────────
-
-  if (loading) {
+  if (loading && !data) return <ClientProfileSkeleton />
+  if (error)
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-        <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">Loading client...</p>
-      </div>
+      <AlfredErrorCard
+        title="Couldn't load this client"
+        message={error}
+        onRetry={fetchClient}
+      />
     )
-  }
+  if (!data) return null
 
-  if (error || !data) {
-    // Frame the failure as ALFRED reporting back: friendlier than a stock
-    // "Failed to load" card and consistent with the route-level error
-    // boundary's branding, so a 500 from /api/clients/[id] looks the same
-    // as an unhandled render crash from the user's point of view.
-    const isNotFound = !!error && /HTTP\s*404/i.test(error)
-    return (
-      <div className="flex min-h-[60vh] items-center justify-center p-6">
-        <AlfredErrorCard
-          title={
-            isNotFound
-              ? "ALFRED here �� I couldn't find that client in our records."
-              : "ALFRED here — I couldn't pull up that client just now."
-          }
-          message={
-            isNotFound
-              ? "The client may have been merged, archived, or never synced from Karbon. Let me take you back to the directory."
-              : "I tried fetching the file but something went wrong on the way. You can try again, or head back to the directory."
-          }
-          error={error ? new Error(error) : undefined}
-          onRetry={fetchClient}
-          homeHref="/clients"
-        />
-      </div>
-    )
-  }
-
-  // Defensive destructure with `?? []` fallbacks. Older deployments of
-  // /api/clients/[id] sometimes shipped responses missing one of these
-  // arrays (e.g. `ignitionClients` was added later, `unifiedInvoices` was
-  // added later). When that happens, hitting `.length` or `.map(...)` on
-  // an undefined value throws and bubbles all the way up to the route
-  // error boundary — better to render an empty section than to crash the
-  // entire page.
-  const {
-    client,
-    workItems = [],
-    karbonTasks = [],
-    karbonInvoices = [],
-    unifiedInvoices,
-    ignitionProposals = [],
-    ignitionClients = [],
-    documents = [],
-    karbonTimesheets = [],
-    debriefs = [],
-    intakeSubmissions = [],
-    karbonNotes = [],
-    manualNotes = [],
-    serviceLinesUsed = [],
-    teamMembers = [],
-    clientGroups = [],
-    relatedContacts = [],
-    relatedOrganizations = [],
-    stats,
-    ignitionPayments = [],
-    paymentsSummary,
-    calendlyEvents = [],
-    zoomMeetings = [],
-    proconnect,
-  } = data
-  // Use the server-merged unified list when present. Older API responses
-  // didn't include it — in that case we synthesize the same shape from
-  // karbonInvoices so the Invoices tab still renders something useful.
-  const invoices =
-    unifiedInvoices ??
-    (karbonInvoices ?? []).map((inv) => ({
-      id: `karbon:${inv.id}`,
-      source: "karbon" as const,
-      invoice_number: inv.invoice_number,
-      status: inv.status,
-      amount: Number(inv.total_amount) || 0,
-      amount_paid:
-        inv.status?.toLowerCase() === "paid" ? Number(inv.total_amount) || 0 : 0,
-      amount_outstanding:
-        inv.status?.toLowerCase() === "paid" ? 0 : Number(inv.total_amount) || 0,
-      currency: inv.currency || "USD",
-      issued_date: inv.issued_date,
-      due_date: inv.due_date,
-      paid_date: inv.paid_date,
-      work_item_title: inv.work_item_title,
-      external_url: inv.karbon_url,
-    }))
+  const { client, stats } = data
 
   return (
     <div className="flex flex-col gap-6 pb-12">
-      {/* ═════ Header ═════ */}
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-            <div className="flex items-start gap-4">
-              <Avatar className="h-16 w-16">
-                {client.avatarUrl ? <AvatarImage src={client.avatarUrl} alt={client.clientName} /> : null}
-                <AvatarFallback className="text-lg">{initials(client.clientName)}</AvatarFallback>
-              </Avatar>
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-2xl font-semibold tracking-tight text-balance">
-                    {client.clientName}
-                  </h1>
-                  {client.isOrganization ? (
-                    <Building2 className="h-5 w-5 text-muted-foreground" />
-                  ) : (
-                    <User className="h-5 w-5 text-muted-foreground" />
-                  )}
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {/*
-                   * Single, filing-form-aware Client Type badge replaces the
-                   * old triple-stack of {type, entityType, contactType}. The
-                   * server resolves a unified label like "Partnership (1065)"
-                   * via lib/client-type so the badge is consistent with the
-                   * Clients list and any future filters.
-                   */}
-                  {client.clientType ? (
-                    <Badge
-                      variant="outline"
-                      className={cn("font-medium", clientTypeBadgeClass(client.clientType.variant))}
-                    >
-                      {client.clientType.labelWithForm}
-                    </Badge>
-                  ) : client.type ? (
-                    <Badge variant="secondary">{client.type}</Badge>
-                  ) : null}
-                  {/*
-                   * Suppress the secondary contactType chip when it duplicates
-                   * what the unified Client Type badge already says. We compare
-                   * against both label fields because Karbon's contact_type
-                   * sometimes carries the bare label ("S Corporation") and
-                   * sometimes the form-suffixed variant ("S-Corp (1120-S)").
-                   */}
-                  {client.contactType &&
-                  client.contactType !== client.clientType?.label &&
-                  client.contactType !== client.clientType?.labelWithForm ? (
-                    <Badge variant="outline">{client.contactType}</Badge>
-                  ) : null}
-                  {client.status ? (
-                    <Badge variant={statusVariant(client.status)}>{client.status}</Badge>
-                  ) : null}
-                  {client.isProspect ? <Badge variant="outline">Prospect</Badge> : null}
-                  {(client.tags || []).slice(0, 5).map((t) => (
-                    <Badge key={t} variant="outline" className="font-normal">
-                      {t}
-                    </Badge>
-                  ))}
-                </div>
-                <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap mt-1">
-                  {client.lastActivityAt ? (
-                    <span className="flex items-center gap-1">
-                      <Clock className="h-3 w-3" />
-                      Last activity {relativeTime(client.lastActivityAt)}
-                    </span>
-                  ) : null}
-                  {client.lastSyncedAt ? (
-                    <span className="flex items-center gap-1">
-                      <RefreshCw className="h-3 w-3" />
-                      Synced {relativeTime(client.lastSyncedAt)}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-            <div className="flex flex-col gap-2 items-stretch md:items-end">
-              <div className="flex gap-2">
-                {client.karbonUrl ? (
-                  <Button asChild variant="outline" size="sm">
-                    <a href={client.karbonUrl} target="_blank" rel="noreferrer">
-                      <ExternalLink className="h-4 w-4 mr-2" />
-                      Open in Karbon
-                    </a>
-                  </Button>
-                ) : null}
-                <Button onClick={handleSync} disabled={syncing} size="sm">
-                  <RefreshCw className={cn("h-4 w-4 mr-2", syncing && "animate-spin")} />
-                  {syncing ? "Syncing..." : "Sync from Karbon"}
-                </Button>
-              </div>
-              {syncMessage ? (
-                <p className="text-xs text-muted-foreground">{syncMessage}</p>
-              ) : null}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      {/* ═════ Identity card + action rail ═════ */}
+      <ClientHeader
+        client={client}
+        syncing={syncing}
+        syncMessage={syncMessage}
+        onSync={handleSync}
+      />
 
-      {/* ═════ Stats row ═════ */}
-      {/* Eight cards on lg+ so Total Paid sits next to Unpaid for an
-          at-a-glance money-in / money-owed pairing. On md we keep the
-          original 4-per-row layout and let the row wrap. */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
-        <StatCard icon={Briefcase} label="Active Work" value={stats.activeWorkItems} sub={`${stats.totalWorkItems} total`} />
-        <StatCard
-          icon={ClipboardList}
-          label="Proposals"
-          value={stats.totalProposals}
-          sub={
-            stats.acceptedProposals
-              ? `${stats.acceptedProposals} accepted`
-              : stats.activeProposals
-              ? `${stats.activeProposals} active`
-              : undefined
-          }
-        />
-        <StatCard icon={CheckSquare} label="Open Tasks" value={stats.openTasks} sub={`${stats.totalTasks} total`} />
-        <StatCard icon={Mail} label="Emails" value={stats.totalEmails} />
-        <StatCard icon={StickyNote} label="Notes" value={stats.totalNotes} />
-        <StatCard icon={FileText} label="Documents" value={stats.totalDocuments} />
-        {/*
-         * Lifetime net paid — the firm's actual cash-in-the-door from
-         * this client, after Ignition/Stripe fees, across all time. We
-         * deliberately use `totalNet` rather than `totalAmount` so this
-         * always reflects what hit the bank, and we leave it as a
-         * lifetime figure (not filtered by the Payments tab date range
-         * below) so it stays a stable "client value" headline number.
-         */}
-        <StatCard
-          icon={Wallet}
-          label="Total Paid"
-          value={formatCurrency(paymentsSummary?.totalNet ?? 0, paymentsSummary?.currency)}
-          sub={
-            paymentsSummary && paymentsSummary.paymentCount > 0
-              ? `${paymentsSummary.paymentCount} payment${paymentsSummary.paymentCount === 1 ? "" : "s"} · lifetime net`
-              : "no payments yet"
-          }
-        />
-        <StatCard
-          icon={DollarSign}
-          label="Unpaid"
-          value={formatCurrency(stats.totalUnpaidAmount)}
-          sub={`${stats.totalInvoices} invoices`}
-        />
-      </div>
+      {/* ═════ Sticky KPI strip ═════ */}
+      <KpiStrip data={data} />
 
       {/* ═════ Tabs ═════ */}
-      {/*
-       * Consolidated tab strip (rev 2026-05). Several previously separate
-       * tabs were merged so the profile reads more like a story than a
-       * directory listing:
-       *   • Communications + Intakes folded into Overview — they're
-       *     read-mostly context, not destinations of their own.
-       *   • Work Items + Tasks → "Work & Tasks" (one engagement view).
-       *   • Notes + Debriefs → "Notes & Debriefs" (one narrative view).
-       *   • Proposals + Invoices + Payments → "Finance" (one billing
-       *     timeline).
-       * Timesheets is hidden from the strip (data still flows through
-       * Karbon, just not surfaced here). Tax stays conditional on a
-       * ProConnect link, Payments collapses into Finance, Documents and
-       * Relationships remain top-level. Multiple <TabsContent value=...>
-       * with the same value all render together inside that tab — Radix
-       * supports this and it lets us merge UIs without duplicating the
-       * card markup.
-       */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="flex flex-wrap h-auto gap-1 justify-start">
+        <TabsList className="grid w-full grid-cols-3 sm:grid-cols-7">
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="work">
-            Work &amp; Tasks
-            {stats.totalWorkItems + stats.totalTasks > 0 ? (
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalWorkItems + stats.totalTasks}
-              </Badge>
-            ) : null}
+          <TabsTrigger value="communications">
+            Comms
+            {stats.totalEmails + stats.totalNotes > 0 && (
+              <CountChip n={stats.totalEmails + stats.totalNotes} />
+            )}
           </TabsTrigger>
-          <TabsTrigger value="notes">
-            Notes &amp; Debriefs
-            {stats.totalNotes + stats.totalDebriefs > 0 ? (
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalNotes + stats.totalDebriefs}
-              </Badge>
-            ) : null}
+          <TabsTrigger value="projects">
+            Projects
+            {stats.activeWorkItems > 0 && <CountChip n={stats.activeWorkItems} />}
           </TabsTrigger>
           <TabsTrigger value="finance">
             Finance
-            {stats.totalProposals + stats.totalInvoices > 0 ? (
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalProposals + stats.totalInvoices}
-              </Badge>
-            ) : null}
+            {stats.totalProposals + stats.totalInvoices > 0 && (
+              <CountChip n={stats.totalProposals + stats.totalInvoices} />
+            )}
           </TabsTrigger>
-          <TabsTrigger value="meetings">
-            Meetings
-            {(calendlyEvents.length + zoomMeetings.length) > 0 ? (
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {calendlyEvents.length + zoomMeetings.length}
-              </Badge>
-            ) : null}
+          <TabsTrigger value="tax">
+            Tax
+            {data.proconnect && data.proconnect.returnCount > 0 && (
+              <CountChip n={data.proconnect.returnCount} />
+            )}
           </TabsTrigger>
-          {/* Tax tab — only shown when this client is linked in
-              ProConnect. The badge counts returns across all five
-              form types (1040/1065/1120/1120S/990). */}
-          {proconnect && proconnect.returnCount > 0 ? (
-            <TabsTrigger value="tax">
-              Tax
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {proconnect.returnCount}
-              </Badge>
-            </TabsTrigger>
-          ) : null}
           <TabsTrigger value="documents">
-            Documents
-            {stats.totalDocuments > 0 ? (
-              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
-                {stats.totalDocuments}
-              </Badge>
-            ) : null}
+            Files
+            {stats.totalDocuments > 0 && <CountChip n={stats.totalDocuments} />}
           </TabsTrigger>
-          <TabsTrigger value="relationships">Relationships</TabsTrigger>
+          <TabsTrigger value="people">People</TabsTrigger>
         </TabsList>
 
-        {/* ── Overview ──────────────────────────────────────────────────── */}
         <TabsContent value="overview" className="mt-4">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {/* Contact Info */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Contact Information</CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3 text-sm">
-                <InfoRow icon={Mail} label="Primary Email" value={client.contactInfo.primaryEmail} href={client.contactInfo.primaryEmail ? `mailto:${client.contactInfo.primaryEmail}` : null} />
-                <InfoRow icon={Mail} label="Secondary Email" value={client.contactInfo.secondaryEmail} />
-                <InfoRow icon={Phone} label="Primary Phone" value={client.contactInfo.phonePrimary} href={client.contactInfo.phonePrimary ? `tel:${client.contactInfo.phonePrimary}` : null} />
-                <InfoRow icon={Phone} label="Mobile" value={client.contactInfo.phoneMobile} href={client.contactInfo.phoneMobile ? `tel:${client.contactInfo.phoneMobile}` : null} />
-                <InfoRow icon={Phone} label="Work" value={client.contactInfo.phoneWork} />
-                <InfoRow icon={MapPin} label="Address" value={client.contactInfo.address} />
-                {client.contactInfo.mailingAddress &&
-                client.contactInfo.mailingAddress !== client.contactInfo.address ? (
-                  <InfoRow icon={MapPin} label="Mailing Address" value={client.contactInfo.mailingAddress} />
-                ) : null}
-                <InfoRow icon={Globe} label="Website" value={client.contactInfo.website} href={client.contactInfo.website} />
-                {/* Social rows — Karbon syncs these as part of the
-                    contact / organization record. We render each only
-                    when populated so the card stays tight on clients
-                    without a digital presence. Twitter handles are
-                    stored as the bare handle (e.g. "@motta"); we
-                    rebuild the canonical URL on the fly. */}
-                {client.contactInfo.linkedin ? (
-                  <InfoRow
-                    icon={Linkedin}
-                    label="LinkedIn"
-                    value={client.contactInfo.linkedin}
-                    href={client.contactInfo.linkedin}
-                  />
-                ) : null}
-                {client.contactInfo.twitter ? (
-                  <InfoRow
-                    icon={Twitter}
-                    label="Twitter / X"
-                    value={client.contactInfo.twitter}
-                    href={
-                      client.contactInfo.twitter.startsWith("http")
-                        ? client.contactInfo.twitter
-                        : `https://twitter.com/${client.contactInfo.twitter.replace(/^@/, "")}`
-                    }
-                  />
-                ) : null}
-                {client.contactInfo.facebook ? (
-                  <InfoRow
-                    icon={Facebook}
-                    label="Facebook"
-                    value={client.contactInfo.facebook}
-                    href={client.contactInfo.facebook}
-                  />
-                ) : null}
-              </CardContent>
-            </Card>
-
-            {/* Identity / Business */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">
-                  {client.isOrganization ? "Business Details" : "Personal Details"}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3 text-sm">
-                {client.isOrganization && client.business
-                  ? Object.entries({
-                      "Legal Name": client.business.legalName,
-                      "Trading Name": client.business.tradingName,
-                      "Industry": client.business.industry,
-                      "Entity Type": client.business.entityType,
-                      "EIN": client.business.ein,
-                      "Incorporated": client.business.incorporationDate
-                        ? formatDate(client.business.incorporationDate as string)
-                        : null,
-                      "Inc. State": client.business.incorporationState,
-                      "Fiscal Year End": client.business.fiscalYearEnd,
-                      "Employees": client.business.numberOfEmployees,
-                    })
-                      .filter(([, v]) => v != null && v !== "")
-                      .map(([k, v]) => <KvRow key={k} label={k} value={String(v)} />)
-                  : null}
-                {!client.isOrganization && client.identity
-                  ? Object.entries({
-                      "Preferred Name": client.identity.preferredName,
-                      "Date of Birth": client.identity.dateOfBirth
-                        ? formatDate(client.identity.dateOfBirth as string)
-                        : null,
-                      "Occupation": client.identity.occupation,
-                      "Employer": client.identity.employer,
-                      "EIN": client.identity.ein,
-                      "SSN (last 4)": client.identity.ssnLastFour
-                        ? `***-**-${client.identity.ssnLastFour}`
-                        : null,
-                    })
-                      .filter(([, v]) => v != null && v !== "")
-                      .map(([k, v]) => <KvRow key={k} label={k} value={String(v)} />)
-                  : null}
-                {(client.isOrganization && !client.business) ||
-                (!client.isOrganization && !client.identity) ? (
-                  <p className="text-muted-foreground">No additional details synced.</p>
-                ) : null}
-              </CardContent>
-            </Card>
-
-            {/* Ownership / Service Lines */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Engagement</CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3 text-sm">
-                {client.ownership.source ? (
-                  <KvRow label="Source" value={client.ownership.source} />
-                ) : null}
-                {client.ownership.referredBy ? (
-                  <KvRow label="Referred By" value={client.ownership.referredBy} />
-                ) : null}
-                {client.ownership.taxProviderName ? (
-                  <KvRow label="Tax Provider" value={client.ownership.taxProviderName} />
-                ) : null}
-                {client.ownership.legalFirmName ? (
-                  <KvRow label="Legal Firm" value={client.ownership.legalFirmName} />
-                ) : null}
-                {serviceLinesUsed.length > 0 ? (
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Service Lines
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {serviceLinesUsed.map((s) => (
-                        <Badge key={s} variant="secondary" className="font-normal">
-                          {s}
-                        </Badge>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                {teamMembers.length > 0 ? (
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Assigned Team
-                    </span>
-                    <div className="flex flex-col gap-1">
-                      {teamMembers.slice(0, 6).map((m) => (
-                        <div key={m.key || m.name} className="flex items-center gap-2">
-                          <Avatar className="h-6 w-6">
-                            <AvatarFallback className="text-xs">{initials(m.name)}</AvatarFallback>
-                          </Avatar>
-                          <span className="text-xs">{m.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Platform Links — Master Hub Contact ↔ Karbon / ProConnect /
-              Ignition. Lives directly under the Overview header so
-              teammates can see (and adjust) the cross-platform identity
-              without scrolling past Karbon work items. */}
-          <PlatformLinksCard contactId={client.id} />
-
-          {/* Ignition Billing Info (if linked) */}
-          {ignitionClients && ignitionClients.length > 0 ? (
-            <Card className="mt-4">
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Flame className="h-4 w-4 text-orange-500" />
-                  Ignition Billing
-                  <Badge variant="secondary" className="ml-auto text-xs font-normal">
-                    {ignitionClients.length} record{ignitionClients.length > 1 ? "s" : ""}
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {ignitionClients.map((ic) => {
-                    const address = [
-                      ic.address_line1,
-                      ic.address_line2,
-                      ic.city,
-                      ic.state,
-                      ic.zip_code,
-                      ic.country,
-                    ]
-                      .filter(Boolean)
-                      .join(", ")
-                    return (
-                      <div
-                        key={ic.ignition_client_id}
-                        className="rounded-lg border bg-muted/30 p-3 flex flex-col gap-2"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="font-medium text-sm truncate">
-                            {ic.name || ic.business_name || "Unnamed"}
-                          </div>
-                          {ic.client_type ? (
-                            <Badge variant="outline" className="text-xs capitalize shrink-0">
-                              {ic.client_type}
-                            </Badge>
-                          ) : null}
-                        </div>
-                        {ic.business_name && ic.name && ic.business_name !== ic.name ? (
-                          <div className="text-xs text-muted-foreground flex items-center gap-1.5">
-                            <Building2 className="h-3 w-3" />
-                            {ic.business_name}
-                          </div>
-                        ) : null}
-                        {ic.email ? (
-                          <div className="text-xs text-muted-foreground flex items-center gap-1.5">
-                            <Mail className="h-3 w-3" />
-                            <a
-                              href={`mailto:${ic.email}`}
-                              className="hover:underline truncate"
-                            >
-                              {ic.email}
-                            </a>
-                          </div>
-                        ) : null}
-                        {ic.phone ? (
-                          <div className="text-xs text-muted-foreground flex items-center gap-1.5">
-                            <Phone className="h-3 w-3" />
-                            <a href={`tel:${ic.phone}`} className="hover:underline">
-                              {ic.phone}
-                            </a>
-                          </div>
-                        ) : null}
-                        {address ? (
-                          <div className="text-xs text-muted-foreground flex items-start gap-1.5">
-                            <MapPin className="h-3 w-3 mt-0.5 shrink-0" />
-                            <span>{address}</span>
-                          </div>
-                        ) : null}
-                        <div className="flex items-center gap-2 mt-1 pt-1 border-t text-xs text-muted-foreground">
-                          {ic.match_status ? (
-                            <Badge
-                              variant={
-                                ic.match_status === "auto_matched"
-                                  ? "default"
-                                  : ic.match_status === "manual_matched"
-                                  ? "secondary"
-                                  : "outline"
-                              }
-                              className="text-[10px] h-4 px-1"
-                            >
-                              {ic.match_status.replace(/_/g, " ")}
-                            </Badge>
-                          ) : null}
-                          {ic.ignition_updated_at ? (
-                            <span className="ml-auto">
-                              Updated {relativeTime(ic.ignition_updated_at)}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          ) : null}
-
-          {/* Recent Activity */}
-          <Card className="mt-4">
-            <CardHeader>
-              <CardTitle className="text-base">Recent Activity</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {communicationsTimeline.length === 0 && workItems.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No activity yet. Click <strong>Sync from Karbon</strong> to pull latest data.
-                </p>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  {[...workItems.slice(0, 3), ...communicationsTimeline.slice(0, 5)]
-                    .slice(0, 8)
-                    .map((item, i) => (
-                      <ActivityRow key={`act-${i}`} item={item} />
-                    ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <OverviewTab data={data} onJump={setActiveTab} />
         </TabsContent>
 
-        {/* ── Work Items ────────────────────────────────────────────────── */}
-        <TabsContent value="work" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Work Items ({workItems.length})</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {workItems.length === 0 ? (
-                <EmptyState message="No work items synced for this client." />
-              ) : (
-                <ScrollArea className="max-h-[600px]">
-                  <div className="divide-y">
-                    {workItems.map((wi) => (
-                      <div key={wi.id} className="p-4 flex flex-col gap-2 hover:bg-muted/30 transition-colors">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex flex-col gap-1 min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="font-medium text-sm truncate">{wi.title || "(untitled)"}</h3>
-                              {wi.has_blocking_todos ? (
-                                <Badge variant="destructive" className="text-xs">
-                                  Blocked
-                                </Badge>
-                              ) : null}
-                            </div>
-                            <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-                              {wi.work_type ? <span>{wi.work_type}</span> : null}
-                              {wi.assignee_name ? (
-                                <>
-                                  <span>•</span>
-                                  <span>{wi.assignee_name}</span>
-                                </>
-                              ) : null}
-                              {wi.due_date ? (
-                                <>
-                                  <span>•</span>
-                                  <span>Due {formatDate(wi.due_date)}</span>
-                                </>
-                              ) : null}
-                              {wi.todo_count != null && wi.todo_count > 0 ? (
-                                <>
-                                  <span>•</span>
-                                  <span>
-                                    {wi.completed_todo_count || 0}/{wi.todo_count} todos
-                                  </span>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <Badge variant={statusVariant(wi.primary_status || wi.status)} className="text-xs">
-                              {wi.primary_status || wi.status || "Unknown"}
-                            </Badge>
-                            {wi.karbon_work_item_key ? (
-                              <Button asChild size="icon" variant="ghost" className="h-7 w-7">
-                                <a
-                                  href={wi.karbon_url || getKarbonWorkItemUrl(wi.karbon_work_item_key)}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  aria-label="Open in Karbon"
-                                >
-                                  <ExternalLink className="h-3.5 w-3.5" />
-                                </a>
-                              </Button>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
+        <TabsContent value="communications" className="mt-4">
+          <CommunicationsTab
+            data={data}
+            tab={communicationsTab}
+            onTabChange={setCommunicationsTab}
+          />
         </TabsContent>
 
-        {/* ── Communications ────────────────────────────────────────────── */}
-        {/* ── Communications (folded into Overview) ───────────────────── */}
-        {/* Lives under Overview because the timeline is read-mostly
-            context (recent emails + Karbon notes) and tells the story
-            of what's been said with the client. Pinned items still get
-            a "Pinned" badge. */}
-        <TabsContent value="overview" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Communications Timeline</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {communicationsTimeline.length === 0 ? (
-                <EmptyState
-                  message="No emails or notes synced yet for this client."
-                  hint="Karbon notes and emails will appear here once they're synced. Use the Sync button above to pull the latest."
-                />
-              ) : (
-                <ScrollArea className="max-h-[700px]">
-                  <div className="divide-y">
-                    {communicationsTimeline.map((c) => (
-                      <div key={c.id} className="p-4 flex flex-col gap-1.5 hover:bg-muted/30 transition-colors">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-center gap-2 min-w-0 flex-1">
-                            {c.kind === "email" ? (
-                              <Mail className="h-4 w-4 text-muted-foreground shrink-0" />
-                            ) : (
-                              <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />
-                            )}
-                            <h3 className="font-medium text-sm truncate">{c.subject || "(no subject)"}</h3>
-                            {c.isPinned ? (
-                              <Badge variant="outline" className="text-xs">
-                                Pinned
-                              </Badge>
-                            ) : null}
-                            {c.direction ? (
-                              <Badge variant="outline" className="text-xs capitalize">
-                                {c.direction}
-                              </Badge>
-                            ) : null}
-                          </div>
-                          <span className="text-xs text-muted-foreground shrink-0">
-                            {relativeTime(c.timestamp)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          {c.author ? <span>{c.author}</span> : null}
-                          {c.url ? (
-                            <a
-                              href={c.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 hover:underline"
-                            >
-                              <ExternalLink className="h-3 w-3" />
-                              Open
-                            </a>
-                          ) : null}
-                        </div>
-                        {c.preview ? (
-                          <p className="text-sm text-foreground/80 line-clamp-2 leading-relaxed">{c.preview}</p>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
+        <TabsContent value="projects" className="mt-4">
+          <ProjectsTab data={data} />
         </TabsContent>
 
-        {/* ── Tasks ────────────────────────���────────────────────────────── */}
-        {/* ── Tasks (folded into Work & Tasks) ─────────────────────────── */}
-        <TabsContent value="work" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Tasks</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {karbonTasks.length === 0 ? (
-                <EmptyState message="No tasks synced for this client yet." />
-              ) : (
-                <ScrollArea className="max-h-[600px]">
-                  <div className="divide-y">
-                    {karbonTasks.map((t) => (
-                      <div key={t.id} className="p-4 flex items-start justify-between gap-4 hover:bg-muted/30 transition-colors">
-                        <div className="flex items-start gap-3 min-w-0 flex-1">
-                          {t.completed_date ? (
-                            <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
-                          ) : (
-                            <CheckSquare className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
-                          )}
-                          <div className="flex flex-col gap-1 min-w-0 flex-1">
-                            <h3 className={cn("text-sm font-medium", t.completed_date && "line-through text-muted-foreground")}>
-                              {t.title || "(untitled)"}
-                            </h3>
-                            <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-                              {t.assignee_name ? <span>{t.assignee_name}</span> : null}
-                              {t.due_date ? (
-                                <>
-                                  <span>•</span>
-                                  <span>Due {formatDate(t.due_date)}</span>
-                                </>
-                              ) : null}
-                              {t.priority ? (
-                                <>
-                                  <span>•</span>
-                                  <span className="capitalize">{t.priority} priority</span>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {t.is_blocking ? (
-                            <Badge variant="destructive" className="text-xs">
-                              Blocking
-                            </Badge>
-                          ) : null}
-                          <Badge variant={statusVariant(t.status)} className="text-xs">
-                            {t.status || "Open"}
-                          </Badge>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
+        <TabsContent value="finance" className="mt-4">
+          <FinanceTab data={data} />
         </TabsContent>
 
-        {/* ── Notes ─────────────────────────────────────────────────────── */}
-        <TabsContent value="notes" className="mt-4">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Karbon Notes ({karbonNotes.length})</CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                {karbonNotes.length === 0 ? (
-                  <EmptyState message="No Karbon notes synced." />
-                ) : (
-                  <ScrollArea className="max-h-[500px]">
-                    <div className="divide-y">
-                      {karbonNotes.map((n) => (
-                        <div key={n.id} className="p-4 flex flex-col gap-1.5">
-                          <div className="flex items-start justify-between gap-2">
-                            <h3 className="font-medium text-sm">{n.subject || "(no subject)"}</h3>
-                            <span className="text-xs text-muted-foreground shrink-0">
-                              {relativeTime(n.karbon_created_at)}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                            {n.author_name ? <span>{n.author_name}</span> : null}
-                            {n.work_item_title ? (
-                              <>
-                                <span>•</span>
-                                <span>{n.work_item_title}</span>
-                              </>
-                            ) : null}
-                            {n.is_pinned ? (
-                              <Badge variant="outline" className="text-xs">
-                                Pinned
-                              </Badge>
-                            ) : null}
-                          </div>
-                          {n.body ? (
-                            <p className="text-sm text-foreground/80 line-clamp-3">
-                              {n.body.replace(/<[^>]+>/g, " ")}
-                            </p>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  </ScrollArea>
-                )}
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Internal Notes ({manualNotes.length})</CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                {manualNotes.length === 0 ? (
-                  <EmptyState message="No internal notes yet." />
-                ) : (
-                  <ScrollArea className="max-h-[500px]">
-                    <div className="divide-y">
-                      {manualNotes.map((n) => (
-                        <div key={n.id} className="p-4 flex flex-col gap-1.5">
-                          <div className="flex items-start justify-between gap-2">
-                            <h3 className="font-medium text-sm">{n.title || "(untitled)"}</h3>
-                            <span className="text-xs text-muted-foreground shrink-0">
-                              {relativeTime(n.created_at)}
-                            </span>
-                          </div>
-                          {n.content ? (
-                            <p className="text-sm text-foreground/80 line-clamp-3 whitespace-pre-wrap">
-                              {n.content}
-                            </p>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  </ScrollArea>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+        <TabsContent value="tax" className="mt-4">
+          <TaxTab data={data} />
         </TabsContent>
 
-        {/* ── Debriefs (grouped by Karbon work item) ────────────────────── */}
-        {/* ── Debriefs (folded into Notes & Debriefs) ──────────────────── */}
-        <TabsContent value="notes" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center justify-between">
-                <span>Debriefs ({debriefs.length})</span>
-                {debriefsByWorkItem.length > 0 ? (
-                  <span className="text-xs font-normal text-muted-foreground">
-                    {debriefsByWorkItem.length}{" "}
-                    {debriefsByWorkItem.length === 1 ? "engagement" : "engagements"}
-                  </span>
-                ) : null}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {debriefs.length === 0 ? (
-                <EmptyState message="No debriefs recorded for this client yet." />
-              ) : (
-                <ul className="divide-y">
-                  {debriefsByWorkItem.map((group) => {
-                    const isCollapsed = collapsedDebriefGroups.has(group.key)
-                    return (
-                      <li key={group.key} className="bg-background">
-                        {/* Work-item header — click to expand/collapse the group */}
-                        <button
-                          type="button"
-                          className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-muted/50 transition-colors"
-                          onClick={() =>
-                            setCollapsedDebriefGroups((prev) => {
-                              const next = new Set(prev)
-                              if (next.has(group.key)) next.delete(group.key)
-                              else next.add(group.key)
-                              return next
-                            })
-                          }
-                        >
-                          {isCollapsed ? (
-                            <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
-                          ) : (
-                            <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
-                          )}
-                          <Briefcase className="h-4 w-4 text-muted-foreground shrink-0" />
-                          <span className="font-medium text-sm flex-1 truncate">
-                            {group.title}
-                          </span>
-                          <Badge variant="secondary" className="h-5 px-1.5 text-xs">
-                            {group.debriefs.length}
-                          </Badge>
-                          {group.latestDate ? (
-                            <span className="text-xs text-muted-foreground hidden sm:inline whitespace-nowrap">
-                              latest {formatDate(group.latestDate)}
-                            </span>
-                          ) : null}
-                          {group.karbonUrl ? (
-                            <a
-                              href={group.karbonUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => e.stopPropagation()}
-                              className="text-muted-foreground hover:text-foreground"
-                              title="Open work item in Karbon"
-                            >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </a>
-                          ) : null}
-                        </button>
-                        {!isCollapsed ? (
-                          <ul className="divide-y border-t bg-muted/20">
-                            {group.debriefs.map((d) => {
-                              const isOpen = expandedDebriefIds.has(d.id)
-                              const cleanedNotes = d.notes
-                                ? d.notes.replace(/<[^>]+>/g, " ")
-                                : ""
-                              const actionItemList = d.action_items?.items || []
-                              return (
-                                <li key={d.id} className="bg-background">
-                                  <button
-                                    type="button"
-                                    className="flex w-full items-center gap-3 px-6 py-2.5 text-left hover:bg-muted/40 transition-colors"
-                                    onClick={() =>
-                                      setExpandedDebriefIds((prev) => {
-                                        const next = new Set(prev)
-                                        if (next.has(d.id)) next.delete(d.id)
-                                        else next.add(d.id)
-                                        return next
-                                      })
-                                    }
-                                  >
-                                    {isOpen ? (
-                                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                                    ) : (
-                                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                                    )}
-                                    <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                                    <span className="text-sm font-medium whitespace-nowrap">
-                                      {formatDate(d.debrief_date)}
-                                    </span>
-                                    {d.debrief_type ? (
-                                      <Badge variant="outline" className="h-5 px-1.5 text-xs">
-                                        {d.debrief_type}
-                                      </Badge>
-                                    ) : null}
-                                    {d.tax_year ? (
-                                      <Badge variant="secondary" className="h-5 px-1.5 text-xs">
-                                        TY {d.tax_year}
-                                      </Badge>
-                                    ) : null}
-                                    {d.team_member_full_name ? (
-                                      <span className="text-xs text-muted-foreground hidden sm:inline truncate">
-                                        {d.team_member_full_name}
-                                      </span>
-                                    ) : null}
-                                    {!isOpen && cleanedNotes ? (
-                                      <span className="text-xs text-muted-foreground truncate hidden md:inline flex-1">
-                                        {cleanedNotes.slice(0, 120)}
-                                      </span>
-                                    ) : null}
-                                    {actionItemList.length > 0 ? (
-                                      <Badge
-                                        variant="outline"
-                                        className="ml-auto h-5 px-1.5 text-xs"
-                                      >
-                                        {actionItemList.length} action
-                                        {actionItemList.length === 1 ? "" : "s"}
-                                      </Badge>
-                                    ) : null}
-                                  </button>
-                                  {isOpen ? (
-                                    <div className="px-6 pb-4 pt-1 space-y-3 text-sm">
-                                      {/* Notes — the full debrief content */}
-                                      {cleanedNotes ? (
-                                        <div>
-                                          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
-                                            Notes
-                                          </h4>
-                                          <p className="whitespace-pre-wrap text-foreground/90 leading-relaxed">
-                                            {cleanedNotes}
-                                          </p>
-                                        </div>
-                                      ) : (
-                                        <p className="text-muted-foreground italic">
-                                          No notes captured for this debrief.
-                                        </p>
-                                      )}
-
-                                      {/* Action items */}
-                                      {actionItemList.length > 0 ? (
-                                        <div>
-                                          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
-                                            Action Items ({actionItemList.length})
-                                          </h4>
-                                          <ul className="space-y-1.5">
-                                            {actionItemList.map((item, idx) => (
-                                              <li
-                                                key={idx}
-                                                className="flex items-start gap-2"
-                                              >
-                                                <CheckSquare className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                                                <div className="flex-1 min-w-0">
-                                                  <p className="text-foreground/90">
-                                                    {item.description}
-                                                  </p>
-                                                  <div className="flex flex-wrap gap-2 text-xs text-muted-foreground mt-0.5">
-                                                    {item.assignee_name ? (
-                                                      <span>{item.assignee_name}</span>
-                                                    ) : null}
-                                                    {item.due_date ? (
-                                                      <span>
-                                                        Due {formatDate(item.due_date)}
-                                                      </span>
-                                                    ) : null}
-                                                    {item.priority ? (
-                                                      <Badge
-                                                        variant="outline"
-                                                        className="h-4 px-1 text-[10px]"
-                                                      >
-                                                        {item.priority}
-                                                      </Badge>
-                                                    ) : null}
-                                                  </div>
-                                                </div>
-                                              </li>
-                                            ))}
-                                          </ul>
-                                        </div>
-                                      ) : null}
-
-                                      {/* Footer — owner / manager / follow-up */}
-                                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground pt-1">
-                                        {d.client_owner_name ? (
-                                          <span>Owner: {d.client_owner_name}</span>
-                                        ) : null}
-                                        {d.client_manager_name ? (
-                                          <span>Manager: {d.client_manager_name}</span>
-                                        ) : null}
-                                        {d.follow_up_date ? (
-                                          <span>
-                                            Follow-up: {formatDate(d.follow_up_date)}
-                                          </span>
-                                        ) : null}
-                                        {d.filing_status ? (
-                                          <span>Filing: {d.filing_status}</span>
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  ) : null}
-                                </li>
-                              )
-                            })}
-                          </ul>
-                        ) : null}
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* ── Intake Submissions (Jotform — folded into Overview) ──────── */}
-        {/* Mirrors the Debriefs tab visually: each submission is a
-            collapsible row keyed by its submitted-at date. Click a
-            row to reveal the full Q/A breakdown captured at the time
-            of intake — useful for understanding what the client
-            originally asked for vs. what they ended up engaging on.
-            Submissions reach this section via lib/jotform/match-client.ts
-            (auto-link on email or business name) and via the manual
-            "Link to client" button on /sales/intake. Rendered only when
-            at least one submission is linked, so long-time clients who
-            joined pre-Jotform don't see an empty card. */}
-        {intakeSubmissions.length > 0 ? (
-          <TabsContent value="overview" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center justify-between">
-                <span>Intake Submissions ({intakeSubmissions.length})</span>
-                <Link
-                  href="/sales/intake"
-                  className="text-xs font-normal text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-                >
-                  Open Intake Queue
-                  <ExternalLink className="h-3 w-3" />
-                </Link>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {intakeSubmissions.length === 0 ? (
-                <EmptyState message="No intake submissions linked to this client yet." />
-              ) : (
-                <ul className="divide-y">
-                  {intakeSubmissions.map((sub) => {
-                    const isOpen = expandedIntakeIds.has(sub.id)
-                    const submittedAt = sub.created_at
-                    // Surface a brief one-line preview when the row is
-                    // collapsed. Prefer the free-text "questions or
-                    // concerns" field because it's where prospects say
-                    // the actual interesting thing; fall back to the
-                    // service focus if that's blank.
-                    const preview =
-                      (sub.questions_or_concerns?.replace(/\s+/g, " ").trim() ||
-                        sub.service_focus ||
-                        "")
-                    return (
-                      <li key={sub.id} className="bg-background">
-                        <button
-                          type="button"
-                          className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/40 transition-colors"
-                          onClick={() =>
-                            setExpandedIntakeIds((prev) => {
-                              const next = new Set(prev)
-                              if (next.has(sub.id)) next.delete(sub.id)
-                              else next.add(sub.id)
-                              return next
-                            })
-                          }
-                        >
-                          {isOpen ? (
-                            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          ) : (
-                            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          )}
-                          <Inbox className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          <span className="text-sm font-medium whitespace-nowrap">
-                            {submittedAt ? formatDate(submittedAt) : "—"}
-                          </span>
-                          {sub.service_focus ? (
-                            <Badge variant="outline" className="h-5 px-1.5 text-xs whitespace-nowrap">
-                              {sub.service_focus}
-                            </Badge>
-                          ) : null}
-                          {sub.lead_status ? (
-                            <Badge variant="secondary" className="h-5 px-1.5 text-xs whitespace-nowrap">
-                              {sub.lead_status}
-                            </Badge>
-                          ) : null}
-                          {/* Show whether this link came from the
-                              auto-matcher or a human pin so a CSM can
-                              decide how much to trust it at a glance. */}
-                          {sub.link_method && sub.link_method !== "manual" ? (
-                            <Badge
-                              variant="outline"
-                              className="h-5 px-1.5 text-xs whitespace-nowrap text-muted-foreground"
-                              title={`Linked automatically via ${sub.link_method.replace("auto_", "").replace("_", " ")}`}
-                            >
-                              auto
-                            </Badge>
-                          ) : null}
-                          {!isOpen && preview ? (
-                            <span className="text-xs text-muted-foreground truncate hidden md:inline flex-1">
-                              {preview.slice(0, 140)}
-                            </span>
-                          ) : null}
-                        </button>
-                        {isOpen ? (
-                          <div className="px-6 pb-4 pt-1 space-y-3 text-sm">
-                            {/* Submitter identity — included on every
-                                row even though it's redundant for the
-                                client we're already on the page for,
-                                because intake forms can be filled out
-                                by spouses, accountants, or assistants
-                                on the client's behalf. */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                              {sub.submitter_full_name ? (
-                                <div>
-                                  <span className="text-muted-foreground">Submitter: </span>
-                                  <span className="font-medium">{sub.submitter_full_name}</span>
-                                </div>
-                              ) : null}
-                              {sub.submitter_email ? (
-                                <div>
-                                  <span className="text-muted-foreground">Email: </span>
-                                  <a href={`mailto:${sub.submitter_email}`} className="font-medium hover:underline">
-                                    {sub.submitter_email}
-                                  </a>
-                                </div>
-                              ) : null}
-                              {sub.submitter_phone ? (
-                                <div>
-                                  <span className="text-muted-foreground">Phone: </span>
-                                  <a href={`tel:${sub.submitter_phone}`} className="font-medium hover:underline">
-                                    {sub.submitter_phone}
-                                  </a>
-                                </div>
-                              ) : null}
-                              {sub.business_name ? (
-                                <div>
-                                  <span className="text-muted-foreground">Business: </span>
-                                  <span className="font-medium">{sub.business_name}</span>
-                                  {sub.business_state ? (
-                                    <span className="text-muted-foreground"> ({sub.business_state})</span>
-                                  ) : null}
-                                </div>
-                              ) : null}
-                              {sub.business_situation ? (
-                                <div>
-                                  <span className="text-muted-foreground">Situation: </span>
-                                  <span className="font-medium">{sub.business_situation}</span>
-                                </div>
-                              ) : null}
-                              {sub.entity_types && sub.entity_types.length > 0 ? (
-                                <div>
-                                  <span className="text-muted-foreground">Entity types: </span>
-                                  <span className="font-medium">{sub.entity_types.join(", ")}</span>
-                                </div>
-                              ) : null}
-                              {sub.referral_source ? (
-                                <div>
-                                  <span className="text-muted-foreground">Heard about us: </span>
-                                  <span className="font-medium">{sub.referral_source}</span>
-                                </div>
-                              ) : null}
-                            </div>
-
-                            {sub.services_requested && sub.services_requested.length > 0 ? (
-                              <div>
-                                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
-                                  Services Requested
-                                </h4>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {sub.services_requested.map((s, i) => (
-                                    <Badge key={i} variant="secondary" className="text-xs">
-                                      {s}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-
-                            {sub.questions_or_concerns ? (
-                              <div>
-                                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
-                                  Questions / Concerns
-                                </h4>
-                                <p className="whitespace-pre-wrap text-foreground/90 leading-relaxed">
-                                  {sub.questions_or_concerns}
-                                </p>
-                              </div>
-                            ) : null}
-
-                            <div className="flex items-center gap-3 pt-1 text-xs text-muted-foreground">
-                              <Link
-                                href={`/sales/intake?id=${sub.id}`}
-                                className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
-                              >
-                                <ExternalLink className="h-3 w-3" />
-                                Open full intake
-                              </Link>
-                              <span>·</span>
-                              <span>
-                                Submission {sub.id.slice(0, 8)}
-                              </span>
-                              {sub.linked_at ? (
-                                <>
-                                  <span>·</span>
-                                  <span title={sub.linked_at}>
-                                    Linked {formatDistanceToNow(parseISO(sub.linked_at), { addSuffix: true })}
-                                  </span>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : null}
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-          </TabsContent>
-        ) : null}
-
-        {/* ── Finance: Proposals → Invoices → Payments ─────────────────── */}
-        {/* All three live under the single Finance tab so the billing
-            story reads top-to-bottom: what we proposed, what we billed,
-            what we collected. Each section is its own card to keep the
-            existing layout / interactions intact. */}
-        <TabsContent value="finance" className="mt-4 flex flex-col gap-4">
-          {/* Proposals (Ignition) */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center justify-between">
-                <span>Proposals ({ignitionProposals.length})</span>
-                <span className="text-sm font-normal text-muted-foreground">
-                  {stats.acceptedProposals > 0 ? (
-                    <>
-                      Accepted: {stats.acceptedProposals}
-                      <span className="mx-2">•</span>
-                    </>
-                  ) : null}
-                  Total Value: {formatCurrency(stats.totalProposalValue)}
-                </span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {ignitionProposals.length === 0 ? (
-                <EmptyState message="No proposals synced from Ignition for this client." />
-              ) : (
-                <ScrollArea className="max-h-[600px]">
-                  <div className="divide-y">
-                    {ignitionProposals.map((p) => {
-                      // Resolve the most informative status label and a date stamp
-                      // describing the most recent state transition. Lifecycle
-                      // priority: revoked > archived > lost > completed > accepted > sent > draft.
-                      const lifecycle =
-                        p.revoked_at
-                          ? { label: "Revoked", date: p.revoked_at, variant: "destructive" as const }
-                          : p.archived_at
-                          ? { label: "Archived", date: p.archived_at, variant: "outline" as const }
-                          : p.lost_at || (p.status || "").toLowerCase() === "lost"
-                          ? { label: "Lost", date: p.lost_at, variant: "destructive" as const }
-                          : p.completed_at
-                          ? { label: "Completed", date: p.completed_at, variant: "default" as const }
-                          : p.accepted_at || (p.status || "").toLowerCase() === "accepted"
-                          ? { label: "Accepted", date: p.accepted_at, variant: "default" as const }
-                          : p.sent_at || (p.status || "").toLowerCase() === "sent"
-                          ? { label: "Sent", date: p.sent_at, variant: "secondary" as const }
-                          : { label: p.status || "Draft", date: p.created_at, variant: "outline" as const }
-
-                      return (
-                        <div key={p.proposal_id} className="p-4 flex items-start justify-between gap-4 hover:bg-muted/30 transition-colors">
-                          <div className="flex flex-col gap-1.5 min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="font-medium text-sm truncate">
-                                {p.title || `Proposal ${p.proposal_number || p.proposal_id.slice(0, 8)}`}
-                              </h3>
-                              <Badge variant={lifecycle.variant} className="text-xs">
-                                {lifecycle.label}
-                              </Badge>
-                              {p.proposal_number && p.title ? (
-                                <span className="text-xs text-muted-foreground">#{p.proposal_number}</span>
-                              ) : null}
-                            </div>
-                            <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-                              {lifecycle.date ? (
-                                <span>
-                                  {lifecycle.label} {formatDate(lifecycle.date)}
-                                </span>
-                              ) : null}
-                              {p.billing_starts_on ? (
-                                <>
-                                  <span>•</span>
-                                  <span>Billing starts {formatDate(p.billing_starts_on)}</span>
-                                </>
-                              ) : null}
-                              {p.client_partner ? (
-                                <>
-                                  <span>•</span>
-                                  <span>Partner: {p.client_partner}</span>
-                                </>
-                              ) : null}
-                              {p.client_manager && p.client_manager !== p.client_partner ? (
-                                <>
-                                  <span>•</span>
-                                  <span>Manager: {p.client_manager}</span>
-                                </>
-                              ) : null}
-                            </div>
-                            {p.lost_reason ? (
-                              <p className="text-xs text-muted-foreground italic">
-                                Reason: {p.lost_reason}
-                              </p>
-                            ) : null}
-                            {/*
-                             * Inline service line items. We sort by ordinal to
-                             * preserve the proposal's original line order and
-                             * suppress the section entirely when there are no
-                             * services (typical for non-accepted proposals).
-                             */}
-                            {p.services && p.services.length > 0 ? (
-                              <ul className="mt-1.5 flex flex-col gap-1 rounded-md border bg-muted/30 px-2.5 py-1.5">
-                                {[...p.services]
-                                  .sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0))
-                                  .map((s) => (
-                                    <li
-                                      key={s.id}
-                                      className="flex items-center justify-between gap-3 text-xs"
-                                    >
-                                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                                        <span className="truncate font-medium">{s.service_name}</span>
-                                        {s.billing_frequency ? (
-                                          <Badge variant="outline" className="h-4 px-1 text-[10px] font-normal capitalize">
-                                            {s.billing_frequency.replace(/_/g, " ")}
-                                          </Badge>
-                                        ) : null}
-                                      </div>
-                                      <span className="text-muted-foreground shrink-0">
-                                        {formatCurrency(s.total_amount, s.currency || p.currency || "USD")}
-                                        {s.quantity && s.quantity > 1 ? (
-                                          <span className="ml-1 text-[10px]">x{s.quantity}</span>
-                                        ) : null}
-                                      </span>
-                                    </li>
-                                  ))}
-                              </ul>
-                            ) : null}
-                          </div>
-                          <div className="flex flex-col items-end gap-1 shrink-0">
-                            <span className="font-semibold">
-                              {formatCurrency(p.total_value, p.currency || "USD")}
-                            </span>
-                            {p.recurring_total && p.recurring_total > 0 ? (
-                              <span className="text-xs text-muted-foreground">
-                                {formatCurrency(p.recurring_total, p.currency || "USD")}/
-                                {(p.recurring_frequency || "month").toLowerCase()}
-                              </span>
-                            ) : null}
-                            {p.signed_url ? (
-                              <Button asChild variant="ghost" size="sm" className="h-7 px-2 -mr-2">
-                                <a href={p.signed_url} target="_blank" rel="noreferrer">
-                                  <ExternalLink className="h-3.5 w-3.5 mr-1" />
-                                  View
-                                </a>
-                              </Button>
-                            ) : null}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Invoices (Karbon / Ignition / HubSpot) */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center justify-between">
-                <span>Invoices ({invoices.length})</span>
-                <span className="text-sm font-normal text-muted-foreground">
-                  Unpaid: {formatCurrency(stats.totalUnpaidAmount)}
-                  <span className="mx-2">•</span>
-                  Total: {formatCurrency(stats.totalInvoicedAmount)}
-                </span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {invoices.length === 0 ? (
-                <EmptyState message="No invoices on file for this client." />
-              ) : (
-                <ScrollArea className="max-h-[600px]">
-                  <div className="divide-y">
-                    {invoices.map((inv) => (
-                      <div
-                        key={inv.id}
-                        className="p-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition-colors"
-                      >
-                        <div className="flex flex-col gap-1 min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="font-medium text-sm">
-                              #{inv.invoice_number || inv.id.split(":").pop()?.slice(0, 8)}
-                            </h3>
-                            <Badge
-                              variant={statusVariant(inv.status)}
-                              className="text-xs capitalize"
-                            >
-                              {inv.status || "draft"}
-                            </Badge>
-                            {/*
-                             * Source pill — distinguishes Karbon (current),
-                             * Ignition (current proposals → invoices), and
-                             * HubSpot (legacy pre-Ignition billing).
-                             */}
-                            <Badge
-                              variant="outline"
-                              className="text-[10px] h-4 px-1 font-normal capitalize text-muted-foreground"
-                            >
-                              {inv.source}
-                            </Badge>
-                          </div>
-                          <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-                            {inv.work_item_title ? <span>{inv.work_item_title}</span> : null}
-                            {inv.issued_date ? (
-                              <>
-                                {inv.work_item_title ? <span>•</span> : null}
-                                <span>Issued {formatDate(inv.issued_date)}</span>
-                              </>
-                            ) : null}
-                            {inv.due_date ? (
-                              <>
-                                <span>•</span>
-                                <span>Due {formatDate(inv.due_date)}</span>
-                              </>
-                            ) : null}
-                            {inv.paid_date ? (
-                              <>
-                                <span>•</span>
-                                <span>Paid {formatDate(inv.paid_date)}</span>
-                              </>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3 shrink-0">
-                          <div className="flex flex-col items-end">
-                            <span className="font-semibold">
-                              {formatCurrency(inv.amount, inv.currency || "USD")}
-                            </span>
-                            {inv.amount_outstanding > 0 &&
-                            inv.amount_outstanding < inv.amount ? (
-                              <span className="text-xs text-muted-foreground">
-                                {formatCurrency(inv.amount_outstanding, inv.currency || "USD")}{" "}
-                                outstanding
-                              </span>
-                            ) : null}
-                          </div>
-                          {inv.external_url ? (
-                            <Button asChild variant="ghost" size="icon" className="h-7 w-7">
-                              <a
-                                href={inv.external_url}
-                                target="_blank"
-                                rel="noreferrer"
-                                aria-label="Open invoice"
-                              >
-                                <ExternalLink className="h-3.5 w-3.5" />
-                              </a>
-                            </Button>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Payments — only rendered when this client has at least one
-              payment on file. The PaymentsTab component owns its own
-              date-range state (preset + custom range) and recomputes
-              its KPI strip and table independently; the lifetime
-              context line keeps the bigger picture visible when a
-              narrow window is selected. */}
-          {paymentsSummary && paymentsSummary.paymentCount > 0 ? (
-            <PaymentsTab
-              payments={ignitionPayments}
-              lifetimeSummary={paymentsSummary}
-            />
-          ) : null}
-        </TabsContent>
-
-        {/* ── Meetings (Calendly + Zoom) ────────────────────────────────── */}
-        {/* Linked Calendly events come from `calendly_event_clients` and
-            linked Zoom meetings come from `zoom_meeting_clients`. Each
-            row carries a `link_source` distinguishing
-            auto / manual / alfred / calendly_bridge so the UI can show
-            provenance without lying about how the link was established. */}
-        <TabsContent value="meetings" className="mt-4 flex flex-col gap-4">
-          {/* Calendly */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <Calendar className="h-4 w-4" />
-                <span>Calendly Meetings ({calendlyEvents.length})</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {calendlyEvents.length === 0 ? (
-                <EmptyState message="No Calendly events linked to this client yet." />
-              ) : (
-                <ScrollArea className="max-h-[600px]">
-                  <div className="divide-y">
-                    {calendlyEvents.map((ev) => {
-                      const start = ev.start_time ? new Date(ev.start_time) : null
-                      const end = ev.end_time ? new Date(ev.end_time) : null
-                      const isCancelled =
-                        !!ev.canceled_at ||
-                        (ev.status || "").toLowerCase() === "canceled"
-                      return (
-                        <div
-                          key={ev.id}
-                          className="p-4 flex flex-col gap-2 hover:bg-muted/30 transition-colors"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="flex flex-col gap-1 min-w-0 flex-1">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <h3 className="font-medium text-sm truncate">
-                                  {ev.name || ev.event_type_name || "(untitled event)"}
-                                </h3>
-                                {isCancelled ? (
-                                  <Badge variant="destructive" className="text-xs">
-                                    Cancelled
-                                  </Badge>
-                                ) : ev.status ? (
-                                  <Badge variant="secondary" className="text-xs">
-                                    {ev.status}
-                                  </Badge>
-                                ) : null}
-                                {ev.rescheduled ? (
-                                  <Badge variant="outline" className="text-xs">
-                                    Rescheduled
-                                  </Badge>
-                                ) : null}
-                                {ev.link_source && ev.link_source !== "auto" ? (
-                                  <Badge variant="outline" className="text-xs capitalize">
-                                    {ev.link_source.replace(/_/g, " ")}
-                                  </Badge>
-                                ) : null}
-                                {ev.needs_review ? (
-                                  <Badge variant="outline" className="text-xs">
-                                    Needs review
-                                  </Badge>
-                                ) : null}
-                              </div>
-                              <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-                                {start ? (
-                                  <span>
-                                    {format(start, "EEE, MMM d, yyyy")} ·{" "}
-                                    {format(start, "h:mm a")}
-                                    {end ? ` – ${format(end, "h:mm a")}` : ""}
-                                  </span>
-                                ) : null}
-                                {ev.location ? (
-                                  <>
-                                    <span>•</span>
-                                    <span className="truncate">{ev.location}</span>
-                                  </>
-                                ) : ev.location_type ? (
-                                  <>
-                                    <span>•</span>
-                                    <span className="capitalize">
-                                      {ev.location_type.replace(/_/g, " ")}
-                                    </span>
-                                  </>
-                                ) : null}
-                                {ev.calendly_user_name ? (
-                                  <>
-                                    <span>•</span>
-                                    <span>Host: {ev.calendly_user_name}</span>
-                                  </>
-                                ) : null}
-                              </div>
-                              {ev.cancel_reason ? (
-                                <p className="text-xs text-muted-foreground italic">
-                                  Reason: {ev.cancel_reason}
-                                </p>
-                              ) : null}
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {ev.join_url && !isCancelled ? (
-                                <Button variant="outline" size="sm" asChild>
-                                  <a
-                                    href={ev.join_url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                  >
-                                    <Video className="h-3.5 w-3.5 mr-1.5" />
-                                    Join
-                                  </a>
-                                </Button>
-                              ) : null}
-                            </div>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Zoom */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <Video className="h-4 w-4" />
-                <span>Zoom Meetings ({zoomMeetings.length})</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {zoomMeetings.length === 0 ? (
-                <EmptyState message="No Zoom meetings linked to this client yet." />
-              ) : (
-                <ScrollArea className="max-h-[600px]">
-                  <div className="divide-y">
-                    {zoomMeetings.map((m) => {
-                      const start = m.start_time
-                        ? new Date(m.start_time)
-                        : m.started_at
-                        ? new Date(m.started_at)
-                        : null
-                      const ended = m.ended_at ? new Date(m.ended_at) : null
-                      const durationMin =
-                        m.duration && m.duration > 0
-                          ? m.duration > 1000
-                            ? Math.round(m.duration / 60)
-                            : m.duration
-                          : null
-                      return (
-                        <div
-                          key={m.id}
-                          className="p-4 flex flex-col gap-2 hover:bg-muted/30 transition-colors"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="flex flex-col gap-1 min-w-0 flex-1">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <h3 className="font-medium text-sm truncate">
-                                  {m.topic || "(untitled meeting)"}
-                                </h3>
-                                {m.status ? (
-                                  <Badge variant="secondary" className="text-xs">
-                                    {m.status}
-                                  </Badge>
-                                ) : null}
-                                {m.calendly_event_id ? (
-                                  <Badge variant="outline" className="text-xs">
-                                    From Calendly
-                                  </Badge>
-                                ) : null}
-                                {m.link_source && m.link_source !== "auto" ? (
-                                  <Badge
-                                    variant="outline"
-                                    className="text-xs capitalize"
-                                  >
-                                    {m.link_source.replace(/_/g, " ")}
-                                  </Badge>
-                                ) : null}
-                                {m.needs_review ? (
-                                  <Badge variant="outline" className="text-xs">
-                                    Needs review
-                                  </Badge>
-                                ) : null}
-                              </div>
-                              <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-                                {start ? (
-                                  <span>
-                                    {format(start, "EEE, MMM d, yyyy")} ·{" "}
-                                    {format(start, "h:mm a")}
-                                    {ended ? ` – ${format(ended, "h:mm a")}` : ""}
-                                  </span>
-                                ) : null}
-                                {durationMin != null ? (
-                                  <>
-                                    <span>•</span>
-                                    <span>{durationMin} min</span>
-                                  </>
-                                ) : null}
-                                {m.host_email ? (
-                                  <>
-                                    <span>•</span>
-                                    <span className="truncate">
-                                      Host: {m.host_email}
-                                    </span>
-                                  </>
-                                ) : null}
-                              </div>
-                              {m.agenda ? (
-                                <p className="text-xs text-muted-foreground line-clamp-2">
-                                  {m.agenda}
-                                </p>
-                              ) : null}
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {m.join_url ? (
-                                <Button variant="outline" size="sm" asChild>
-                                  <a
-                                    href={m.join_url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                  >
-                                    <Video className="h-3.5 w-3.5 mr-1.5" />
-                                    Join
-                                  </a>
-                                </Button>
-                              ) : null}
-                            </div>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* ── Tax (ProConnect) ──────────────────────────────────────────── */}
-        {/* Only rendered when the client is linked in ProConnect. The
-            normalized `returns` shape lets us render every form type in
-            one table without form-specific conditionals. */}
-        {proconnect && proconnect.returnCount > 0 ? (
-          <TabsContent value="tax" className="mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Landmark className="h-4 w-4" />
-                  ProConnect Tax Returns
-                  <Badge variant="secondary" className="ml-auto text-xs font-normal">
-                    {proconnect.returnCount} return
-                    {proconnect.returnCount === 1 ? "" : "s"}
-                    {proconnect.latestTaxYear ? ` • latest ${proconnect.latestTaxYear}` : ""}
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40">
-                      <tr className="text-left text-xs text-muted-foreground border-b">
-                        <th className="px-4 py-2 font-medium">Form</th>
-                        <th className="px-4 py-2 font-medium">Tax Year</th>
-                        <th className="px-4 py-2 font-medium">Status</th>
-                        <th className="px-4 py-2 font-medium">E-file</th>
-                        <th className="px-4 py-2 font-medium">Preparer</th>
-                        <th className="px-4 py-2 font-medium text-right">Revenue / AGI</th>
-                        <th className="px-4 py-2 font-medium text-right">Income</th>
-                        <th className="px-4 py-2 font-medium text-right">Tax</th>
-                        <th className="px-4 py-2 font-medium text-right">Refund</th>
-                        <th className="px-4 py-2 font-medium text-right">Owed</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {proconnect.returns.map((r, idx) => (
-                        <tr
-                          key={`${r.form}-${r.taxYear}-${idx}`}
-                          className="border-b last:border-0 hover:bg-muted/20"
-                        >
-                          <td className="px-4 py-2">
-                            <div className="flex items-center gap-1">
-                              <Badge variant="outline" className="font-mono text-xs">
-                                {r.form}
-                              </Badge>
-                              {r.amended ? (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px] bg-amber-50 text-amber-900 border-amber-200"
-                                >
-                                  amended
-                                </Badge>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td className="px-4 py-2 tabular-nums">{r.taxYear ?? "—"}</td>
-                          <td className="px-4 py-2 capitalize text-muted-foreground">
-                            {r.status || "—"}
-                          </td>
-                          <td className="px-4 py-2">
-                            {r.efileStatus ? (
-                              <Badge
-                                variant={
-                                  r.efileStatus.toLowerCase().includes("accepted")
-                                    ? "default"
-                                    : "secondary"
-                                }
-                                className="text-xs capitalize"
-                              >
-                                {r.efileStatus.replace(/_/g, " ")}
-                              </Badge>
-                            ) : (
-                              <span className="text-muted-foreground">—</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-2 text-xs text-muted-foreground">
-                            {r.preparer || "—"}
-                          </td>
-                          <td className="px-4 py-2 text-right tabular-nums">
-                            {r.totalRevenue != null ? formatCurrency(r.totalRevenue) : "—"}
-                          </td>
-                          <td className="px-4 py-2 text-right tabular-nums">
-                            {r.totalIncome != null ? formatCurrency(r.totalIncome) : "—"}
-                          </td>
-                          <td className="px-4 py-2 text-right tabular-nums">
-                            {r.totalTax != null ? formatCurrency(r.totalTax) : "—"}
-                          </td>
-                          <td className="px-4 py-2 text-right tabular-nums text-emerald-700">
-                            {r.refund != null ? formatCurrency(r.refund) : "—"}
-                          </td>
-                          <td className="px-4 py-2 text-right tabular-nums text-rose-700">
-                            {r.amountOwed != null ? formatCurrency(r.amountOwed) : "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        ) : null}
-
-        {/* ── Documents ─────────────���───────────────────────────────────── */}
         <TabsContent value="documents" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Documents ({documents.length})</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {documents.length === 0 ? (
-                <EmptyState message="No documents on file." />
-              ) : (
-                <ScrollArea className="max-h-[600px]">
-                  <div className="divide-y">
-                    {documents.map((d) => (
-                      <div key={d.id} className="p-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition-colors">
-                        <div className="flex items-center gap-3 min-w-0 flex-1">
-                          <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                          <div className="flex flex-col gap-0.5 min-w-0">
-                            <span className="text-sm font-medium truncate">{d.name || "(untitled)"}</span>
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                              {d.document_type ? <span>{d.document_type}</span> : null}
-                              {d.file_type ? (
-                                <>
-                                  <span>•</span>
-                                  <span>{d.file_type}</span>
-                                </>
-                              ) : null}
-                              <span>•</span>
-                              <span>{formatBytes(d.file_size_bytes)}</span>
-                              {d.uploaded_at ? (
-                                <>
-                                  <span>•</span>
-                                  <span>{relativeTime(d.uploaded_at)}</span>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                        </div>
-                        {d.storage_url ? (
-                          <Button asChild variant="ghost" size="icon" className="h-7 w-7">
-                            <a href={d.storage_url} target="_blank" rel="noreferrer" aria-label="Download">
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </a>
-                          </Button>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
+          <DocumentsTab data={data} />
         </TabsContent>
 
-        {/* ── Timesheets ────────────────────────────────────────────────── */}
-        {/* Hidden from the tab strip in 2026-05 to keep the profile
-            focused on client-facing surfaces. The Karbon timesheet
-            data still syncs and feeds stats.totalBillableMinutes for
-            internal reporting; if it ever needs surfacing again, just
-            re-add a <TabsTrigger value="time"> entry above and restore
-            this panel. */}
-
-        {/* ── Relationships ─────────────────────────────────────────────── */}
-        <TabsContent value="relationships" className="mt-4">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {clientGroups.length > 0 ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Users className="h-4 w-4" />
-                    Client Groups
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-2">
-                  {clientGroups.map((g) => (
-                    <div key={g.id} className="flex items-center justify-between gap-2 text-sm border rounded-md p-3">
-                      <div className="flex flex-col gap-0.5 min-w-0">
-                        <span className="font-medium">{g.name || "(unnamed)"}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {[g.group_type, g.role, g.relationship].filter(Boolean).join(" • ")}
-                        </span>
-                      </div>
-                      {g.isPrimary ? <Badge variant="secondary">Primary</Badge> : null}
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            ) : null}
-
-            {relatedContacts.length > 0 ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <User className="h-4 w-4" />
-                    Related Contacts ({relatedContacts.length})
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-2">
-                  {relatedContacts.map((c) => (
-                    <Link
-                      key={c.id}
-                      href={`/clients/${c.id}`}
-                      className="flex items-center justify-between gap-2 text-sm border rounded-md p-3 hover:bg-muted/40 transition-colors"
-                    >
-                      <div className="flex flex-col gap-0.5 min-w-0">
-                        <span className="font-medium">{c.full_name || "Unnamed"}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {[c.roleOrTitle, c.primary_email].filter(Boolean).join(" • ")}
-                        </span>
-                      </div>
-                      {c.ownershipPercentage != null ? (
-                        <Badge variant="outline">{c.ownershipPercentage}%</Badge>
-                      ) : null}
-                    </Link>
-                  ))}
-                </CardContent>
-              </Card>
-            ) : null}
-
-            {relatedOrganizations.length > 0 ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Building2 className="h-4 w-4" />
-                    Related Organizations ({relatedOrganizations.length})
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-2">
-                  {relatedOrganizations.map((o) => (
-                    <Link
-                      key={o.id}
-                      href={`/clients/${o.id}`}
-                      className="flex items-center justify-between gap-2 text-sm border rounded-md p-3 hover:bg-muted/40 transition-colors"
-                    >
-                      <div className="flex flex-col gap-0.5 min-w-0">
-                        <span className="font-medium">{o.full_name || o.name || "Unnamed"}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {[o.roleOrTitle, o.industry, o.primary_email].filter(Boolean).join(" • ")}
-                        </span>
-                      </div>
-                    </Link>
-                  ))}
-                </CardContent>
-              </Card>
-            ) : null}
-
-            {clientGroups.length === 0 &&
-            relatedContacts.length === 0 &&
-            relatedOrganizations.length === 0 ? (
-              <Card className="lg:col-span-2">
-                <CardContent className="pt-6">
-                  <EmptyState message="No related contacts, organizations, or client groups." />
-                </CardContent>
-              </Card>
-            ) : null}
-          </div>
+        <TabsContent value="people" className="mt-4">
+          <PeopleTab data={data} clientId={clientId} />
         </TabsContent>
       </Tabs>
     </div>
   )
 }
 
-// ───────────────────────────────────────────────────���─��───────────────────────
-// Sub-components
+// ─────────────────────────────────────────────────────────────────────────────
+// Header
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Payments tab
-//
-// The payments tab is the only one of the in-tab views with substantive
-// client-side logic (date filtering + on-the-fly summary recomputation),
-// so it's extracted from the main JSX tree to keep the parent function
-// readable. It still lives in this file because it leans on several
-// private helpers (`StatCard`, `formatCurrency`, `formatDate`,
-// `relativeTime`) defined above; exporting them just to import them in
-// a sibling file would be net-noise.
-// ─────────────────────────────────────────────────────────────────────────────
-
-type DateRangePreset =
-  | "ytd"
-  | "last_30"
-  | "last_90"
-  | "last_12_months"
-  | "previous_year"
-  | "all_time"
-  | "custom"
-
-const DATE_RANGE_LABELS: Record<DateRangePreset, string> = {
-  ytd: "Year to date",
-  last_30: "Last 30 days",
-  last_90: "Last 90 days",
-  last_12_months: "Last 12 months",
-  previous_year: "Previous year",
-  all_time: "All time",
-  custom: "Custom range",
-}
-
-/**
- * Resolve a preset key + optional custom inputs to a concrete
- * [start, end] window. `null` on either side means open-ended on that
- * side ("since beginning of time" / "up to right now"). The custom
- * inputs use the `Input type="date"` value format (`YYYY-MM-DD`) and
- * are interpreted in the user's local timezone, matching how the
- * native picker presents them.
- */
-function resolveDateRange(
-  preset: DateRangePreset,
-  customStart: string,
-  customEnd: string,
-): { start: Date | null; end: Date | null } {
-  const now = new Date()
-  switch (preset) {
-    case "ytd":
-      return { start: new Date(now.getFullYear(), 0, 1), end: null }
-    case "last_30": {
-      const d = new Date(now)
-      d.setDate(d.getDate() - 30)
-      return { start: d, end: null }
-    }
-    case "last_90": {
-      const d = new Date(now)
-      d.setDate(d.getDate() - 90)
-      return { start: d, end: null }
-    }
-    case "last_12_months": {
-      const d = new Date(now)
-      d.setMonth(d.getMonth() - 12)
-      return { start: d, end: null }
-    }
-    case "previous_year":
-      return {
-        start: new Date(now.getFullYear() - 1, 0, 1),
-        end: new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999),
-      }
-    case "all_time":
-      return { start: null, end: null }
-    case "custom":
-      return {
-        // Append explicit times so `new Date("2024-01-01")` doesn't
-        // get parsed as UTC midnight and shift a day in negative-UTC
-        // timezones.
-        start: customStart ? new Date(`${customStart}T00:00:00`) : null,
-        end: customEnd ? new Date(`${customEnd}T23:59:59.999`) : null,
-      }
-  }
-}
-
-function PaymentsTab({
-  payments,
-  lifetimeSummary,
+function ClientHeader({
+  client,
+  syncing,
+  syncMessage,
+  onSync,
 }: {
-  payments: Array<{
-    ignition_payment_id: string
-    ignition_invoice_id: string | null
-    amount: number | null
-    fees: number | null
-    net_amount: number | null
-    currency: string | null
-    payment_method: string | null
-    payment_status: string | null
-    paid_at: string | null
-    refunded_at: string | null
-    refund_amount: number | null
-  }>
-  lifetimeSummary: {
-    totalNet: number
-    paymentCount: number
-    currency: string
-    mostRecentPaidAt: string | null
-  }
+  client: ClientBundle["client"]
+  syncing: boolean
+  syncMessage: string | null
+  onSync: () => void
 }) {
-  // Default to YTD per product spec. The custom inputs are kept in
-  // state independently of the preset so switching back from "custom"
-  // to e.g. "ytd" doesn't blow them away — useful when an admin is
-  // toggling between a saved custom window and a quick comparison.
-  const [preset, setPreset] = useState<DateRangePreset>("ytd")
-  const [customStart, setCustomStart] = useState("")
-  const [customEnd, setCustomEnd] = useState("")
-
-  const range = useMemo(
-    () => resolveDateRange(preset, customStart, customEnd),
-    [preset, customStart, customEnd],
-  )
-
-  const filteredPayments = useMemo(() => {
-    // Open-ended on both sides → no filtering. Saves a pass over the
-    // (potentially long) payments array on the "All time" preset.
-    if (!range.start && !range.end) return payments
-    return payments.filter((p) => {
-      if (!p.paid_at) return false
-      const t = new Date(p.paid_at).getTime()
-      if (range.start && t < range.start.getTime()) return false
-      if (range.end && t > range.end.getTime()) return false
-      return true
-    })
-  }, [payments, range])
-
-  // Re-summarise on the client using the same helper the server
-  // route uses, so the in-tab KPI strip stays in lockstep with the
-  // top-of-page "Total Paid" card. `summarizePayments` correctly
-  // counts both `collected` (in-transit) and `disbursed` (settled)
-  // rows as paid — see `lib/ignition/payments.ts` for the full
-  // lifecycle rationale.
-  const filteredSummary = useMemo(
-    () => summarizePayments(filteredPayments),
-    [filteredPayments],
-  )
-
-  const currency = lifetimeSummary.currency
-  const isFiltered = preset !== "all_time"
-
-  // Format the actual resolved range for the "Showing" label so the
-  // user can see exactly what window they're looking at, not just the
-  // preset name (which is meaningful but ambiguous for things like
-  // "last 90 days" if you forgot the current date).
-  const showingLabel = (() => {
-    if (preset === "all_time") return "All payments on file"
-    const startStr = range.start ? format(range.start, "MMM d, yyyy") : "—"
-    const endStr = range.end ? format(range.end, "MMM d, yyyy") : "today"
-    return `${startStr} → ${endStr}`
-  })()
+  const isOrg = client.isOrganization
+  const subtitleParts = [
+    client.clientType?.labelWithForm || client.clientType?.label,
+    client.contactType,
+    client.entityType,
+  ].filter(Boolean)
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* ── Filter bar ─────────────────────────────────────────────── */}
-      <Card>
-        <CardContent className="pt-4 pb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-col gap-0.5">
-            <span className="text-xs font-medium text-muted-foreground">
-              Showing
-            </span>
-            <span className="text-sm font-semibold tabular-nums">
-              {showingLabel}
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Select
-              value={preset}
-              onValueChange={(v) => setPreset(v as DateRangePreset)}
-            >
-              <SelectTrigger className="w-[180px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(DATE_RANGE_LABELS) as DateRangePreset[]).map(
-                  (k) => (
-                    <SelectItem key={k} value={k}>
-                      {DATE_RANGE_LABELS[k]}
-                    </SelectItem>
-                  ),
+    <Card>
+      <CardContent className="p-6">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+          {/* Identity */}
+          <div className="flex items-start gap-4 min-w-0 flex-1">
+            <Avatar className="h-16 w-16 shrink-0">
+              <AvatarImage src={client.avatarUrl || undefined} alt={client.clientName} />
+              <AvatarFallback className="text-base font-medium">
+                {isOrg ? <Building2 className="h-7 w-7" /> : initials(client.clientName)}
+              </AvatarFallback>
+            </Avatar>
+
+            <div className="flex flex-col gap-2 min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-2xl font-semibold tracking-tight text-balance">
+                  {client.clientName}
+                </h1>
+                {client.clientType && (
+                  <Badge
+                    variant="outline"
+                    className={cn("font-medium", clientTypeBadgeClass(client.clientType.variant))}
+                  >
+                    {client.clientType.labelWithForm || client.clientType.label}
+                  </Badge>
                 )}
-              </SelectContent>
-            </Select>
-            {preset === "custom" ? (
-              <>
-                <Input
-                  type="date"
-                  value={customStart}
-                  onChange={(e) => setCustomStart(e.target.value)}
-                  className="w-[160px]"
-                  aria-label="Start date"
-                />
-                <span className="text-xs text-muted-foreground">to</span>
-                <Input
-                  type="date"
-                  value={customEnd}
-                  onChange={(e) => setCustomEnd(e.target.value)}
-                  className="w-[160px]"
-                  aria-label="End date"
-                />
-              </>
-            ) : null}
+                {client.isProspect && (
+                  <Badge variant="secondary" className="font-medium">
+                    Prospect
+                  </Badge>
+                )}
+                {client.status && !client.isProspect && (
+                  <Badge variant="outline">{client.status}</Badge>
+                )}
+              </div>
+
+              {subtitleParts.length > 0 && (
+                <p className="text-sm text-muted-foreground">{subtitleParts.join(" · ")}</p>
+              )}
+
+              {/* Inline contact rail */}
+              <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground mt-1">
+                {client.contactInfo.primaryEmail && (
+                  <ContactLink
+                    icon={<Mail className="h-3.5 w-3.5" />}
+                    href={`mailto:${client.contactInfo.primaryEmail}`}
+                    label={client.contactInfo.primaryEmail}
+                  />
+                )}
+                {client.contactInfo.phonePrimary && (
+                  <ContactLink
+                    icon={<Phone className="h-3.5 w-3.5" />}
+                    href={`tel:${client.contactInfo.phonePrimary}`}
+                    label={client.contactInfo.phonePrimary}
+                  />
+                )}
+                {client.contactInfo.website && (
+                  <ContactLink
+                    icon={<Globe className="h-3.5 w-3.5" />}
+                    href={client.contactInfo.website}
+                    label={
+                      client.contactInfo.website
+                        .replace(/^https?:\/\//, "")
+                        .replace(/\/$/, "")
+                    }
+                    external
+                  />
+                )}
+                {client.contactInfo.linkedin && (
+                  <ContactLink
+                    icon={<Linkedin className="h-3.5 w-3.5" />}
+                    href={client.contactInfo.linkedin}
+                    label="LinkedIn"
+                    external
+                  />
+                )}
+                {client.contactInfo.address && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <MapPin className="h-3.5 w-3.5" />
+                    <span className="truncate max-w-[280px]">
+                      {client.contactInfo.address}
+                    </span>
+                  </span>
+                )}
+              </div>
+
+              {client.tags && client.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {client.tags.map((tag) => (
+                    <Badge key={tag} variant="secondary" className="text-xs font-normal">
+                      <Tag className="h-2.5 w-2.5 mr-1" />
+                      {tag}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* Action rail */}
+          <div className="flex flex-wrap gap-2 lg:flex-col lg:items-stretch lg:w-48">
+            {client.contactInfo.primaryEmail && (
+              <Button variant="outline" size="sm" asChild>
+                <a href={`mailto:${client.contactInfo.primaryEmail}`}>
+                  <Mail className="h-3.5 w-3.5 mr-1.5" />
+                  Email
+                </a>
+              </Button>
+            )}
+            {client.karbonUrl && (
+              <Button variant="outline" size="sm" asChild>
+                <a href={client.karbonUrl} target="_blank" rel="noopener noreferrer">
+                  <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                  Open in Karbon
+                </a>
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onSync}
+              disabled={syncing}
+              title="Re-sync this client from Karbon"
+            >
+              <RefreshCw
+                className={cn("h-3.5 w-3.5 mr-1.5", syncing && "animate-spin")}
+              />
+              {syncing ? "Syncing…" : "Sync from Karbon"}
+            </Button>
+            {syncMessage && (
+              <span className="text-xs text-muted-foreground">{syncMessage}</span>
+            )}
+            {client.lastActivityAt && (
+              <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                Active {relativeTime(client.lastActivityAt)}
+              </span>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function ContactLink({
+  icon,
+  href,
+  label,
+  external,
+}: {
+  icon: React.ReactNode
+  href: string
+  label: string
+  external?: boolean
+}) {
+  return (
+    <a
+      href={href}
+      target={external ? "_blank" : undefined}
+      rel={external ? "noopener noreferrer" : undefined}
+      className="inline-flex items-center gap-1.5 hover:text-foreground transition-colors"
+    >
+      {icon}
+      <span className="truncate max-w-[260px]">{label}</span>
+    </a>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KPI strip
+// ─────────────────────────────────────────────────────────────────────────────
+
+function KpiStrip({ data }: { data: ClientBundle }) {
+  const { stats, paymentsSummary } = data
+  const lifetimeRevenue = paymentsSummary.totalAmount || stats.totalProposalValue
+  const nextMeeting = useMemo(() => {
+    const now = Date.now()
+    const upcoming: Array<{ when: string; what: string }> = []
+    for (const ev of data.calendlyEvents || []) {
+      if (!ev.start_time) continue
+      const t = new Date(ev.start_time).getTime()
+      if (t >= now && !ev.canceled_at)
+        upcoming.push({
+          when: ev.start_time,
+          what: ev.name || ev.event_type_name || "Calendly meeting",
+        })
+    }
+    for (const m of data.zoomMeetings || []) {
+      if (!m.start_time) continue
+      const t = new Date(m.start_time).getTime()
+      if (t >= now)
+        upcoming.push({
+          when: m.start_time,
+          what: m.topic || "Zoom meeting",
+        })
+    }
+    upcoming.sort(
+      (a, b) => new Date(a.when).getTime() - new Date(b.when).getTime(),
+    )
+    return upcoming[0] || null
+  }, [data.calendlyEvents, data.zoomMeetings])
+
+  const lastContactAt = useMemo(() => {
+    const candidates: Array<string | null | undefined> = [
+      data.client.lastActivityAt,
+      ...(data.emails.slice(0, 5).map((e) => e.sent_at || e.received_at)),
+    ]
+    const parsed = candidates
+      .filter((v): v is string => !!v)
+      .map((v) => new Date(v).getTime())
+      .filter((n) => !Number.isNaN(n))
+    if (parsed.length === 0) return null
+    return new Date(Math.max(...parsed)).toISOString()
+  }, [data.client.lastActivityAt, data.emails])
+
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <KpiCard
+        icon={<Briefcase className="h-4 w-4 text-muted-foreground" />}
+        label="Open projects"
+        value={stats.activeWorkItems.toString()}
+        sub={
+          stats.totalWorkItems > 0
+            ? `${stats.completedWorkItems} done · ${stats.totalWorkItems} total`
+            : "No work items yet"
+        }
+      />
+      <KpiCard
+        icon={<DollarSign className="h-4 w-4 text-muted-foreground" />}
+        label="Lifetime revenue"
+        value={formatCurrency(lifetimeRevenue, paymentsSummary.currency || "USD")}
+        sub={
+          stats.totalUnpaidAmount > 0
+            ? `${formatCurrency(stats.totalUnpaidAmount)} outstanding`
+            : stats.totalProposalValue > 0
+              ? `${formatCurrency(stats.totalProposalValue)} proposal value`
+              : "No revenue yet"
+        }
+      />
+      <KpiCard
+        icon={<MessageSquare className="h-4 w-4 text-muted-foreground" />}
+        label="Last contact"
+        value={lastContactAt ? (relativeTime(lastContactAt) ?? "—") : "—"}
+        sub={lastContactAt ? formatDate(lastContactAt) || "" : "No recorded contact"}
+      />
+      <KpiCard
+        icon={<Calendar className="h-4 w-4 text-muted-foreground" />}
+        label="Next meeting"
+        value={nextMeeting ? (relativeTime(nextMeeting.when) ?? "—") : "None scheduled"}
+        sub={nextMeeting ? nextMeeting.what : "—"}
+      />
+    </div>
+  )
+}
+
+function KpiCard({
+  icon,
+  label,
+  value,
+  sub,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string
+  sub: string
+}) {
+  return (
+    <Card>
+      <CardContent className="p-4 flex flex-col gap-1">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {icon}
+          <span className="uppercase tracking-wide">{label}</span>
+        </div>
+        <div className="text-xl font-semibold tracking-tight truncate">{value}</div>
+        <div className="text-xs text-muted-foreground truncate">{sub}</div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function CountChip({ n }: { n: number }) {
+  return (
+    <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-xs font-normal">
+      {n}
+    </Badge>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Overview tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+function OverviewTab({
+  data,
+  onJump,
+}: {
+  data: ClientBundle
+  onJump: (tab: string) => void
+}) {
+  const { client } = data
+  const recentEmails = data.emails.slice(0, 3)
+  const recentNotes = [...(data.karbonNotes || []), ...(data.manualNotes || [])]
+    .map((n: any) => ({
+      id: n.id,
+      subject: n.subject || n.title || "(no subject)",
+      preview: ((n.body || n.content || "") as string)
+        .replace(/<[^>]+>/g, " ")
+        .slice(0, 160),
+      when: n.karbon_created_at || n.created_at,
+      author: n.author_name || null,
+      isPinned: !!n.is_pinned,
+    }))
+    .sort(
+      (a, b) =>
+        new Date(b.when || 0).getTime() - new Date(a.when || 0).getTime(),
+    )
+    .slice(0, 3)
+
+  const activeWork = data.workItems
+    .filter((w) => (w.status || "").toLowerCase() !== "completed")
+    .slice(0, 4)
+
+  const ownerName =
+    data.teamMembers.find((tm) => tm.key === client.ownership.clientOwnerKey)?.name ||
+    null
+  const managerName =
+    data.teamMembers.find((tm) => tm.key === client.ownership.clientManagerKey)
+      ?.name || null
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* Key facts */}
+      <Card className="lg:col-span-1">
+        <CardHeader>
+          <CardTitle className="text-base">Key facts</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm space-y-3">
+          <FactRow label="Type" value={client.clientType?.labelWithForm || client.clientType?.label || "—"} />
+          <FactRow label="Status" value={client.isProspect ? "Prospect" : (client.status || "—")} />
+          <FactRow label="Owner" value={ownerName || "—"} />
+          <FactRow label="Manager" value={managerName || "—"} />
+          <FactRow
+            label="Source"
+            value={client.ownership.referredBy || client.ownership.source || "—"}
+          />
+          {client.business && (
+            <>
+              <Separator />
+              <FactRow
+                label="Industry"
+                value={(client.business.industry as string) || "—"}
+              />
+              <FactRow
+                label="Entity"
+                value={(client.business.entityType as string) || "—"}
+              />
+              <FactRow
+                label="EIN"
+                value={(client.business.ein as string) || "—"}
+              />
+            </>
+          )}
+          <Separator />
+          <FactRow
+            label="Created"
+            value={formatDate(client.karbonCreatedAt) || "—"}
+          />
+          <FactRow
+            label="Last synced"
+            value={relativeTime(client.lastSyncedAt) || "—"}
+          />
         </CardContent>
       </Card>
 
-      {/* ── KPI strip (reflects the filtered range) ────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard
-          icon={Wallet}
-          label="Total Collected"
-          value={formatCurrency(filteredSummary.totalAmount, currency)}
-          sub={`${filteredSummary.paymentCount} payment${
-            filteredSummary.paymentCount === 1 ? "" : "s"
-          }`}
+      {/* Recent activity */}
+      <div className="lg:col-span-2 flex flex-col gap-4">
+        <Card>
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-base">Recent emails</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => onJump("communications")}>
+              View all
+              <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            {recentEmails.length === 0 ? (
+              <EmptyState message="No emails on file." />
+            ) : (
+              <div className="divide-y">
+                {recentEmails.map((e) => (
+                  <div
+                    key={e.id}
+                    className="p-4 flex flex-col gap-1 hover:bg-muted/30 transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-sm truncate">
+                        {e.subject || "(no subject)"}
+                      </span>
+                      <span className="text-xs text-muted-foreground shrink-0">
+                        {relativeTime(e.sent_at || e.received_at) || "—"}
+                      </span>
+                    </div>
+                    <span className="text-xs text-muted-foreground truncate">
+                      {e.from_name || e.from_email || "Unknown sender"}
+                      {e.direction ? ` · ${e.direction}` : ""}
+                    </span>
+                    <p className="text-xs text-muted-foreground line-clamp-2">
+                      {(e.body_text || "").slice(0, 200)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-base">Active projects</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => onJump("projects")}>
+              View all
+              <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            {activeWork.length === 0 ? (
+              <EmptyState message="No active work items." />
+            ) : (
+              <div className="divide-y">
+                {activeWork.map((w) => (
+                  <ProjectRow key={w.id} workItem={w} compact />
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-base">Recent notes</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => onJump("communications")}>
+              View all
+              <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            {recentNotes.length === 0 ? (
+              <EmptyState message="No notes recorded." />
+            ) : (
+              <div className="divide-y">
+                {recentNotes.map((n) => (
+                  <div key={n.id} className="p-4 flex flex-col gap-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-sm truncate">{n.subject}</span>
+                      <span className="text-xs text-muted-foreground shrink-0">
+                        {relativeTime(n.when) || "—"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground line-clamp-2">
+                      {n.preview}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function FactRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <span className="text-muted-foreground text-xs uppercase tracking-wide pt-0.5">
+        {label}
+      </span>
+      <span className="text-sm font-medium text-right truncate max-w-[60%]">
+        {value}
+      </span>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Communications tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CommunicationsTab({
+  data,
+  tab,
+  onTabChange,
+}: {
+  data: ClientBundle
+  tab: string
+  onTabChange: (t: string) => void
+}) {
+  const intakeAndDebriefCount =
+    (data.intakeSubmissions?.length || 0) + (data.debriefs?.length || 0)
+  const meetingCount =
+    (data.calendlyEvents?.length || 0) +
+    (data.zoomMeetings?.length || 0) +
+    (data.meetings?.length || 0)
+  const noteCount =
+    (data.karbonNotes?.length || 0) + (data.manualNotes?.length || 0)
+
+  return (
+    <Tabs value={tab} onValueChange={onTabChange} className="w-full">
+      <TabsList className="grid grid-cols-4 w-full max-w-2xl">
+        <TabsTrigger value="emails">
+          Emails
+          {data.emails.length > 0 && <CountChip n={data.emails.length} />}
+        </TabsTrigger>
+        <TabsTrigger value="notes">
+          Notes
+          {noteCount > 0 && <CountChip n={noteCount} />}
+        </TabsTrigger>
+        <TabsTrigger value="meetings">
+          Meetings
+          {meetingCount > 0 && <CountChip n={meetingCount} />}
+        </TabsTrigger>
+        <TabsTrigger value="intakes">
+          Intakes
+          {intakeAndDebriefCount > 0 && <CountChip n={intakeAndDebriefCount} />}
+        </TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="emails" className="mt-4">
+        <EmailsCard emails={data.emails} />
+      </TabsContent>
+      <TabsContent value="notes" className="mt-4">
+        <NotesCard
+          karbonNotes={data.karbonNotes}
+          manualNotes={data.manualNotes}
         />
-        <StatCard
-          icon={DollarSign}
-          label="Net to Firm"
-          value={formatCurrency(filteredSummary.totalNet, currency)}
-          sub={
-            filteredSummary.totalFees > 0
-              ? `after ${formatCurrency(
-                  filteredSummary.totalFees,
-                  currency,
-                )} fees`
-              : undefined
-          }
+      </TabsContent>
+      <TabsContent value="meetings" className="mt-4">
+        <MeetingsCard data={data} />
+      </TabsContent>
+      <TabsContent value="intakes" className="mt-4">
+        <IntakesAndDebriefsCard
+          intakes={data.intakeSubmissions}
+          debriefs={data.debriefs}
         />
-        <StatCard
-          icon={TrendingUp}
-          label="Refunded"
-          value={formatCurrency(filteredSummary.totalRefunded, currency)}
-          sub={
-            filteredSummary.refundCount > 0
-              ? `${filteredSummary.refundCount} refund${
-                  filteredSummary.refundCount === 1 ? "" : "s"
-                }`
-              : "none"
-          }
+      </TabsContent>
+    </Tabs>
+  )
+}
+
+function EmailsCard({ emails }: { emails: ClientBundle["emails"] }) {
+  if (emails.length === 0) return <EmptyCard message="No emails on file for this client." />
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <ScrollArea className="max-h-[700px]">
+          <div className="divide-y">
+            {emails.map((e) => (
+              <div key={e.id} className="p-4 flex flex-col gap-1.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-sm truncate">
+                        {e.subject || "(no subject)"}
+                      </span>
+                      {e.direction && (
+                        <Badge variant="outline" className="text-xs capitalize">
+                          {e.direction}
+                        </Badge>
+                      )}
+                      {e.is_read === false && (
+                        <Badge variant="default" className="text-xs">
+                          Unread
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {e.from_name || e.from_email || "Unknown"}
+                      {e.to_emails?.length
+                        ? ` → ${e.to_emails.slice(0, 2).join(", ")}${e.to_emails.length > 2 ? "…" : ""}`
+                        : ""}
+                    </p>
+                  </div>
+                  <span className="text-xs text-muted-foreground shrink-0">
+                    {formatDate(e.sent_at || e.received_at, "MMM d") || "—"}
+                  </span>
+                </div>
+                {e.body_text && (
+                  <p className="text-xs text-muted-foreground line-clamp-3">
+                    {e.body_text.slice(0, 400)}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </ScrollArea>
+      </CardContent>
+    </Card>
+  )
+}
+
+function NotesCard({
+  karbonNotes,
+  manualNotes,
+}: {
+  karbonNotes: ClientBundle["karbonNotes"]
+  manualNotes: ClientBundle["manualNotes"]
+}) {
+  const merged = useMemo(() => {
+    const all = [
+      ...karbonNotes.map((n) => ({
+        id: `k-${n.id}`,
+        source: "karbon" as const,
+        subject: n.subject || "(no subject)",
+        body: (n.body || "").replace(/<[^>]+>/g, " "),
+        when: n.karbon_created_at,
+        author: n.author_name,
+        isPinned: !!n.is_pinned,
+        url: n.karbon_url,
+        workItem: n.work_item_title,
+      })),
+      ...manualNotes.map((n) => ({
+        id: `m-${n.id}`,
+        source: "hub" as const,
+        subject: n.title || "(no subject)",
+        body: n.content || "",
+        when: n.created_at,
+        author: null as string | null,
+        isPinned: !!n.is_pinned,
+        url: null as string | null,
+        workItem: null as string | null,
+      })),
+    ]
+    return all.sort((a, b) => {
+      // pinned first, then newest first
+      if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1
+      return new Date(b.when || 0).getTime() - new Date(a.when || 0).getTime()
+    })
+  }, [karbonNotes, manualNotes])
+
+  if (merged.length === 0) return <EmptyCard message="No notes recorded for this client yet." />
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <ScrollArea className="max-h-[700px]">
+          <div className="divide-y">
+            {merged.map((n) => (
+              <div key={n.id} className="p-4 flex flex-col gap-1.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
+                    {n.isPinned && (
+                      <Badge variant="default" className="text-xs">
+                        Pinned
+                      </Badge>
+                    )}
+                    <span className="font-medium text-sm truncate">{n.subject}</span>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "text-xs uppercase",
+                        n.source === "karbon"
+                          ? "text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-900"
+                          : "text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900",
+                      )}
+                    >
+                      {n.source === "karbon" ? "Karbon" : "Hub"}
+                    </Badge>
+                  </div>
+                  <span className="text-xs text-muted-foreground shrink-0">
+                    {formatDate(n.when, "MMM d, yyyy") || "—"}
+                  </span>
+                </div>
+                {(n.author || n.workItem) && (
+                  <p className="text-xs text-muted-foreground">
+                    {n.author && <>by {n.author}</>}
+                    {n.workItem && (
+                      <>
+                        {n.author ? " · " : ""}on {n.workItem}
+                      </>
+                    )}
+                  </p>
+                )}
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap line-clamp-6">
+                  {n.body}
+                </p>
+                {n.url && (
+                  <a
+                    href={n.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs inline-flex items-center gap-1 text-primary hover:underline w-fit"
+                  >
+                    Open in Karbon
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </ScrollArea>
+      </CardContent>
+    </Card>
+  )
+}
+
+function MeetingsCard({ data }: { data: ClientBundle }) {
+  // Combine all three sources into one list with provenance.
+  const items = useMemo(() => {
+    const out: Array<{
+      id: string
+      source: "calendly" | "zoom" | "meeting"
+      title: string
+      when: string | null
+      end: string | null
+      duration: number | null
+      status: string | null
+      host: string | null
+      joinUrl: string | null
+      provenance: ReturnType<typeof provenanceLabel>
+      needsReview: boolean
+      cancelled: boolean
+      bridgedFromCalendly: boolean
+    }> = []
+
+    for (const ev of data.calendlyEvents || []) {
+      out.push({
+        id: `cal-${ev.id}`,
+        source: "calendly",
+        title: ev.name || ev.event_type_name || "(Calendly meeting)",
+        when: ev.start_time,
+        end: ev.end_time,
+        duration: null,
+        status: ev.canceled_at ? "Cancelled" : ev.status,
+        host: ev.calendly_user_name,
+        joinUrl: ev.canceled_at ? null : ev.join_url,
+        provenance: provenanceLabel(ev.link_source),
+        needsReview: !!ev.needs_review,
+        cancelled: !!ev.canceled_at,
+        bridgedFromCalendly: false,
+      })
+    }
+    for (const m of data.zoomMeetings || []) {
+      const dur =
+        m.duration && m.duration > 0
+          ? m.duration > 1000
+            ? Math.round(m.duration / 60)
+            : m.duration
+          : null
+      out.push({
+        id: `zoom-${m.id}`,
+        source: "zoom",
+        title: m.topic || "(Zoom meeting)",
+        when: m.start_time || m.started_at,
+        end: m.ended_at,
+        duration: dur,
+        status: m.status,
+        host: m.host_email,
+        joinUrl: m.join_url,
+        provenance: provenanceLabel(m.link_source),
+        needsReview: !!m.needs_review,
+        cancelled: false,
+        bridgedFromCalendly: !!m.calendly_event_id,
+      })
+    }
+    for (const m of data.meetings || []) {
+      out.push({
+        id: `kmtg-${m.id}`,
+        source: "meeting",
+        title: m.title || "(Meeting)",
+        when: m.scheduled_start,
+        end: m.scheduled_end,
+        duration: m.duration_minutes,
+        status: m.status,
+        host: null,
+        joinUrl: null,
+        provenance: null,
+        needsReview: false,
+        cancelled: false,
+        bridgedFromCalendly: false,
+      })
+    }
+    return out.sort(
+      (a, b) => new Date(b.when || 0).getTime() - new Date(a.when || 0).getTime(),
+    )
+  }, [data])
+
+  if (items.length === 0)
+    return <EmptyCard message="No Calendly bookings or Zoom meetings linked to this client yet." />
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <ScrollArea className="max-h-[700px]">
+          <div className="divide-y">
+            {items.map((m) => {
+              const start = m.when ? new Date(m.when) : null
+              const end = m.end ? new Date(m.end) : null
+              return (
+                <div
+                  key={m.id}
+                  className={cn(
+                    "p-4 flex flex-col gap-1.5",
+                    m.cancelled && "opacity-60",
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium text-sm truncate">
+                          {m.title}
+                        </span>
+                        <SourceChip source={m.source} />
+                        {m.cancelled && (
+                          <Badge variant="destructive" className="text-xs">
+                            Cancelled
+                          </Badge>
+                        )}
+                        {m.bridgedFromCalendly && (
+                          <Badge variant="outline" className="text-xs">
+                            From Calendly
+                          </Badge>
+                        )}
+                        {m.provenance && (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "text-[10px] uppercase tracking-wide font-medium",
+                              m.provenance.className,
+                            )}
+                          >
+                            {m.provenance.label}
+                          </Badge>
+                        )}
+                        {m.needsReview && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] uppercase tracking-wide font-medium bg-amber-50 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 border-amber-200 dark:border-amber-700/60"
+                          >
+                            review
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {start ? format(start, "EEE, MMM d, yyyy · h:mm a") : "Unknown date"}
+                        {end ? ` – ${format(end, "h:mm a")}` : ""}
+                        {m.duration ? ` · ${m.duration} min` : ""}
+                        {m.host ? ` · Host: ${m.host}` : ""}
+                      </p>
+                    </div>
+                    {m.joinUrl && (
+                      <Button variant="outline" size="sm" asChild>
+                        <a
+                          href={m.joinUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <Video className="h-3.5 w-3.5 mr-1.5" />
+                          Join
+                        </a>
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </ScrollArea>
+      </CardContent>
+    </Card>
+  )
+}
+
+function SourceChip({ source }: { source: "calendly" | "zoom" | "meeting" }) {
+  if (source === "calendly")
+    return (
+      <Badge
+        variant="outline"
+        className="text-xs bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border-blue-200 dark:border-blue-900"
+      >
+        Calendly
+      </Badge>
+    )
+  if (source === "zoom")
+    return (
+      <Badge
+        variant="outline"
+        className="text-xs bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300 border-sky-200 dark:border-sky-900"
+      >
+        Zoom
+      </Badge>
+    )
+  return (
+    <Badge variant="outline" className="text-xs">
+      Karbon
+    </Badge>
+  )
+}
+
+function IntakesAndDebriefsCard({
+  intakes,
+  debriefs,
+}: {
+  intakes: ClientBundle["intakeSubmissions"]
+  debriefs: ClientBundle["debriefs"]
+}) {
+  const hasContent = intakes.length > 0 || debriefs.length > 0
+  if (!hasContent)
+    return (
+      <EmptyCard message="No intake submissions or debrief notes for this client yet." />
+    )
+
+  return (
+    <div className="flex flex-col gap-4">
+      {intakes.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Intake submissions ({intakes.length})
+            </CardTitle>
+            <CardDescription>
+              What this client said about themselves at the front door — first‑contact
+              answers, pain points, and the services they asked us about.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y">
+              {intakes.map((i) => (
+                <div key={i.id} className="p-4 flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-sm">
+                        {i.submitter_full_name || i.business_name || "Unknown submitter"}
+                      </span>
+                      {i.service_focus && (
+                        <Badge variant="secondary" className="text-xs">
+                          {i.service_focus}
+                        </Badge>
+                      )}
+                      {i.lead_status && (
+                        <Badge variant="outline" className="text-xs">
+                          {i.lead_status}
+                        </Badge>
+                      )}
+                      {i.link_method && i.link_method !== "manual" && (
+                        <Badge variant="outline" className="text-[10px] uppercase">
+                          {i.link_method.replace("auto_", "auto · ")}
+                        </Badge>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {formatDate(i.created_at) || "—"}
+                    </span>
+                  </div>
+                  {i.business_situation && (
+                    <p className="text-xs text-muted-foreground line-clamp-3">
+                      {i.business_situation}
+                    </p>
+                  )}
+                  {i.questions_or_concerns && (
+                    <p className="text-xs italic text-muted-foreground line-clamp-2">
+                      “{i.questions_or_concerns}”
+                    </p>
+                  )}
+                  {i.karbon_work_item_url && (
+                    <a
+                      href={i.karbon_work_item_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs inline-flex items-center gap-1 text-primary hover:underline w-fit"
+                    >
+                      {i.karbon_work_item_title || "Open work item"}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {debriefs.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <StickyNote className="h-4 w-4" />
+              Debriefs ({debriefs.length})
+            </CardTitle>
+            <CardDescription>
+              Internal post-meeting recaps and action items captured by the team.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y">
+              {debriefs.map((d) => {
+                const itemCount = d.action_items?.items?.length || 0
+                return (
+                  <div key={d.id} className="p-4 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium text-sm">
+                          {d.debrief_type || "Debrief"}
+                          {d.tax_year ? ` · TY ${d.tax_year}` : ""}
+                        </span>
+                        {d.status && (
+                          <Badge variant="outline" className="text-xs">
+                            {d.status}
+                          </Badge>
+                        )}
+                        {itemCount > 0 && (
+                          <Badge variant="secondary" className="text-xs">
+                            {itemCount} action{itemCount === 1 ? "" : "s"}
+                          </Badge>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {formatDate(d.debrief_date) || formatDate(d.created_at) || "—"}
+                      </span>
+                    </div>
+                    {d.team_member_full_name && (
+                      <p className="text-xs text-muted-foreground">
+                        by {d.team_member_full_name}
+                        {d.work_item_title ? ` · on ${d.work_item_title}` : ""}
+                      </p>
+                    )}
+                    {d.notes && (
+                      <p className="text-sm text-muted-foreground whitespace-pre-wrap line-clamp-4">
+                        {d.notes}
+                      </p>
+                    )}
+                    {d.work_item_karbon_url && (
+                      <a
+                        href={d.work_item_karbon_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs inline-flex items-center gap-1 text-primary hover:underline w-fit"
+                      >
+                        Open work item
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Projects tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ProjectsTab({ data }: { data: ClientBundle }) {
+  const active = data.workItems.filter(
+    (w) => (w.status || "").toLowerCase() !== "completed",
+  )
+  const completed = data.workItems.filter(
+    (w) => (w.status || "").toLowerCase() === "completed",
+  )
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Briefcase className="h-4 w-4" />
+            Active projects ({active.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {active.length === 0 ? (
+            <EmptyState message="No active projects." />
+          ) : (
+            <div className="divide-y">
+              {active.map((w) => (
+                <ProjectRow key={w.id} workItem={w} />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {completed.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2 text-muted-foreground">
+              <CheckCircle2 className="h-4 w-4" />
+              Completed projects ({completed.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <ScrollArea className="max-h-[400px]">
+              <div className="divide-y">
+                {completed.map((w) => (
+                  <ProjectRow key={w.id} workItem={w} />
+                ))}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+function ProjectRow({
+  workItem: w,
+  compact,
+}: {
+  workItem: ClientBundle["workItems"][number]
+  compact?: boolean
+}) {
+  const url =
+    w.karbon_url ||
+    (w.karbon_work_item_key ? getKarbonWorkItemUrl(w.karbon_work_item_key) : null)
+  const todoProgress =
+    w.todo_count && w.todo_count > 0
+      ? `${w.completed_todo_count || 0}/${w.todo_count} todos`
+      : null
+  const isOverdue =
+    !!w.due_date &&
+    !w.completed_date &&
+    new Date(w.due_date).getTime() < Date.now()
+
+  return (
+    <div className={cn("p-4 flex flex-col gap-1.5", compact && "p-3")}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-sm truncate">
+              {w.title || "(untitled)"}
+            </span>
+            {w.work_type && (
+              <Badge variant="outline" className="text-xs">
+                {w.work_type}
+              </Badge>
+            )}
+            {w.has_blocking_todos && (
+              <Badge
+                variant="outline"
+                className="text-xs bg-amber-50 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 border-amber-200 dark:border-amber-700/60"
+              >
+                <AlertTriangle className="h-3 w-3 mr-1" />
+                Blocked
+              </Badge>
+            )}
+            {isOverdue && (
+              <Badge variant="destructive" className="text-xs">
+                Overdue
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-x-3 gap-y-0.5 flex-wrap text-xs text-muted-foreground mt-0.5">
+            {w.primary_status && <span>{w.primary_status}</span>}
+            {w.secondary_status && (
+              <>
+                <span>·</span>
+                <span>{w.secondary_status}</span>
+              </>
+            )}
+            {w.assignee_name && (
+              <>
+                <span>·</span>
+                <span>Assigned to {w.assignee_name}</span>
+              </>
+            )}
+            {w.due_date && (
+              <>
+                <span>·</span>
+                <span>Due {formatDate(w.due_date) || "—"}</span>
+              </>
+            )}
+            {todoProgress && (
+              <>
+                <span>·</span>
+                <span>{todoProgress}</span>
+              </>
+            )}
+          </div>
+        </div>
+        {url && (
+          <Button variant="ghost" size="sm" asChild>
+            <a href={url} target="_blank" rel="noopener noreferrer">
+              <ExternalLink className="h-3.5 w-3.5" />
+              <span className="sr-only">Open in Karbon</span>
+            </a>
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Finance tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+function FinanceTab({ data }: { data: ClientBundle }) {
+  const summary = useMemo(
+    () => summarizePayments(data.ignitionPayments),
+    [data.ignitionPayments],
+  )
+
+  const acceptedProposals = data.ignitionProposals.filter(
+    (p) => p.accepted_at || p.status === "accepted" || p.status === "completed",
+  )
+  const openProposals = data.ignitionProposals.filter(
+    (p) =>
+      !p.accepted_at &&
+      !p.lost_at &&
+      !p.archived_at &&
+      !p.revoked_at &&
+      p.status !== "completed",
+  )
+
+  const recurringMonthly = acceptedProposals.reduce((sum, p) => {
+    const total = p.recurring_total || 0
+    const freq = (p.recurring_frequency || "").toLowerCase()
+    if (freq === "monthly") return sum + total
+    if (freq === "annually" || freq === "yearly") return sum + total / 12
+    if (freq === "quarterly") return sum + total / 3
+    return sum
+  }, 0)
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Money KPIs */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <KpiCard
+          icon={<PiggyBank className="h-4 w-4 text-muted-foreground" />}
+          label="Total collected"
+          value={formatCurrency(summary.totalAmount, summary.currency)}
+          sub={`${summary.paymentCount} payment${summary.paymentCount === 1 ? "" : "s"}`}
         />
-        <StatCard
-          icon={Calendar}
-          label="Most Recent"
-          value={
-            filteredSummary.mostRecentPaidAt
-              ? formatDate(filteredSummary.mostRecentPaidAt) || "—"
-              : "—"
-          }
-          sub={
-            filteredSummary.mostRecentPaidAt
-              ? relativeTime(filteredSummary.mostRecentPaidAt) || undefined
-              : undefined
-          }
+        <KpiCard
+          icon={<Receipt className="h-4 w-4 text-muted-foreground" />}
+          label="Outstanding"
+          value={formatCurrency(data.stats.totalUnpaidAmount)}
+          sub={`${data.stats.totalInvoices} invoice${data.stats.totalInvoices === 1 ? "" : "s"} on file`}
+        />
+        <KpiCard
+          icon={<DollarSign className="h-4 w-4 text-muted-foreground" />}
+          label="Active proposals"
+          value={data.stats.acceptedProposals.toString()}
+          sub={`${formatCurrency(data.stats.totalProposalValue)} total value`}
+        />
+        <KpiCard
+          icon={<Clock className="h-4 w-4 text-muted-foreground" />}
+          label="Recurring"
+          value={formatCurrency(recurringMonthly)}
+          sub="per month (annualised)"
         />
       </div>
 
-      {/* Lifetime context line — only when filtering, so the user
-          always knows what the cumulative picture looks like even
-          when they've narrowed to a tight window. */}
-      {isFiltered ? (
-        <p className="text-xs text-muted-foreground px-1">
-          Lifetime:{" "}
-          <span className="font-medium text-foreground">
-            {formatCurrency(lifetimeSummary.totalNet, currency)}
-          </span>{" "}
-          net across {lifetimeSummary.paymentCount} payment
-          {lifetimeSummary.paymentCount === 1 ? "" : "s"}
-          {lifetimeSummary.mostRecentPaidAt
-            ? `, most recent ${
-                formatDate(lifetimeSummary.mostRecentPaidAt) || "—"
-              }`
-            : ""}
-          .
-        </p>
-      ) : null}
-
-      {/* ── Payments table ─────────────────────────────────────────── */}
+      {/* Proposals */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-2">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Wallet className="h-4 w-4" />
-            Payment History
+        <CardHeader>
+          <CardTitle className="text-base">
+            Proposals ({data.ignitionProposals.length})
           </CardTitle>
-          <Badge variant="outline" className="text-xs font-normal">
-            {filteredPayments.length} of {payments.length}
-          </Badge>
+          <CardDescription>
+            Ignition is the source of truth for "is this actually a client?" — a
+            signed proposal here is what flips a contact from prospect to active.
+          </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          {filteredPayments.length === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
-              No payments in this range.
-            </p>
+          {data.ignitionProposals.length === 0 ? (
+            <EmptyState message="No Ignition proposals on file." />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/40">
-                  <tr className="text-left text-xs text-muted-foreground border-b">
-                    <th className="px-4 py-2 font-medium">Date</th>
-                    <th className="px-4 py-2 font-medium">Status</th>
-                    <th className="px-4 py-2 font-medium">Method</th>
-                    <th className="px-4 py-2 font-medium text-right">Amount</th>
-                    <th className="px-4 py-2 font-medium text-right">Fees</th>
-                    <th className="px-4 py-2 font-medium text-right">Net</th>
-                    <th className="px-4 py-2 font-medium">Invoice</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredPayments.map((p) => {
-                    const isRefunded = !!p.refunded_at
-                    return (
-                      <tr
-                        key={p.ignition_payment_id}
-                        className="border-b last:border-0 hover:bg-muted/20"
-                      >
-                        <td className="px-4 py-2 whitespace-nowrap">
-                          {p.paid_at ? formatDate(p.paid_at) : "—"}
-                        </td>
-                        <td className="px-4 py-2">
-                          {/* Treat both `collected` (just charged,
-                              funds in transit) and `disbursed`
-                              (settled to firm) as the same "paid"
-                              state for badge styling — they're
-                              consecutive lifecycle stages of a
-                              successful payment, not distinct
-                              outcomes. */}
-                          <Badge
-                            variant={
-                              isRefunded
-                                ? "destructive"
-                                : isPaid(p)
-                                  ? "default"
-                                  : "secondary"
-                            }
-                            className="text-xs capitalize"
-                          >
-                            {isRefunded
-                              ? "refunded"
-                              : p.payment_status || "—"}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-2 capitalize text-muted-foreground">
-                          {p.payment_method || "—"}
-                        </td>
-                        <td className="px-4 py-2 text-right tabular-nums font-medium">
-                          {formatCurrency(
-                            Number(p.amount) || 0,
-                            p.currency || "USD",
-                          )}
-                        </td>
-                        <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                          {p.fees != null
-                            ? formatCurrency(
-                                Number(p.fees),
-                                p.currency || "USD",
-                              )
-                            : "—"}
-                        </td>
-                        <td className="px-4 py-2 text-right tabular-nums">
-                          {p.net_amount != null
-                            ? formatCurrency(
-                                Number(p.net_amount),
-                                p.currency || "USD",
-                              )
-                            : "—"}
-                        </td>
-                        <td className="px-4 py-2 text-xs text-muted-foreground font-mono">
-                          {p.ignition_invoice_id || "—"}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+            <div className="divide-y">
+              {[...openProposals, ...acceptedProposals].map((p) => (
+                <ProposalRow key={p.proposal_id} proposal={p} />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Invoices */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Invoices ({data.unifiedInvoices.length})
+          </CardTitle>
+          <CardDescription>
+            Merged from Karbon, Ignition, and the legacy HubSpot import.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
+          {data.unifiedInvoices.length === 0 ? (
+            <EmptyState message="No invoices on file." />
+          ) : (
+            <div className="divide-y">
+              {data.unifiedInvoices.map((inv) => (
+                <InvoiceRow key={inv.id} invoice={inv} />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Payments */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Payments ({data.ignitionPayments.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {data.ignitionPayments.length === 0 ? (
+            <EmptyState message="No payments collected yet." />
+          ) : (
+            <div className="divide-y">
+              {data.ignitionPayments.map((p) => (
+                <div
+                  key={p.ignition_payment_id}
+                  className="p-4 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-sm">
+                        {formatCurrency(p.amount, p.currency || "USD")}
+                      </span>
+                      {p.payment_method && (
+                        <Badge variant="outline" className="text-xs capitalize">
+                          {p.payment_method.replace(/_/g, " ")}
+                        </Badge>
+                      )}
+                      {p.payment_status && (
+                        <Badge
+                          variant={isPaid(p) ? "default" : "secondary"}
+                          className="text-xs capitalize"
+                        >
+                          {p.payment_status}
+                        </Badge>
+                      )}
+                      {p.refunded_at && (
+                        <Badge variant="destructive" className="text-xs">
+                          Refunded {formatDate(p.refunded_at) || ""}
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {formatDate(p.paid_at, "MMM d, yyyy") || "—"}
+                      {p.fees && p.fees > 0
+                        ? ` · fees ${formatCurrency(p.fees, p.currency || "USD")}`
+                        : ""}
+                      {p.net_amount != null
+                        ? ` · net ${formatCurrency(p.net_amount, p.currency || "USD")}`
+                        : ""}
+                    </p>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </CardContent>
@@ -3274,124 +2145,577 @@ function PaymentsTab({
   )
 }
 
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  sub,
+function ProposalRow({
+  proposal: p,
 }: {
-  icon: React.ComponentType<{ className?: string }>
-  label: string
-  value: string | number
-  sub?: string
+  proposal: ClientBundle["ignitionProposals"][number]
+}) {
+  const isAccepted = !!p.accepted_at || p.status === "accepted" || p.status === "completed"
+  const isLost = !!p.lost_at
+  const isArchived = !!p.archived_at || !!p.revoked_at
+  const value = p.total_value || (p.one_time_total || 0) + (p.recurring_total || 0)
+  return (
+    <div className="p-4 flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-medium text-sm truncate">
+            {p.title || `Proposal ${p.proposal_number || ""}`.trim() || "Untitled proposal"}
+          </span>
+          <Badge
+            variant={isAccepted ? "default" : isLost ? "destructive" : "secondary"}
+            className="text-xs capitalize"
+          >
+            {isAccepted ? "Accepted" : isLost ? "Lost" : isArchived ? "Archived" : (p.status || "Draft")}
+          </Badge>
+          {p.recurring_frequency && (
+            <Badge variant="outline" className="text-xs capitalize">
+              {p.recurring_frequency}
+            </Badge>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {p.accepted_at
+            ? `Signed ${formatDate(p.accepted_at) || ""}`
+            : p.sent_at
+              ? `Sent ${formatDate(p.sent_at) || ""}`
+              : `Created ${formatDate(p.created_at) || "—"}`}
+          {p.client_manager ? ` · Manager: ${p.client_manager}` : ""}
+        </p>
+        {p.lost_reason && (
+          <p className="text-xs text-muted-foreground italic">
+            Reason: {p.lost_reason}
+          </p>
+        )}
+      </div>
+      <div className="text-right shrink-0">
+        <div className="font-medium text-sm">
+          {formatCurrency(value, p.currency || "USD")}
+        </div>
+        {p.recurring_total ? (
+          <div className="text-xs text-muted-foreground">
+            {formatCurrency(p.recurring_total, p.currency || "USD")}/{p.recurring_frequency || "—"}
+          </div>
+        ) : null}
+        {p.signed_url && (
+          <a
+            href={p.signed_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs inline-flex items-center gap-1 text-primary hover:underline mt-0.5"
+          >
+            View
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function InvoiceRow({
+  invoice: inv,
+}: {
+  invoice: ClientBundle["unifiedInvoices"][number]
 }) {
   return (
-    <Card>
-      <CardContent className="pt-4 pb-4">
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex flex-col gap-0.5 min-w-0">
-            <span className="text-xs font-medium text-muted-foreground">{label}</span>
-            <span className="text-xl font-semibold tabular-nums">{value}</span>
-            {sub ? <span className="text-xs text-muted-foreground">{sub}</span> : null}
-          </div>
-          <Icon className="h-4 w-4 text-muted-foreground shrink-0 mt-1" />
+    <div className="p-4 flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-medium text-sm">
+            {inv.invoice_number || "Invoice"}
+          </span>
+          <Badge variant="outline" className="text-xs uppercase">
+            {inv.source}
+          </Badge>
+          {inv.status && (
+            <Badge
+              variant={
+                inv.status.toLowerCase() === "paid"
+                  ? "default"
+                  : inv.amount_outstanding > 0
+                    ? "destructive"
+                    : "secondary"
+              }
+              className="text-xs capitalize"
+            >
+              {inv.status}
+            </Badge>
+          )}
         </div>
+        <p className="text-xs text-muted-foreground">
+          {inv.work_item_title ? `${inv.work_item_title} · ` : ""}
+          Issued {formatDate(inv.issued_date) || "—"}
+          {inv.due_date ? ` · Due ${formatDate(inv.due_date)}` : ""}
+          {inv.paid_date ? ` · Paid ${formatDate(inv.paid_date)}` : ""}
+        </p>
+      </div>
+      <div className="text-right shrink-0">
+        <div className="font-medium text-sm">
+          {formatCurrency(inv.amount, inv.currency)}
+        </div>
+        {inv.amount_outstanding > 0 ? (
+          <div className="text-xs text-destructive">
+            {formatCurrency(inv.amount_outstanding, inv.currency)} outstanding
+          </div>
+        ) : (
+          <div className="text-xs text-muted-foreground">Paid</div>
+        )}
+        {inv.external_url && (
+          <a
+            href={inv.external_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs inline-flex items-center gap-1 text-primary hover:underline mt-0.5"
+          >
+            Open
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tax tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+function TaxTab({ data }: { data: ClientBundle }) {
+  if (!data.proconnect)
+    return (
+      <Alert>
+        <FileText className="h-4 w-4" />
+        <AlertTitle>No ProConnect link yet</AlertTitle>
+        <AlertDescription>
+          This client isn't linked in ProConnect. Map them in the Tax dashboard or use
+          the People → Platform links card below.
+        </AlertDescription>
+      </Alert>
+    )
+
+  const { returns, latestTaxYear, returnCount } = data.proconnect
+
+  if (returnCount === 0)
+    return (
+      <Alert>
+        <FileText className="h-4 w-4" />
+        <AlertTitle>Linked, but no returns imported</AlertTitle>
+        <AlertDescription>
+          We have a ProConnect mapping for this client but no Phase 1 return data has
+          been imported yet. Trigger an import from the Tax dashboard — once it
+          completes, returns will appear here grouped by year.
+        </AlertDescription>
+      </Alert>
+    )
+
+  // Group by year (newest first)
+  const byYear = useMemo(() => {
+    const groups = new Map<number | "unknown", typeof returns>()
+    for (const r of returns) {
+      const key = r.taxYear ?? "unknown"
+      const arr = groups.get(key) || []
+      arr.push(r)
+      groups.set(key, arr)
+    }
+    return Array.from(groups.entries()).sort((a, b) => {
+      if (a[0] === "unknown") return 1
+      if (b[0] === "unknown") return -1
+      return (b[0] as number) - (a[0] as number)
+    })
+  }, [returns])
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm text-muted-foreground">
+          {returnCount} return{returnCount === 1 ? "" : "s"}
+          {latestTaxYear ? ` · most recent TY ${latestTaxYear}` : ""}
+        </div>
+      </div>
+
+      {byYear.map(([year, list]) => (
+        <Card key={String(year)}>
+          <CardHeader>
+            <CardTitle className="text-base">
+              {year === "unknown" ? "Unscheduled" : `Tax year ${year}`}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y">
+              {list.map((r, idx) => (
+                <div key={`${r.form}-${idx}`} className="p-4 flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="outline" className="text-xs">
+                        {FORM_LABELS[r.form] || r.form}
+                      </Badge>
+                      {r.amended && (
+                        <Badge variant="secondary" className="text-xs">
+                          Amended
+                        </Badge>
+                      )}
+                      {r.status && (
+                        <Badge variant="secondary" className="text-xs capitalize">
+                          {r.status}
+                        </Badge>
+                      )}
+                      {r.efileStatus && (
+                        <Badge
+                          variant="outline"
+                          className="text-xs capitalize bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900"
+                        >
+                          e-file: {r.efileStatus}
+                        </Badge>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {r.preparer ? `Prepared by ${r.preparer}` : ""}
+                      {r.updatedAt
+                        ? ` · updated ${relativeTime(r.updatedAt) || "—"}`
+                        : ""}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm pt-1">
+                    {r.totalRevenue != null && (
+                      <TaxStat label="Total revenue" value={formatCurrency(r.totalRevenue)} />
+                    )}
+                    {r.totalIncome != null && (
+                      <TaxStat label="Total income" value={formatCurrency(r.totalIncome)} />
+                    )}
+                    {r.totalTax != null && (
+                      <TaxStat label="Total tax" value={formatCurrency(r.totalTax)} />
+                    )}
+                    {r.refund != null && r.refund > 0 && (
+                      <TaxStat
+                        label="Refund"
+                        value={formatCurrency(r.refund)}
+                        positive
+                      />
+                    )}
+                    {r.amountOwed != null && r.amountOwed > 0 && (
+                      <TaxStat
+                        label="Amount owed"
+                        value={formatCurrency(r.amountOwed)}
+                        negative
+                      />
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  )
+}
+
+function TaxStat({
+  label,
+  value,
+  positive,
+  negative,
+}: {
+  label: string
+  value: string
+  positive?: boolean
+  negative?: boolean
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-xs text-muted-foreground uppercase tracking-wide">
+        {label}
+      </span>
+      <span
+        className={cn(
+          "text-sm font-medium",
+          positive && "text-emerald-700 dark:text-emerald-400",
+          negative && "text-destructive",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Documents tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+function DocumentsTab({ data }: { data: ClientBundle }) {
+  if (data.documents.length === 0)
+    return <EmptyCard message="No documents uploaded for this client yet." />
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <ScrollArea className="max-h-[700px]">
+          <div className="divide-y">
+            {data.documents.map((d) => (
+              <div
+                key={d.id}
+                className="p-4 flex items-start justify-between gap-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Files className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <span className="font-medium text-sm truncate">
+                      {d.name || "(untitled)"}
+                    </span>
+                    {d.document_type && (
+                      <Badge variant="outline" className="text-xs">
+                        {d.document_type}
+                      </Badge>
+                    )}
+                    {d.tax_year && (
+                      <Badge variant="secondary" className="text-xs">
+                        TY {d.tax_year}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {d.file_type ? `${d.file_type.toUpperCase()} · ` : ""}
+                    {formatBytes(d.file_size_bytes)}
+                    {d.uploaded_at ? ` · uploaded ${formatDate(d.uploaded_at)}` : ""}
+                  </p>
+                  {d.description && (
+                    <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+                      {d.description}
+                    </p>
+                  )}
+                </div>
+                {d.storage_url && (
+                  <Button variant="outline" size="sm" asChild>
+                    <a
+                      href={d.storage_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                      Open
+                    </a>
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </ScrollArea>
       </CardContent>
     </Card>
   )
 }
 
-function InfoRow({
-  icon: Icon,
-  label,
-  value,
-  href,
+// ─────────────────────────────────────────────────────────────────────────────
+// People tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+function PeopleTab({
+  data,
+  clientId,
 }: {
-  icon: React.ComponentType<{ className?: string }>
-  label: string
-  value: string | null | undefined
-  href?: string | null
+  data: ClientBundle
+  clientId: string
 }) {
-  if (!value) return null
-  const content = (
-    <div className="flex items-start gap-3">
-      <Icon className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-      <div className="flex flex-col gap-0.5 min-w-0">
-        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          {label}
-        </span>
-        <span className="text-sm break-words">{value}</span>
+  const { client } = data
+  const isOrg = client.isOrganization
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Related people */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Users className="h-4 w-4" />
+            {isOrg
+              ? `Related contacts (${data.relatedContacts.length})`
+              : `Affiliated organizations (${data.relatedOrganizations.length})`}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {isOrg && data.relatedContacts.length === 0 && (
+            <EmptyState message="No contacts linked to this organization." />
+          )}
+          {!isOrg && data.relatedOrganizations.length === 0 && (
+            <EmptyState message="No organizations affiliated with this contact." />
+          )}
+          {isOrg ? (
+            <div className="divide-y">
+              {data.relatedContacts.map((c) => (
+                <div key={c.id} className="p-3 flex items-center gap-3">
+                  <Avatar className="h-9 w-9">
+                    <AvatarFallback className="text-xs">
+                      {initials(c.full_name || "?")}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0 flex-1">
+                    <a
+                      href={`/clients/${c.id}`}
+                      className="font-medium text-sm hover:underline truncate block"
+                    >
+                      {c.full_name || "(unnamed)"}
+                    </a>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {c.roleOrTitle ||
+                        c.primary_email ||
+                        c.phone_primary ||
+                        "—"}
+                      {c.ownershipPercentage != null
+                        ? ` · ${c.ownershipPercentage}%`
+                        : ""}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="divide-y">
+              {data.relatedOrganizations.map((o) => (
+                <div key={o.id} className="p-3 flex items-center gap-3">
+                  <div className="h-9 w-9 rounded-md bg-muted flex items-center justify-center shrink-0">
+                    <Building2 className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <a
+                      href={`/clients/${o.id}`}
+                      className="font-medium text-sm hover:underline truncate block"
+                    >
+                      {o.name || o.full_name || "(unnamed org)"}
+                    </a>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {o.roleOrTitle || o.industry || o.primary_email || "—"}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Client groups & team */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <User className="h-4 w-4" />
+            Internal team
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 flex flex-col gap-3 text-sm">
+          {data.teamMembers.length === 0 ? (
+            <span className="text-muted-foreground text-sm">
+              No team members assigned.
+            </span>
+          ) : (
+            data.teamMembers.map((tm) => (
+              <div key={tm.key || tm.email || tm.name} className="flex items-center gap-3">
+                <Avatar className="h-9 w-9">
+                  <AvatarFallback className="text-xs">
+                    {initials(tm.name)}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0 flex-1">
+                  <span className="font-medium text-sm">{tm.name}</span>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {tm.email || "—"}
+                  </p>
+                </div>
+              </div>
+            ))
+          )}
+          {data.clientGroups.length > 0 && (
+            <>
+              <Separator />
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Client groups
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {data.clientGroups.map((g) => (
+                    <Badge key={g.id} variant="secondary" className="text-xs">
+                      {g.name || "(unnamed)"}
+                      {g.role ? ` · ${g.role}` : ""}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+          {data.serviceLinesUsed.length > 0 && (
+            <>
+              <Separator />
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Services used
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {data.serviceLinesUsed.map((s) => (
+                    <Badge key={s} variant="outline" className="text-xs">
+                      {s}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Platform links */}
+      <div className="lg:col-span-2">
+        <PlatformLinksCard contactId={clientId} />
       </div>
     </div>
   )
-  if (href) {
-    return (
-      <a href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer" className="hover:opacity-80 transition-opacity">
-        {content}
-      </a>
-    )
-  }
-  return content
 }
 
-function KvRow({ label, value }: { label: string; value: string }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Misc helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function EmptyState({ message }: { message: string }) {
   return (
-    <div className="flex items-start justify-between gap-3">
-      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide shrink-0">
-        {label}
-      </span>
-      <span className="text-sm text-right break-words">{value}</span>
+    <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+      {message}
     </div>
   )
 }
 
-function ActivityRow({ item }: { item: any }) {
-  // Heuristic rendering for either work item or comm timeline item
-  if (item.kind === "email" || item.kind === "note") {
-    return (
-      <div className="flex items-start gap-3 text-sm">
-        {item.kind === "email" ? (
-          <Mail className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-        ) : (
-          <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-        )}
-        <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-medium truncate">{item.subject || "(no subject)"}</span>
-            <span className="text-xs text-muted-foreground shrink-0">{relativeTime(item.timestamp)}</span>
+function EmptyCard({ message }: { message: string }) {
+  return (
+    <Card>
+      <CardContent className="p-8">
+        <EmptyState message={message} />
+      </CardContent>
+    </Card>
+  )
+}
+
+function ClientProfileSkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      <Card>
+        <CardContent className="p-6 flex items-start gap-4">
+          <Skeleton className="h-16 w-16 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-7 w-72" />
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-4 w-64" />
           </div>
-          {item.preview ? (
-            <span className="text-xs text-muted-foreground line-clamp-1">{item.preview}</span>
-          ) : null}
-        </div>
+        </CardContent>
+      </Card>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Card key={i}>
+            <CardContent className="p-4 space-y-2">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-6 w-32" />
+              <Skeleton className="h-3 w-40" />
+            </CardContent>
+          </Card>
+        ))}
       </div>
-    )
-  }
-  // Work item
-  return (
-    <div className="flex items-start gap-3 text-sm">
-      <Briefcase className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-      <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-        <div className="flex items-center justify-between gap-2">
-          <span className="font-medium truncate">{item.title || "(untitled)"}</span>
-          <Badge variant={statusVariant(item.primary_status || item.status)} className="text-xs shrink-0">
-            {item.primary_status || item.status || "Unknown"}
-          </Badge>
-        </div>
-        {item.due_date ? (
-          <span className="text-xs text-muted-foreground">Due {formatDate(item.due_date)}</span>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-function EmptyState({ message, hint }: { message: string; hint?: string }) {
-  return (
-    <div className="flex flex-col items-center gap-2 py-12 text-center px-4">
-      <ClipboardList className="h-8 w-8 text-muted-foreground" />
-      <p className="text-sm text-muted-foreground">{message}</p>
-      {hint ? <p className="text-xs text-muted-foreground max-w-md">{hint}</p> : null}
+      <Skeleton className="h-10 w-full" />
+      <Skeleton className="h-96 w-full" />
     </div>
   )
 }
