@@ -12,6 +12,7 @@ import {
   upsertAutoClientLink,
 } from "@/lib/calendly-invitee-match"
 import { runAlfredCalendlyTriage } from "@/lib/alfred/calendly-triage"
+import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 
 /**
  * Calendly webhook receiver.
@@ -210,18 +211,58 @@ async function upsertInvitee(
   // *is* found we also write a `calendly_event_clients` row tagged as
   // an auto-link so the Team Calendar can render it as a "client" tag
   // alongside any manual tags users add later.
+  const inviteePhone = extractPhoneFromInvitee(invitee)
   const match = await matchInviteeToContact(supabase, {
     email: invitee.email,
     name: invitee.name,
-    phone: extractPhoneFromInvitee(invitee),
+    phone: inviteePhone,
   })
-  const contactId = match?.contactId ?? null
+  let contactId = match?.contactId ?? null
+  let contactMatchMethod: "email" | "name_phone" | "name" | "auto_created" | null =
+    match?.matchMethod ?? null
 
-  if (match?.contactId && eventId) {
+  // Hub-first: when nothing matched, auto-create a Master Hub Contact
+  // for the invitee. Calendly bookings are one of the three canonical
+  // intake channels (alongside Jotform and Zoom) — every booked
+  // invitee should exist as a Hub contact even if a teammate has not
+  // yet manually linked them. We tag the row with source=calendly and
+  // is_prospect=true; pushing to Karbon/ProConnect/Ignition stays
+  // teammate-driven from the contact detail page.
+  if (!contactId && (invitee.email || invitee.name)) {
+    try {
+      const created = await findOrCreateHubContact(
+        {
+          email: invitee.email ?? null,
+          fullName: invitee.name ?? null,
+          phone: inviteePhone,
+        },
+        { source: "calendly", supabase, skipInternal: true },
+      )
+      if (created.contact_id) {
+        contactId = created.contact_id
+        contactMatchMethod = created.created ? "auto_created" : "email"
+        console.log(
+          `[calendly] hub auto-${created.created ? "created" : "matched"} contact ${created.contact_id}: ${created.reason}`,
+        )
+      }
+    } catch (err) {
+      console.error("[calendly] hub auto-create failed (non-blocking):", err)
+    }
+  }
+
+  if (contactId && eventId) {
     await upsertAutoClientLink(supabase, {
       calendlyEventId: eventId,
-      contactId: match.contactId,
-      matchMethod: match.matchMethod,
+      contactId,
+      // `calendly_event_clients.match_method` is constrained to the
+      // legacy enum; coerce auto_created → "email" since email was the
+      // primary signal we used to build the new contact. Source-of-
+      // truth for "this contact came from Calendly" lives on
+      // contacts.source.
+      matchMethod:
+        contactMatchMethod === "auto_created"
+          ? "email"
+          : (contactMatchMethod ?? "email"),
     })
   }
 
@@ -260,8 +301,9 @@ async function upsertInvitee(
   return {
     inviteeUuid: uuid,
     deterministicMatch: {
-      contactId: match?.contactId ?? null,
-      matchMethod: match?.matchMethod ?? null,
+      contactId,
+      matchMethod:
+        contactMatchMethod === "auto_created" ? "email" : contactMatchMethod,
     },
     invitee,
   }
