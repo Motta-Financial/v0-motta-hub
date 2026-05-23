@@ -5,7 +5,7 @@
  * GET /api/proconnect/sync - Get sync status and stats
  *
  * The sync work runs inline via lib/proconnect/sync.runFullSync(). It is
- * resumable — if the 40s self-timeout fires before all clients are
+ * resumable — if the 55s self-timeout fires before all clients are
  * processed, the run is marked "partial" with a last_client_index, and
  * the next POST resumes from that point. Repeat until status === "success".
  */
@@ -17,7 +17,7 @@ import { requireLeadership } from "@/lib/auth/require-leadership"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
-export const maxDuration = 60
+export const maxDuration = 300
 
 export async function GET() {
   try {

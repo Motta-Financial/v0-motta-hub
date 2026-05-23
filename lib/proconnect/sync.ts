@@ -31,9 +31,9 @@ const PARALLEL_CLIENTS = 3
 // Skip clients synced within this many hours (unless full reset)
 const SKIP_IF_SYNCED_WITHIN_HOURS = 24
 
-// Max execution time before we gracefully stop (Vercel timeout is 60s for hobby, 300s for pro)
-// Leave 5s buffer for cleanup and response serialization
-const MAX_EXECUTION_MS = 55_000
+// Max execution time before we gracefully stop (Vercel timeout is 300s on Pro plan)
+// Leave 15s buffer for cleanup and response serialization
+const MAX_EXECUTION_MS = 285_000
 
 interface SyncResult {
   success: boolean
@@ -174,6 +174,33 @@ async function getResumeIndex(supabase: SupabaseClient): Promise<number> {
 
   console.log("[v0] getResumeIndex returning 0 (last run was not partial or index was 0)")
   return 0
+}
+
+/**
+ * Get accumulated counts from the most recent partial sync log.
+ * When resuming, we need to add to these counts rather than starting from 0.
+ */
+async function getPreviousSyncCounts(supabase: SupabaseClient): Promise<{
+  clientsSynced: number
+  engagementsSynced: number
+  customStatusesSynced: number
+}> {
+  const { data, error } = await supabase
+    .from("proconnect_sync_logs")
+    .select("status, clients_synced, engagements_synced, custom_statuses_synced")
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .single()
+
+  if (error || !data || data.status !== "partial") {
+    return { clientsSynced: 0, engagementsSynced: 0, customStatusesSynced: 0 }
+  }
+
+  return {
+    clientsSynced: data.clients_synced ?? 0,
+    engagementsSynced: data.engagements_synced ?? 0,
+    customStatusesSynced: data.custom_statuses_synced ?? 0,
+  }
 }
 
 /**
@@ -564,8 +591,12 @@ export async function runFullSync(
 
   const isResuming = resumeIndex > 0
 
+  // When resuming, load the previous run's accumulated counts so we can add to them
+  let previousCounts = { clientsSynced: 0, engagementsSynced: 0, customStatusesSynced: 0 }
   if (isResuming) {
     console.log(`[ProConnect Sync] Resuming from client index ${resumeIndex}`)
+    previousCounts = await getPreviousSyncCounts(supabase)
+    console.log("[v0] Previous counts loaded:", previousCounts)
   }
 
   // Create sync log
@@ -624,17 +655,22 @@ export async function runFullSync(
       status = "failed"
     }
 
+    // Accumulate counts from previous partial runs when resuming
+    const totalClientsSynced = previousCounts.clientsSynced + clientResult.count
+    const totalEngagementsSynced = previousCounts.engagementsSynced + engagementResult.count
+    const totalStatusesSynced = previousCounts.customStatusesSynced + statusResult.count
+
     // Update sync log
     await updateSyncLog(supabase, syncLogId, {
       status,
-      clients_synced: clientResult.count,
-      engagements_synced: engagementResult.count,
-      custom_statuses_synced: statusResult.count,
+      clients_synced: totalClientsSynced,
+      engagements_synced: totalEngagementsSynced,
+      custom_statuses_synced: totalStatusesSynced,
       last_client_index: engagementResult.lastClientIndex,
       error_message: isPartial
         ? `Partial sync: processed ${engagementResult.lastClientIndex}/${engagementResult.totalClients} clients (${engagementResult.skippedClients} skipped) in ${Math.round((Date.now() - startTime) / 1000)}s`
         : success
-          ? `Synced ${engagementResult.count} engagements (${engagementResult.skippedClients} clients skipped - already synced)`
+          ? `Synced ${totalEngagementsSynced} engagements (${engagementResult.skippedClients} clients skipped - already synced)`
           : `${errors.length} errors occurred`,
       error_details: isPartial
         ? {
@@ -652,9 +688,9 @@ export async function runFullSync(
     return {
       success,
       syncLogId,
-      clientsSynced: clientResult.count,
-      engagementsSynced: engagementResult.count,
-      customStatusesSynced: statusResult.count,
+      clientsSynced: totalClientsSynced,
+      engagementsSynced: totalEngagementsSynced,
+      customStatusesSynced: totalStatusesSynced,
       errors,
       duration: Date.now() - startTime,
       timedOut,
@@ -672,19 +708,24 @@ export async function runFullSync(
 
     if (isTimeoutError) {
       // Timeout should be partial, not failed - so it doesn't trigger 3-strike alerts
+      // Accumulate counts from previous partial runs when resuming
+      const totalClientsSynced = previousCounts.clientsSynced + clientResult.count
+      const totalEngagementsSynced = previousCounts.engagementsSynced + engagementResult.count
+      const totalStatusesSynced = previousCounts.customStatusesSynced + statusResult.count
+
       await updateSyncLog(supabase, syncLogId, {
         status: "partial",
-        clients_synced: clientResult.count,
-        engagements_synced: engagementResult.count,
-        custom_statuses_synced: statusResult.count,
+        clients_synced: totalClientsSynced,
+        engagements_synced: totalEngagementsSynced,
+        custom_statuses_synced: totalStatusesSynced,
         last_client_index: engagementResult.lastClientIndex || resumeIndex || 1, // Save progress for resume
         error_message: `Partial sync: timed out after ${Math.round((Date.now() - startTime) / 1000)}s - will resume on next run`,
         error_details: {
           partial: true,
           timedOut: true,
           resumeIndex: engagementResult.lastClientIndex || resumeIndex,
-          clientsSynced: clientResult.count,
-          engagementsSynced: engagementResult.count,
+          clientsSynced: totalClientsSynced,
+          engagementsSynced: totalEngagementsSynced,
           stack: err instanceof Error ? err.stack : null,
         },
       })
@@ -692,9 +733,9 @@ export async function runFullSync(
       return {
         success: false,
         syncLogId,
-        clientsSynced: clientResult.count,
-        engagementsSynced: engagementResult.count,
-        customStatusesSynced: statusResult.count,
+        clientsSynced: totalClientsSynced,
+        engagementsSynced: totalEngagementsSynced,
+        customStatusesSynced: totalStatusesSynced,
         errors: [errorMessage],
         duration: Date.now() - startTime,
         timedOut: true,
@@ -703,29 +744,33 @@ export async function runFullSync(
       }
     }
 
-    // Actual failure (not timeout)
+    // Actual failure (not timeout) - still accumulate counts
+    const totalClientsSynced = previousCounts.clientsSynced + clientResult.count
+    const totalEngagementsSynced = previousCounts.engagementsSynced + engagementResult.count
+    const totalStatusesSynced = previousCounts.customStatusesSynced + statusResult.count
+
     await updateSyncLog(supabase, syncLogId, {
       status: "failed",
-      clients_synced: clientResult.count,
-      engagements_synced: engagementResult.count,
-      custom_statuses_synced: statusResult.count,
+      clients_synced: totalClientsSynced,
+      engagements_synced: totalEngagementsSynced,
+      custom_statuses_synced: totalStatusesSynced,
       last_client_index: engagementResult.lastClientIndex || resumeIndex, // Preserve resume point on failure
       error_message: errorMessage,
       error_details: { 
         stack: err instanceof Error ? err.stack : null,
         timedOut: false,
         resumeIndex: engagementResult.lastClientIndex || resumeIndex,
-        clientsSynced: clientResult.count,
-        engagementsSynced: engagementResult.count,
+        clientsSynced: totalClientsSynced,
+        engagementsSynced: totalEngagementsSynced,
       },
     })
 
     return {
       success: false,
       syncLogId,
-      clientsSynced: clientResult.count,
-      engagementsSynced: engagementResult.count,
-      customStatusesSynced: statusResult.count,
+      clientsSynced: totalClientsSynced,
+      engagementsSynced: totalEngagementsSynced,
+      customStatusesSynced: totalStatusesSynced,
       errors: [errorMessage],
       duration: Date.now() - startTime,
       timedOut: false,
