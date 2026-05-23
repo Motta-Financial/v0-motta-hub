@@ -99,7 +99,14 @@ async function main() {
     const url = row[urlIdx] || null;
     const teammate = row[teammateIdx] || '';
     const dateStr = row[dateIdx] || '';
-    const meetingType = row[typeIdx] || null;
+    // Airtable's "Prospect/Client" rows are just regular meetings — collapse
+    // to "meeting" so the importer stays consistent with the rest of the
+    // debriefs (Calendly bridge, Zoom triage, manual Hub debriefs).
+    const rawMeetingType = row[typeIdx] || null;
+    const meetingType =
+      rawMeetingType && /^prospect\s*\/\s*client$/i.test(rawMeetingType.trim())
+        ? 'meeting'
+        : rawMeetingType;
     const clientKey = row[clientKeyIdx] || null;
     const meetingNotes = row[notesIdx] || '';
     const pricingAdj = row[pricingIdx] || '';

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import Link from "next/link"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -63,6 +64,13 @@ interface Debrief {
   work_item_title: string | null
   work_item_client_name: string | null
   work_item_karbon_url: string | null
+  // debriefs_full pre-joins team_member info as flat fields. Older code paths
+  // also build a nested `team_member` object via the FK fallback query, so we
+  // accept both shapes and resolve in `getTeamMemberName`.
+  team_member_full_name?: string | null
+  team_member_avatar_url?: string | null
+  created_by_full_name?: string | null
+  created_by_avatar_url?: string | null
   status: string | null
   notes: string | null
   filing_status: string | null
@@ -104,7 +112,22 @@ interface TeamMember {
 
 function getTeamMemberName(d: Debrief | null): string {
   if (!d) return "-"
-  return d.team_member?.full_name || d.action_items?.team_member_name || d.created_by?.full_name || "-"
+  // debriefs_full returns flat *_full_name fields; the FK-fallback path nests
+  // them under team_member / created_by. Backfill on Airtable-imported rows
+  // populated team_member_id, so prefer the joined name first either way.
+  return (
+    d.team_member?.full_name ||
+    d.team_member_full_name ||
+    d.action_items?.team_member_name ||
+    d.created_by?.full_name ||
+    d.created_by_full_name ||
+    "-"
+  )
+}
+
+function getTeamMemberAvatar(d: Debrief | null): string | null | undefined {
+  if (!d) return null
+  return d.team_member?.avatar_url || d.team_member_avatar_url || null
 }
 
 function getInitials(name: string | null) {
@@ -177,6 +200,14 @@ export default function DebriefsPage() {
     if (d.organization_id || d.organization_display_name || d.organization_name) return "organization"
     if (d.contact_id || d.contact_full_name) return "contact"
     return "unknown"
+  }
+
+  // The clients route resolves by either contacts.id or organizations.id, so we
+  // can hand it whichever FK is set on the debrief. Prefer organization_id when
+  // present (more granular profile), otherwise fall back to contact_id.
+  const resolveClientHref = (d: Debrief): string | null => {
+    const id = d.organization_id || d.contact_id
+    return id ? `/clients/${id}` : null
   }
 
   // Prefer the canonical work_items.karbon_url over the user-pasted
@@ -316,7 +347,7 @@ export default function DebriefsPage() {
                 <SelectContent>
                   <SelectItem value="all">All Types</SelectItem>
                   {debriefTypes.map((type) => (
-                    <SelectItem key={type} value={type}>
+                    <SelectItem key={type} value={type} className="capitalize">
                       {type}
                     </SelectItem>
                   ))}
@@ -373,68 +404,81 @@ export default function DebriefsPage() {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <Table>
+                <Table className="min-w-[1200px]">
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Client / Organization</TableHead>
-                      <TableHead>Karbon Work Item</TableHead>
-                      <TableHead>Team Member</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead className="min-w-[18rem]">Notes</TableHead>
-                      <TableHead>Action Items</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
+                      <TableHead className="w-[7.5rem] whitespace-nowrap">Date</TableHead>
+                      <TableHead className="min-w-[14rem]">Client / Organization</TableHead>
+                      <TableHead className="min-w-[16rem]">Karbon Work Item</TableHead>
+                      <TableHead className="min-w-[12rem]">Team Member</TableHead>
+                      <TableHead className="w-[8rem] whitespace-nowrap">Type</TableHead>
+                      <TableHead className="min-w-[20rem]">Notes</TableHead>
+                      <TableHead className="w-[7rem] whitespace-nowrap">Action Items</TableHead>
+                      <TableHead className="w-[8rem] whitespace-nowrap text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredDebriefs.map((debrief) => {
                       const clientName = resolveClientName(debrief)
                       const clientType = resolveClientType(debrief)
+                      const clientHref = resolveClientHref(debrief)
                       const karbonWorkUrl = resolveKarbonWorkUrl(debrief)
                       const memberName = getTeamMemberName(debrief)
+                      const memberAvatar = getTeamMemberAvatar(debrief)
                       return (
                         <TableRow
                           key={debrief.id}
                           className="cursor-pointer hover:bg-muted/50"
                           onClick={() => openDetails(debrief)}
                         >
-                          <TableCell className="whitespace-nowrap">
+                          <TableCell className="whitespace-nowrap align-top">
                             <div className="flex items-center gap-2">
-                              <Calendar className="h-4 w-4 text-muted-foreground" />
+                              <Calendar className="h-4 w-4 shrink-0 text-muted-foreground" />
                               {debrief.debrief_date
                                 ? format(new Date(debrief.debrief_date), "MMM d, yyyy")
                                 : "-"}
                             </div>
                           </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
+                          <TableCell className="align-top">
+                            <div className="flex items-start gap-2">
                               {clientType === "organization" ? (
-                                <Building2 className="h-4 w-4 text-muted-foreground" />
+                                <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                               ) : clientType === "contact" ? (
-                                <User className="h-4 w-4 text-muted-foreground" />
+                                <User className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                               ) : (
-                                <User className="h-4 w-4 text-muted-foreground/60" />
+                                <User className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/60" />
                               )}
-                              <span className="font-medium">{clientName || "Unmapped"}</span>
+                              {clientHref && clientName ? (
+                                <Link
+                                  href={clientHref}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="font-medium text-primary underline-offset-2 hover:underline"
+                                  title={clientName}
+                                >
+                                  {clientName}
+                                </Link>
+                              ) : (
+                                <span className="font-medium">{clientName || "Unmapped"}</span>
+                              )}
                             </div>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="align-top">
                             {debrief.work_item_title || karbonWorkUrl ? (
-                              <div className="flex items-center gap-1">
-                                <Briefcase className="h-3.5 w-3.5 text-muted-foreground" />
+                              <div className="flex items-start gap-1.5">
+                                <Briefcase className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                                 {karbonWorkUrl ? (
                                   <a
                                     href={karbonWorkUrl}
                                     target="_blank"
                                     rel="noreferrer"
                                     onClick={(e) => e.stopPropagation()}
-                                    className="line-clamp-1 max-w-[16rem] text-sm text-primary underline-offset-2 hover:underline"
+                                    className="text-sm text-primary underline-offset-2 hover:underline break-words"
                                     title={debrief.work_item_title || karbonWorkUrl}
                                   >
                                     {debrief.work_item_title || "Open in Karbon"}
                                   </a>
                                 ) : (
-                                  <span className="line-clamp-1 max-w-[16rem] text-sm">
+                                  <span className="text-sm break-words" title={debrief.work_item_title || undefined}>
                                     {debrief.work_item_title}
                                   </span>
                                 )}
@@ -443,12 +487,10 @@ export default function DebriefsPage() {
                               <span className="text-muted-foreground">-</span>
                             )}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="align-top">
                             <div className="flex items-center gap-2">
-                              <Avatar className="h-6 w-6">
-                                {debrief.team_member?.avatar_url && (
-                                  <AvatarImage src={debrief.team_member.avatar_url} alt={memberName} />
-                                )}
+                              <Avatar className="h-6 w-6 shrink-0">
+                                {memberAvatar && <AvatarImage src={memberAvatar} alt={memberName} />}
                                 <AvatarFallback className="text-xs">
                                   {getInitials(memberName)}
                                 </AvatarFallback>
@@ -456,14 +498,17 @@ export default function DebriefsPage() {
                               <span className="whitespace-nowrap">{memberName}</span>
                             </div>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="align-top">
                             {debrief.debrief_type && (
-                              <Badge variant="secondary" className={getTypeColor(debrief.debrief_type)}>
+                              <Badge
+                                variant="secondary"
+                                className={`${getTypeColor(debrief.debrief_type)} whitespace-nowrap capitalize`}
+                              >
                                 {debrief.debrief_type}
                               </Badge>
                             )}
                           </TableCell>
-                          <TableCell className="max-w-md">
+                          <TableCell className="align-top">
                             {debrief.notes ? (
                               <p className="line-clamp-2 whitespace-pre-wrap text-sm text-muted-foreground">
                                 {debrief.notes}
@@ -472,9 +517,9 @@ export default function DebriefsPage() {
                               <span className="text-muted-foreground">-</span>
                             )}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="align-top">
                             {debrief.action_items?.items?.length ? (
-                              <Badge variant="outline">
+                              <Badge variant="outline" className="whitespace-nowrap">
                                 {debrief.action_items.items.length} item
                                 {debrief.action_items.items.length !== 1 ? "s" : ""}
                               </Badge>
@@ -482,42 +527,44 @@ export default function DebriefsPage() {
                               <span className="text-muted-foreground">-</span>
                             )}
                           </TableCell>
-                          <TableCell className="text-right">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                openDetails(debrief)
-                              }}
-                              title="View details"
-                            >
-                              <Eye className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setEditingDebrief(debrief)
-                              }}
-                              title="Edit debrief"
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                            {karbonWorkUrl && (
+                          <TableCell className="text-right align-top">
+                            <div className="flex items-center justify-end gap-0.5">
                               <Button
                                 variant="ghost"
                                 size="sm"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  window.open(karbonWorkUrl, "_blank")
+                                  openDetails(debrief)
                                 }}
-                                title="Open in Karbon"
+                                title="View details"
                               >
-                                <ExternalLink className="h-4 w-4" />
+                                <Eye className="h-4 w-4" />
                               </Button>
-                            )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setEditingDebrief(debrief)
+                                }}
+                                title="Edit debrief"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              {karbonWorkUrl && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    window.open(karbonWorkUrl, "_blank")
+                                  }}
+                                  title="Open in Karbon"
+                                >
+                                  <ExternalLink className="h-4 w-4" />
+                                </Button>
+                              )}
+                            </div>
                           </TableCell>
                         </TableRow>
                       )
@@ -608,9 +655,9 @@ export default function DebriefsPage() {
                     ) : (
                       <p className="flex items-center gap-2">
                         <Avatar className="h-6 w-6">
-                          {selectedDebrief.team_member?.avatar_url && (
+                          {getTeamMemberAvatar(selectedDebrief) && (
                             <AvatarImage
-                              src={selectedDebrief.team_member.avatar_url}
+                              src={getTeamMemberAvatar(selectedDebrief) || undefined}
                               alt={getTeamMemberName(selectedDebrief)}
                             />
                           )}
@@ -626,7 +673,10 @@ export default function DebriefsPage() {
                     <p className="text-sm font-medium text-muted-foreground">Debrief Type</p>
                     <p>
                       {selectedDebrief.debrief_type && (
-                        <Badge variant="secondary" className={getTypeColor(selectedDebrief.debrief_type)}>
+                        <Badge
+                          variant="secondary"
+                          className={`${getTypeColor(selectedDebrief.debrief_type)} capitalize`}
+                        >
                           {selectedDebrief.debrief_type}
                         </Badge>
                       )}
