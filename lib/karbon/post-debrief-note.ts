@@ -426,7 +426,7 @@ export async function postDebriefNoteToKarbon(
   const siteUrl =
     process.env.NEXT_PUBLIC_SITE_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
-    "https://mottahub-motta.vercel.app"
+    "https://hub.motta.cpa"
   const hubUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
   // Subject line uses the work item name as the primary identifier, matching

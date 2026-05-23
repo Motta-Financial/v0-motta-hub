@@ -6,7 +6,7 @@
  * to proconnect_oauth_tokens.
  *
  * Configured in Intuit Developer:
- *   Redirect URIs (Development): https://motta.cpa/api/proconnect/oauth/callback
+ *   Redirect URIs (Development): https://hub.motta.cpa/api/proconnect/oauth/callback
  */
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
   const error = searchParams.get("error")
   const errorDescription = searchParams.get("error_description")
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
 
   // Handle user-denied consent or other errors from Intuit
   if (error) {

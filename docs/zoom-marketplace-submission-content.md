@@ -155,8 +155,8 @@ Upload `/public/zoom-architecture-diagram.jpg`
 
 **Yes.** All traffic to and from Motta Hub uses HTTPS terminated by Vercel's
 edge network, which enforces TLS 1.2 or higher (TLS 1.3 by default). The
-OAuth redirect URI (`https://motta.cpa/api/zoom/oauth/callback`) and the
-webhook endpoint (`https://motta.cpa/api/zoom/webhook`) are both HTTPS-only.
+OAuth redirect URI (`https://hub.motta.cpa/api/zoom/oauth/callback`) and the
+webhook endpoint (`https://hub.motta.cpa/api/zoom/webhook`) are both HTTPS-only.
 All calls to `api.zoom.us` and `zoom.us/oauth/token` are made over HTTPS
 using Node.js's built-in `fetch`, which uses the OS TLS stack on Vercel's
 runtime.

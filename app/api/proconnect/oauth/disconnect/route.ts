@@ -6,7 +6,7 @@
  * Marketplace, or when they click "Disconnect" in /tax/settings.
  *
  * Configured in Intuit Developer:
- *   App URLs > Disconnect URL: https://motta.cpa/api/proconnect/oauth/disconnect
+ *   App URLs > Disconnect URL: https://hub.motta.cpa/api/proconnect/oauth/disconnect
  */
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
@@ -61,7 +61,7 @@ async function performDisconnect(): Promise<{ ok: boolean; error?: string }> {
 }
 
 export async function GET(_request: NextRequest) {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
   const result = await performDisconnect()
 
   const url = new URL("/tax/settings", baseUrl)

@@ -52,7 +52,7 @@ function resolveSiteUrl(request: NextRequest): string {
     const normalized = envUrl.startsWith("http") ? envUrl : `https://${envUrl}`
     return normalized.replace(/\/$/, "")
   }
-  return "https://mottahub-motta.vercel.app"
+  return "https://hub.motta.cpa"
 }
 
 /**

@@ -49,7 +49,7 @@ export async function GET(request: Request) {
 
   try {
     const supabase = createAdminClient()
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
 
     // Compute this week's Friday date label (used in the reminder copy)
     const today = new Date()

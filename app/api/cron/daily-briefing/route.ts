@@ -44,7 +44,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url)
     const previewTo = url.searchParams.get("previewTo")
     const supabase = createAdminClient()
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
     const hubUrl = appUrl.startsWith("http") ? appUrl : `https://${appUrl}`
 
 /* ──────────────────────────────────────────────────────────────────

@@ -356,7 +356,7 @@ export async function POST(req: NextRequest) {
           .map((tm: any) => tm.email as string)
 
         if (recipientEmails.length > 0) {
-          const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+          const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
           const prospectUrl = `${appUrl}/prospects/${inserted.id}`
 
           // Stitch a single "City, ST ZIP" string from the parts so

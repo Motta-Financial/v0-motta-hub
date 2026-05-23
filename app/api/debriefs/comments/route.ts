@@ -194,7 +194,7 @@ async function notifyDebriefParticipants(
   }
 
   const idsArr = Array.from(recipientIds)
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://mottahub-motta.vercel.app"
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
   const debriefUrl = `${siteUrl}/debriefs?id=${debriefId}`
   const preview = content.length > 220 ? content.slice(0, 220) + "…" : content
 

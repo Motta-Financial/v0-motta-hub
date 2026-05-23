@@ -255,7 +255,7 @@ export async function POST(request: NextRequest) {
 async function createDebriefNotifications(debrief: any, authorName: string, body: any) {
   try {
     const supabase = createAdminClient()
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://mottahub-motta.vercel.app"
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
     const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
     // Resolve client name for messages/subject. Order of preference:
