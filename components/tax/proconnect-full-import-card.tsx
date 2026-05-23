@@ -353,7 +353,18 @@ export function ProconnectFullImportCard() {
             </div>
           </div>
         )}
-        {lastResult && !lastResult.ok && (
+        {lastResult && lastResult.partial && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            <div className="font-medium">Partial batch — re-run to resume</div>
+            <div className="mt-1 text-xs">
+              Processed {lastResult.engagementsSynced ?? 0} engagements through client
+              index {lastResult.lastClientIndex ?? "?"}. Click <em>Run full import</em>{" "}
+              again to continue from where this batch stopped. Counts accumulate
+              across runs.
+            </div>
+          </div>
+        )}
+        {lastResult && !lastResult.ok && !lastResult.partial && (
           <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
             <div className="font-medium">Import failed</div>
             <div className="mt-1 text-xs">{lastResult.error ?? "Unknown error"}</div>
