@@ -64,6 +64,12 @@ export interface SyncRecentZoomDataResult {
   participantsScanned: number
   hubContactsCreated: number
   hubContactsMatched: number
+  /** Number of meetings the deterministic Calendly→Zoom bridge linked
+   *  this run. Each bridged meeting also had its Calendly event's
+   *  client + work-item tags copied over with link_source='calendly_bridge'. */
+  bridgedFromCalendly: number
+  /** Number of meetings ALFRED tagged this run (auto or needs_review). */
+  alfredTagged: number
   errors: Array<{ zoom_email: string; error: string }>
 }
 
@@ -93,6 +99,8 @@ export async function syncRecentZoomData(
   let participantsScanned = 0
   let hubContactsCreated = 0
   let hubContactsMatched = 0
+  let bridgedFromCalendly = 0
+  let alfredTagged = 0
 
   if (connections.length === 0) {
     return {
@@ -102,6 +110,8 @@ export async function syncRecentZoomData(
       participantsScanned,
       hubContactsCreated,
       hubContactsMatched,
+      bridgedFromCalendly,
+      alfredTagged,
       errors,
     }
   }
@@ -292,6 +302,8 @@ export async function syncRecentZoomData(
         participantsScanned += partResult.participantsSeen
         hubContactsCreated += partResult.contactsCreated
         hubContactsMatched += partResult.contactsMatched
+        bridgedFromCalendly += partResult.bridgedFromCalendly
+        alfredTagged += partResult.alfredTagged
         if (partResult.errors.length > 0) {
           console.warn(
             `[v0] [Zoom Recent Sync] ${conn.zoom_email} participant errors:`,
@@ -323,6 +335,8 @@ export async function syncRecentZoomData(
     participantsScanned,
     hubContactsCreated,
     hubContactsMatched,
+    bridgedFromCalendly,
+    alfredTagged,
     errors,
   }
 }

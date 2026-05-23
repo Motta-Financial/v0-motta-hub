@@ -129,13 +129,15 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ zoomMeetin
     supabase
       .from("zoom_meeting_clients")
       .select(
-        `id, link_source, match_method, contact:contacts ( id, full_name, primary_email ), organization:organizations ( id, name )`,
+        `id, link_source, match_method, confidence, alfred_reason, needs_review, contact:contacts ( id, full_name, primary_email ), organization:organizations ( id, name )`,
       )
       .eq("zoom_meeting_id", internalId)
       .order("created_at", { ascending: true }),
     supabase
       .from("zoom_meeting_work_items")
-      .select(`id, work_item:work_items ( id, title, client_name, status, due_date )`)
+      .select(
+        `id, link_source, match_method, confidence, alfred_reason, needs_review, work_item:work_items ( id, title, client_name, status, due_date )`,
+      )
       .eq("zoom_meeting_id", internalId)
       .order("created_at", { ascending: true }),
   ])
@@ -190,7 +192,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ zoomMeetin
         created_by_team_member_id: createdBy,
       })
       .select(
-        `id, link_source, match_method, contact:contacts ( id, full_name, primary_email ), organization:organizations ( id, name )`,
+        `id, link_source, match_method, confidence, alfred_reason, needs_review, contact:contacts ( id, full_name, primary_email ), organization:organizations ( id, name )`,
       )
       .single()
     if (error) {
@@ -212,9 +214,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ zoomMeetin
       .insert({
         zoom_meeting_id: internalId,
         work_item_id: workItemId,
+        link_source: "manual",
         created_by_team_member_id: createdBy,
       })
-      .select(`id, work_item:work_items ( id, title, client_name, status, due_date )`)
+      .select(
+        `id, link_source, match_method, confidence, alfred_reason, needs_review, work_item:work_items ( id, title, client_name, status, due_date )`,
+      )
       .single()
     if (error) {
       const status = (error as { code?: string }).code === "23505" ? 409 : 500
