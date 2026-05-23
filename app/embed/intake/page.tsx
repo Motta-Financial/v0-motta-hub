@@ -6,14 +6,29 @@
  * progress bar, and conditional branches that skip irrelevant pages
  * (e.g. a personal-only prospect never sees business questions).
  *
- * The submit payload remains identical to the previous single-page
- * version of this form, so /api/public/intake -> Karbon push ->
- * ALFRED enrichment -> team notify pipeline keeps working unchanged.
+ * Streamlining decisions (vs. the legacy Jotform):
+ *  - Address inputs use Photon (komoot) autocomplete — free, no API key,
+ *    OSM-backed — and ZIP entry auto-fills city/state via zippopotam.us.
+ *    Both endpoints are CORS-enabled and graceful-degrade to manual
+ *    typing if a network call fails.
+ *  - We dropped the "new or existing business" gate — the AI brief on
+ *    the prospect's freeform situation answers that question more
+ *    fluently than a radio button could.
+ *  - Detailed business operations (tax classification, entity types,
+ *    accounting system, employee count, revenue range) are NOT
+ *    required. They live behind an opt-in "Add more details" toggle so
+ *    a prospect who just wants to talk can submit in ~90 seconds. The
+ *    copy explains that filling them in shortens onboarding.
+ *  - "Questions" and "Business summary" collapsed into a single
+ *    freeform textarea — "How can Motta help?". The submit synthesizes
+ *    that text into the existing `questions_or_concerns` field so
+ *    ALFRED's question-research pass still runs.
+ *  - ALFRED is introduced on the welcome screen and surfaces a one-
+ *    line contextual tip on each step (an avatar + a short hint).
  *
- * No external state lib — a single useState bag holds the answers,
- * and a stepIndex pointer advances through a dynamically-built step
- * array. Steps are pure data (id + render fn + optional `when`
- * predicate); reordering or adding a step is one line.
+ * The form payload remains a superset of the previous version, so
+ * /api/public/intake → Karbon push → ALFRED enrichment → fee estimate
+ * → team notify pipeline keeps working unchanged.
  *
  * Iframe target for the marketing site at motta.cpa. The embed
  * layout (app/embed/layout.tsx) strips Hub chrome; CSP
@@ -23,8 +38,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 
-// ── Option sets (mirror the live Jotform exactly so the parser /
-//    Karbon push / team email don't need to learn new vocab) ───────
+// ── Option sets (mirror the live Jotform vocabulary so the parser /
+//    Karbon push / team email don't need to learn new terms) ───────
 
 const SERVICE_FOCUS_OPTIONS = [
   {
@@ -85,19 +100,6 @@ const REVENUE_RANGES = [
   "$1M+",
 ] as const
 
-const BUSINESS_SITUATIONS = [
-  {
-    value: "I am seeking services for an existing business",
-    label: "I have an existing business",
-  },
-  {
-    value: "I am looking for help setting up a new business",
-    label: "I'm setting up a new business",
-  },
-] as const
-
-// US states — the picker is a `<select>` so people don't have to
-// remember the two-letter code.
 const US_STATES: { value: string; label: string }[] = [
   ["AL", "Alabama"], ["AK", "Alaska"], ["AZ", "Arizona"], ["AR", "Arkansas"],
   ["CA", "California"], ["CO", "Colorado"], ["CT", "Connecticut"], ["DE", "Delaware"],
@@ -126,22 +128,32 @@ interface FormState {
   state: string
   zip: string
 
-  service_focus: string // one of SERVICE_FOCUS_OPTIONS values
+  service_focus: string
   services_requested: string[]
-  entity_types: string[]
-  business_situation: string
 
   business_name: string
   business_state: string
   business_email: string
   business_phone: string
+  // "Same as my personal contact info" toggle — when true we copy
+  // email/phone at submit time. We keep the boolean in state so the
+  // toggle survives back-navigation.
+  business_contact_same_as_personal: boolean
+
+  // Opt-in detailed fields. The wizard hides them behind a
+  // "Add more details" disclosure on the business step.
+  show_business_details: boolean
+  entity_types: string[]
   business_tax_classification: string
   business_revenue_range: string
   business_employee_count: string
   business_uses_accounting_system: string
-  business_summary: string
 
-  questions_or_concerns: string
+  /** Combined "How can Motta help / your current situation?" textarea —
+   * we send this verbatim as `questions_or_concerns` so ALFRED's
+   * question-research pass picks it up.  */
+  situation: string
+
   referral_source: string
   preferred_team_member: string
 
@@ -160,18 +172,18 @@ const INITIAL_STATE: FormState = {
   zip: "",
   service_focus: "",
   services_requested: [],
-  entity_types: [],
-  business_situation: "",
   business_name: "",
   business_state: "",
   business_email: "",
   business_phone: "",
+  business_contact_same_as_personal: true,
+  show_business_details: false,
+  entity_types: [],
   business_tax_classification: "",
   business_revenue_range: "",
   business_employee_count: "",
   business_uses_accounting_system: "",
-  business_summary: "",
-  questions_or_concerns: "",
+  situation: "",
   referral_source: "",
   preferred_team_member: "",
   website: "",
@@ -184,8 +196,6 @@ function isEmail(v: string): boolean {
 }
 
 function isPhone(v: string): boolean {
-  // Allow anything with at least 7 digits; we don't enforce US format
-  // because some prospects type +44, +1-555, etc.
   return v.replace(/\D/g, "").length >= 7
 }
 
@@ -198,26 +208,17 @@ export default function IntakeWizardPage() {
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
 
-  // Re-derive enabled steps every render — `when` predicates may
-  // depend on the latest answers (e.g. "skip business steps if
-  // Personal Only").
   const steps = useMemo(() => buildSteps(state), [state])
   const safeIndex = Math.min(stepIndex, steps.length - 1)
   const current = steps[safeIndex]
   const progress = Math.round(((safeIndex + 1) / steps.length) * 100)
 
-  // If the user changes an earlier answer that removes some steps
-  // ahead of them, snap back to the last valid step. (E.g. they
-  // pick Personal Only after having seen the business pages.)
   useEffect(() => {
     if (stepIndex > steps.length - 1) {
       setStepIndex(steps.length - 1)
     }
   }, [steps.length, stepIndex])
 
-  // Scroll the new step into view on advance/back. Prospects on
-  // mobile especially appreciate this — without it the keyboard
-  // can leave them looking at the bottom of an old step.
   const stageRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     stageRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
@@ -250,6 +251,16 @@ export default function IntakeWizardPage() {
     setSubmitting(true)
     setError(null)
     try {
+      // Resolve "same as personal" right at submit time — we never
+      // mutate the personal fields, just mirror them onto the business
+      // payload so the existing API contract stays unchanged.
+      const businessEmail = state.business_contact_same_as_personal
+        ? state.email
+        : state.business_email
+      const businessPhone = state.business_contact_same_as_personal
+        ? state.phone
+        : state.business_phone
+
       const payload = {
         first_name: state.first_name.trim() || undefined,
         last_name: state.last_name.trim() || undefined,
@@ -265,12 +276,11 @@ export default function IntakeWizardPage() {
           state.services_requested.length > 0 ? state.services_requested : undefined,
         entity_types:
           state.entity_types.length > 0 ? state.entity_types : undefined,
-        business_situation: state.business_situation || undefined,
 
         business_name: state.business_name.trim() || undefined,
         business_state: state.business_state.trim() || undefined,
-        business_email: state.business_email.trim() || undefined,
-        business_phone: state.business_phone.trim() || undefined,
+        business_email: businessEmail.trim() || undefined,
+        business_phone: businessPhone.trim() || undefined,
         business_tax_classification:
           state.business_tax_classification || undefined,
         business_revenue_range: state.business_revenue_range || undefined,
@@ -278,9 +288,13 @@ export default function IntakeWizardPage() {
           state.business_employee_count.trim() || undefined,
         business_uses_accounting_system:
           state.business_uses_accounting_system.trim() || undefined,
-        business_summary: state.business_summary.trim() || undefined,
 
-        questions_or_concerns: state.questions_or_concerns.trim() || undefined,
+        // Single combined textarea. Sent as `questions_or_concerns` so
+        // research-questions.ts processes it. We do NOT also send it
+        // as `business_summary` — extracting biz facts from it is
+        // ALFRED's enrichment job.
+        questions_or_concerns: state.situation.trim() || undefined,
+
         referral_source: state.referral_source.trim() || undefined,
         preferred_team_member:
           state.preferred_team_member.trim() || undefined,
@@ -323,9 +337,6 @@ export default function IntakeWizardPage() {
     }
   }
 
-  // Pressing Enter in a single-line input advances. Multi-line
-  // textareas use Cmd/Ctrl+Enter (the keyDown handler on the
-  // textareas filters this).
   function onFormKeyDown(e: React.KeyboardEvent<HTMLFormElement>) {
     if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "TEXTAREA") {
       e.preventDefault()
@@ -346,8 +357,9 @@ export default function IntakeWizardPage() {
           Thanks{state.first_name ? `, ${state.first_name}` : ""} — we&apos;ve got it
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          A teammate will review your intake and reach out within one
-          business day to schedule your discovery call.
+          ALFRED is preparing a research brief for our team right now.
+          A teammate will follow up within one business day to schedule
+          your discovery call on Zoom.
         </p>
       </div>
     )
@@ -399,6 +411,7 @@ export default function IntakeWizardPage() {
           </div>
 
           <div key={current.id} className="animate-fadein">
+            {current.alfred ? <AlfredHint message={current.alfred} /> : null}
             {current.render({ state, update })}
           </div>
 
@@ -442,7 +455,6 @@ export default function IntakeWizardPage() {
         </form>
       </div>
 
-      {/* Tiny hint about Enter-to-advance */}
       <p className="mt-6 text-center text-[11px] text-muted-foreground/70">
         Press <kbd className="rounded border bg-muted px-1 font-sans">Enter</kbd>{" "}
         to continue
@@ -461,6 +473,8 @@ interface StepProps {
 interface Step {
   id: string
   cta?: string
+  /** Optional ALFRED-voiced one-liner shown above the step heading. */
+  alfred?: string
   validate?: (s: FormState) => string | null
   render: (p: StepProps) => React.ReactNode
 }
@@ -471,20 +485,33 @@ function buildSteps(state: FormState): Step[] {
     state.service_focus === "Both Personal & Business"
 
   const all: (Step | false)[] = [
-    // 1 — Welcome
+    // 1 — Welcome (introduces ALFRED)
     {
       id: "welcome",
-      cta: "Get started",
+      cta: "Let's go",
       render: () => (
         <StepShell eyebrow="New client intake">
           <h1 className="text-balance text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
             Let&apos;s get to know you
           </h1>
           <p className="text-pretty text-base leading-relaxed text-muted-foreground">
-            A few quick questions so we can route you to the right person on
-            our team. Most folks finish this in about three minutes — your
-            answers save as you go.
+            Most folks finish this in about three minutes. After you submit,
+            we&apos;ll email you a link to book a Zoom discovery call with the
+            right teammate.
           </p>
+          <div className="mt-2 flex items-start gap-3 rounded-lg border border-primary/20 bg-primary/5 p-4">
+            <AlfredAvatar />
+            <div className="flex flex-col gap-1">
+              <p className="text-sm font-semibold text-foreground">
+                Hi, I&apos;m ALFRED — Motta&apos;s in-house Ai assistant
+              </p>
+              <p className="text-pretty text-xs leading-relaxed text-muted-foreground">
+                I&apos;ll quietly research your situation while you fill this
+                out, so the teammate who calls you already knows the basics.
+                Anything you share here saves us time on the call.
+              </p>
+            </div>
+          </div>
         </StepShell>
       ),
     },
@@ -492,6 +519,7 @@ function buildSteps(state: FormState): Step[] {
     // 2 — Name
     {
       id: "name",
+      alfred: "Just your legal first and last name is fine.",
       validate: (s) =>
         !s.first_name.trim() || !s.last_name.trim()
           ? "Please share your first and last name."
@@ -524,6 +552,8 @@ function buildSteps(state: FormState): Step[] {
     // 3 — Email & phone
     {
       id: "contact",
+      alfred:
+        "We only use this to schedule your discovery call — no marketing.",
       validate: (s) => {
         if (!s.email.trim()) return "Please enter your email."
         if (!isEmail(s.email)) return "That email doesn't look quite right."
@@ -532,11 +562,7 @@ function buildSteps(state: FormState): Step[] {
         return null
       },
       render: ({ state, update }) => (
-        <StepShell
-          eyebrow="About you"
-          title="How can we reach you?"
-          subtitle="We&rsquo;ll only use this to schedule your discovery call."
-        >
+        <StepShell eyebrow="About you" title="How can we reach you?">
           <Field
             autoFocus
             label="Email"
@@ -561,22 +587,28 @@ function buildSteps(state: FormState): Step[] {
       ),
     },
 
-    // 4 — Address
+    // 4 — Address (Photon autocomplete + ZIP autofill)
     {
       id: "address",
+      alfred:
+        "Helps me match you with a teammate licensed in your state. Type your address — I&apos;ll autocomplete it.",
       render: ({ state, update }) => (
         <StepShell
           eyebrow="About you"
           title="Where are you based?"
-          subtitle="Helps us match you with a teammate licensed in your state. Optional."
+          subtitle="Optional, but it speeds up the routing."
         >
-          <Field
-            autoFocus
+          <AddressAutocomplete
             label="Street address"
             value={state.street_address}
             onChange={(v) => update("street_address", v)}
-            placeholder="123 Main St"
-            autoComplete="street-address"
+            onSelect={(addr) => {
+              if (addr.street) update("street_address", addr.street)
+              if (addr.city) update("city", addr.city)
+              if (addr.state) update("state", addr.state)
+              if (addr.zip) update("zip", addr.zip)
+            }}
+            autoFocus
           />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_auto]">
             <Field
@@ -592,13 +624,14 @@ function buildSteps(state: FormState): Step[] {
               options={US_STATES}
               placeholder="—"
             />
-            <Field
+            <ZipField
               label="ZIP"
               value={state.zip}
               onChange={(v) => update("zip", v)}
-              autoComplete="postal-code"
-              maxLength={10}
-              inputMode="numeric"
+              onAutofill={(addr) => {
+                if (!state.city && addr.city) update("city", addr.city)
+                if (!state.state && addr.state) update("state", addr.state)
+              }}
               className="sm:w-28"
             />
           </div>
@@ -609,6 +642,7 @@ function buildSteps(state: FormState): Step[] {
     // 5 — Service focus (the gating question)
     {
       id: "service-focus",
+      alfred: "Pick the one that&apos;s closest — we can adjust on the call.",
       validate: (s) =>
         !s.service_focus ? "Please pick one to continue." : null,
       render: ({ state, update }) => (
@@ -637,6 +671,7 @@ function buildSteps(state: FormState): Step[] {
     // 6 — Services (multi-select chips, filtered by focus)
     {
       id: "services",
+      alfred: "Pick everything that applies — we&apos;ll narrow down on the call.",
       render: ({ state, update }) => {
         const focus = state.service_focus
         const filtered = SERVICES.filter((s) => {
@@ -648,7 +683,6 @@ function buildSteps(state: FormState): Step[] {
           <StepShell
             eyebrow="What you need"
             title="Which services are you interested in?"
-            subtitle="Pick everything that applies — we'll narrow down on the call."
           >
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {filtered.map((svc) => {
@@ -677,210 +711,220 @@ function buildSteps(state: FormState): Step[] {
       },
     },
 
-    // 7 — Entity types (business only)
+    // 7 — Business basics (only if business). Replaces the old
+    //     "entity types" + "existing/new" + "business basics" + "ops"
+    //     trio. The detail-heavy fields are opt-in via a disclosure.
     wantsBusiness && {
-      id: "entity-types",
+      id: "business",
+      alfred:
+        "Just the name and state are needed. The rest is optional — but the more I know, the smoother onboarding goes.",
       render: ({ state, update }) => (
         <StepShell
           eyebrow="Your business"
-          title="What types of entities are we working with?"
-          subtitle="Pick all that apply. Don't worry if you're not sure — we can sort it out together."
+          title="Tell us about your business"
         >
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {ENTITY_TYPES.map((e) => {
-              const checked = state.entity_types.includes(e)
-              return (
-                <CheckCard
-                  key={e}
-                  label={e}
-                  checked={checked}
-                  onChange={() => {
-                    update(
-                      "entity_types",
-                      checked
-                        ? state.entity_types.filter((v) => v !== e)
-                        : [...state.entity_types, e],
-                    )
-                  }}
-                />
-              )
-            })}
-          </div>
-        </StepShell>
-      ),
-    },
+          <Field
+            autoFocus
+            label="Business name"
+            value={state.business_name}
+            onChange={(v) => update("business_name", v)}
+            placeholder="Acme LLC (or proposed name if you&apos;re still forming it)"
+          />
+          <SelectField
+            label="State of operation"
+            value={state.business_state}
+            onChange={(v) => update("business_state", v)}
+            options={US_STATES}
+            placeholder="—"
+          />
 
-    // 8 — Existing or new business
-    wantsBusiness && {
-      id: "business-situation",
-      validate: (s) =>
-        !s.business_situation ? "Please pick one to continue." : null,
-      render: ({ state, update }) => (
-        <StepShell
-          eyebrow="Your business"
-          title="Which best describes your situation?"
-        >
-          <div className="flex flex-col gap-2.5">
-            {BUSINESS_SITUATIONS.map((opt) => (
-              <RadioCard
-                key={opt.value}
-                name="business_situation"
-                value={opt.value}
-                label={opt.label}
-                checked={state.business_situation === opt.value}
-                onChange={() => update("business_situation", opt.value)}
-              />
-            ))}
-          </div>
-        </StepShell>
-      ),
-    },
-
-    // 9 — Business basics (name, state, summary)
-    wantsBusiness && {
-      id: "business-basics",
-      render: ({ state, update }) => {
-        const isNew =
-          state.business_situation ===
-          "I am looking for help setting up a new business"
-        return (
-          <StepShell
-            eyebrow="Your business"
-            title={isNew ? "Tell us about the new business" : "Tell us about your business"}
-            subtitle="Whatever you know — leave the rest blank."
-          >
-            <Field
-              autoFocus
-              label={isNew ? "Proposed business name" : "Business name"}
-              value={state.business_name}
-              onChange={(v) => update("business_name", v)}
-              placeholder="Acme LLC"
-            />
+          <CheckboxRow
+            checked={state.business_contact_same_as_personal}
+            onChange={(checked) =>
+              update("business_contact_same_as_personal", checked)
+            }
+            label="Business contact info is the same as my personal info"
+          />
+          {!state.business_contact_same_as_personal ? (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <SelectField
-                label={isNew ? "State of operation" : "Business state"}
-                value={state.business_state}
-                onChange={(v) => update("business_state", v)}
-                options={US_STATES}
-                placeholder="—"
+              <Field
+                label="Business email"
+                type="email"
+                value={state.business_email}
+                onChange={(v) => update("business_email", v)}
+                placeholder="info@acme.com"
+                inputMode="email"
               />
-              <SelectField
-                label="Annual revenue"
-                value={state.business_revenue_range}
-                onChange={(v) => update("business_revenue_range", v)}
-                options={REVENUE_RANGES.map((r) => ({ value: r, label: r }))}
-                placeholder="Pick a range"
+              <Field
+                label="Business phone"
+                type="tel"
+                value={state.business_phone}
+                onChange={(v) => update("business_phone", v)}
+                placeholder="(555) 555-0100"
+                inputMode="tel"
               />
             </div>
-            <Textarea
-              label={isNew ? "Brief summary of the new business" : "Brief summary of the business"}
-              value={state.business_summary}
-              onChange={(v) => update("business_summary", v)}
-              placeholder="What you do, who your customers are, anything else relevant."
-              rows={4}
-            />
-          </StepShell>
-        )
-      },
-    },
+          ) : null}
 
-    // 10 — Business operations
-    wantsBusiness && {
-      id: "business-ops",
-      render: ({ state, update }) => (
-        <StepShell
-          eyebrow="Your business"
-          title="A few more business details"
-          subtitle="Optional — helps us hit the ground running."
-        >
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <SelectField
-              label="Tax classification"
-              value={state.business_tax_classification}
-              onChange={(v) => update("business_tax_classification", v)}
-              options={TAX_CLASSIFICATIONS.map((t) => ({ value: t, label: t }))}
-              placeholder="Pick one"
-            />
-            <Field
-              label="Number of employees"
-              value={state.business_employee_count}
-              onChange={(v) => update("business_employee_count", v)}
-              placeholder="e.g. 12"
-              inputMode="numeric"
-            />
-          </div>
-          <Field
-            label="Accounting system in use"
-            value={state.business_uses_accounting_system}
-            onChange={(v) => update("business_uses_accounting_system", v)}
-            placeholder="e.g. QuickBooks Online, Xero, none yet"
-          />
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field
-              label="Business email"
-              type="email"
-              value={state.business_email}
-              onChange={(v) => update("business_email", v)}
-              placeholder="info@acme.com"
-              inputMode="email"
-            />
-            <Field
-              label="Business phone"
-              type="tel"
-              value={state.business_phone}
-              onChange={(v) => update("business_phone", v)}
-              placeholder="(555) 555-0100"
-              inputMode="tel"
-            />
+          {/* Opt-in details disclosure */}
+          <div className="mt-2 rounded-lg border border-dashed border-border bg-muted/30 p-4">
+            <button
+              type="button"
+              onClick={() =>
+                update("show_business_details", !state.show_business_details)
+              }
+              className="flex w-full items-center justify-between gap-3 text-left"
+            >
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-semibold text-foreground">
+                  Add more details about your business
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Optional — sharing your entity type, accounting system, and
+                  rough revenue means our first call can skip the basics and go
+                  straight to value.
+                </span>
+              </div>
+              <span
+                aria-hidden="true"
+                className={`flex-none text-muted-foreground transition-transform ${
+                  state.show_business_details ? "rotate-180" : ""
+                }`}
+              >
+                <ChevronDownIcon />
+              </span>
+            </button>
+            {state.show_business_details ? (
+              <div className="mt-4 flex flex-col gap-3.5">
+                <div>
+                  <span className="mb-1.5 block text-sm font-medium text-foreground">
+                    Entity types you operate
+                  </span>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {ENTITY_TYPES.map((e) => {
+                      const checked = state.entity_types.includes(e)
+                      return (
+                        <CheckCard
+                          key={e}
+                          label={e}
+                          checked={checked}
+                          onChange={() => {
+                            update(
+                              "entity_types",
+                              checked
+                                ? state.entity_types.filter((v) => v !== e)
+                                : [...state.entity_types, e],
+                            )
+                          }}
+                        />
+                      )
+                    })}
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <SelectField
+                    label="Tax classification"
+                    value={state.business_tax_classification}
+                    onChange={(v) => update("business_tax_classification", v)}
+                    options={TAX_CLASSIFICATIONS.map((t) => ({
+                      value: t,
+                      label: t,
+                    }))}
+                    placeholder="Pick one"
+                  />
+                  <SelectField
+                    label="Annual revenue"
+                    value={state.business_revenue_range}
+                    onChange={(v) => update("business_revenue_range", v)}
+                    options={REVENUE_RANGES.map((r) => ({
+                      value: r,
+                      label: r,
+                    }))}
+                    placeholder="Pick a range"
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Field
+                    label="Number of employees"
+                    value={state.business_employee_count}
+                    onChange={(v) => update("business_employee_count", v)}
+                    placeholder="e.g. 12"
+                    inputMode="numeric"
+                  />
+                  <Field
+                    label="Accounting system"
+                    value={state.business_uses_accounting_system}
+                    onChange={(v) =>
+                      update("business_uses_accounting_system", v)
+                    }
+                    placeholder="QuickBooks, Xero, none yet…"
+                  />
+                </div>
+              </div>
+            ) : null}
           </div>
         </StepShell>
       ),
     },
 
-    // 11 — Anything else (questions, referral, preferred team member)
+    // 8 — Single freeform "How can Motta help?" textarea
     {
-      id: "anything-else",
+      id: "situation",
+      alfred:
+        "Type freely — anything from &ldquo;I got an IRS notice&rdquo; to &ldquo;I want to plan a business sale.&rdquo; I&apos;ll research your questions before the call.",
       render: ({ state, update }) => (
         <StepShell
-          eyebrow="Wrapping up"
-          title="Anything else we should know?"
-          subtitle="All optional."
+          eyebrow="Your situation"
+          title="How can Motta help?"
+          subtitle="Tell us about your current situation, what&apos;s prompting this conversation, or any specific questions on your mind."
         >
           <Textarea
             autoFocus
-            label="Questions or concerns you'd like us to address"
-            value={state.questions_or_concerns}
-            onChange={(v) => update("questions_or_concerns", v)}
-            placeholder="Anything keeping you up at night — back taxes, an audit notice, planning a sale, etc."
-            rows={4}
+            label="In your own words"
+            value={state.situation}
+            onChange={(v) => update("situation", v)}
+            placeholder="e.g. I just incorporated my second business and need help thinking through how to pay myself, what entity to file as, and how to clean up last year&apos;s books."
+            rows={6}
           />
+        </StepShell>
+      ),
+    },
+
+    // 9 — Referral + preferred teammate (optional)
+    {
+      id: "referral",
+      alfred: "All optional — skip if you&apos;d rather we pick.",
+      render: ({ state, update }) => (
+        <StepShell eyebrow="Wrapping up" title="Anything else?">
           <Field
             label="Who sent you our way?"
             value={state.referral_source}
             onChange={(v) => update("referral_source", v)}
-            placeholder="A friend's name, a podcast, a search…"
+            placeholder="A friend&apos;s name, a podcast, a search…"
           />
           <Field
-            label="Is there a specific team member you'd like to meet with?"
+            label="A specific teammate you&apos;d like to meet with?"
             value={state.preferred_team_member}
             onChange={(v) => update("preferred_team_member", v)}
-            placeholder="No preference is fine — we'll match you up."
+            placeholder="No preference is fine — we&apos;ll match you up."
           />
         </StepShell>
       ),
     },
 
-    // 12 — Review & submit
+    // 10 — Review & submit
     {
       id: "review",
       cta: "Submit intake",
+      alfred:
+        "When you submit, I&apos;ll start researching and the team will email you a link to schedule a Zoom discovery call.",
       render: ({ state }) => <ReviewStep state={state} />,
     },
   ]
   return all.filter(Boolean) as Step[]
 }
 
-// ── Reusable step shell + field primitives ───────────────────────
+// ── Step shell + field primitives ────────────────────────────────
 
 function StepShell({
   eyebrow,
@@ -916,6 +960,39 @@ function StepShell({
       )}
       {children ? <div className="flex flex-col gap-3.5">{children}</div> : null}
     </div>
+  )
+}
+
+function AlfredHint({ message }: { message: string }) {
+  return (
+    <div className="mb-5 flex items-start gap-2.5 rounded-md border border-primary/15 bg-primary/[0.04] px-3 py-2.5">
+      <AlfredAvatar small />
+      <p
+        className="text-pretty text-xs leading-relaxed text-foreground/80"
+        // ALFRED hints contain entity escapes (e.g. &apos;) that we
+        // author inline; render them as HTML so the right-single-quote
+        // shows up cleanly without bloating each step's JSX.
+        dangerouslySetInnerHTML={{
+          __html: `<span class="font-semibold text-foreground">ALFRED:</span> ${message}`,
+        }}
+      />
+    </div>
+  )
+}
+
+function AlfredAvatar({ small }: { small?: boolean } = {}) {
+  // Inline SVG mark — no remote dependency, looks deliberate next to
+  // ALFRED's voice. Letters "AL" inside a primary-tinted disc.
+  const size = small ? "h-6 w-6" : "h-8 w-8"
+  return (
+    <span
+      aria-hidden="true"
+      className={`inline-flex flex-none items-center justify-center rounded-full bg-primary text-primary-foreground ${size}`}
+    >
+      <span className={small ? "text-[9px] font-bold" : "text-[11px] font-bold"}>
+        AL
+      </span>
+    </span>
   )
 }
 
@@ -1116,7 +1193,292 @@ function CheckCard({
   )
 }
 
+function CheckboxRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-3 py-1 text-sm text-foreground">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="sr-only"
+      />
+      <span
+        aria-hidden="true"
+        className={`flex h-5 w-5 flex-none items-center justify-center rounded border-2 transition-colors ${
+          checked
+            ? "border-primary bg-primary text-primary-foreground"
+            : "border-input bg-background"
+        }`}
+      >
+        {checked ? <CheckIcon small /> : null}
+      </span>
+      <span>{label}</span>
+    </label>
+  )
+}
+
+// ── Address autocomplete (Photon / komoot — free, no key) ───────
+
+interface PhotonHit {
+  street?: string
+  city?: string
+  state?: string
+  zip?: string
+  display: string
+}
+
+function AddressAutocomplete({
+  label,
+  value,
+  onChange,
+  onSelect,
+  autoFocus,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  onSelect: (addr: PhotonHit) => void
+  autoFocus?: boolean
+}) {
+  const [hits, setHits] = useState<PhotonHit[]>([])
+  const [open, setOpen] = useState(false)
+  const [highlight, setHighlight] = useState(0)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastQueryRef = useRef<string>("")
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    const q = value.trim()
+    if (q.length < 4) {
+      setHits([])
+      return
+    }
+    if (q === lastQueryRef.current) return
+    debounceRef.current = setTimeout(async () => {
+      lastQueryRef.current = q
+      try {
+        // Photon — komoot's geocoder. CORS-enabled; no API key needed.
+        // We bias to US results because the firm only serves the US.
+        const url =
+          `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}` +
+          `&limit=6&osm_tag=highway&lang=en`
+        const res = await fetch(url)
+        if (!res.ok) {
+          setHits([])
+          return
+        }
+        const data = (await res.json()) as {
+          features?: Array<{
+            properties?: {
+              housenumber?: string
+              street?: string
+              name?: string
+              city?: string
+              state?: string
+              postcode?: string
+              country?: string
+              countrycode?: string
+            }
+          }>
+        }
+        const out: PhotonHit[] = []
+        for (const f of data.features ?? []) {
+          const p = f.properties ?? {}
+          // Photon returns global hits — only show US matches.
+          const cc = (p.countrycode ?? p.country ?? "").toUpperCase()
+          if (cc && !cc.startsWith("US")) continue
+          const streetParts = [p.housenumber, p.street ?? p.name].filter(
+            Boolean,
+          )
+          const street = streetParts.join(" ")
+          const stateAbbr = guessStateAbbr(p.state)
+          const display = [
+            street,
+            [p.city, stateAbbr, p.postcode].filter(Boolean).join(", "),
+          ]
+            .filter(Boolean)
+            .join(" — ")
+          if (!street && !p.city) continue
+          out.push({
+            street: street || undefined,
+            city: p.city,
+            state: stateAbbr,
+            zip: p.postcode,
+            display: display || (p.name ?? ""),
+          })
+        }
+        setHits(out)
+        setOpen(out.length > 0)
+        setHighlight(0)
+      } catch {
+        setHits([])
+      }
+    }, 220)
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [value])
+
+  function pick(hit: PhotonHit) {
+    onSelect(hit)
+    setOpen(false)
+    setHits([])
+  }
+
+  return (
+    <label className="relative flex flex-col gap-1.5">
+      <span className="text-sm font-medium text-foreground">{label}</span>
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value)
+          setOpen(true)
+        }}
+        onFocus={() => hits.length > 0 && setOpen(true)}
+        onBlur={() => {
+          // Delay so click on a suggestion can register first.
+          setTimeout(() => setOpen(false), 150)
+        }}
+        onKeyDown={(e) => {
+          if (!open || hits.length === 0) return
+          if (e.key === "ArrowDown") {
+            e.preventDefault()
+            setHighlight((h) => Math.min(h + 1, hits.length - 1))
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault()
+            setHighlight((h) => Math.max(h - 1, 0))
+          } else if (e.key === "Enter") {
+            e.preventDefault()
+            pick(hits[highlight]!)
+          } else if (e.key === "Escape") {
+            setOpen(false)
+          }
+        }}
+        placeholder="Start typing your address…"
+        autoFocus={autoFocus}
+        autoComplete="street-address"
+        className="rounded-md border border-input bg-background px-3.5 py-3 text-base text-foreground placeholder:text-muted-foreground/60 focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
+      />
+      {open && hits.length > 0 ? (
+        <ul className="absolute left-0 right-0 top-full z-10 mt-1 max-h-64 overflow-auto rounded-md border border-border bg-popover shadow-lg">
+          {hits.map((h, i) => (
+            <li key={`${h.display}-${i}`}>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pick(h)}
+                onMouseEnter={() => setHighlight(i)}
+                className={`flex w-full items-start gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                  i === highlight
+                    ? "bg-primary/10 text-foreground"
+                    : "hover:bg-muted text-foreground"
+                }`}
+              >
+                <span aria-hidden="true" className="mt-0.5 flex-none text-muted-foreground">
+                  <PinIcon />
+                </span>
+                <span className="flex-1">{h.display}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </label>
+  )
+}
+
+/**
+ * State-name → 2-letter abbreviation. Photon returns the full state
+ * name (e.g. "California"); the form expects the abbreviation
+ * (`CA`) so the existing parser writes it onto submitter_state.
+ */
+function guessStateAbbr(stateName?: string): string | undefined {
+  if (!stateName) return undefined
+  const found = US_STATES.find(
+    (s) => s.label.toLowerCase() === stateName.toLowerCase(),
+  )
+  return found?.value
+}
+
+// ZIP field with autofill via api.zippopotam.us. Free, CORS-enabled,
+// no API key. We only fire when the ZIP looks complete (5 digits).
+function ZipField({
+  label,
+  value,
+  onChange,
+  onAutofill,
+  className,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  onAutofill: (addr: { city?: string; state?: string }) => void
+  className?: string
+}) {
+  const lastFiredRef = useRef<string>("")
+  useEffect(() => {
+    const z = value.replace(/\D/g, "")
+    if (z.length !== 5) return
+    if (z === lastFiredRef.current) return
+    lastFiredRef.current = z
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(`https://api.zippopotam.us/us/${z}`)
+        if (!res.ok || cancelled) return
+        const data = (await res.json()) as {
+          places?: Array<{
+            "place name"?: string
+            "state abbreviation"?: string
+          }>
+        }
+        const place = data.places?.[0]
+        if (!place) return
+        onAutofill({
+          city: place["place name"],
+          state: place["state abbreviation"],
+        })
+      } catch {
+        /* no-op — manual fill still works */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [value, onAutofill])
+
+  return (
+    <Field
+      label={label}
+      value={value}
+      onChange={onChange}
+      autoComplete="postal-code"
+      maxLength={10}
+      inputMode="numeric"
+      className={className}
+    />
+  )
+}
+
 function ReviewStep({ state }: { state: FormState }) {
+  const businessEmail = state.business_contact_same_as_personal
+    ? state.email
+    : state.business_email
+  const businessPhone = state.business_contact_same_as_personal
+    ? state.phone
+    : state.business_phone
+
   const rows: { label: string; value: string | null }[] = [
     {
       label: "Name",
@@ -1139,19 +1501,22 @@ function ReviewStep({ state }: { state: FormState }) {
           ? state.services_requested.join(", ")
           : null,
     },
+    { label: "Business name", value: state.business_name || null },
+    { label: "Business state", value: state.business_state || null },
+    { label: "Business email", value: businessEmail || null },
+    { label: "Business phone", value: businessPhone || null },
     {
       label: "Entity types",
       value:
         state.entity_types.length > 0 ? state.entity_types.join(", ") : null,
     },
-    { label: "Business name", value: state.business_name || null },
-    {
-      label: "Revenue range",
-      value: state.business_revenue_range || null,
-    },
     {
       label: "Tax classification",
       value: state.business_tax_classification || null,
+    },
+    {
+      label: "Revenue range",
+      value: state.business_revenue_range || null,
     },
     { label: "Referred by", value: state.referral_source || null },
     {
@@ -1164,7 +1529,7 @@ function ReviewStep({ state }: { state: FormState }) {
     <StepShell
       eyebrow="Almost done"
       title="Quick review"
-      subtitle="Make sure this looks right — you can hit Back to fix anything."
+      subtitle="Make sure this looks right — Back to fix anything."
     >
       <dl className="divide-y divide-border overflow-hidden rounded-lg border bg-card">
         {rows.map((r) => (
@@ -1179,13 +1544,13 @@ function ReviewStep({ state }: { state: FormState }) {
           </div>
         ))}
       </dl>
-      {state.questions_or_concerns ? (
+      {state.situation ? (
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Notes
+            Your situation
           </p>
           <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">
-            {state.questions_or_concerns}
+            {state.situation}
           </p>
         </div>
       ) : null}
@@ -1242,6 +1607,41 @@ function ArrowRightIcon() {
       aria-hidden="true"
     >
       <path d="M8 4l6 6-6 6M14 10H4" />
+    </svg>
+  )
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <path d="M5 8l5 5 5-5" />
+    </svg>
+  )
+}
+
+function PinIcon() {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <path d="M10 17s6-5.4 6-10a6 6 0 1 0-12 0c0 4.6 6 10 6 10z" />
+      <circle cx="10" cy="7" r="2" />
     </svg>
   )
 }

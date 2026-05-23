@@ -1,11 +1,19 @@
 /**
  * Public Contact-Form embed.
  *
- * Iframe target for the marketing site's "Contact Us" page. Posts to
- * /api/public/contact (CORS-protected; same-origin POST from this
- * page bypasses CORS entirely). The standalone embed page is a
- * fallback path — the website team's primary integration is a JSON
- * fetch from their own React form. See WEBSITE_INTEGRATION.md.
+ * Iframe target for the marketing site's "Send Us a Message" page.
+ * Single-page (not paginated) — the intake wizard handles long
+ * prospect onboarding; this form is for quick "I have a question"
+ * messages, so a wizard would be overkill.
+ *
+ * UX matches the streamlined intake form:
+ *   - ALFRED introduces themself in a banner so prospects know an AI
+ *     teammate is on the case.
+ *   - Address / company autocomplete is intentionally NOT included —
+ *     this form doesn't need address data.
+ *
+ * Posts to /api/public/contact (CORS-protected; same-origin POST from
+ * this page bypasses CORS entirely).
  */
 "use client"
 
@@ -29,8 +37,7 @@ export default function ContactEmbedPage() {
       topic: String(fd.get("topic") ?? "").trim() || undefined,
       subject: String(fd.get("subject") ?? "").trim() || undefined,
       message: String(fd.get("message") ?? "").trim(),
-      // Honeypot — must stay empty.
-      website: String(fd.get("website") ?? "").trim(),
+      website: String(fd.get("website") ?? "").trim(), // honeypot
       source_page:
         typeof window !== "undefined" && window.parent !== window
           ? document.referrer || undefined
@@ -50,8 +57,6 @@ export default function ContactEmbedPage() {
         return
       }
       setStatus("ok")
-      // Tell the parent frame the submit completed so it can scroll
-      // the iframe back to the top, run analytics, etc.
       try {
         window.parent?.postMessage(
           { type: "motta:contact:success", submission_id: data.submission_id },
@@ -73,8 +78,9 @@ export default function ContactEmbedPage() {
           Thanks for reaching out
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          We&apos;ve received your message and someone from our team will be in
-          touch within one business day.
+          ALFRED is briefing the team on your message. Someone will be in
+          touch within one business day, usually with a Calendly link to a
+          Zoom call if a deeper conversation makes sense.
         </p>
       </div>
     )
@@ -83,17 +89,35 @@ export default function ContactEmbedPage() {
   return (
     <div className="mx-auto max-w-xl px-4 py-8">
       <h1 className="mb-2 text-balance text-2xl font-semibold text-foreground">
-        Contact Motta
+        Send Motta a message
       </h1>
-      <p className="mb-6 text-pretty text-sm leading-relaxed text-muted-foreground">
-        Tell us a bit about what you&apos;re looking for and we&apos;ll get
-        back to you within one business day.
+      <p className="mb-5 text-pretty text-sm leading-relaxed text-muted-foreground">
+        Tell us what&apos;s going on and we&apos;ll get back to you within
+        one business day.
       </p>
 
+      <div className="mb-6 flex items-start gap-3 rounded-lg border border-primary/20 bg-primary/5 p-4">
+        <span
+          aria-hidden="true"
+          className="inline-flex h-8 w-8 flex-none items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground"
+        >
+          AL
+        </span>
+        <div className="flex flex-col gap-1">
+          <p className="text-sm font-semibold text-foreground">
+            Hi, I&apos;m ALFRED — Motta&apos;s in-house Ai assistant
+          </p>
+          <p className="text-pretty text-xs leading-relaxed text-muted-foreground">
+            I&apos;ll quietly research your question and pull together
+            anything I can find on your business so the teammate who replies
+            already has context.
+          </p>
+        </div>
+      </div>
+
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {/* Honeypot. Visually hidden + aria-hidden so users + screen
-            readers ignore it; bots happily fill it and we drop the
-            submission server-side. */}
+        {/* Honeypot — hidden + aria-hidden so users + screen readers
+            ignore it; bots fill it and we drop the submission. */}
         <div aria-hidden="true" className="absolute left-[-9999px] h-0 w-0 overflow-hidden">
           <label htmlFor="website">Website (do not fill)</label>
           <input
@@ -105,10 +129,15 @@ export default function ContactEmbedPage() {
           />
         </div>
 
-        <Field label="Name" name="name" required maxLength={200} />
+        <Field label="Name" name="name" required maxLength={200} autoFocus />
         <Field label="Email" name="email" type="email" required maxLength={320} />
         <Field label="Phone" name="phone" type="tel" maxLength={40} />
-        <Field label="Company (optional)" name="company" maxLength={200} />
+        <Field
+          label="Company or website (optional)"
+          name="company"
+          maxLength={200}
+          placeholder="e.g. Acme LLC or acme.com — helps ALFRED research"
+        />
 
         <div className="flex flex-col gap-2">
           <label htmlFor="topic" className="text-sm font-medium text-foreground">
@@ -118,7 +147,7 @@ export default function ContactEmbedPage() {
             id="topic"
             name="topic"
             defaultValue=""
-            className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="rounded-md border border-input bg-background px-3 py-2.5 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
           >
             <option value="">Select a topic…</option>
             <option value="individual-tax">Individual tax</option>
@@ -133,7 +162,7 @@ export default function ContactEmbedPage() {
 
         <div className="flex flex-col gap-2">
           <label htmlFor="message" className="text-sm font-medium text-foreground">
-            Message
+            Your message
           </label>
           <textarea
             id="message"
@@ -141,8 +170,9 @@ export default function ContactEmbedPage() {
             required
             minLength={5}
             maxLength={5000}
-            rows={5}
-            className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
+            rows={6}
+            placeholder="Type freely — anything from a quick question to a detailed situation."
+            className="rounded-md border border-input bg-background px-3 py-2.5 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
 
@@ -155,7 +185,7 @@ export default function ContactEmbedPage() {
         <button
           type="submit"
           disabled={status === "submitting"}
-          className="mt-2 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+          className="mt-2 inline-flex items-center justify-center rounded-md bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {status === "submitting" ? "Sending…" : "Send message"}
         </button>
@@ -170,12 +200,16 @@ function Field({
   type = "text",
   required = false,
   maxLength,
+  placeholder,
+  autoFocus,
 }: {
   label: string
   name: string
   type?: string
   required?: boolean
   maxLength?: number
+  placeholder?: string
+  autoFocus?: boolean
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -189,7 +223,9 @@ function Field({
         type={type}
         required={required}
         maxLength={maxLength}
-        className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        className="rounded-md border border-input bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
       />
     </div>
   )

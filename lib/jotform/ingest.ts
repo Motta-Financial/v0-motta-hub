@@ -14,6 +14,7 @@ import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
 import { resolvePreferredTeamMember } from "./assign"
 import { enrichIntakeSubmission } from "./enrich"
 import { researchProspectQuestions } from "./research-questions"
+import { estimateIntakeFees } from "./fee-estimate"
 import { notifyTeamOfNewIntake } from "./notify"
 import type { JotformSubmission } from "./client"
 
@@ -284,6 +285,7 @@ export async function runIntakePostProcessing(
         "referral_organization_id",
         "enrichment",
         "question_research",
+        "fee_estimate",
         "notified_at",
       ].join(","),
     )
@@ -324,6 +326,7 @@ export async function runIntakePostProcessing(
     referral_organization_id: string | null
     enrichment: Record<string, unknown> | null
     question_research: Record<string, unknown> | null
+    fee_estimate: Record<string, unknown> | null
     notified_at: string | null
   }
 
@@ -445,8 +448,13 @@ export async function runIntakePostProcessing(
   // belt-and-suspenders.
   const needsEnrichment = !submissionRow.enrichment
   const needsResearch = !submissionRow.question_research && !!submissionRow.questions_or_concerns
+  const needsFeeEstimate = !submissionRow.fee_estimate
 
-  const [enrichmentResult, researchResult] = await Promise.allSettled([
+  // All three calls are independent web/AI passes — running them
+  // concurrently shaves ~20s off the worst-case total. Each returns
+  // null on failure rather than throwing, so the email path always
+  // gets to render with whatever did land.
+  const [enrichmentResult, researchResult, feeResult] = await Promise.allSettled([
     needsEnrichment
       ? enrichIntakeSubmission(supabase, {
           id: submissionRow.id,
@@ -469,19 +477,35 @@ export async function runIntakePostProcessing(
           service_focus: submissionRow.service_focus,
         })
       : Promise.resolve(null),
+    needsFeeEstimate
+      ? estimateIntakeFees(supabase, {
+          service_focus: submissionRow.service_focus,
+          services_requested: submissionRow.services_requested,
+          entity_types: submissionRow.entity_types,
+          business_revenue_range: submissionRow.business_revenue_range,
+          business_tax_classification: null,
+          business_employee_count: null,
+          business_state: submissionRow.business_state,
+          business_summary: submissionRow.business_summary,
+          questions_or_concerns: submissionRow.questions_or_concerns,
+        })
+      : Promise.resolve(null),
   ])
 
   const enrichment =
     enrichmentResult.status === "fulfilled" ? enrichmentResult.value : null
   const questionResearch =
     researchResult.status === "fulfilled" ? researchResult.value : null
+  const feeEstimate =
+    feeResult.status === "fulfilled" ? feeResult.value : null
 
-  // Persist whatever we got. If both failed we still write the email
-  // out with what we have, but skip the wasted UPDATE.
-  if (enrichment || questionResearch) {
+  // Persist whatever we got. If all three failed we still write the
+  // email out with what we have, but skip the wasted UPDATE.
+  if (enrichment || questionResearch || feeEstimate) {
     const updates: Record<string, unknown> = {}
     if (enrichment) updates.enrichment = enrichment
     if (questionResearch) updates.question_research = questionResearch
+    if (feeEstimate) updates.fee_estimate = feeEstimate
     const { error: updErr } = await supabase
       .from("jotform_intake_submissions")
       .update(updates)
@@ -522,7 +546,14 @@ export async function runIntakePostProcessing(
         enrichment: enrichment
           ? { summary: enrichment.summary, websites: enrichment.websites }
           : null,
-        question_research: questionResearch ? { summary: questionResearch.summary } : null,
+        question_research: questionResearch
+          ? {
+              summary: questionResearch.summary,
+              key_points: questionResearch.key_points,
+              references: questionResearch.references,
+            }
+          : null,
+        fee_estimate: feeEstimate ?? null,
         jotform_created_at: submissionRow.jotform_created_at,
       })
       const { error: notifyErr } = await supabase
