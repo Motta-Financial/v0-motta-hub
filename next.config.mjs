@@ -61,6 +61,40 @@ const nextConfig = {
           { key: "Access-Control-Allow-Credentials", value: "true" },
         ],
       },
+      /**
+       * Public embed pages — these are designed to be iframed from the
+       * marketing site at https://motta.cpa (and its Vercel preview
+       * URLs). The corresponding JSON APIs live under /api/public/*
+       * and have their own CORS allowlist (see lib/cors.ts) since the
+       * website team's preview domains are dynamic.
+       *
+       * frame-ancestors here is the iframe equivalent of CORS — it
+       * tells the browser which origins may embed this page. We allow
+       * 'self' (so /clients/[id] can preview the embed for QA), the
+       * production marketing domain, and the Vercel preview pattern
+       * for the public-website project.
+       */
+      {
+        source: "/embed/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          {
+            key: "Content-Security-Policy",
+            value: [
+              "default-src 'self'",
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+              "style-src 'self' 'unsafe-inline'",
+              "img-src 'self' data: https: blob:",
+              "font-src 'self' data:",
+              "connect-src 'self'",
+              "frame-ancestors 'self' https://motta.cpa https://*.motta.cpa https://*.vercel.app https://www.mottafinancial.com",
+              "base-uri 'self'",
+              "form-action 'self'",
+            ].join("; "),
+          },
+        ],
+      },
     ]
   },
 }

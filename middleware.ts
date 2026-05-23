@@ -99,7 +99,18 @@ export async function middleware(request: NextRequest) {
   // cookie OR `Authorization: Bearer`, but middleware still has to let
   // the request reach the handler in the Bearer case (no cookie =>
   // `user` is null, which would otherwise 401 below).
-  const isPublicApi = isPublicAuthApi
+  const isPublicApi =
+    isPublicAuthApi ||
+    // The public-website surface. motta.cpa (and the website team's
+    // Vercel previews) POST contact + intake submissions here. CORS
+    // origin allowlist + honeypot + IP rate-limit live INSIDE each
+    // route, not in middleware — middleware just has to let the
+    // anonymous request reach the handler.
+    pathname.startsWith("/api/public/")
+  // Public iframe-able pages used by the marketing site at motta.cpa.
+  // No auth, no Hub chrome — see app/embed/layout.tsx and the
+  // frame-ancestors CSP in next.config.mjs.
+  const isPublicEmbed = pathname.startsWith("/embed/")
   const isWebhook =
     pathname.startsWith("/api/webhooks") ||
     pathname.startsWith("/api/karbon/webhooks") ||
@@ -223,7 +234,8 @@ export async function middleware(request: NextRequest) {
     isAlfredBearerCall ||
     isZoomEmbed ||
     isLegalPage ||
-    isDocsPage
+    isDocsPage ||
+    isPublicEmbed
   ) {
     return supabaseResponse
   }

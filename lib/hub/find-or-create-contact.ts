@@ -42,6 +42,7 @@ export type HubContactSource =
   | "calendly"
   | "zoom"
   | "prospect_form"
+  | "website_contact"
   | "manual"
 
 export interface HubContactInput {
