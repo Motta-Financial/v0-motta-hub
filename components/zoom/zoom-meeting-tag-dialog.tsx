@@ -79,12 +79,20 @@ interface ClientTag {
   id: string
   link_source?: string | null
   match_method?: string | null
+  confidence?: number | null
+  alfred_reason?: string | null
+  needs_review?: boolean | null
   contact?: { id: string; full_name: string; primary_email?: string | null } | null
   organization?: { id: string; name: string } | null
 }
 
 interface WorkItemTag {
   id: string
+  link_source?: string | null
+  match_method?: string | null
+  confidence?: number | null
+  alfred_reason?: string | null
+  needs_review?: boolean | null
   work_item?: {
     id: string
     title: string
@@ -117,6 +125,88 @@ interface Props {
    * its in-memory tag count badge without a full refetch.
    */
   onTagsChanged?: (next: { clients: ClientTag[]; workItems: WorkItemTag[] }) => void
+}
+
+/**
+ * Renders a small uppercase chip describing how a tag got onto this
+ * meeting. Together with the optional yellow "review" chip these are
+ * the only visual cue that distinguishes a Calendly-bridge tag from a
+ * Zoom-participant auto-tag from an ALFRED guess from a manual pick.
+ *
+ * Source labels:
+ *   - 'auto'             → "auto"     (Zoom participant sweep)
+ *   - 'calendly_bridge'  → "Calendly" (carried over from a Calendly booking)
+ *   - 'alfred'           → "ALFRED"   (model-inferred)
+ *   - 'manual' / null    → no chip    (user-tagged is the default)
+ */
+function SourcePill({
+  source,
+  matchMethod,
+  reason,
+  confidence,
+  needsReview,
+}: {
+  source: string | null | undefined
+  matchMethod?: string | null
+  reason?: string | null
+  confidence?: number | null
+  needsReview?: boolean | null
+}) {
+  if (!source || source === "manual") {
+    return needsReview ? <ReviewPill /> : null
+  }
+
+  const config: Record<
+    string,
+    { label: string; className: string; titlePrefix: string }
+  > = {
+    auto: {
+      label: "auto",
+      className: "text-muted-foreground",
+      titlePrefix: "Auto-linked from Zoom participant list",
+    },
+    calendly_bridge: {
+      label: "Calendly",
+      className: "text-blue-700 dark:text-blue-300",
+      titlePrefix: "Carried over from the Calendly booking",
+    },
+    alfred: {
+      label: "ALFRED",
+      className: "text-violet-700 dark:text-violet-300",
+      titlePrefix: "Suggested by ALFRED",
+    },
+  }
+  const c = config[source] ?? {
+    label: source,
+    className: "text-muted-foreground",
+    titlePrefix: source,
+  }
+  const titleParts = [c.titlePrefix]
+  if (matchMethod) titleParts.push(`via ${matchMethod}`)
+  if (typeof confidence === "number") titleParts.push(`confidence ${(confidence * 100).toFixed(0)}%`)
+  if (reason) titleParts.push(`— ${reason}`)
+  return (
+    <>
+      <span
+        className={cn("text-[10px] uppercase tracking-wide font-medium", c.className)}
+        title={titleParts.join(" ")}
+      >
+        {c.label}
+      </span>
+      {needsReview ? <ReviewPill /> : null}
+    </>
+  )
+}
+
+function ReviewPill() {
+  return (
+    <span
+      className="rounded-sm bg-amber-100 px-1 text-[10px] uppercase tracking-wide font-medium text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
+      title="ALFRED's confidence is below the auto-accept threshold — please confirm or remove."
+    >
+      review
+    </span>
+  )
 }
 
 export function ZoomMeetingTagDialog({
@@ -526,25 +616,25 @@ export function ZoomMeetingTagDialog({
                     const isOrg = !!c.organization
                     const label = isOrg ? c.organization!.name : c.contact!.full_name
                     const Icon = isOrg ? Building2 : User
-                    const isAuto = c.link_source === "auto"
                     return (
                       <Badge
                         key={c.id}
                         variant="outline"
-                        className="flex items-center gap-1.5 pr-1 py-1 font-normal"
-                        title={
-                          isAuto
-                            ? `Auto-linked${c.match_method ? ` via ${c.match_method}` : ""}`
-                            : "Manually tagged"
-                        }
+                        className={cn(
+                          "flex items-center gap-1.5 pr-1 py-1 font-normal",
+                          c.needs_review &&
+                            "border-amber-300 dark:border-amber-700/60",
+                        )}
                       >
                         <Icon className="h-3 w-3 shrink-0 opacity-60" />
                         <span className="truncate max-w-[200px]">{label}</span>
-                        {isAuto && (
-                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                            auto
-                          </span>
-                        )}
+                        <SourcePill
+                          source={c.link_source}
+                          matchMethod={c.match_method}
+                          reason={c.alfred_reason}
+                          confidence={c.confidence}
+                          needsReview={c.needs_review}
+                        />
                         <button
                           type="button"
                           aria-label={`Remove ${label}`}
@@ -668,7 +758,10 @@ export function ZoomMeetingTagDialog({
                     <Badge
                       key={w.id}
                       variant="outline"
-                      className="flex items-center gap-1.5 pr-1 py-1 font-normal"
+                      className={cn(
+                        "flex items-center gap-1.5 pr-1 py-1 font-normal",
+                        w.needs_review && "border-amber-300 dark:border-amber-700/60",
+                      )}
                     >
                       <Briefcase className="h-3 w-3 shrink-0 opacity-60" />
                       <span className="truncate max-w-[260px]">
@@ -680,6 +773,13 @@ export function ZoomMeetingTagDialog({
                           </span>
                         )}
                       </span>
+                      <SourcePill
+                        source={w.link_source}
+                        matchMethod={w.match_method}
+                        reason={w.alfred_reason}
+                        confidence={w.confidence}
+                        needsReview={w.needs_review}
+                      />
                       <button
                         type="button"
                         aria-label={`Remove ${w.work_item?.title || "work item"}`}
