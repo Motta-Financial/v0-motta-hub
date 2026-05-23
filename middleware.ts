@@ -74,6 +74,12 @@ export async function middleware(request: NextRequest) {
   }
 
   const isLoginPage = pathname === "/login"
+  // Anonymous landing page served at motta.cpa. We deliberately do not
+  // redirect signed-in users away from /welcome — a logged-in team
+  // member can still want to view the public marketing surface (e.g.
+  // to share a screenshot with a prospect). The "Team log in" CTA on
+  // the page links to /login, which IS gated below.
+  const isWelcomePage = pathname === "/welcome"
   const isAuthCallback = pathname.startsWith("/auth")
   // Public auth API: /api/auth/forgot-password is the entrypoint for the
   // self-service password reset flow and must be reachable without a session.
@@ -235,7 +241,8 @@ export async function middleware(request: NextRequest) {
     isZoomEmbed ||
     isLegalPage ||
     isDocsPage ||
-    isPublicEmbed
+    isPublicEmbed ||
+    isWelcomePage
   ) {
     return supabaseResponse
   }
@@ -246,10 +253,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  // Redirect unauthenticated users to login (except if already on login)
+  // Redirect unauthenticated users to the public landing page (except
+  // if they've explicitly navigated to /login, which we let through so
+  // the auth screen can render).
   if (!user && !isLoginPage) {
     const url = request.nextUrl.clone()
-    url.pathname = "/login"
+    url.pathname = "/welcome"
     return NextResponse.redirect(url)
   }
 
