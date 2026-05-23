@@ -326,7 +326,7 @@ async function buildCandidateShortlist(
     })
   }
 
-  const orgQueries: Promise<any>[] = []
+  const orgQueries: Array<PromiseLike<any>> = []
   if (emailDomain) {
     // Organizations don't store an `email_domain` column — match by
     // suffix on `primary_email` instead. Indexed via trigram in
@@ -464,7 +464,7 @@ async function buildCandidateShortlist(
   }
 }
 
-// ─── Model call ──────────────────────────────────────────────────────
+// ─── Model call ─���────────────────────────────────────────────────────
 
 const decisionSchema = z.object({
   contact_id: z
