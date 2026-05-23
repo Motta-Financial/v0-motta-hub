@@ -36,6 +36,7 @@ export type AIUseCase =
   | "tommy_recap"
   | "jotform_enrichment"
   | "question_research"
+  | "intake_fee_estimate"
   | "claude_playground"
 
 export interface AIConfig {
@@ -79,6 +80,7 @@ const DEFAULT_MODELS: Record<AIUseCase, string> = {
   tommy_recap: EMAIL_PROSE_MODEL,            // Claude Haiku — fast prose generation
   jotform_enrichment: LEAD_ENRICHMENT_MODEL, // Claude Haiku — fast summarization
   question_research: QUESTION_RESEARCH_MODEL, // Claude Sonnet — accurate technical answers
+  intake_fee_estimate: QUESTION_RESEARCH_MODEL, // Claude Sonnet — same reasoning tier as research
   claude_playground: CLAUDE_DEFAULT,         // Claude Sonnet — general playground
 }
 
@@ -88,6 +90,7 @@ const DEFAULT_DISPLAY_NAMES: Record<AIUseCase, string> = {
   tommy_recap: "Tommy Weekly Recap",
   jotform_enrichment: "Jotform Lead Enrichment",
   question_research: "Question Research",
+  intake_fee_estimate: "Intake Fee Estimate",
   claude_playground: "Claude Playground",
 }
 
@@ -202,6 +205,7 @@ export async function getAllAIConfigs(): Promise<AIConfig[]> {
     "tommy_recap",
     "jotform_enrichment",
     "question_research",
+    "intake_fee_estimate",
     "claude_playground",
   ]
 

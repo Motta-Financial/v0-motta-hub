@@ -8,6 +8,8 @@ import {
   rateLimitFor,
 } from "@/lib/cors"
 import { sendEmail } from "@/lib/email"
+import { enrichIntakeSubmission } from "@/lib/jotform/enrich"
+import { researchProspectQuestions } from "@/lib/jotform/research-questions"
 
 /**
  * POST /api/public/contact
@@ -209,7 +211,38 @@ export async function POST(req: NextRequest) {
     console.error("[v0] [public/contact] hub create failed:", err)
   }
 
-  // ── 3. Notify the team via Resend ───────────────────────────────
+  // ── 3. Run ALFRED research passes (best-effort, capped) ─────────
+  // We deliberately reuse the Jotform intake helpers — same brain,
+  // same outputs, same fail-soft semantics. The shapes are a strict
+  // subset of what the intake pipeline expects (no business
+  // address, etc.), and both helpers tolerate nulls.
+  const researchInput = {
+    id: row.id as string,
+    submitter_full_name: name,
+    business_name: body.company ?? null,
+    business_state: null,
+    business_summary: null,
+    questions_or_concerns: message,
+    additional_notes: null,
+    service_focus: body.topic ?? null,
+    organization_id: null,
+    contact_id: hubContactId,
+  }
+  const [enrichmentResult, researchResult] = await Promise.allSettled([
+    enrichIntakeSubmission(supabase, researchInput),
+    researchProspectQuestions({
+      questions_or_concerns: message,
+      business_name: body.company ?? null,
+      business_state: null,
+      service_focus: body.topic ?? null,
+    }),
+  ])
+  const enrichment =
+    enrichmentResult.status === "fulfilled" ? enrichmentResult.value : null
+  const questionResearch =
+    researchResult.status === "fulfilled" ? researchResult.value : null
+
+  // ── 4. Notify the team via Resend ───────────────────────────────
   try {
     const subjectLine = body.subject?.trim()
       ? `[Website Contact] ${body.subject.trim().slice(0, 80)}`
@@ -226,6 +259,8 @@ export async function POST(req: NextRequest) {
       sourcePage: body.source_page,
       hubContactId,
       submissionId: row.id,
+      enrichment,
+      questionResearch,
     })
 
     await sendEmail({
@@ -269,41 +304,182 @@ function buildContactEmailHtml(p: {
   sourcePage?: string
   hubContactId: string | null
   submissionId: string
+  enrichment: {
+    summary?: string | null
+    websites?: Array<{ url: string; title?: string }>
+  } | null
+  questionResearch: {
+    summary?: string | null
+    key_points?: string[] | null
+    references?: Array<{ url: string; title?: string }> | null
+  } | null
 }): string {
-  const hubBase =
-    process.env.NEXT_PUBLIC_APP_URL ?? "https://hub.motta.cpa"
+  // Brand palette mirrors lib/email.ts so this email renders identically
+  // to the intake / debrief / Tommy emails in every inbox.
+  const C = {
+    primary: "#6B745D",
+    primaryDark: "#5A6250",
+    surface: "#FFFFFF",
+    background: "#EAE6E1",
+    textPrimary: "#1F2520",
+    textMuted: "#6B7066",
+    border: "#D8D3CB",
+    accent: "#C97B3F",
+  } as const
+
+  const hubBase = process.env.NEXT_PUBLIC_APP_URL ?? "https://hub.motta.cpa"
   const hubLink = p.hubContactId
     ? `${hubBase}/clients/${p.hubContactId}`
     : `${hubBase}/admin/website-contacts`
-  const rows: Array<[string, string | undefined]> = [
+
+  // ── 1. General Info ─────────────────────────────────────────────
+  const identityRows: Array<[string, string | undefined]> = [
     ["From", p.name],
-    ["Email", p.email],
-    ["Phone", p.phone],
-    ["Company", p.company],
-    ["Topic", p.topic],
-    ["Subject", p.subject],
-    ["Source page", p.sourcePage],
+    [
+      "Email",
+      p.email
+        ? `<a href="mailto:${escape(p.email)}" style="color:${C.primaryDark};">${escape(p.email)}</a>`
+        : undefined,
+    ],
+    [
+      "Phone",
+      p.phone
+        ? `<a href="tel:${escape(p.phone.replace(/[^\d+]/g, ""))}" style="color:${C.primaryDark};">${escape(p.phone)}</a>`
+        : undefined,
+    ],
+    ["Company", p.company ? escape(p.company) : undefined],
+    ["Topic", p.topic ? escape(p.topic) : undefined],
+    ["Subject", p.subject ? escape(p.subject) : undefined],
+    ["Source page", p.sourcePage ? escape(p.sourcePage) : undefined],
   ]
-  const rowsHtml = rows
+  const rowsHtml = identityRows
     .filter(([, v]) => v && String(v).trim())
     .map(
       ([k, v]) =>
-        `<tr><td style="padding:4px 12px 4px 0;color:#6b7280;font-size:12px;">${escape(k)}</td><td style="padding:4px 0;font-size:14px;">${escape(v ?? "")}</td></tr>`,
+        `<tr><td style="padding:8px 12px;font-size:13px;color:${C.textMuted};width:160px;vertical-align:top;">${escape(k)}</td><td style="padding:8px 12px;font-size:14px;color:${C.textPrimary};">${v}</td></tr>`,
     )
     .join("")
 
-  return `
-<div style="font-family:-apple-system,system-ui,sans-serif;color:#111827;max-width:640px;">
-  <h2 style="margin:0 0 4px 0;font-size:18px;">New website contact form</h2>
-  <p style="margin:0 0 16px 0;color:#6b7280;font-size:13px;">Submission ${escape(p.submissionId)}</p>
-  <table style="border-collapse:collapse;margin-bottom:16px;">${rowsHtml}</table>
-  <div style="border-left:3px solid #e5e7eb;padding:8px 0 8px 12px;white-space:pre-wrap;font-size:14px;line-height:1.5;">${escape(
-    p.message,
-  )}</div>
-  <p style="margin:20px 0 0 0;font-size:13px;">
-    <a href="${escape(hubLink)}" style="color:#2563eb;text-decoration:none;">${
-      p.hubContactId ? "Open contact in Hub" : "Open in Hub"
-    }</a>
-  </p>
-</div>`.trim()
+  const enrichmentBlock = p.enrichment?.summary
+    ? `<div style="margin-top:16px;">
+        <div style="font-size:12px;color:${C.primaryDark};text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:600;">ALFRED · Prospect Research</div>
+        <div style="background:${C.surface};border:1px solid ${C.border};border-radius:6px;padding:12px 16px;font-size:14px;color:${C.textPrimary};line-height:1.5;white-space:pre-wrap;">${escape(p.enrichment.summary)}</div>
+        ${
+          p.enrichment.websites && p.enrichment.websites.length > 0
+            ? `<div style="margin-top:8px;font-size:12px;color:${C.textMuted};">Researched: ${p.enrichment.websites
+                .map(
+                  (w) =>
+                    `<a href="${escape(w.url)}" style="color:${C.primaryDark};">${escape(w.title ?? w.url)}</a>`,
+                )
+                .join(" · ")}</div>`
+            : ""
+        }
+      </div>`
+    : ""
+
+  // ── 2. Client Questions ─────────────────────────────────────────
+  const messageBlock = `
+    <div>
+      <div style="font-size:12px;color:${C.textMuted};text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Their message</div>
+      <div style="background:#fff7ed;border-left:3px solid ${C.accent};padding:12px 16px;border-radius:4px;font-size:14px;color:${C.textPrimary};white-space:pre-wrap;line-height:1.5;">${escape(p.message)}</div>
+    </div>`
+
+  const r = p.questionResearch
+  const researchBlock = r?.summary
+    ? `<div style="margin-top:16px;">
+        <div style="font-size:12px;color:${C.primaryDark};text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:600;">ALFRED · Draft Response</div>
+        <div style="background:${C.surface};border:1px solid ${C.border};border-radius:6px;padding:12px 16px;font-size:14px;color:${C.textPrimary};line-height:1.55;white-space:pre-wrap;">${escape(r.summary)}</div>
+        ${
+          r.key_points && r.key_points.length > 0
+            ? `<div style="margin-top:10px;">
+                <div style="font-size:12px;color:${C.textMuted};text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Suggested action items</div>
+                <ul style="margin:0;padding-left:18px;color:${C.textPrimary};font-size:14px;line-height:1.55;">
+                  ${r.key_points.map((kp) => `<li style="margin-bottom:4px;">${escape(kp)}</li>`).join("")}
+                </ul>
+              </div>`
+            : ""
+        }
+        ${
+          r.references && r.references.length > 0
+            ? `<div style="margin-top:8px;font-size:12px;color:${C.textMuted};">References: ${r.references
+                .map(
+                  (ref) =>
+                    `<a href="${escape(ref.url)}" style="color:${C.primaryDark};">${escape(ref.title ?? ref.url)}</a>`,
+                )
+                .join(" · ")}</div>`
+            : ""
+        }
+        <div style="margin-top:6px;font-size:11px;color:${C.textMuted};font-style:italic;">Draft research — review before sharing with the prospect.</div>
+      </div>`
+    : ""
+
+  // ── 3. Potential Client Value ───────────────────────────────────
+  // Contact-form messages are too thin for a useful fee estimate, so
+  // we surface a single-line note pointing the partner to send them
+  // the intake form (which DOES estimate fees) if the conversation
+  // warrants it.
+  const valueBlock = `
+    <div style="background:${C.surface};border:1px solid ${C.border};border-radius:6px;padding:12px 16px;font-size:13px;color:${C.textPrimary};line-height:1.55;">
+      <strong>Light touch:</strong> contact-form messages don&#39;t include enough information for a fee estimate.
+      If this conversation looks billable, send them the
+      <a href="https://www.mottafinancial.com/intake-form" style="color:${C.primaryDark};">intake form</a>
+      and ALFRED will draft an estimate from those answers.
+    </div>`
+
+  const sectionHeader = (title: string) =>
+    `<h2 style="color:${C.textPrimary};font-size:14px;margin:24px 0 12px;padding-bottom:6px;border-bottom:2px solid ${C.border};text-transform:uppercase;letter-spacing:0.5px;">${escape(title)}</h2>`
+
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:${C.background};">
+  <div style="max-width:680px;margin:0 auto;padding:24px 16px;">
+    <div style="background:${C.surface};border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06);border:1px solid ${C.border};">
+      <div style="background:${C.primary};padding:18px 28px;">
+        <table width="100%" cellspacing="0" cellpadding="0" border="0">
+          <tr>
+            <td style="vertical-align:middle;">
+              <div style="color:${C.surface};font-size:18px;font-weight:700;letter-spacing:0.04em;">MOTTA HUB</div>
+              <div style="color:rgba(255,255,255,0.8);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;margin-top:2px;">From ALFRED Ai</div>
+            </td>
+            <td style="vertical-align:middle;text-align:right;">
+              <span style="display:inline-block;background:rgba(255,255,255,0.15);color:${C.surface};font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;padding:5px 10px;border-radius:999px;">Website Message</span>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="padding:32px;">
+        <h1 style="color:${C.textPrimary};font-size:22px;margin:0 0 4px;font-weight:700;letter-spacing:-0.01em;">New message from ${escape(p.name)}${p.company ? ` <span style="color:${C.textMuted};font-weight:500;">· ${escape(p.company)}</span>` : ""}</h1>
+        <p style="color:${C.textMuted};font-size:13px;margin:0 0 8px;">Submission ${escape(p.submissionId)}</p>
+
+        ${sectionHeader("General Info")}
+        <table style="width:100%;border-collapse:collapse;">
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        ${enrichmentBlock}
+
+        ${sectionHeader("Client Questions")}
+        ${messageBlock}
+        ${researchBlock}
+
+        ${sectionHeader("Potential Client Value")}
+        ${valueBlock}
+
+        <div style="margin-top:32px;text-align:center;">
+          <a href="${escape(hubLink)}" style="display:inline-block;background:${C.primary};color:${C.surface};padding:12px 28px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;letter-spacing:0.02em;">${
+            p.hubContactId ? "Open contact in MOTTA HUB &rarr;" : "Open in MOTTA HUB &rarr;"
+          }</a>
+        </div>
+      </div>
+
+      <div style="background:${C.background};padding:16px 28px;border-top:1px solid ${C.border};">
+        <p style="font-size:11px;color:${C.textMuted};margin:0;text-align:center;letter-spacing:0.02em;">
+          ALFRED Ai · Replies to this email go directly to the prospect.
+        </p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`
 }
