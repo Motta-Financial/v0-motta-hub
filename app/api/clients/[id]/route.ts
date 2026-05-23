@@ -130,6 +130,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       ignitionClientsRes,
       intakeSubmissionsRes,
       ignitionPaymentsRes,
+      calendlyEventLinksRes,
+      zoomMeetingLinksRes,
       pcMappingRes,
     ] = await Promise.all([
       // Work items: filter by karbon_client_key (always populated) — covers both
@@ -372,6 +374,32 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         .order("paid_at", { ascending: false, nullsFirst: false })
         .limit(500),
 
+      // Calendly events linked to this client via calendly_event_clients
+      // (auto/manual/alfred/calendly_bridge link sources). We fetch the
+      // link rows by FK then hydrate the event detail in a follow-up
+      // query so the profile can render meeting topic, time, status, and
+      // the join URL without needing the live Calendly API.
+      supabase
+        .from("calendly_event_clients")
+        .select(
+          "id, calendly_event_id, link_source, confidence, needs_review, match_method, created_at",
+        )
+        .or(`${idCol}.eq.${entityId}`)
+        .order("created_at", { ascending: false })
+        .limit(200),
+
+      // Zoom meetings linked to this client via zoom_meeting_clients (the
+      // mirror of the calendly link table — set by the participant sweep,
+      // the Calendly→Zoom bridge, ALFRED triage, and manual tagging).
+      supabase
+        .from("zoom_meeting_clients")
+        .select(
+          "id, zoom_meeting_id, link_source, confidence, needs_review, match_method, created_at",
+        )
+        .or(`${idCol}.eq.${entityId}`)
+        .order("created_at", { ascending: false })
+        .limit(200),
+
       // ProConnect link lookup. The `client_mapping` table is the only
       // place that ties our internal contact/org UUID to a ProConnect
       // `oiiClientId`. If a row exists here we'll do a second-tier
@@ -397,7 +425,82 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const ignitionProposals = ignitionProposalsRes.data || []
     const ignitionClients = ignitionClientsRes.data || []
     const ignitionPayments = ignitionPaymentsRes.data || []
+    const calendlyEventLinks = (calendlyEventLinksRes.data || []) as any[]
+    const zoomMeetingLinks = (zoomMeetingLinksRes.data || []) as any[]
     const pcMapping = pcMappingRes.data || null
+
+    // ── Hydrate Calendly events ──────────────────────────────────────────
+    // The link table only stores FKs; we need the event row for topic /
+    // time / status / join URL display. Single round-trip with `in()`.
+    let calendlyEvents: any[] = []
+    if (calendlyEventLinks.length > 0) {
+      const eventIds = Array.from(
+        new Set(calendlyEventLinks.map((l) => l.calendly_event_id).filter(Boolean)),
+      )
+      if (eventIds.length > 0) {
+        const { data: events } = await supabase
+          .from("calendly_events")
+          .select(
+            "id, name, status, event_type_name, location, location_type, join_url, calendly_uri, start_time, end_time, calendly_user_name, calendly_user_email, canceled_at, cancel_reason, rescheduled",
+          )
+          .in("id", eventIds)
+        const linkByEventId = new Map(
+          calendlyEventLinks.map((l) => [l.calendly_event_id, l]),
+        )
+        calendlyEvents = (events || [])
+          .map((ev: any) => {
+            const link = linkByEventId.get(ev.id)
+            return {
+              ...ev,
+              link_source: link?.link_source || null,
+              confidence: link?.confidence ?? null,
+              needs_review: !!link?.needs_review,
+              link_id: link?.id || null,
+            }
+          })
+          .sort(
+            (a, b) =>
+              new Date(b.start_time || 0).getTime() -
+              new Date(a.start_time || 0).getTime(),
+          )
+      }
+    }
+
+    // ── Hydrate Zoom meetings ────────────────────────────────────────────
+    let zoomMeetings: any[] = []
+    if (zoomMeetingLinks.length > 0) {
+      const meetingIds = Array.from(
+        new Set(zoomMeetingLinks.map((l) => l.zoom_meeting_id).filter(Boolean)),
+      )
+      if (meetingIds.length > 0) {
+        const { data: meetings } = await supabase
+          .from("zoom_meetings")
+          .select(
+            "id, zoom_meeting_id, topic, agenda, status, host_email, start_time, started_at, ended_at, duration, join_url, calendly_event_id",
+          )
+          .in("id", meetingIds)
+        const linkByMeetingId = new Map(
+          zoomMeetingLinks.map((l) => [l.zoom_meeting_id, l]),
+        )
+        zoomMeetings = (meetings || [])
+          .map((m: any) => {
+            const link = linkByMeetingId.get(m.id)
+            return {
+              ...m,
+              link_source: link?.link_source || null,
+              confidence: link?.confidence ?? null,
+              needs_review: !!link?.needs_review,
+              link_id: link?.id || null,
+            }
+          })
+          .sort(
+            (a, b) =>
+              new Date(b.start_time || b.started_at || 0).getTime() -
+              new Date(a.start_time || a.started_at || 0).getTime(),
+          )
+      }
+    }
+
 
     // ── ProConnect auto-link (self-healing) ──────────────────────────────
     // The seed run of scripts/match-proconnect-clients-by-email.ts only
@@ -697,7 +800,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     // `collected | disbursed` being the union of "real" paid states.
     const paymentsSummary = summarizePayments(ignitionPayments)
 
-    // ── Unified Invoices ─────────────────────────────────────────────────
+    // ── Unified Invoices ──────────────��──────────────────────────────────
     // Normalizes Karbon and Ignition (incl. legacy HubSpot) invoices into a
     // single shape so the UI can render one list. The original arrays remain
     // available for any downstream consumer that needs source-specific fields.
@@ -825,6 +928,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       totalNotes: karbonNotes.length + manualNotes.length,
       totalDocuments: documents.length,
       totalMeetings: meetings.length,
+      totalCalendlyEvents: calendlyEvents.length,
+      totalZoomMeetings: zoomMeetings.length,
       totalDebriefs: debriefs.length,
       totalIntakeSubmissions: intakeSubmissions.length,
       // Unified invoice stats span Karbon + Ignition + legacy HubSpot.
@@ -1083,6 +1188,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       relatedOrganizations,
       ignitionPayments,
       paymentsSummary,
+      calendlyEvents,
+      zoomMeetings,
       proconnect,
     })
   } catch (error) {
