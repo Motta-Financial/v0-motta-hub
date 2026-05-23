@@ -2,13 +2,15 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 
 // ── ProConnect client roster ─────────────────────────────────────────
-// Returns one row per row in proconnect_clients, enriched with the
-// count of engagements (returns) we have synced for that client from
-// the proconnect_engagements table.
+// Returns one row per row in proconnect_clients, enriched with:
+//   1. the count of engagements (returns) we have synced for that client
+//      from the proconnect_engagements table,
+//   2. the matching row from master_client_mapping (the unified view
+//      we built earlier today), so the UI can deep-link out to the
+//      Karbon / Ignition / Motta Hub identity for the same client.
 //
-// This route is intentionally ProConnect-only: cross-system identity
-// (Karbon, Ignition, Hub contact id) is NOT joined here. The /tax
-// dashboard surfaces what Intuit's API gives us and nothing else.
+// We keep the join logic on the server so the page component stays
+// declarative and doesn't have to coordinate multiple queries.
 
 type ProconnectClient = {
   id: string
@@ -32,6 +34,19 @@ type ProconnectClient = {
   updated_at: string | null
 }
 
+type MasterMappingRow = {
+  internal_client_id: string
+  client_type: "PERSON" | "ORGANIZATION"
+  display_name: string | null
+  primary_email: string | null
+  karbon_client_id: string | null
+  ignition_client_id: string | null
+  proconnect_client_id: string | null
+  karbon_url: string | null
+  linked_systems: string[] | null
+  link_count: number | null
+}
+
 type ProconnectEngagement = {
   id: string
   engagement_id: string | null
@@ -52,17 +67,20 @@ export async function GET() {
   try {
     const supabase = createAdminClient()
 
-    // Run the client query, the engagements query, and the profile
-    // mapping query in parallel. Cross-system mapping queries
-    // (master_client_mapping) were intentionally removed — this route
-    // surfaces ProConnect-native data only.
-    const [clientsRes, engagementsRes, profilesRes] = await Promise.all([
+    // Run the client query, the mapping query, and the engagements query in parallel
+    const [clientsRes, mappingRes, engagementsRes, profilesRes] = await Promise.all([
       supabase
         .from("proconnect_clients")
         .select(
           "id, proconnect_client_id, proconnect_entity_id, top_level_entity_id, client_type, client_state, display_name, business_name, name_for_matching, first_name, last_name, email, phone, city, state, zip, tax_id, created_at, updated_at",
         )
         .order("display_name", { ascending: true }),
+      supabase
+        .from("master_client_mapping")
+        .select(
+          "internal_client_id, client_type, display_name, primary_email, karbon_client_id, ignition_client_id, proconnect_client_id, karbon_url, linked_systems, link_count",
+        )
+        .not("proconnect_client_id", "is", null),
       supabase
         .from("proconnect_engagements")
         .select(
@@ -76,10 +94,12 @@ export async function GET() {
     ])
 
     if (clientsRes.error) throw clientsRes.error
+    if (mappingRes.error) throw mappingRes.error
     if (engagementsRes.error) throw engagementsRes.error
     if (profilesRes.error) throw profilesRes.error
 
     const clients = (clientsRes.data || []) as ProconnectClient[]
+    const mappings = (mappingRes.data || []) as MasterMappingRow[]
     const engagements = (engagementsRes.data || []) as ProconnectEngagement[]
 
     // profileId → human display name. Keep null when unmapped — never
@@ -91,6 +111,12 @@ export async function GET() {
       const tm = p.team_members as { full_name?: string | null } | null
       const name = p.display_name || tm?.full_name || null
       if (name) preparerMap.set(p.profile_id, name)
+    }
+
+    // Build a lookup of mapping rows keyed on proconnect_client_id.
+    const mappingByPc = new Map<string, MasterMappingRow>()
+    for (const m of mappings) {
+      if (m.proconnect_client_id) mappingByPc.set(m.proconnect_client_id, m)
     }
 
     // Build a per-client engagements rollup from the new proconnect_engagements table
@@ -185,6 +211,9 @@ export async function GET() {
     }
 
     const enriched = clients.map((c) => {
+      const m = c.proconnect_client_id
+        ? mappingByPc.get(c.proconnect_client_id)
+        : undefined
       const rollup =
         c.proconnect_client_id ? rollupByPc.get(c.proconnect_client_id) : undefined
       return {
@@ -194,13 +223,20 @@ export async function GET() {
         last_activity_at: rollup?.latestActivity ?? null,
         preparers: rollup ? Array.from(rollup.preparers) : [],
         return_forms: rollup?.forms ?? [],
+        mapping: m
+          ? {
+              internal_client_id: m.internal_client_id,
+              karbon_client_id: m.karbon_client_id,
+              ignition_client_id: m.ignition_client_id,
+              karbon_url: m.karbon_url ?? null,
+              linked_systems: m.linked_systems ?? [],
+              link_count: m.link_count ?? 0,
+            }
+          : null,
       }
     })
 
-    // Aggregate stats — ProConnect-only metrics. We dropped the
-    // linkedToKarbon / linkedToIgnition / unmappedToHub counters
-    // because those rely on master_client_mapping (a Hub artifact),
-    // which is not part of the ProConnect API surface.
+    // Aggregate stats
     const byState: Record<string, number> = {}
     for (const c of enriched) {
       const key = c.client_state || "UNKNOWN"
@@ -223,6 +259,12 @@ export async function GET() {
       withoutReturns: enriched.filter((c) => c.return_count === 0).length,
       totalReturns: enriched.reduce((s, c) => s + c.return_count, 0),
       totalAmended: enriched.reduce((s, c) => s + c.amended_count, 0),
+      linkedToKarbon: enriched.filter((c) => !!c.mapping?.karbon_client_id)
+        .length,
+      linkedToIgnition: enriched.filter(
+        (c) => !!c.mapping?.ignition_client_id,
+      ).length,
+      unmappedToHub: enriched.filter((c) => !c.mapping).length,
       byState,
       subEntities,
     }
