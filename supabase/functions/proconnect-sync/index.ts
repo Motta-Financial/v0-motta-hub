@@ -332,6 +332,11 @@ async function syncClientEngagements(
       const engagementId = eng.id || eng.engagementId || `${clientId}-${year}`
       const formType = eng.type || null
 
+      // CRITICAL: Use the engagement's actual clientId from the API response,
+      // NOT the clientId we queried with. ProConnect returns engagements that
+      // may belong to different clients than the one we queried.
+      const actualClientId = eng.clientId || clientId
+
       // Hoist nested raw_json fields into first-class columns so the
       // /tax dashboard, enriched view, and ALFRED can query without
       // unwrapping JSON. raw_json is still preserved for forensics.
@@ -348,7 +353,7 @@ async function syncClientEngagements(
       const { error } = await supabase.from("proconnect_engagements").upsert(
         {
           engagement_id: engagementId,
-          proconnect_client_id: clientId,
+          proconnect_client_id: actualClientId,
           tax_year: year,
           return_type: formType,
           form_type: formType,
@@ -368,7 +373,10 @@ async function syncClientEngagements(
           synced_at: now,
           updated_at: now,
         },
-        { onConflict: "proconnect_client_id,tax_year,return_type" }
+        // Use engagement_id as the conflict key - it's globally unique.
+        // The old composite key (proconnect_client_id,tax_year,return_type)
+        // was broken because return_type is often null, causing overwrites.
+        { onConflict: "engagement_id" }
       )
 
       if (error) {

@@ -326,6 +326,11 @@ async function syncClientEngagements(
           (eng.engagementId as string) ||
           `${clientId}-${year}`
 
+        // CRITICAL: Use the engagement's actual clientId from the API response,
+        // NOT the clientId we queried with. ProConnect returns engagements that
+        // may belong to different clients than the one we queried.
+        const actualClientId = (eng.clientId as string) || clientId
+
         // Extract form type from raw API response
         const formType = (eng.type as string) || null
         const returnType = formType
@@ -333,7 +338,7 @@ async function syncClientEngagements(
         const { error } = await supabase.from("proconnect_engagements").upsert(
           {
             engagement_id: engagementId,
-            proconnect_client_id: clientId,
+            proconnect_client_id: actualClientId,
             tax_year: year,
             return_type: returnType,
             form_type: formType,
@@ -345,7 +350,10 @@ async function syncClientEngagements(
             updated_at: new Date().toISOString(),
           },
           {
-            onConflict: "proconnect_client_id,tax_year,return_type",
+            // Use engagement_id as the conflict key - it's globally unique.
+            // The old composite key (proconnect_client_id,tax_year,return_type)
+            // was broken because return_type is often null, causing overwrites.
+            onConflict: "engagement_id",
           }
         )
 
