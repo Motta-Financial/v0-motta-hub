@@ -41,6 +41,7 @@ import {
   Twitter,
   User,
   Users,
+  Video,
   Wallet,
 } from "lucide-react"
 
@@ -321,6 +322,57 @@ interface ClientBundle {
     scheduled_end: string | null
     duration_minutes: number | null
   }>
+  /**
+   * Calendly events linked to this client via `calendly_event_clients`.
+   * Hydrated server-side from `calendly_events` (so the Meetings tab
+   * can render topic / time / status / join URL without a follow-up
+   * request). `link_source` distinguishes auto-match from
+   * calendly_bridge / alfred / manual tags.
+   */
+  calendlyEvents?: Array<{
+    id: string
+    name: string | null
+    status: string | null
+    event_type_name: string | null
+    location: string | null
+    location_type: string | null
+    join_url: string | null
+    calendly_uri: string | null
+    start_time: string | null
+    end_time: string | null
+    calendly_user_name: string | null
+    calendly_user_email: string | null
+    canceled_at: string | null
+    cancel_reason: string | null
+    rescheduled: boolean | null
+    link_source: string | null
+    confidence: number | null
+    needs_review: boolean
+    link_id: string | null
+  }>
+  /**
+   * Zoom meetings linked to this client via `zoom_meeting_clients`.
+   * Set by the Zoom participant sweep, the Calendly→Zoom bridge,
+   * ALFRED triage, and manual tagging.
+   */
+  zoomMeetings?: Array<{
+    id: string
+    zoom_meeting_id: number | string | null
+    topic: string | null
+    agenda: string | null
+    status: string | null
+    host_email: string | null
+    start_time: string | null
+    started_at: string | null
+    ended_at: string | null
+    duration: number | null
+    join_url: string | null
+    calendly_event_id: string | null
+    link_source: string | null
+    confidence: number | null
+    needs_review: boolean
+    link_id: string | null
+  }>
   debriefs: Array<{
     id: string
     debrief_date: string | null
@@ -410,6 +462,8 @@ interface ClientBundle {
     totalNotes: number
     totalDocuments: number
     totalMeetings: number
+    totalCalendlyEvents?: number
+    totalZoomMeetings?: number
     totalDebriefs: number
     totalIntakeSubmissions: number
     totalInvoices: number
@@ -799,6 +853,8 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     stats,
     ignitionPayments = [],
     paymentsSummary,
+    calendlyEvents = [],
+    zoomMeetings = [],
     proconnect,
   } = data
   // Use the server-merged unified list when present. Older API responses
@@ -1016,6 +1072,14 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
             {stats.totalProposals + stats.totalInvoices > 0 ? (
               <Badge variant="secondary" className="ml-2 h-5 px-1.5">
                 {stats.totalProposals + stats.totalInvoices}
+              </Badge>
+            ) : null}
+          </TabsTrigger>
+          <TabsTrigger value="meetings">
+            Meetings
+            {(calendlyEvents.length + zoomMeetings.length) > 0 ? (
+              <Badge variant="secondary" className="ml-2 h-5 px-1.5">
+                {calendlyEvents.length + zoomMeetings.length}
               </Badge>
             ) : null}
           </TabsTrigger>
@@ -2318,6 +2382,243 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
           ) : null}
         </TabsContent>
 
+        {/* ── Meetings (Calendly + Zoom) ────────────────────────────────── */}
+        {/* Linked Calendly events come from `calendly_event_clients` and
+            linked Zoom meetings come from `zoom_meeting_clients`. Each
+            row carries a `link_source` distinguishing
+            auto / manual / alfred / calendly_bridge so the UI can show
+            provenance without lying about how the link was established. */}
+        <TabsContent value="meetings" className="mt-4 flex flex-col gap-4">
+          {/* Calendly */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Calendar className="h-4 w-4" />
+                <span>Calendly Meetings ({calendlyEvents.length})</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {calendlyEvents.length === 0 ? (
+                <EmptyState message="No Calendly events linked to this client yet." />
+              ) : (
+                <ScrollArea className="max-h-[600px]">
+                  <div className="divide-y">
+                    {calendlyEvents.map((ev) => {
+                      const start = ev.start_time ? new Date(ev.start_time) : null
+                      const end = ev.end_time ? new Date(ev.end_time) : null
+                      const isCancelled =
+                        !!ev.canceled_at ||
+                        (ev.status || "").toLowerCase() === "canceled"
+                      return (
+                        <div
+                          key={ev.id}
+                          className="p-4 flex flex-col gap-2 hover:bg-muted/30 transition-colors"
+                        >
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex flex-col gap-1 min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="font-medium text-sm truncate">
+                                  {ev.name || ev.event_type_name || "(untitled event)"}
+                                </h3>
+                                {isCancelled ? (
+                                  <Badge variant="destructive" className="text-xs">
+                                    Cancelled
+                                  </Badge>
+                                ) : ev.status ? (
+                                  <Badge variant="secondary" className="text-xs">
+                                    {ev.status}
+                                  </Badge>
+                                ) : null}
+                                {ev.rescheduled ? (
+                                  <Badge variant="outline" className="text-xs">
+                                    Rescheduled
+                                  </Badge>
+                                ) : null}
+                                {ev.link_source && ev.link_source !== "auto" ? (
+                                  <Badge variant="outline" className="text-xs capitalize">
+                                    {ev.link_source.replace(/_/g, " ")}
+                                  </Badge>
+                                ) : null}
+                                {ev.needs_review ? (
+                                  <Badge variant="outline" className="text-xs">
+                                    Needs review
+                                  </Badge>
+                                ) : null}
+                              </div>
+                              <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                                {start ? (
+                                  <span>
+                                    {format(start, "EEE, MMM d, yyyy")} ·{" "}
+                                    {format(start, "h:mm a")}
+                                    {end ? ` – ${format(end, "h:mm a")}` : ""}
+                                  </span>
+                                ) : null}
+                                {ev.location ? (
+                                  <>
+                                    <span>•</span>
+                                    <span className="truncate">{ev.location}</span>
+                                  </>
+                                ) : ev.location_type ? (
+                                  <>
+                                    <span>•</span>
+                                    <span className="capitalize">
+                                      {ev.location_type.replace(/_/g, " ")}
+                                    </span>
+                                  </>
+                                ) : null}
+                                {ev.calendly_user_name ? (
+                                  <>
+                                    <span>•</span>
+                                    <span>Host: {ev.calendly_user_name}</span>
+                                  </>
+                                ) : null}
+                              </div>
+                              {ev.cancel_reason ? (
+                                <p className="text-xs text-muted-foreground italic">
+                                  Reason: {ev.cancel_reason}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {ev.join_url && !isCancelled ? (
+                                <Button variant="outline" size="sm" asChild>
+                                  <a
+                                    href={ev.join_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                  >
+                                    <Video className="h-3.5 w-3.5 mr-1.5" />
+                                    Join
+                                  </a>
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </ScrollArea>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Zoom */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Video className="h-4 w-4" />
+                <span>Zoom Meetings ({zoomMeetings.length})</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {zoomMeetings.length === 0 ? (
+                <EmptyState message="No Zoom meetings linked to this client yet." />
+              ) : (
+                <ScrollArea className="max-h-[600px]">
+                  <div className="divide-y">
+                    {zoomMeetings.map((m) => {
+                      const start = m.start_time
+                        ? new Date(m.start_time)
+                        : m.started_at
+                        ? new Date(m.started_at)
+                        : null
+                      const ended = m.ended_at ? new Date(m.ended_at) : null
+                      const durationMin =
+                        m.duration && m.duration > 0
+                          ? m.duration > 1000
+                            ? Math.round(m.duration / 60)
+                            : m.duration
+                          : null
+                      return (
+                        <div
+                          key={m.id}
+                          className="p-4 flex flex-col gap-2 hover:bg-muted/30 transition-colors"
+                        >
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex flex-col gap-1 min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="font-medium text-sm truncate">
+                                  {m.topic || "(untitled meeting)"}
+                                </h3>
+                                {m.status ? (
+                                  <Badge variant="secondary" className="text-xs">
+                                    {m.status}
+                                  </Badge>
+                                ) : null}
+                                {m.calendly_event_id ? (
+                                  <Badge variant="outline" className="text-xs">
+                                    From Calendly
+                                  </Badge>
+                                ) : null}
+                                {m.link_source && m.link_source !== "auto" ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-xs capitalize"
+                                  >
+                                    {m.link_source.replace(/_/g, " ")}
+                                  </Badge>
+                                ) : null}
+                                {m.needs_review ? (
+                                  <Badge variant="outline" className="text-xs">
+                                    Needs review
+                                  </Badge>
+                                ) : null}
+                              </div>
+                              <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                                {start ? (
+                                  <span>
+                                    {format(start, "EEE, MMM d, yyyy")} ·{" "}
+                                    {format(start, "h:mm a")}
+                                    {ended ? ` – ${format(ended, "h:mm a")}` : ""}
+                                  </span>
+                                ) : null}
+                                {durationMin != null ? (
+                                  <>
+                                    <span>•</span>
+                                    <span>{durationMin} min</span>
+                                  </>
+                                ) : null}
+                                {m.host_email ? (
+                                  <>
+                                    <span>•</span>
+                                    <span className="truncate">
+                                      Host: {m.host_email}
+                                    </span>
+                                  </>
+                                ) : null}
+                              </div>
+                              {m.agenda ? (
+                                <p className="text-xs text-muted-foreground line-clamp-2">
+                                  {m.agenda}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {m.join_url ? (
+                                <Button variant="outline" size="sm" asChild>
+                                  <a
+                                    href={m.join_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                  >
+                                    <Video className="h-3.5 w-3.5 mr-1.5" />
+                                    Join
+                                  </a>
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </ScrollArea>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* ── Tax (ProConnect) ──────────────────────────────────────────── */}
         {/* Only rendered when the client is linked in ProConnect. The
             normalized `returns` shape lets us render every form type in
@@ -2422,7 +2723,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
           </TabsContent>
         ) : null}
 
-        {/* ── Documents ─────────────────────────────────────────────────── */}
+        {/* ── Documents ─────────────���───────────────────────────────────── */}
         <TabsContent value="documents" className="mt-4">
           <Card>
             <CardHeader>
