@@ -32,8 +32,8 @@ const PARALLEL_CLIENTS = 3
 const SKIP_IF_SYNCED_WITHIN_HOURS = 24
 
 // Max execution time before we gracefully stop (Vercel timeout is 60s for hobby, 300s for pro)
-// Leave 20s buffer for cleanup and slow API calls
-const MAX_EXECUTION_MS = 40_000
+// Leave 5s buffer for cleanup and response serialization
+const MAX_EXECUTION_MS = 55_000
 
 interface SyncResult {
   success: boolean
@@ -573,9 +573,13 @@ export async function runFullSync(
   const syncLogId = await createSyncLog(supabase, syncType)
   console.log("[v0] Step 2 done - createSyncLog", Date.now() - startTime, "ms elapsed")
 
+  // Track results outside try block so catch can access them for partial progress reporting
+  let clientResult = { count: 0, errors: [] as string[] }
+  let engagementResult = { count: 0, errors: [] as string[], timedOut: false, lastClientIndex: 0, totalClients: 0, skippedClients: 0 }
+  let statusResult = { count: 0, errors: [] as string[] }
+
   try {
     // 1. Sync clients (only on fresh runs, not resumes)
-    let clientResult = { count: 0, errors: [] as string[] }
     if (!isResuming) {
       console.log("[v0] Step 3 start - syncClients", Date.now() - startTime, "ms elapsed")
       clientResult = await syncClients(supabase)
@@ -593,7 +597,7 @@ export async function runFullSync(
     // Force full sync on manual runs; incremental on cron/webhook
     const forceFullSync = syncType === "manual"
     console.log("[v0] Step 4 start - syncEngagements", Date.now() - startTime, "ms elapsed")
-    const engagementResult = await syncEngagements(supabase, startTime, resumeIndex, forceFullSync)
+    engagementResult = await syncEngagements(supabase, startTime, resumeIndex, forceFullSync)
     console.log("[v0] Step 4 done - syncEngagements", Date.now() - startTime, "ms elapsed, count:", engagementResult.count, "skipped:", engagementResult.skippedClients)
     errors.push(...engagementResult.errors)
     timedOut = engagementResult.timedOut
@@ -603,7 +607,6 @@ export async function runFullSync(
     const isComplete = engagementResult.lastClientIndex === 0 && !timedOut
 
     // 3. Sync custom statuses (only if we completed all clients and have time)
-    let statusResult = { count: 0, errors: [] as string[] }
     if (isComplete && Date.now() - startTime < MAX_EXECUTION_MS) {
       statusResult = await syncCustomStatuses(supabase)
       errors.push(...statusResult.errors)
@@ -671,12 +674,17 @@ export async function runFullSync(
       // Timeout should be partial, not failed - so it doesn't trigger 3-strike alerts
       await updateSyncLog(supabase, syncLogId, {
         status: "partial",
-        last_client_index: resumeIndex > 0 ? resumeIndex : 1, // Save progress for resume
+        clients_synced: clientResult.count,
+        engagements_synced: engagementResult.count,
+        custom_statuses_synced: statusResult.count,
+        last_client_index: engagementResult.lastClientIndex || resumeIndex || 1, // Save progress for resume
         error_message: `Partial sync: timed out after ${Math.round((Date.now() - startTime) / 1000)}s - will resume on next run`,
         error_details: {
           partial: true,
           timedOut: true,
-          resumeIndex,
+          resumeIndex: engagementResult.lastClientIndex || resumeIndex,
+          clientsSynced: clientResult.count,
+          engagementsSynced: engagementResult.count,
           stack: err instanceof Error ? err.stack : null,
         },
       })
@@ -684,35 +692,40 @@ export async function runFullSync(
       return {
         success: false,
         syncLogId,
-        clientsSynced: 0,
-        engagementsSynced: 0,
-        customStatusesSynced: 0,
+        clientsSynced: clientResult.count,
+        engagementsSynced: engagementResult.count,
+        customStatusesSynced: statusResult.count,
         errors: [errorMessage],
         duration: Date.now() - startTime,
         timedOut: true,
         partial: true,
-        lastClientIndex: resumeIndex,
+        lastClientIndex: engagementResult.lastClientIndex || resumeIndex,
       }
     }
 
     // Actual failure (not timeout)
     await updateSyncLog(supabase, syncLogId, {
       status: "failed",
-      last_client_index: resumeIndex, // Preserve resume point on failure
+      clients_synced: clientResult.count,
+      engagements_synced: engagementResult.count,
+      custom_statuses_synced: statusResult.count,
+      last_client_index: engagementResult.lastClientIndex || resumeIndex, // Preserve resume point on failure
       error_message: errorMessage,
       error_details: { 
         stack: err instanceof Error ? err.stack : null,
         timedOut: false,
-        resumeIndex,
+        resumeIndex: engagementResult.lastClientIndex || resumeIndex,
+        clientsSynced: clientResult.count,
+        engagementsSynced: engagementResult.count,
       },
     })
 
     return {
       success: false,
       syncLogId,
-      clientsSynced: 0,
-      engagementsSynced: 0,
-      customStatusesSynced: 0,
+      clientsSynced: clientResult.count,
+      engagementsSynced: engagementResult.count,
+      customStatusesSynced: statusResult.count,
       errors: [errorMessage],
       duration: Date.now() - startTime,
       timedOut: false,
