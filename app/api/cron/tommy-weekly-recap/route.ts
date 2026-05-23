@@ -444,7 +444,7 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
 
     // Build the email HTML using the shared MOTTA HUB wrapper so the header,
     // footer, and brand palette match the Thursday reminder email exactly.
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
     const html = buildTommyRecapHtml({
       weekLabel,
       aiSummary,
@@ -555,7 +555,7 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
     // returns, so the Weekly Tommy's tab + future email reruns pick it
     // up automatically. `?skipImage=true` suppresses the trigger.
     if (!skipImage && topThree.length > 0) {
-      const appUrlForTrigger = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+      const appUrlForTrigger = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
       const triggerUrl = `${appUrlForTrigger}/api/cron/tommy-podium-image`
       // Detached fetch — we don't await, don't read the body, don't
       // even keep the promise. A short connection timeout makes sure a

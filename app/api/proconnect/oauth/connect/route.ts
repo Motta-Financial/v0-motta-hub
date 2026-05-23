@@ -10,7 +10,7 @@
  * to /api/proconnect/oauth/callback with an authorization code.
  *
  * Configured in Intuit Developer:
- *   App URLs > Connect/Reconnect URL: https://motta.cpa/api/proconnect/oauth/connect
+ *   App URLs > Connect/Reconnect URL: https://hub.motta.cpa/api/proconnect/oauth/connect
  */
 import { NextRequest, NextResponse } from "next/server"
 import { randomBytes } from "node:crypto"
@@ -20,7 +20,7 @@ const SCOPE = "com.intuit.proconnect.taxreturns openid profile email"
 
 export async function GET(request: NextRequest) {
   const clientId = process.env.PROCONNECT_CLIENT_ID
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
 
   if (!clientId) {
     return NextResponse.json(

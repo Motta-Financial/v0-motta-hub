@@ -56,7 +56,7 @@ export async function POST(request: Request) {
       type: "recovery",
       email: email,
       options: {
-        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || "https://mottahub-motta.vercel.app"}/auth/callback?type=recovery`,
+        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || "https://hub.motta.cpa"}/auth/callback?type=recovery`,
       },
     })
 

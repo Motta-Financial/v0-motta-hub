@@ -167,7 +167,94 @@ old URLs need to be removed yet, just **add** the new one alongside.
 
 ---
 
-## 4. Verify after cutover
+## 4. Re-register webhook subscriptions
+
+The OAuth dashboards above only fix login/redirect URLs. Webhook
+subscriptions (where providers POST events INTO the Hub) are stored
+provider-side keyed by URL — they will keep delivering to the OLD
+URL until you explicitly resubscribe with the new one. Do this AFTER
+the env-var redeploy in §2 finishes.
+
+### Karbon webhooks (8 subscriptions)
+
+The Hub's webhook subscription manager picks up the new URL from
+`NEXT_PUBLIC_APP_URL` automatically. Trigger a re-subscribe:
+
+```bash
+# Subscribes all 8 WebhookTypes to the URL resolved by lib/karbon/webhook-url.ts.
+curl -X POST https://hub.motta.cpa/api/karbon/webhooks/subscriptions \
+  -H 'content-type: application/json' \
+  -H "cookie: <your-auth-cookie>" \
+  -d '{}'
+```
+
+Or use the UI: `/admin/webhooks` → Karbon card → "Open" →
+"Subscribe to all". Verify the resulting `target_url` in the local
+DB is `https://hub.motta.cpa/api/karbon/webhooks` for every row.
+
+After verifying deliveries land, **delete the old subscriptions**
+pointing at `*.vercel.app` or `mottafinancial.com`:
+
+```bash
+curl -X DELETE 'https://hub.motta.cpa/api/karbon/webhooks/subscriptions?targetUrl=https%3A%2F%2Fmottahub-motta.vercel.app%2Fapi%2Fkarbon%2Fwebhooks'
+```
+
+### Calendly webhooks (per OAuth connection)
+
+Calendly stores webhooks per OAuth connection. From `/admin/webhooks`
+→ Calendly card → "Manage", click "Subscribe" on each connected
+account. Old subscriptions remain in Calendly until you delete them
+manually from that same UI.
+
+### Jotform webhooks
+
+Both forms (Intake `242306172162144` and Feedback `240915444941155`)
+need their callbacks updated:
+
+```bash
+curl -X POST https://hub.motta.cpa/api/jotform/webhook/subscribe \
+  -H 'content-type: application/json' \
+  -d '{"formId":"242306172162144"}'
+
+curl -X POST https://hub.motta.cpa/api/jotform/webhook/subscribe \
+  -H 'content-type: application/json' \
+  -d '{"formId":"240915444941155"}'
+```
+
+Confirm via the UI on `/admin/webhooks` that both Jotform cards show
+the new `hub.motta.cpa` callback. Then in the Jotform dashboard, edit
+each form → Settings → Integrations → Webhooks → delete any leftover
+URLs that point at the old domain.
+
+### Zoom webhook (single endpoint)
+
+Zoom only allows one Event Subscription URL per Marketplace app, so
+this is a clean swap in §3 — nothing else to do here.
+
+### ProConnect / Intuit webhooks
+
+Set in the Intuit Developer dashboard under "Webhooks". Edit the
+endpoint URL to `https://hub.motta.cpa/api/proconnect/webhooks` and
+save. Use Intuit's "Send Test Notification" button to confirm a 200
+response, then verify the row in `proconnect_webhook_events`.
+
+### Ignition webhooks
+
+Ignition delivers to per-event paths under
+`/api/ignition/webhook/{event}`. In Ignition → Apps → your app →
+Webhook URLs, replace the base with `https://hub.motta.cpa`.
+
+### Stripe webhooks
+
+If a Stripe webhook is in use today, add a new endpoint at
+`https://hub.motta.cpa/api/stripe/webhook` (note: this Hub does not
+yet implement that route — only add it once a route exists), copy
+the new signing secret to `STRIPE_WEBHOOK_SECRET`, and disable the
+old endpoint after a few days of clean deliveries.
+
+---
+
+## 5. Verify after cutover
 
 In a clean browser window:
 
@@ -202,7 +289,7 @@ Expected: `HTTP/2 204` plus
 
 ---
 
-## 5. Redirect the old domain
+## 6. Redirect the old domain
 
 Once the new URL has been live and clean for 24-48h:
 
@@ -217,7 +304,7 @@ Once the new URL has been live and clean for 24-48h:
 
 ---
 
-## 6. Rollback
+## 7. Rollback
 
 If something breaks during cutover:
 

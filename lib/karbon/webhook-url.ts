@@ -1,27 +1,31 @@
 /**
  * Resolves the public URL Karbon should POST webhooks to.
  *
- * Resolution order:
+ * Resolution order (UPDATED for the hub.motta.cpa migration):
  *   1. KARBON_WEBHOOK_TARGET_URL — explicit override (set this in production)
- *   2. https://${VERCEL_PROJECT_PRODUCTION_URL} — stable Vercel production URL
- *   3. NEXT_PUBLIC_APP_URL — manual app URL fallback
+ *   2. NEXT_PUBLIC_APP_URL / APP_BASE_URL — canonical Hub URL
+ *      (https://hub.motta.cpa). This is preferred over the auto-set
+ *      VERCEL_PROJECT_PRODUCTION_URL because the .vercel.app domain is
+ *      not the user-facing surface — we want Karbon delivering to the
+ *      branded subdomain.
+ *   3. https://${VERCEL_PROJECT_PRODUCTION_URL} — stable Vercel production URL
  *   4. https://${VERCEL_URL} — current deployment (preview); not recommended for prod
  */
 export function resolveWebhookTargetUrl(): string {
   const explicit = process.env.KARBON_WEBHOOK_TARGET_URL
   if (explicit) return ensureWebhookPath(explicit)
 
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL
+  if (appUrl) return ensureWebhookPath(appUrl)
+
   const prodUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
   if (prodUrl) return ensureWebhookPath(`https://${prodUrl}`)
-
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL
-  if (appUrl) return ensureWebhookPath(appUrl)
 
   const vercelUrl = process.env.VERCEL_URL
   if (vercelUrl) return ensureWebhookPath(`https://${vercelUrl}`)
 
   throw new Error(
-    "Cannot resolve Karbon webhook target URL — set KARBON_WEBHOOK_TARGET_URL or VERCEL_PROJECT_PRODUCTION_URL",
+    "Cannot resolve Karbon webhook target URL — set KARBON_WEBHOOK_TARGET_URL or NEXT_PUBLIC_APP_URL",
   )
 }
 

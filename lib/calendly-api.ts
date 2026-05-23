@@ -110,7 +110,7 @@ export function getAppBaseUrl(): string {
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.APP_BASE_URL ||
     process.env.AUTH0_BASE_URL ||
-    "https://motta.cpa"
+    "https://hub.motta.cpa"
   const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
   return withScheme.replace(/\/+$/, "")
 }

@@ -307,7 +307,7 @@ WRITING GUIDELINES:
   const appUrl =
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.APP_BASE_URL ||
-    "https://motta.cpa"
+    "https://hub.motta.cpa"
   const hubUrl = appUrl.startsWith("http") ? appUrl : `https://${appUrl}`
   const galleryUrl = `${hubUrl}/motta-alliance`
 

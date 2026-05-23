@@ -260,7 +260,7 @@ function defaultHubUrlFor(submissionId: string): string {
   const siteUrl =
     process.env.NEXT_PUBLIC_SITE_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
-    "https://mottahub-motta.vercel.app"
+    "https://hub.motta.cpa"
   // Mirrors components/intake/intake-list.tsx's deep-link convention.
   return `${siteUrl}/sales/intake?submission=${submissionId}`
 }

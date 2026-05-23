@@ -1,7 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/server"
 
 const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "ALFRED Ai <Info@mottafinancial.com>"
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
 
 // All email categories users can opt in/out of.
 // Each `notification_type` value emitted via /api/notifications/send is mapped
@@ -256,7 +256,7 @@ export function buildDebriefEmailHtml({
   debriefUrl: string
   logoUrl?: string
 }) {
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_BASE_URL || "https://mottahub-motta.vercel.app"
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_BASE_URL || "https://hub.motta.cpa"
   const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
 
   // Helper to render a Karbon deep link
@@ -637,7 +637,7 @@ export function buildProspectEmailHtml({
   const siteUrl =
     process.env.NEXT_PUBLIC_SITE_URL ||
     process.env.APP_BASE_URL ||
-    "https://mottahub-motta.vercel.app"
+    "https://hub.motta.cpa"
   const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
   const today = new Date().toLocaleDateString("en-US", {
     month: "long",
@@ -1412,7 +1412,7 @@ const newsHtml = `
       </table>`
     : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No updates were shipped yesterday — the Hub rests quietly.</p>`
 
-  // ── Section: Business Metrics (Appendix) ───────────────────────────────
+  // ── Section: Business Metrics (Appendix) ──────���────────────────────────
   const hasBusinessMetrics =
     (newIntakeForms && newIntakeForms.length > 0) ||
     (newFeedback && newFeedback.length > 0) ||

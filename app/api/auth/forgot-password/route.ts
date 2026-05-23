@@ -142,5 +142,5 @@ function resolveSiteUrl(request: NextRequest): string {
     return normalized.replace(/\/$/, "")
   }
 
-  return "https://mottahub-motta.vercel.app"
+  return "https://hub.motta.cpa"
 }

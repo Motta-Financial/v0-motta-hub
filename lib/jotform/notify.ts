@@ -23,7 +23,7 @@ import { sendCategoryEmail } from "@/lib/email"
 const APP_URL =
   process.env.NEXT_PUBLIC_APP_URL ||
   process.env.APP_BASE_URL ||
-  "https://motta.cpa"
+  "https://hub.motta.cpa"
 
 // Brand palette — mirrors lib/email.ts so the firm-wide intake email
 // matches the Tommy Recap / Debrief / Daily Briefing wrappers in
