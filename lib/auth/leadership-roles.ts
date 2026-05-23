@@ -9,7 +9,18 @@
  * as PPD.
  */
 
-export const LEADERSHIP_ROLES = ["Partner", "Principal", "Director"] as const
+/**
+ * The "Leadership" (PPD) access tier.
+ *
+ * - "Partner", "Principal", "Director" are the firm leadership chain.
+ * - "Admin" is included so non-leadership platform admins (e.g. the
+ *   back-end development lead) can run the same operational tooling
+ *   leadership uses — ProConnect imports, sync triggers, etc.
+ *   This keeps a single source of truth: anyone in `team_members`
+ *   with one of these four roles passes both `requireAdmin` and
+ *   `requireLeadership`.
+ */
+export const LEADERSHIP_ROLES = ["Partner", "Principal", "Director", "Admin"] as const
 
 export type LeadershipRole = (typeof LEADERSHIP_ROLES)[number]
 
