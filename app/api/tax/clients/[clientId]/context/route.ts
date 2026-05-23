@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
-import { searchTaxClients, computeTaxProfile, getClientDocuments } from "@/lib/tax/profile"
+import { computeTaxProfile, getClientDocuments } from "@/lib/tax/profile"
 
 /**
  * GET /api/tax/clients/[clientId]/context
@@ -40,15 +40,10 @@ export async function GET(
 
     const client = clientRes.data
 
-    // Fetch Hub contact linkage
-    const { data: hubContact } = await supabase
-      .from("contacts")
-      .select("id, karbon_contact_key, legacy_motta_client_id, primary_email, phone")
-      .or(`email.eq.${client.email || ""},karbon_contact_key.is.not.null`)
-      .limit(1)
-      .maybeSingle()
-
-    // Fetch latest engagements for context
+    // Fetch latest engagements for context. Hub-side identity (Karbon
+    // contact key, legacy Motta client id, Hub contact UUID) is NOT
+    // resolved here — this endpoint is ProConnect-only by design so
+    // ALFRED gets a single, consistent system of record.
     const { data: recentEngagements } = await supabase
       .from("proconnect_engagements_enriched")
       .select("engagement_id, tax_year, return_type, efile_status, preparer_name, user_defined_status_name")
@@ -67,10 +62,8 @@ export async function GET(
         businessName: client.business_name,
         clientType: client.client_type,
         isActive: client.client_state === "ACTIVE",
-        // Cross-references
-        hubContactId: hubContact?.id || null,
-        karbonKey: hubContact?.karbon_contact_key || null,
-        legacyId: hubContact?.legacy_motta_client_id || null,
+        // Cross-system identity (Karbon, Hub, legacy Motta id) is
+        // intentionally absent — /tax/* is ProConnect-only.
         // Contact for verification
         email: client.email,
         phone: client.phone,

@@ -10,7 +10,9 @@ import { computeTaxProfile, getClientDocuments } from "@/lib/tax/profile"
  * - All tax returns on file with full engagement details
  * - Return summaries by year and form type
  * - Associated preparers
- * - Hub linkage (Karbon, Ignition)
+ *
+ * Cross-system identity (Karbon / Ignition / Hub linkage) is NOT
+ * surfaced here — this route is ProConnect-only by design.
  */
 export async function GET(
   _req: NextRequest,
@@ -21,8 +23,10 @@ export async function GET(
   try {
     const supabase = createAdminClient()
 
-    // Fetch client, their engagements, and profile mappings in parallel
-    const [clientRes, engagementsRes, mappingRes, profilesRes, profileSummary, documents] = await Promise.all([
+    // Fetch client, their engagements, and profile mappings in parallel.
+    // master_client_mapping was intentionally dropped — Hub/Karbon/Ignition
+    // identity does not belong on a ProConnect-native /tax/* surface.
+    const [clientRes, engagementsRes, profilesRes, profileSummary, documents] = await Promise.all([
       supabase
         .from("proconnect_clients")
         .select("*")
@@ -33,11 +37,6 @@ export async function GET(
         .select("*")
         .eq("proconnect_client_id", clientId)
         .order("tax_year", { ascending: false }),
-      supabase
-        .from("master_client_mapping")
-        .select("*")
-        .eq("proconnect_client_id", clientId)
-        .maybeSingle(),
       supabase
         .from("proconnect_profiles")
         .select("profile_id, display_name, email, team_members(full_name, email)"),
@@ -55,7 +54,6 @@ export async function GET(
 
     const client = clientRes.data
     const engagements = engagementsRes.data || []
-    const mapping = mappingRes.data
 
     // Build preparer lookup
     const preparerMap = new Map<string, { name: string; email: string | null }>()
@@ -166,15 +164,7 @@ export async function GET(
         efileCounts,
         preparers: Array.from(preparers),
       },
-      hubLinkage: mapping
-        ? {
-            internalClientId: mapping.internal_client_id,
-            karbonClientId: mapping.karbon_client_id,
-            ignitionClientId: mapping.ignition_client_id,
-            karbonUrl: mapping.karbon_url,
-            linkedSystems: mapping.linked_systems || [],
-          }
-        : null,
+      hubLinkage: null,
       // Enhanced profile data for research and ALFRED
       taxProfile: profileSummary
         ? {

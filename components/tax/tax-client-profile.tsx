@@ -103,13 +103,7 @@ type TaxProfileResponse = {
     efileCounts: Record<string, number>
     preparers: string[]
   }
-  hubLinkage: {
-    internalClientId: string
-    karbonClientId: string | null
-    ignitionClientId: string | null
-    karbonUrl: string | null
-    linkedSystems: string[]
-  } | null
+  hubLinkage: null
   taxProfile: {
     totalReturns: number
     taxYearsFiled: number[]
@@ -206,7 +200,7 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
     )
   }
 
-  const { client, engagements, summary, hubLinkage, taxProfile, documents } = data
+  const { client, engagements, summary, taxProfile, documents } = data
   const isSubEntity =
     client.proconnectEntityId &&
     client.topLevelEntityId &&
@@ -286,28 +280,7 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
             </div>
           </div>
 
-          {/* Hub linkage badges */}
-          {hubLinkage && hubLinkage.linkedSystems.length > 0 && (
-            <div className="flex items-center gap-2">
-              <Link2 className="h-4 w-4 text-muted-foreground" />
-              {hubLinkage.karbonUrl && (
-                <a
-                  href={hubLinkage.karbonUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs bg-stone-100 hover:bg-stone-200 px-2 py-1 rounded transition-colors"
-                >
-                  Karbon
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
-              {hubLinkage.ignitionClientId && (
-                <span className="text-xs bg-stone-100 px-2 py-1 rounded">
-                  Ignition linked
-                </span>
-              )}
-            </div>
-          )}
+          {/* Hub linkage badges removed — /tax/* is ProConnect-only. */}
         </div>
       </header>
 
@@ -442,20 +415,6 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
               </div>
             </div>
           </div>
-          {hubLinkage && (
-            <div className="mt-3 pt-3 border-t border-stone-200 flex flex-wrap gap-3 text-xs">
-              <span className="text-muted-foreground">Also linked to:</span>
-              {hubLinkage.karbonClientId && (
-                <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700">Karbon</Badge>
-              )}
-              {hubLinkage.ignitionClientId && (
-                <Badge variant="outline" className="text-xs bg-violet-50 text-violet-700">Ignition</Badge>
-              )}
-              {hubLinkage.internalClientId && (
-                <Badge variant="outline" className="text-xs bg-emerald-50 text-emerald-700">Hub Contact</Badge>
-              )}
-            </div>
-          )}
         </CardContent>
       </Card>
 
@@ -629,18 +588,6 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
               <div>
                 <div className="text-xs text-muted-foreground uppercase tracking-wide">Top-Level Entity</div>
                 <div className="font-mono text-xs mt-1">{client.topLevelEntityId}</div>
-              </div>
-            )}
-            {hubLinkage?.internalClientId && (
-              <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide">Hub Contact ID</div>
-                <div className="font-mono text-xs mt-1">{hubLinkage.internalClientId}</div>
-              </div>
-            )}
-            {hubLinkage?.karbonClientId && (
-              <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide">Karbon Key</div>
-                <div className="font-mono text-xs mt-1">{hubLinkage.karbonClientId}</div>
               </div>
             )}
             {client.taxId && (

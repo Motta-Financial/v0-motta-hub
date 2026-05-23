@@ -6,11 +6,9 @@ import Link from "next/link"
 import {
   Users,
   FileText,
-  Link2,
   AlertCircle,
   Search as SearchIcon,
   Filter as FilterIcon,
-  ExternalLink,
   Network,
 } from "lucide-react"
 import {
@@ -37,10 +35,9 @@ import { cn } from "@/lib/utils"
 
 // ── Client row shape ─────────────────────────────────────────────────
 // Mirrors what /api/tax/clients returns: each ProConnect client is
-// enriched with (a) a flat array of returns we have on file grouped
-// by form code, and (b) the matching row from the master_client_mapping
-// view so the UI can deep-link out to the Karbon / Ignition surface
-// for the same client.
+// enriched with a flat array of returns we have on file grouped by
+// form code. This surface is ProConnect-only — Karbon/Ignition/Hub
+// linkage is no longer surfaced here.
 type ClientRow = {
   id: string
   proconnect_client_id: string | null
@@ -77,14 +74,6 @@ type ClientRow = {
     latestPreparer: string | null
     latestUpdatedAt: string | null
   }>
-  mapping: {
-    internal_client_id: string
-    karbon_client_id: string | null
-    ignition_client_id: string | null
-    karbon_url: string | null
-    linked_systems: string[]
-    link_count: number
-  } | null
 }
 
 const fetcher = (u: string) =>
@@ -100,9 +89,6 @@ const fetcher = (u: string) =>
         withoutReturns: number
         totalReturns: number
         totalAmended: number
-        linkedToKarbon: number
-        linkedToIgnition: number
-        unmappedToHub: number
         byState: Record<string, number>
         subEntities: number
       }
@@ -160,9 +146,9 @@ export function TaxClientsClient() {
           ProConnect Clients
         </h1>
         <p className="text-sm text-muted-foreground">
-          The full ProConnect client roster, enriched with the returns we have
-          on file and cross-system links to the Motta Hub master record
-          (Karbon, Ignition).
+          The full ProConnect client roster, enriched with the engagements
+          we have on file. All data is sourced directly from the ProConnect
+          API — no cross-system identity is mixed in.
         </p>
       </header>
 
@@ -195,24 +181,26 @@ export function TaxClientsClient() {
           tone="emerald"
         />
         <KpiCard
-          label="Linked to Karbon"
-          value={data ? fmtNumber(data.stats.linkedToKarbon) : "—"}
+          label="Sub-Entities"
+          value={data ? fmtNumber(data.stats.subEntities) : "—"}
           subtitle={
-            data ? `${data.stats.linkedToIgnition} also in Ignition` : ""
+            data
+              ? "Children of a parent record in ProConnect"
+              : ""
           }
-          icon={Link2}
+          icon={Network}
           tone="blue"
         />
         <KpiCard
-          label="Unmapped to Hub"
-          value={data ? fmtNumber(data.stats.unmappedToHub) : "—"}
+          label="Without Returns"
+          value={data ? fmtNumber(data.stats.withoutReturns) : "—"}
           subtitle={
             data
-              ? `${fmtNumber(data.stats.subEntities)} sub-entit${data.stats.subEntities === 1 ? "y" : "ies"} in roster`
-              : "Needs cross-system match"
+              ? `${fmtNumber(data.stats.totalClients - data.stats.withoutReturns)} have at least one return`
+              : "No engagements synced yet"
           }
           icon={AlertCircle}
-          tone={data && data.stats.unmappedToHub > 0 ? "amber" : "stone"}
+          tone={data && data.stats.withoutReturns > 0 ? "amber" : "stone"}
         />
       </div>
 
@@ -308,7 +296,6 @@ export function TaxClientsClient() {
                     <TableHead>Returns on file</TableHead>
                     <TableHead className="w-[130px]">Preparer(s)</TableHead>
                     <TableHead className="w-[120px]">Last activity</TableHead>
-                    <TableHead>Hub linkage</TableHead>
                     <TableHead className="w-[100px]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -510,34 +497,6 @@ export function TaxClientsClient() {
                             rec {new Date(c.updated_at).toLocaleDateString()}
                           </div>
                         ) : null}
-                      </TableCell>
-                      <TableCell>
-                        {c.mapping ? (
-                          <div className="flex items-center gap-1.5">
-                            <Badge
-                              variant="outline"
-                              className="text-[10px] bg-emerald-50 text-emerald-900 border-emerald-200"
-                            >
-                              {c.mapping.link_count}-system
-                            </Badge>
-                            <Link
-                              href={`/admin/master-client-mapping?q=${encodeURIComponent(
-                                c.mapping.internal_client_id,
-                              )}`}
-                              className="text-[11px] text-blue-700 hover:underline inline-flex items-center gap-0.5"
-                            >
-                              View in hub
-                              <ExternalLink className="h-3 w-3" />
-                            </Link>
-                          </div>
-                        ) : (
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] bg-amber-50 text-amber-900 border-amber-200"
-                          >
-                            Unmapped
-                          </Badge>
-                        )}
                       </TableCell>
                       <TableCell>
                         <Link href={`/tax/clients/${c.proconnect_client_id}`}>
