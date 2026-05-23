@@ -61,6 +61,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { summarizePayments, isPaid } from "@/lib/ignition/payments"
 import { cn } from "@/lib/utils"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
+import { PlatformLinksCard } from "@/components/clients/platform-links-card"
 import { AlfredErrorCard } from "@/components/alfred-error"
 import { clientTypeBadgeClass, type ClientType } from "@/lib/client-type"
 
@@ -1197,6 +1198,12 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
               </CardContent>
             </Card>
           </div>
+
+          {/* Platform Links — Master Hub Contact ↔ Karbon / ProConnect /
+              Ignition. Lives directly under the Overview header so
+              teammates can see (and adjust) the cross-platform identity
+              without scrolling past Karbon work items. */}
+          <PlatformLinksCard contactId={client.id} />
 
           {/* Ignition Billing Info (if linked) */}
           {ignitionClients && ignitionClients.length > 0 ? (

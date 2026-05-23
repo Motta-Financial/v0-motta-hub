@@ -24,6 +24,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { findOrCreateClient } from "@/lib/karbon/client-sync"
+import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 import { buildProspectEmailHtml, sendEmail } from "@/lib/email"
 
 interface CreateProspectBody {
@@ -71,6 +72,24 @@ interface CreateProspectBody {
   // creator if omitted — most of the time the teammate filing the
   // form is also the one who will own the follow-up.
   assigned_to_id?: string | null
+
+  // Platform-push picker. The form auto-recommends these based on
+  // service_focus / business presence (see prospect-form.tsx) but the
+  // teammate can uncheck any of them. The Hub contact is ALWAYS
+  // created; these flags only control whether we queue a downstream
+  // mirror call.
+  //
+  // - push_to_karbon: true today actually performs the create+mirror.
+  //   This preserves the existing behaviour where every prospect ends
+  //   up in Karbon ready for a work item.
+  // - push_to_proconnect / push_to_ignition: stored as intent only;
+  //   the actual API calls are queued by their respective sync
+  //   workers (or invoked from the contact detail page) once the
+  //   relevant integrations are wired up. The status starts as
+  //   'queued' and the worker flips it to 'pushed' / 'failed'.
+  push_to_karbon?: boolean
+  push_to_proconnect?: boolean
+  push_to_ignition?: boolean
 }
 
 function isUuid(s: string | undefined | null): s is string {
@@ -114,6 +133,25 @@ export async function POST(req: NextRequest) {
 
     const assigneeId = isUuid(body.assigned_to_id) ? body.assigned_to_id : body.created_by_id
 
+    // Decide platform-push intent. Defaults mirror the form's "what
+    // to recommend" logic so a curl-only client gets the same
+    // pipeline as the UI:
+    //   - Karbon: always recommended (every prospect is a billable
+    //     candidate).
+    //   - ProConnect: recommended when service_focus mentions tax.
+    //   - Ignition: recommended when there's a business name (the
+    //     proposal flow is almost always business-side).
+    const focus = (body.service_focus ?? "").toLowerCase()
+    const services = (body.services_requested ?? []).map((s) => s.toLowerCase())
+    const looksTax =
+      focus.includes("tax") ||
+      services.some((s) => s.includes("tax") || s.includes("1040") || s.includes("return"))
+    const hasBusiness = !!body.business_name?.trim()
+
+    const pushToKarbon = body.push_to_karbon ?? true
+    const pushToProconnect = body.push_to_proconnect ?? looksTax
+    const pushToIgnition = body.push_to_ignition ?? hasBusiness
+
     const { data: inserted, error: insertError } = await supabase
       .from("prospect_submissions")
       .insert({
@@ -151,6 +189,15 @@ export async function POST(req: NextRequest) {
 
         assigned_to_id: assigneeId,
         lead_status: "new",
+
+        // Platform-push intent. Karbon "queued" only when actually
+        // pushing; the others stay queued until their workers run.
+        push_to_karbon: pushToKarbon,
+        karbon_push_status: pushToKarbon ? "queued" : "skipped",
+        push_to_proconnect: pushToProconnect,
+        proconnect_push_status: pushToProconnect ? "queued" : "skipped",
+        push_to_ignition: pushToIgnition,
+        ignition_push_status: pushToIgnition ? "queued" : "skipped",
       })
       .select("id")
       .single()
@@ -163,41 +210,91 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // ── 3. Auto-link / create Karbon contact ───────────────────────
-    // Best-effort: failures here don't fail the request. The row is
-    // already persisted; the detail page will show the "no linked
-    // contact yet" affordance and the teammate can resolve manually.
-    try {
-      const linkResult = await findOrCreateClient(
-        {
-          email: body.submitter_email ?? undefined,
-          fullName: fullName ?? undefined,
-          businessName: body.business_name ?? undefined,
-          phone: body.submitter_phone ?? undefined,
-        },
-        { autoCreate: true, source: "Motta Hub Prospect Form" },
-      )
+    // ── 3. Master Hub Contact (always) + optional Karbon push ─────
+    // The Master Hub Contact is the single source of truth (per the
+    // Motta Hub data model). Calendly/Jotform/Zoom and now the
+    // Prospect Form all funnel into the same `contacts` table; this
+    // route used to call Karbon-first, which meant a Karbon outage
+    // could leave a prospect un-linked. Hub-first guarantees we
+    // always have a Hub contact id to redirect the teammate to.
+    //
+    // Karbon push is now governed by `pushToKarbon`. When true we
+    // still call findOrCreateClient (which mirrors back into the
+    // Hub) so the Karbon-mirrored fields like karbon_contact_key
+    // get populated. When false we skip the push entirely — the
+    // teammate can trigger it later from the detail page.
+    let finalContactId: string | null = null
+    let finalOrganizationId: string | null = null
+    let finalLinkMethod: string | null = null
 
-      if (linkResult.contact_id || linkResult.organization_id) {
-        const linkMethod =
+    try {
+      const hub = await findOrCreateHubContact(
+        {
+          email: body.submitter_email ?? null,
+          fullName: fullName ?? null,
+          businessName: body.business_name ?? null,
+          phone: body.submitter_phone ?? null,
+        },
+        { source: "prospect_form", supabase },
+      )
+      finalContactId = hub.contact_id
+      finalOrganizationId = hub.organization_id
+      finalLinkMethod = hub.created ? "auto_hub_created" : `auto_hub_${hub.method}`
+    } catch (err) {
+      console.error("[v0] POST /api/prospects hub create failed:", err)
+    }
+
+    if (pushToKarbon) {
+      try {
+        const linkResult = await findOrCreateClient(
+          {
+            email: body.submitter_email ?? undefined,
+            fullName: fullName ?? undefined,
+            businessName: body.business_name ?? undefined,
+            phone: body.submitter_phone ?? undefined,
+          },
+          { autoCreate: true, source: "Motta Hub Prospect Form" },
+        )
+        // Karbon's findOrCreateClient writes back to contacts/orgs
+        // already; prefer its IDs since they carry the Karbon keys.
+        if (linkResult.contact_id) finalContactId = linkResult.contact_id
+        if (linkResult.organization_id) finalOrganizationId = linkResult.organization_id
+
+        finalLinkMethod =
           linkResult.method === "karbon_created"
             ? "auto_karbon_created"
             : linkResult.method === "karbon_match"
               ? "auto_karbon_match"
-              : "auto_email" // supabase_match — most likely matched by email
+              : finalLinkMethod ?? "auto_email"
 
         await supabase
           .from("prospect_submissions")
           .update({
-            contact_id: linkResult.contact_id,
-            organization_id: linkResult.organization_id,
-            link_method: linkMethod,
-            linked_at: new Date().toISOString(),
+            karbon_push_status: linkResult.contact_id || linkResult.organization_id
+              ? "pushed"
+              : "failed",
+            karbon_pushed_at: new Date().toISOString(),
           })
           .eq("id", inserted.id)
+      } catch (err) {
+        console.error("[v0] POST /api/prospects Karbon push failed:", err)
+        await supabase
+          .from("prospect_submissions")
+          .update({ karbon_push_status: "failed" })
+          .eq("id", inserted.id)
       }
-    } catch (err) {
-      console.error("[v0] POST /api/prospects auto-link failed:", err)
+    }
+
+    if (finalContactId || finalOrganizationId) {
+      await supabase
+        .from("prospect_submissions")
+        .update({
+          contact_id: finalContactId,
+          organization_id: finalOrganizationId,
+          link_method: finalLinkMethod,
+          linked_at: new Date().toISOString(),
+        })
+        .eq("id", inserted.id)
     }
 
     // ── 4. Team-wide notification — UNCONDITIONAL ──────────────────

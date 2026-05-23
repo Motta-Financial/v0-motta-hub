@@ -81,6 +81,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { useUser } from "@/hooks/use-user"
+import { PlatformPushRow } from "@/components/prospects/platform-push-row"
 
 // ─────────────────────────────────────────────────────────────────────
 // Option sets — sourced from the actual values observed in
@@ -241,6 +242,27 @@ export function ProspectForm() {
   //    debrief, where everything goes in one free-form notes field) ──
   const [internalNotes, setInternalNotes] = useState("")
 
+  // ── Platform-push picker ───────────────────────────────────────────
+  // The Master Hub Contact is always created from the form. These
+  // toggles only control which downstream platforms we ALSO push to
+  // at submit time. Karbon is the only push that is fully wired today
+  // (it auto-creates the Karbon contact + mirrors Karbon keys back).
+  // ProConnect / Ignition pushes are recorded as intent — the
+  // contact detail page will show a "Push now" affordance once those
+  // workers are wired up.
+  //
+  // We initialize each toggle to undefined and let the auto-recommend
+  // effect below set it based on the selected services. The teammate
+  // can override at any time; once they touch a toggle we stop
+  // auto-recommending for that platform (tracked via the *Touched
+  // refs).
+  const [pushToKarbon, setPushToKarbon] = useState(true)
+  const [pushToProconnect, setPushToProconnect] = useState(false)
+  const [pushToIgnition, setPushToIgnition] = useState(false)
+  const karbonTouched = useRef(false)
+  const proconnectTouched = useRef(false)
+  const ignitionTouched = useRef(false)
+
   // ── Action Items ───────────────────────────────────────────────────
   const [actionItems, setActionItems] = useState<ActionItem[]>([])
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
@@ -276,6 +298,22 @@ export function ProspectForm() {
     }
     fetchTeamMembers()
   }, [])
+
+  // ── Auto-recommend platform pushes ─────────────────────────────────
+  // Re-runs whenever the teammate adjusts services or business name.
+  // We only update toggles that the teammate has not explicitly
+  // touched — once they uncheck a recommendation we never reinstate
+  // it from a downstream service change.
+  useEffect(() => {
+    const services = selectedServices.map((s) => s.toLowerCase())
+    const looksTax = services.some(
+      (s) => s.includes("tax") || s.includes("1040") || s.includes("return"),
+    )
+    const hasBiz = !!businessName.trim() || hasBusinessServices
+    if (!karbonTouched.current) setPushToKarbon(true)
+    if (!proconnectTouched.current) setPushToProconnect(looksTax)
+    if (!ignitionTouched.current) setPushToIgnition(hasBiz)
+  }, [selectedServices, businessName, hasBusinessServices])
 
   // ── Validation ─────────────────────────────────────────────────────
   // Required fields are driven by the selected services:
@@ -453,6 +491,11 @@ export function ProspectForm() {
           business_summary: onlyPersonal ? null : businessSummary,
 
           internal_notes: internalNotes,
+
+          // Platform-push intent (see Platform Sync card below).
+          push_to_karbon: pushToKarbon,
+          push_to_proconnect: pushToProconnect,
+          push_to_ignition: pushToIgnition,
 
           // Action items — same shape as debriefs
           action_items: actionItems.map((item) => ({
@@ -1071,12 +1114,78 @@ export function ProspectForm() {
         </CardContent>
       </Card>
 
+      {/* ─── Platform Sync ─── */}
+      {/*
+        Master Hub Contact is always created on submit (Hub-first).
+        These toggles let the teammate decide which downstream
+        platforms to ALSO create-or-link a contact in. The picker
+        auto-recommends:
+          • Karbon — always recommended (every prospect is billable).
+          • ProConnect — when services include tax / 1040 / returns.
+          • Ignition — when the prospect has a business (proposal flow).
+        Touching any toggle "pins" the teammate's choice; we never
+        re-recommend after that.
+      */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Platform Sync</CardTitle>
+          <CardDescription>
+            We always create the Master Hub Contact. Pick which other
+            platforms to also create or link this prospect in. Recommendations
+            update automatically as you fill out the form — uncheck any that
+            don&apos;t apply.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <PlatformPushRow
+            id="push-karbon"
+            label="Karbon"
+            description="CRM + work-item home. Pushes immediately on submit."
+            recommended
+            checked={pushToKarbon}
+            onChange={(v) => {
+              karbonTouched.current = true
+              setPushToKarbon(v)
+            }}
+          />
+          <PlatformPushRow
+            id="push-proconnect"
+            label="ProConnect"
+            description="Tax-prep platform. Recommended for tax engagements."
+            recommended={(() => {
+              const s = selectedServices.map((x) => x.toLowerCase())
+              return s.some(
+                (x) => x.includes("tax") || x.includes("1040") || x.includes("return"),
+              )
+            })()}
+            checked={pushToProconnect}
+            onChange={(v) => {
+              proconnectTouched.current = true
+              setPushToProconnect(v)
+            }}
+            queuedNote="Queued — sync runs from contact detail page."
+          />
+          <PlatformPushRow
+            id="push-ignition"
+            label="Ignition"
+            description="Proposals + engagement letters. Recommended for businesses."
+            recommended={!!businessName.trim() || hasBusinessServices}
+            checked={pushToIgnition}
+            onChange={(v) => {
+              ignitionTouched.current = true
+              setPushToIgnition(v)
+            }}
+            queuedNote="Queued — sync runs from contact detail page."
+          />
+        </CardContent>
+      </Card>
+
       {/* ─── Submit ─── */}
       <div className="flex flex-col gap-3 rounded-md border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-xs text-muted-foreground">
-          On submit, we&apos;ll auto-match a Karbon contact (or create one), email the
-          team, and take you to the prospect&apos;s detail page where you can create
-          the Karbon Work Item.
+          On submit, we&apos;ll create the Master Hub Contact, push to any
+          selected platforms above, email the team, and take you to the
+          prospect&apos;s detail page.
         </div>
         <div className="flex items-center gap-2">
           {error && (

@@ -33,6 +33,7 @@ import {
   zoomFetch,
   type ZoomConnection,
 } from "@/lib/zoom-auth"
+import { processRecentZoomParticipants } from "@/lib/zoom/process-meeting-participants"
 
 export interface SyncRecentZoomDataOptions {
   supabase: SupabaseClient
@@ -55,6 +56,14 @@ export interface SyncRecentZoomDataResult {
   connections: number
   meetingsUpserted: number
   recordingsUpserted: number
+  /**
+   * Aggregated stats from the participant → Hub-contact bridge that
+   * runs after meeting upserts. Zero when no new external participants
+   * were seen in the meetings we processed this run.
+   */
+  participantsScanned: number
+  hubContactsCreated: number
+  hubContactsMatched: number
   errors: Array<{ zoom_email: string; error: string }>
 }
 
@@ -81,9 +90,20 @@ export async function syncRecentZoomData(
   const errors: Array<{ zoom_email: string; error: string }> = []
   let meetingsUpserted = 0
   let recordingsUpserted = 0
+  let participantsScanned = 0
+  let hubContactsCreated = 0
+  let hubContactsMatched = 0
 
   if (connections.length === 0) {
-    return { connections: 0, meetingsUpserted, recordingsUpserted, errors }
+    return {
+      connections: 0,
+      meetingsUpserted,
+      recordingsUpserted,
+      participantsScanned,
+      hubContactsCreated,
+      hubContactsMatched,
+      errors,
+    }
   }
 
   const now = new Date()
@@ -254,6 +274,36 @@ export async function syncRecentZoomData(
         .from("zoom_connections")
         .update({ last_synced_at: new Date().toISOString() })
         .eq("id", conn.id)
+
+      // ── Hub contact bridge ───────────────────────────────────
+      // After meetings are upserted, walk recently-ended meetings
+      // for this connection and turn each external participant into
+      // a Master Hub Contact (auto-created if none exists). The call
+      // is best-effort — Zoom participant fetches frequently 404 for
+      // instant meetings, and we don't want to fail the whole sync
+      // over it. Each connection processes up to 50 meetings per
+      // run; the watermark column ensures we eventually catch up.
+      try {
+        const partResult = await processRecentZoomParticipants(
+          supabase,
+          conn as ZoomConnection,
+          { sinceDays, maxMeetings: 50 },
+        )
+        participantsScanned += partResult.participantsSeen
+        hubContactsCreated += partResult.contactsCreated
+        hubContactsMatched += partResult.contactsMatched
+        if (partResult.errors.length > 0) {
+          console.warn(
+            `[v0] [Zoom Recent Sync] ${conn.zoom_email} participant errors:`,
+            partResult.errors,
+          )
+        }
+      } catch (err) {
+        console.error(
+          `[v0] [Zoom Recent Sync] ${conn.zoom_email} participant processor crashed (non-fatal):`,
+          err,
+        )
+      }
     } catch (err) {
       errors.push({
         zoom_email: conn.zoom_email,
@@ -270,6 +320,9 @@ export async function syncRecentZoomData(
     connections: connections.length,
     meetingsUpserted,
     recordingsUpserted,
+    participantsScanned,
+    hubContactsCreated,
+    hubContactsMatched,
     errors,
   }
 }

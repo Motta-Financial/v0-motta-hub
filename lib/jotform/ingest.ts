@@ -9,6 +9,7 @@ import { buildIntakeRow } from "./parse"
 import { buildFeedbackRow } from "./parse-feedback"
 import { autoLinkIntakeSubmission, autoLinkFeedbackSubmission } from "./match-client"
 import { findOrCreateClient } from "@/lib/karbon/client-sync"
+import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
 import { resolvePreferredTeamMember } from "./assign"
 import { enrichIntakeSubmission } from "./enrich"
@@ -83,8 +84,46 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
       // First try the standard auto-link (Supabase-only)
       let result = await autoLinkIntakeSubmission(supabase, persisted.id, persisted)
 
-      // If no match found, use the enhanced Karbon search + create flow
+      // If no match found, use the enhanced Karbon search + create flow.
+      // Karbon stays the source of truth for billable client identity,
+      // but the Hub contact is created/matched FIRST so that:
+      //   1. A Karbon outage never blocks Master Hub Contact creation
+      //      (Hub-first invariant — Jotform/Calendly/Zoom always
+      //      produce a Hub contact regardless of downstream platform
+      //      health).
+      //   2. The Karbon push step has a stable contacts.id to mirror
+      //      onto, eliminating the race where parallel Jotform
+      //      submissions could each try to create the same Karbon
+      //      contact.
+      // We still preserve the existing behaviour of auto-pushing to
+      // Karbon for Jotform (per the user's intake-routing decision) —
+      // the Hub-first call is purely a safety net + dedupe key.
       if (!result?.link_method) {
+        let hubFallback: { contact_id: string | null; organization_id: string | null } = {
+          contact_id: null,
+          organization_id: null,
+        }
+        try {
+          const hub = await findOrCreateHubContact(
+            {
+              email: persisted.submitter_email ?? null,
+              fullName: persisted.submitter_full_name ?? null,
+              businessName: persisted.business_name ?? null,
+              phone: persisted.phone_number ?? null,
+            },
+            { source: "jotform_intake", supabase },
+          )
+          hubFallback = {
+            contact_id: hub.contact_id,
+            organization_id: hub.organization_id,
+          }
+        } catch (err) {
+          console.log(
+            "[Jotform] hub-first create failed (will still try Karbon):",
+            (err as Error).message,
+          )
+        }
+
         const karbonResult = await findOrCreateClient(
           {
             email: persisted.submitter_email || undefined,
@@ -95,14 +134,25 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
           { autoCreate: true, source: "Jotform Intake" }
         )
 
-        if (karbonResult.contact_id || karbonResult.organization_id) {
-          // Update the submission with the new link
-          const linkMethod = karbonResult.method === "karbon_created" ? "auto_karbon_created" : "auto_karbon_match"
+        // Karbon path won — use its IDs (it has Karbon keys attached).
+        // Karbon path failed — fall back to whatever the Hub-first
+        // call produced so we never leave the submission unlinked.
+        const finalContactId = karbonResult.contact_id ?? hubFallback.contact_id
+        const finalOrganizationId =
+          karbonResult.organization_id ?? hubFallback.organization_id
+
+        if (finalContactId || finalOrganizationId) {
+          const linkMethod =
+            karbonResult.method === "karbon_created"
+              ? "auto_karbon_created"
+              : karbonResult.contact_id || karbonResult.organization_id
+                ? "auto_karbon_match"
+                : "auto_hub_created"
           await supabase
             .from("jotform_intake_submissions")
             .update({
-              contact_id: karbonResult.contact_id,
-              organization_id: karbonResult.organization_id,
+              contact_id: finalContactId,
+              organization_id: finalOrganizationId,
               link_method: linkMethod,
               linked_at: new Date().toISOString(),
             })
@@ -119,7 +169,9 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
             }
           }
 
-          console.log(`[Jotform] Karbon ${karbonResult.method}: ${karbonResult.reason}`)
+          console.log(
+            `[Jotform] resolved intake: hub=${!!hubFallback.contact_id || !!hubFallback.organization_id} karbon=${karbonResult.method} reason=${karbonResult.reason ?? "n/a"}`,
+          )
         }
       } else {
         console.log(`[Jotform] auto-linked intake ${submission.id} via ${result.link_method}: ${result.reason}`)
