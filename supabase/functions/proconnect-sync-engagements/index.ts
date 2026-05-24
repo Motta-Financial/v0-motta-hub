@@ -84,6 +84,7 @@ interface ProConnectEngagement {
   modifiedBy?: { profileId?: string }
   createdDate?: string
   modifiedDate?: string
+  userDefinedStatus?: string
   taxFiling?: {
     filings?: Array<{
       filingStatuses?: Array<{ status?: string; date?: string }>
@@ -164,7 +165,7 @@ function mapEngagementToRow(eng: ProConnectEngagement): MappedEngagement {
     engagement_state: eng.state ?? null,
     status: eng.status ?? null,
     work_status: eng.workStatus ?? null,
-    user_defined_status_id: eng.customStatus ?? null,
+    user_defined_status_id: eng.userDefinedStatus ?? null,
     efile_status: getLatestEfileStatus(eng),
     assignee_profile_id: eng.assignee?.profileId ?? null,
     assignee_auth_id: eng.assignee?.authId ?? null,
