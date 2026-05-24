@@ -2,18 +2,18 @@
 /**
  * ProConnect Sync Engagements - Supabase Edge Function (Deno Runtime)
  *
- * Pulls tax return engagements from the ProConnect API for a given year and
- * optional client range, then upserts them into proconnect_engagements.
- * Supports batch sync (offset/limit), single-client sync, and dry-run mode.
+ * Pulls ALL tax return engagements for a given year from ProConnect in a
+ * single API call (the oiiClientId filter is ignored server-side) and
+ * upserts them into proconnect_engagements.
  *
  * NO AUTH REQUIRED - Supabase gateway handles auth via apikey header.
  * "Verify JWT with legacy secret" should be OFF in function settings.
  *
- * Env vars (set via `supabase secrets set`):
- * - SUPABASE_URL (auto)
- * - SUPABASE_SERVICE_ROLE_KEY (auto)
- * - PROCONNECT_CLIENT_ID
- * - PROCONNECT_CLIENT_SECRET
+ * Request body: { year: number, dryRun?: boolean }
+ *
+ * Env vars (auto-injected by Supabase):
+ * - SUPABASE_URL
+ * - SUPABASE_SERVICE_ROLE_KEY
  */
 
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2"
@@ -40,10 +40,10 @@ const REFRESH_TOKEN_FUNCTION_URL =
   "https://gylupzxitoebhqjnvzuw.supabase.co/functions/v1/proconnect-refresh-token"
 
 const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000
-const PARALLEL_CLIENTS = 3
 const MAX_RETRIES = 5
 const RETRY_BASE_MS = 600
-const WALL_CLOCK_LIMIT_MS = 360_000 // 360s — stop 40s before hard limit
+const WALL_CLOCK_LIMIT_MS = 360_000 // stop 40s before Supabase's hard limit
+const UPSERT_BATCH_SIZE = 100
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -56,35 +56,25 @@ interface StoredToken {
 }
 
 interface SyncRequest {
-  syncType?: "incremental" | "backfill" | "single_client"
   year: number
-  clientOffset?: number
-  clientLimit?: number
   dryRun?: boolean
-  clientId?: string
-}
-
-interface ProConnectClient {
-  proconnect_client_id: string
-  proconnect_entity_id: string | null
 }
 
 interface ProConnectEngagement {
   engagementId: string
   clientId: string
   period: string
-  type: string
+  type?: string
   name?: string
   state?: string
   status?: string
   workStatus?: string
-  customStatus?: string
+  userDefinedStatus?: string
   assignee?: { profileId?: string; authId?: string }
   createdBy?: { profileId?: string }
   modifiedBy?: { profileId?: string }
   createdDate?: string
   modifiedDate?: string
-  userDefinedStatus?: string
   taxFiling?: {
     filings?: Array<{
       filingStatuses?: Array<{ status?: string; date?: string }>
@@ -96,8 +86,8 @@ interface MappedEngagement {
   engagement_id: string
   proconnect_client_id: string
   tax_year: number
-  return_type: string
-  form_type: string
+  return_type: string | null
+  form_type: string | null
   engagement_name: string | null
   engagement_state: string | null
   status: string | null
@@ -119,10 +109,6 @@ interface SyncResponse {
   success: boolean
   status: "completed" | "partial" | "failed"
   year: number
-  clientOffset: number
-  clientLimit: number
-  nextClientOffset: number
-  clientsProcessed: number
   engagementsFound: number
   engagementsSynced: number
   errors: string[]
@@ -139,13 +125,12 @@ function getLatestEfileStatus(eng: ProConnectEngagement): string | null {
   let latestDate = new Date(0)
 
   for (const filing of filings) {
-    const statuses = filing.filingStatuses || []
-    for (const status of statuses) {
-      if (status.date) {
-        const date = new Date(status.date)
-        if (date > latestDate) {
-          latestDate = date
-          latest = status
+    for (const s of filing.filingStatuses || []) {
+      if (s.date) {
+        const d = new Date(s.date)
+        if (d > latestDate) {
+          latestDate = d
+          latest = s
         }
       }
     }
@@ -156,9 +141,10 @@ function getLatestEfileStatus(eng: ProConnectEngagement): string | null {
 
 function mapEngagementToRow(eng: ProConnectEngagement): MappedEngagement {
   if (!eng.type) {
-    console.warn("[v0] Engagement missing type", eng.engagementId)
+    console.warn("[v0] Engagement missing type:", eng.engagementId)
   }
 
+  const now = new Date().toISOString()
   return {
     engagement_id: eng.engagementId,
     proconnect_client_id: eng.clientId,
@@ -178,8 +164,8 @@ function mapEngagementToRow(eng: ProConnectEngagement): MappedEngagement {
     proconnect_created_at: eng.createdDate ?? null,
     proconnect_modified_at: eng.modifiedDate ?? null,
     raw_json: eng,
-    synced_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    synced_at: now,
+    updated_at: now,
   }
 }
 
@@ -196,7 +182,6 @@ async function fetchWithRetry(
     try {
       const res = await fetch(url, options)
 
-      // Retry on 429 or 5xx
       if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
         const backoff = RETRY_BASE_MS * Math.pow(2, attempt)
         console.log(
@@ -206,16 +191,11 @@ async function fetchWithRetry(
         continue
       }
 
-      // Do not retry permanent 4xx except 429
-      if (res.status >= 400 && res.status < 500 && res.status !== 429) {
-        return res
-      }
-
       return res
     } catch (e) {
       const backoff = RETRY_BASE_MS * Math.pow(2, attempt)
       console.log(`[v0] Attempt ${attempt + 1}/${retries}: fetch error — ${e}`)
-      await sleep(backoff)
+      if (attempt < retries - 1) await sleep(backoff)
     }
   }
 
@@ -227,9 +207,8 @@ async function refreshTokenIfNeeded(
   token: StoredToken,
   serviceRoleKey: string,
 ): Promise<StoredToken> {
-  const expiresAt = new Date(token.expires_at)
-  const now = new Date()
-  const timeUntilExpiry = expiresAt.getTime() - now.getTime()
+  const timeUntilExpiry =
+    new Date(token.expires_at).getTime() - Date.now()
 
   if (timeUntilExpiry > TOKEN_EXPIRY_BUFFER_MS) {
     console.log(
@@ -256,35 +235,33 @@ async function refreshTokenIfNeeded(
     throw new Error(`Token refresh failed: ${refreshRes.status} — ${errorText}`)
   }
 
-  // Do NOT trust the refresh function response body for the new token —
-  // it may not include access_token. Re-read directly from the database
-  // so we always have the canonical, freshly-written value.
-  console.log(`[v0] Refresh function OK — re-reading token from database`)
+  // Re-read from DB — the refresh function body may not include access_token
+  console.log(`[v0] Refresh OK — re-reading token from database`)
 
-  const { data: freshToken, error: readError } = await supabase
+  const { data: fresh, error: readError } = await supabase
     .from("proconnect_oauth_tokens")
     .select("access_token, refresh_token, expires_at")
     .eq("is_singleton", true)
     .single()
 
-  if (readError || !freshToken) {
+  if (readError || !fresh) {
     throw new Error(
       `Failed to re-read token after refresh: ${readError?.message}`,
     )
   }
 
-  if (!freshToken.access_token) {
+  if (!fresh.access_token) {
     throw new Error(
       "Re-read token row has no access_token — refresh may have failed silently",
     )
   }
 
-  console.log("[v0] Re-read refreshed token from database")
+  console.log("[v0] Refreshed token re-read from database")
 
   return {
-    access_token: freshToken.access_token,
-    refresh_token: freshToken.refresh_token,
-    expires_at: freshToken.expires_at,
+    access_token: fresh.access_token,
+    refresh_token: fresh.refresh_token,
+    expires_at: fresh.expires_at,
   }
 }
 
@@ -295,7 +272,6 @@ async function refreshTokenIfNeeded(
 Deno.serve(async (req: Request) => {
   console.log(`[v0] Engagements sync request: ${req.method} ${req.url}`)
 
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders })
   }
@@ -308,18 +284,11 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    // Parse request
     const body: SyncRequest = await req.json()
-    const syncType = body.syncType || "backfill"
     const year = body.year
-    const clientOffset = body.clientOffset ?? 0
-    const clientLimit = body.clientLimit ?? 300
     const dryRun = body.dryRun ?? false
-    const clientId = body.clientId
 
-    console.log(
-      `[v0] Request: syncType=${syncType}, year=${year}, offset=${clientOffset}, limit=${clientLimit}, dryRun=${dryRun}`,
-    )
+    console.log(`[v0] Starting sync: year=${year}, dryRun=${dryRun}`)
 
     if (!year) {
       return new Response(
@@ -328,14 +297,8 @@ Deno.serve(async (req: Request) => {
       )
     }
 
-    if (syncType === "single_client" && !clientId) {
-      return new Response(
-        JSON.stringify({ error: "clientId required for single_client sync" }),
-        { status: 400, headers: corsHeaders },
-      )
-    }
+    // ── Supabase client ──────────────────────────────────────────────────────
 
-    // Initialize Supabase
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL")
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
 
@@ -345,211 +308,119 @@ Deno.serve(async (req: Request) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
-    // Get stored token
+    // ── OAuth token ──────────────────────────────────────────────────────────
+
     console.log(`[v0] Fetching stored OAuth token`)
-    const { data: tokenRows, error: tokenError } = await supabase
+    const { data: tokenRow, error: tokenError } = await supabase
       .from("proconnect_oauth_tokens")
       .select("access_token, refresh_token, expires_at")
       .eq("is_singleton", true)
       .single()
 
-    if (tokenError || !tokenRows) {
+    if (tokenError || !tokenRow) {
       throw new Error(`Failed to fetch OAuth token: ${tokenError?.message}`)
     }
 
-    let token = tokenRows as StoredToken
-
-    // Refresh token if needed
-    token = await refreshTokenIfNeeded(supabase, token, SUPABASE_SERVICE_ROLE_KEY)
-
-    // Get client list
-    let clientsToProcess: ProConnectClient[] = []
-
-    if (syncType === "single_client") {
-      console.log(`[v0] Fetching single client: ${clientId}`)
-      const { data, error } = await supabase
-        .from("proconnect_clients")
-        .select("proconnect_client_id, proconnect_entity_id")
-        .eq("proconnect_client_id", clientId)
-        .single()
-
-      if (error || !data) {
-        throw new Error(`Client not found: ${clientId}`)
-      }
-
-      clientsToProcess = [{
-        proconnect_client_id: data.proconnect_client_id,
-        proconnect_entity_id: data.proconnect_entity_id ?? null,
-      }]
-    } else {
-      console.log(
-        `[v0] Fetching ${clientLimit} clients starting at offset ${clientOffset}`,
-      )
-      const { data, error } = await supabase
-        .from("proconnect_clients")
-        .select("proconnect_client_id, proconnect_entity_id")
-        .order("proconnect_client_id")
-        .range(clientOffset, clientOffset + clientLimit - 1)
-
-      if (error) {
-        throw new Error(`Failed to fetch clients: ${error.message}`)
-      }
-
-      clientsToProcess = (data || []).map((c: any) => ({
-        proconnect_client_id: c.proconnect_client_id,
-        proconnect_entity_id: c.proconnect_entity_id ?? null,
-      }))
-    }
-
-    console.log(`[v0] Processing ${clientsToProcess.length} clients`)
-
-    const startTime = Date.now()
-    const mappedEngagements: MappedEngagement[] = []
-    const errors: string[] = []
-    let processedCount = 0
-
-    // Process clients in parallel batches
-    for (let i = 0; i < clientsToProcess.length; i += PARALLEL_CLIENTS) {
-      // Wall-clock guard
-      if (Date.now() - startTime > WALL_CLOCK_LIMIT_MS) {
-        const nextOffset = clientOffset + i
-        console.log(
-          `[v0] Wall clock limit reached at client index ${i} — stopping for next batch at offset ${nextOffset}`,
-        )
-        errors.push(
-          `Stopped at client ${i}/${clientsToProcess.length} — time limit`,
-        )
-        break
-      }
-
-      const batch = clientsToProcess.slice(
-        i,
-        Math.min(i + PARALLEL_CLIENTS, clientsToProcess.length),
-      )
-
-      const batchPromises = batch.map(async (client) => {
-        try {
-          // Prefer proconnect_entity_id for the oiiClientId query param —
-          // the ProConnect API expects the OII entity ID, not the internal
-          // client ID. Fall back to proconnect_client_id if entity_id is null.
-          const oiiClientId =
-            client.proconnect_entity_id ?? client.proconnect_client_id
-
-          console.log(
-            `[v0] Fetching engagements for client ${client.proconnect_client_id} (oiiClientId=${oiiClientId}) year ${year}`,
-          )
-
-          const url = new URL(PROCONNECT_ENGAGEMENTS_URL)
-          url.searchParams.set("source", "ITO")
-          url.searchParams.set("period", String(year))
-          url.searchParams.set("oiiClientId", oiiClientId)
-
-          const response = await fetchWithRetry(url.toString(), {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${token.access_token}`,
-              "Content-Type": "application/json",
-            },
-          })
-
-          if (!response.ok) {
-            const text = await response.text()
-            throw new Error(
-              `API returned ${response.status}: ${text.slice(0, 200)}`,
-            )
-          }
-
-          const data = await response.json()
-
-          // [v0] TEMPORARY DEBUG — inspect raw response shape
-          console.log(
-            `[v0] Raw engagements response for client ${client.proconnect_client_id}:`,
-            JSON.stringify(data).slice(0, 3000),
-          )
-
-          const engagements: ProConnectEngagement[] =
-            Array.isArray(data)
-              ? data
-              : Array.isArray(data?.engagements)
-                ? data.engagements
-                : Array.isArray(data?.items)
-                  ? data.items
-                  : Array.isArray(data?.data)
-                    ? data.data
-                    : []
-
-          console.log(
-            `[v0] Client ${client.proconnect_client_id} (oiiClientId=${oiiClientId}): found ${engagements.length} engagements`,
-          )
-
-          return engagements.map(mapEngagementToRow)
-        } catch (e) {
-          const msg = `Client ${client.proconnect_client_id}: ${e instanceof Error ? e.message : String(e)}`
-          console.error(`[v0] ${msg}`)
-          errors.push(msg)
-          return []
-        }
-      })
-
-      const batchResults = await Promise.all(batchPromises)
-      batchResults.forEach((rows) => {
-        mappedEngagements.push(...rows)
-      })
-
-      processedCount += batch.length
-      console.log(
-        `[v0] Batch complete: processed ${processedCount}/${clientsToProcess.length} clients`,
-      )
-    }
-
-    console.log(
-      `[v0] Mapping complete: ${mappedEngagements.length} engagements to sync`,
+    const token = await refreshTokenIfNeeded(
+      supabase,
+      tokenRow as StoredToken,
+      SUPABASE_SERVICE_ROLE_KEY,
     )
 
-    // Dry run: return sample data without upsert
+    // ── Fetch all engagements for the year (single API call) ─────────────────
+
+    console.log(`[v0] Fetching all engagements for year ${year}`)
+
+    const url = new URL(PROCONNECT_ENGAGEMENTS_URL)
+    url.searchParams.set("source", "ITO")
+    url.searchParams.set("period", String(year))
+
+    const startTime = Date.now()
+
+    const response = await fetchWithRetry(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token.access_token}`,
+        "Content-Type": "application/json",
+      },
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(
+        `ProConnect API returned ${response.status}: ${text.slice(0, 500)}`,
+      )
+    }
+
+    const data = await response.json()
+
+    const engagements: ProConnectEngagement[] = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.engagements)
+        ? data.engagements
+        : Array.isArray(data?.items)
+          ? data.items
+          : Array.isArray(data?.data)
+            ? data.data
+            : []
+
+    console.log(`[v0] API returned ${engagements.length} engagements for ${year}`)
+
+    // ── Map ──────────────────────────────────────────────────────────────────
+
+    const mappedEngagements = engagements.map(mapEngagementToRow)
+
+    console.log(`[v0] Mapped ${mappedEngagements.length} engagements`)
+
+    // ── Dry run ──────────────────────────────────────────────────────────────
+
     if (dryRun) {
-      console.log(`[v0] Dry run mode — not upserting`)
+      console.log(`[v0] Dry run — skipping upsert`)
       return new Response(
         JSON.stringify({
           success: true,
           status: "completed",
           year,
-          clientOffset,
-          clientLimit,
-          nextClientOffset: clientOffset + clientsToProcess.length,
-          clientsProcessed: clientsToProcess.length,
           engagementsFound: mappedEngagements.length,
           engagementsSynced: 0,
           sampleRows: mappedEngagements.slice(0, 3),
-          errors,
+          errors: [],
           dryRun: true,
-        } as SyncResponse),
+        } satisfies SyncResponse),
         { headers: corsHeaders },
       )
     }
 
-    // Upsert in batches
-    const UPSERT_BATCH_SIZE = 100
+    // ── Upsert in batches ────────────────────────────────────────────────────
+
+    const errors: string[] = []
     let upsertedCount = 0
 
     for (let i = 0; i < mappedEngagements.length; i += UPSERT_BATCH_SIZE) {
+      // Wall-clock guard — write what we have and report partial
+      if (Date.now() - startTime > WALL_CLOCK_LIMIT_MS) {
+        console.log(`[v0] Wall-clock limit reached at row ${i} — stopping`)
+        errors.push(
+          `Stopped at row ${i}/${mappedEngagements.length} — time limit`,
+        )
+        break
+      }
+
       const batch = mappedEngagements.slice(
         i,
         Math.min(i + UPSERT_BATCH_SIZE, mappedEngagements.length),
       )
 
       console.log(
-        `[v0] Upserting batch ${Math.floor(i / UPSERT_BATCH_SIZE) + 1} (${batch.length} rows)`,
+        `[v0] Upserting batch ${Math.floor(i / UPSERT_BATCH_SIZE) + 1}: rows ${i}–${i + batch.length - 1}`,
       )
 
       const { error: upsertError } = await supabase
         .from("proconnect_engagements")
-        .upsert(batch, {
-          onConflict: "engagement_id",
-        })
+        .upsert(batch, { onConflict: "engagement_id" })
 
       if (upsertError) {
-        const msg = `Upsert error: ${upsertError.message}`
+        const msg = `Upsert error at row ${i}: ${upsertError.message}`
         console.error(`[v0] ${msg}`)
         errors.push(msg)
       } else {
@@ -557,31 +428,25 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const success = errors.length === 0
-    const wasStopped = Date.now() - startTime > WALL_CLOCK_LIMIT_MS
-    const status = wasStopped ? "partial" : "completed"
-    const nextClientOffset = wasStopped
-      ? clientOffset + processedCount
-      : clientOffset + clientsToProcess.length
+    const hitTimeLimit =
+      errors.some((e) => e.includes("time limit")) ||
+      Date.now() - startTime > WALL_CLOCK_LIMIT_MS
+    const status = hitTimeLimit ? "partial" : "completed"
 
     console.log(
-      `[v0] Sync ${status}: ${upsertedCount}/${mappedEngagements.length} upserted`,
+      `[v0] Sync ${status}: ${upsertedCount}/${mappedEngagements.length} engagements upserted`,
     )
 
     return new Response(
       JSON.stringify({
-        success,
+        success: errors.length === 0,
         status,
         year,
-        clientOffset,
-        clientLimit,
-        nextClientOffset,
-        clientsProcessed: processedCount,
         engagementsFound: mappedEngagements.length,
         engagementsSynced: upsertedCount,
         errors,
         dryRun: false,
-      } as SyncResponse),
+      } satisfies SyncResponse),
       { headers: corsHeaders },
     )
   } catch (e) {
@@ -589,11 +454,7 @@ Deno.serve(async (req: Request) => {
     console.error(`[v0] Fatal error: ${msg}`)
 
     return new Response(
-      JSON.stringify({
-        success: false,
-        status: "failed",
-        error: msg,
-      }),
+      JSON.stringify({ success: false, status: "failed", error: msg }),
       { status: 500, headers: corsHeaders },
     )
   }
