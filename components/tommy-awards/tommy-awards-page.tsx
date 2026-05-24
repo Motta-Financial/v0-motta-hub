@@ -9,10 +9,11 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Trophy, Flame, Target, Users, Zap, Calendar, Filter, X, Send } from "lucide-react"
+import { Trophy, Flame, Target, Users, Zap, Calendar, Filter, X, Send, Sparkles } from "lucide-react"
 import { TommyLeaderboard } from "./tommy-leaderboard"
 import { TommyYTDLeaderboard } from "./tommy-ytd-leaderboard"
 import { TommyRecentBallots } from "./tommy-recent-ballots"
+import { TommyStats } from "./tommy-stats"
 
 interface Week {
   id: string
@@ -577,6 +578,13 @@ export function TommyAwardsPage() {
             <Calendar className="h-4 w-4" />
             Year-to-Date Standings
           </TabsTrigger>
+          <TabsTrigger
+            value="stats"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#1D2620] text-[#F4EFE8] hover:bg-[rgba(168,197,102,0.10)] gap-2"
+          >
+            <Sparkles className="h-4 w-4" />
+            Tommy Stats
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="weekly" className="m-0">
@@ -585,6 +593,10 @@ export function TommyAwardsPage() {
 
         <TabsContent value="ytd" className="m-0">
           <TommyYTDLeaderboard year={filters.year} />
+        </TabsContent>
+
+        <TabsContent value="stats" className="m-0">
+          <TommyStats year={filters.year} />
         </TabsContent>
       </Tabs>
 
