@@ -31,6 +31,8 @@ import {
   TrendingUp,
   Target,
   Award,
+  Medal,
+  FileText,
 } from "lucide-react"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
@@ -170,6 +172,41 @@ export function TommyStats({ year }: TommyStatsProps) {
   )[0]
   const bestStreak = [...stats].sort((a, b) => b.best_streak - a.best_streak)[0]
 
+  // Firm-wide raw counts. The Tommy Stats tab previously paired the
+  // percentage KPIs with the global "Recent Ballots" feed; per request,
+  // that feed has been removed on this tab and replaced with a panel of
+  // raw firm totals so the page answers "what happened, in absolute
+  // terms?" right next to "what % of weeks did people podium?".
+  //
+  // Each podium-position week is counted once across the whole team.
+  // `weeks_in_first` etc. are per-teammate, so summing them gives the
+  // total number of teammate-weeks at that finish — which equals the
+  // total number of 1st/2nd/3rd-place finishes the firm has handed out.
+  const totalPodiums = stats.reduce(
+    (acc, r) => acc + (r.podium_weeks || 0),
+    0,
+  )
+  const totalFirsts = stats.reduce(
+    (acc, r) => acc + (r.weeks_in_first || 0),
+    0,
+  )
+  const totalSeconds = stats.reduce(
+    (acc, r) => acc + (r.weeks_in_second || 0),
+    0,
+  )
+  const totalThirds = stats.reduce(
+    (acc, r) => acc + (r.weeks_in_third || 0),
+    0,
+  )
+  // Ballots submitted = total first-place votes across the firm.
+  // Each ballot contributes exactly one 1st-place vote, so summing
+  // `first_place_votes` across teammates is a faithful proxy without
+  // requiring a new API field.
+  const ballotsSubmitted = stats.reduce(
+    (acc, r) => acc + (r.first_place_votes || 0),
+    0,
+  )
+
   return (
     <div className="space-y-4">
       <Card
@@ -229,24 +266,84 @@ export function TommyStats({ year }: TommyStatsProps) {
         </CardContent>
       </Card>
 
+      {/*
+        Raw Totals — firm-wide absolute counts. Sits between the
+        percentage KPI panel above (which answers "how often did people
+        podium?") and the per-teammate leaderboard below (which answers
+        "who did it most?"). Replaces the global Recent Ballots feed
+        that previously rendered on this tab.
+      */}
+      <Card
+        className="border"
+        style={{
+          backgroundColor: "#0F140C",
+          borderColor: "rgba(168,197,102,0.30)",
+        }}
+      >
+        <CardHeader className="pb-3">
+          <div className="flex flex-col gap-1.5">
+            <CardTitle className="flex items-center gap-2 text-[#F4EFE8]">
+              <Trophy className="h-5 w-5" style={{ color: "#A8C566" }} />
+              Raw Totals — {displayYear}
+            </CardTitle>
+            <CardDescription className="text-[#F4EFE8]/70">
+              Firm-wide counts across every Tommy week so far this year.
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            <KpiTile
+              icon={<Award className="h-4 w-4" />}
+              label="Podium finishes"
+              value={String(totalPodiums)}
+              hint="1st + 2nd + 3rd"
+            />
+            <KpiTile
+              icon={<Crown className="h-4 w-4" />}
+              label="First place"
+              value={String(totalFirsts)}
+              hint={`across ${totalWeeks} ${totalWeeks === 1 ? "week" : "weeks"}`}
+              accent
+            />
+            <KpiTile
+              icon={<Medal className="h-4 w-4" />}
+              label="Second place"
+              value={String(totalSeconds)}
+            />
+            <KpiTile
+              icon={<Medal className="h-4 w-4" />}
+              label="Third place"
+              value={String(totalThirds)}
+            />
+            <KpiTile
+              icon={<FileText className="h-4 w-4" />}
+              label="Ballots submitted"
+              value={String(ballotsSubmitted)}
+              hint={`in ${displayYear}`}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       <Tabs defaultValue="leaderboard" className="space-y-3">
         <TabsList
-          className="w-full justify-start gap-1 p-1 h-auto"
+          className="w-full justify-start gap-1 p-1 h-auto border"
           style={{
-            backgroundColor: "#1D2620",
+            backgroundColor: "#0F140C",
             borderColor: "rgba(168,197,102,0.30)",
           }}
         >
           <TabsTrigger
             value="leaderboard"
-            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#1D2620] text-[#F4EFE8] hover:bg-[rgba(168,197,102,0.10)] gap-2"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#0F140C] data-[state=active]:shadow data-[state=inactive]:text-[#F4EFE8] data-[state=inactive]:hover:bg-[rgba(168,197,102,0.12)] data-[state=inactive]:hover:text-[#A8C566] gap-2 font-semibold"
           >
             <Trophy className="h-4 w-4" />
             KPI Leaderboard
           </TabsTrigger>
           <TabsTrigger
             value="cards"
-            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#1D2620] text-[#F4EFE8] hover:bg-[rgba(168,197,102,0.10)] gap-2"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#0F140C] data-[state=active]:shadow data-[state=inactive]:text-[#F4EFE8] data-[state=inactive]:hover:bg-[rgba(168,197,102,0.12)] data-[state=inactive]:hover:text-[#A8C566] gap-2 font-semibold"
           >
             <Target className="h-4 w-4" />
             Per-teammate Cards

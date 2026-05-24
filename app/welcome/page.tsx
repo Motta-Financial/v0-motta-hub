@@ -98,8 +98,7 @@ export default function WelcomePage() {
       </header>
 
       {/* Hero — dark forest panel with the motta.cpa hero photograph,
-          mirroring the same image-over-gradient treatment used on the
-          public site. */}
+          using the same image-over-gradient treatment as the public site. */}
       <section
         className="relative overflow-hidden"
         style={{ backgroundColor: COLORS.forest, color: COLORS.cream }}
@@ -168,74 +167,60 @@ export default function WelcomePage() {
         </div>
       </section>
 
-      {/* About — framed photograph + checkmark list, the same composition
-          motta.cpa uses for its "About" block. */}
-      <section className="mx-auto max-w-6xl px-6 py-24 lg:py-28">
-        <div className="grid gap-12 lg:grid-cols-2 lg:items-center lg:gap-16">
-          <div className="relative">
-            <div
-              className="overflow-hidden rounded-md"
-              style={{ border: `1px solid ${COLORS.rule}` }}
-            >
-              <img
-                src="/welcome/about.jpg"
-                alt="The Motta Financial team"
-                className="h-full w-full object-cover"
-              />
-            </div>
-            <div
-              className="absolute -bottom-6 -left-6 hidden rounded-md px-5 py-4 shadow-lg sm:block"
-              style={{ backgroundColor: COLORS.forest, color: COLORS.cream }}
-            >
-              <div
-                className="text-xs font-semibold uppercase tracking-[0.22em]"
-                style={{ color: COLORS.sage }}
-              >
-                Established
-              </div>
-              <div className="text-3xl font-semibold leading-none">2023</div>
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            <p
-              className="text-xs font-semibold uppercase tracking-[0.28em]"
-              style={{ color: COLORS.sageDark }}
-            >
-              About Motta Financial
-            </p>
-            <h2 className="text-balance text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
-              A modern firm built around the work, not the busywork.
-            </h2>
-            <p
-              className="text-pretty leading-relaxed"
-              style={{ color: COLORS.inkMuted }}
-            >
-              Motta Financial was founded in 2023 to be a different kind of CPA
-              firm — one where technology handles the repetition so the team
-              can spend their time advising. ALFRED is how we deliver on that
-              promise across tax, advisory, and bookkeeping.
-            </p>
-            <ul className="grid gap-3 sm:grid-cols-2">
-              {[
-                "Drafted tax returns in minutes, not days",
-                "Pre-meeting briefs for every engagement",
-                "Always-on document organization",
-                "Calendar, Zoom, and email kept in sync",
-              ].map((point) => (
-                <li key={point} className="flex items-start gap-3">
-                  <span
-                    className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
-                    style={{ backgroundColor: COLORS.sage, color: COLORS.forest }}
-                  >
-                    <Check className="h-3 w-3" strokeWidth={3} />
-                  </span>
-                  <span style={{ color: COLORS.ink }}>{point}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+      {/* About — text-only, no photograph. The composition centers the
+          firm's story with the Motta brand colors only. */}
+      <section
+        className="mx-auto max-w-4xl px-6 py-24 text-center lg:py-28"
+      >
+        <p
+          className="text-xs font-semibold uppercase tracking-[0.28em]"
+          style={{ color: COLORS.sageDark }}
+        >
+          About Motta Financial
+        </p>
+        <h2 className="mt-4 text-balance text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
+          A modern firm built around the work, not the busywork.
+        </h2>
+        <p
+          className="mx-auto mt-6 max-w-2xl text-pretty leading-relaxed"
+          style={{ color: COLORS.inkMuted }}
+        >
+          Motta Financial was founded in 2023 to be a different kind of CPA
+          firm — one where technology handles the repetition so the team can
+          spend their time advising. ALFRED is how we deliver on that promise
+          across tax, advisory, and bookkeeping.
+        </p>
+        <div className="mt-6 flex justify-center">
+          <span
+            className="inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.22em]"
+            style={{
+              backgroundColor: COLORS.forest,
+              borderColor: COLORS.forest,
+              color: COLORS.cream,
+            }}
+          >
+            <span style={{ color: COLORS.sage }}>Established</span>
+            <span>2023</span>
+          </span>
         </div>
+        <ul className="mx-auto mt-12 grid max-w-3xl gap-3 text-left sm:grid-cols-2">
+          {[
+            "Drafted tax returns in minutes, not days",
+            "Pre-meeting briefs for every engagement",
+            "Always-on document organization",
+            "Calendar, Zoom, and email kept in sync",
+          ].map((point) => (
+            <li key={point} className="flex items-start gap-3">
+              <span
+                className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+                style={{ backgroundColor: COLORS.sage, color: COLORS.forest }}
+              >
+                <Check className="h-3 w-3" strokeWidth={3} />
+              </span>
+              <span style={{ color: COLORS.ink }}>{point}</span>
+            </li>
+          ))}
+        </ul>
       </section>
 
       {/* ALFRED Ai dark panel — mirrors motta.cpa's signature dark green
