@@ -138,11 +138,11 @@ function mapClientToRow(client: ProConnectClient): Record<string, unknown> {
   const primaryPhone = getPrimary(client.phoneNumbers)
   const primaryAddress = getPrimary(client.physicalAddresses)
 
-  // Determine client type
+  // Determine client type — uppercase to match CHECK constraint
   const clientType = client.person
-    ? "individual"
+    ? "PERSON"
     : client.organization
-      ? "business"
+      ? "ORGANIZATION"
       : null
 
   // Tax ID from person or organization
