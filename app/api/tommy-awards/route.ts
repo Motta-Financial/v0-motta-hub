@@ -556,6 +556,12 @@ export async function GET(request: NextRequest) {
       }
 
       const sortedWeekDates = Object.keys(weekBuckets).sort()
+      // Track each member's full ranks (1..N where N = number of teammates
+      // who received any votes that week) so we can compute an "average
+      // finish" KPI that includes 4th, 5th, … finishes — not just podium
+      // weeks. The existing `avg_podium_finish` only counts weeks where
+      // finish ∈ {1,2,3}; per request we surface the broader figure too.
+      const ranksByMember: Record<string, number[]> = {}
       sortedWeekDates.forEach((weekDate) => {
         const weekBallots = weekBuckets[weekDate]!
         const weeklyPoints: Record<string, number> = {}
@@ -602,6 +608,19 @@ export async function GET(request: NextRequest) {
           .map(([name, points]) => ({ name, points }))
           .sort((a, b) => b.points - a.points)
 
+        // Competition ranking (1, 2, 2, 4, …) — ties share a rank, the
+        // next entry skips. Stored per teammate so we can compute the
+        // mean finish across every week they received any votes.
+        let lastPoints = Number.POSITIVE_INFINITY
+        let lastRank = 0
+        sorted.forEach((entry, idx) => {
+          const rank = entry.points === lastPoints ? lastRank : idx + 1
+          lastPoints = entry.points
+          lastRank = rank
+          if (!ranksByMember[entry.name]) ranksByMember[entry.name] = []
+          ranksByMember[entry.name]!.push(rank)
+        })
+
         const finishByMember: Record<string, number> = {}
         if (sorted.length > 0) {
           awardWeeklyPodiumCredit(sorted, (name, place) => {
@@ -619,6 +638,24 @@ export async function GET(request: NextRequest) {
           else if (finish === 3) m.weeks_in_third++
         })
       })
+
+      // Firm-wide vote totals — used to compute each teammate's share of
+      // total votes (1st + 2nd + 3rd, plus HM/Partner in pre-2026 years
+      // since those still earned points). Hidden members are excluded so
+      // shares add up to 100% across the visible roster.
+      const firmTotalVotes = Object.values(memberStats)
+        .filter((m) => !HIDDEN_MEMBERS.includes(m.name))
+        .reduce(
+          (acc, m) =>
+            acc +
+            m.first_place_votes +
+            m.second_place_votes +
+            m.third_place_votes +
+            (isYear2026OrLater
+              ? 0
+              : m.honorable_mention_votes + m.partner_votes),
+          0,
+        )
 
       const stats = Object.values(memberStats)
         .filter((m) => !HIDDEN_MEMBERS.includes(m.name))
@@ -641,6 +678,15 @@ export async function GET(request: NextRequest) {
             podiumFinishesOnly.length > 0
               ? podiumFinishesOnly.reduce((s, f) => s + (f.finish || 0), 0) /
                 podiumFinishesOnly.length
+              : null
+
+          // Average finish across every week the teammate received any
+          // votes (not just podium weeks). Lower = better; e.g. 1.00 means
+          // they came in first every time they were voted on.
+          const memberRanks = ranksByMember[m.name] || []
+          const avgFinish =
+            memberRanks.length > 0
+              ? memberRanks.reduce((s, r) => s + r, 0) / memberRanks.length
               : null
 
           // Streak: walk eligible weeks chronologically; consecutive
@@ -686,6 +732,19 @@ export async function GET(request: NextRequest) {
                 : 0,
             vote_share_pct:
               eligibleWeeks > 0 ? m.weeks_voted_on / eligibleWeeks : 0,
+            // Share of all votes cast firm-wide that landed on this
+            // teammate. Includes 1st/2nd/3rd in 2026+ and additionally
+            // HM + Partner pre-2026, matching the points model above.
+            vote_count_share_pct:
+              firmTotalVotes > 0
+                ? (m.first_place_votes +
+                    m.second_place_votes +
+                    m.third_place_votes +
+                    (isYear2026OrLater
+                      ? 0
+                      : m.honorable_mention_votes + m.partner_votes)) /
+                  firmTotalVotes
+                : 0,
             weeks_in_first: m.weeks_in_first,
             weeks_in_second: m.weeks_in_second,
             weeks_in_third: m.weeks_in_third,
@@ -697,6 +756,7 @@ export async function GET(request: NextRequest) {
             total_points: m.total_points,
             points_per_eligible_week: pointsPerEligibleWeek,
             avg_podium_finish: avgPodiumFinish,
+            avg_finish: avgFinish,
             current_streak: currentStreak,
             best_streak: bestStreak,
           }
