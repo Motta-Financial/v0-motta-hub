@@ -251,15 +251,35 @@ async function refreshTokenIfNeeded(
     throw new Error(`Token refresh failed: ${refreshRes.status} — ${errorText}`)
   }
 
-  const refreshedData = await refreshRes.json()
-  console.log(
-    `[v0] Token refreshed — new expires_at: ${refreshedData.expires_at}`,
-  )
+  // Do NOT trust the refresh function response body for the new token —
+  // it may not include access_token. Re-read directly from the database
+  // so we always have the canonical, freshly-written value.
+  console.log(`[v0] Refresh function OK — re-reading token from database`)
+
+  const { data: freshToken, error: readError } = await supabase
+    .from("proconnect_oauth_tokens")
+    .select("access_token, refresh_token, expires_at")
+    .eq("is_singleton", true)
+    .single()
+
+  if (readError || !freshToken) {
+    throw new Error(
+      `Failed to re-read token after refresh: ${readError?.message}`,
+    )
+  }
+
+  if (!freshToken.access_token) {
+    throw new Error(
+      "Re-read token row has no access_token — refresh may have failed silently",
+    )
+  }
+
+  console.log("[v0] Re-read refreshed token from database")
 
   return {
-    access_token: refreshedData.access_token,
-    refresh_token: refreshedData.refresh_token,
-    expires_at: refreshedData.expires_at,
+    access_token: freshToken.access_token,
+    refresh_token: freshToken.refresh_token,
+    expires_at: freshToken.expires_at,
   }
 }
 
