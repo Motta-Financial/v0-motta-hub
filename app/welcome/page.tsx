@@ -67,6 +67,11 @@ export default function WelcomePage() {
               src="/images/alfred-wordmark.png"
               alt="ALFRED"
               className="h-9 w-auto"
+              // The exported wordmark ships with a near-white backing
+              // baked into the PNG. `multiply` lets the cream page show
+              // through the light pixels so the logo no longer reads as
+              // a beige rectangle pasted onto the header.
+              style={{ mixBlendMode: "multiply" }}
             />
             <span
               className="hidden text-xs font-semibold uppercase tracking-[0.22em] sm:inline"
@@ -314,6 +319,10 @@ export default function WelcomePage() {
               src="/images/alfred-wordmark.png"
               alt="ALFRED"
               className="h-7 w-auto opacity-80"
+              // Same trick as the header — drop the baked-in light
+              // background so the wordmark sits cleanly on the cream
+              // footer instead of rendering as a beige tile.
+              style={{ mixBlendMode: "multiply" }}
             />
             <span
               className="text-sm"
