@@ -442,6 +442,278 @@ export async function GET(request: NextRequest) {
       })
     }
 
+    // Tommy Stats — start-date-aware KPIs across the year.
+    // Eligibility rule: a week counts toward a member's denominators iff
+    //   week_date >= team_members.start_date AND week_date <= today.
+    // Combined voters Ganesh + Thameem are normalized to "P24"; the pair's
+    // start_date is the EARLIER of the two.
+    if (type === "tommy_stats") {
+      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA", "G&T"]
+      const normalizeName = (name: string) =>
+        COMBINED_VOTERS.includes(name) ? "P24" : name
+
+      const targetYear = year || new Date().getFullYear().toString()
+      const isYear2026OrLater = Number.parseInt(targetYear) >= 2026
+      const todayIso = new Date().toISOString().slice(0, 10)
+      const yearStart = `${targetYear}-01-01`
+      const yearEnd = `${targetYear}-12-31`
+
+      const [
+        { data: ballots, error: ballotsError },
+        { data: weekRowsRaw, error: weeksError },
+        { data: memberRows, error: membersError },
+      ] = await Promise.all([
+        supabase
+          .from("tommy_award_ballots")
+          .select("*")
+          .gte("week_date", yearStart)
+          .lte("week_date", yearEnd),
+        supabase
+          .from("tommy_award_weeks")
+          .select("week_date")
+          .gte("week_date", yearStart)
+          .lte("week_date", yearEnd)
+          .lte("week_date", todayIso),
+        supabase
+          .from("team_members")
+          .select("full_name, start_date, is_active")
+          .order("full_name"),
+      ])
+
+      if (ballotsError) throw ballotsError
+      if (weeksError) throw weeksError
+      if (membersError) throw membersError
+
+      const allWeekDates: string[] = (weekRowsRaw || []).map((w) =>
+        String(w.week_date).slice(0, 10),
+      )
+      const totalWeeksThisYear = allWeekDates.length
+
+      // Build {normalizedName -> startDateIso}. P24 takes the earlier of
+      // Ganesh/Thameem's start dates.
+      const startDateByName: Record<string, string | null> = {}
+      ;(memberRows || []).forEach((m: any) => {
+        if (HIDDEN_MEMBERS.includes(m.full_name)) return
+        const normalized = normalizeName(m.full_name)
+        const sd = m.start_date ? String(m.start_date).slice(0, 10) : null
+        if (
+          sd &&
+          (!startDateByName[normalized] || sd < startDateByName[normalized]!)
+        ) {
+          startDateByName[normalized] = sd
+        } else if (!(normalized in startDateByName)) {
+          startDateByName[normalized] = sd
+        }
+      })
+
+      // Group ballots by week.
+      const weekBuckets: Record<string, any[]> = {}
+      ;(ballots || []).forEach((b: any) => {
+        const wd = String(b.week_date).slice(0, 10)
+        if (!weekBuckets[wd]) weekBuckets[wd] = []
+        weekBuckets[wd]!.push(b)
+      })
+
+      type MemberAccumulator = {
+        name: string
+        first_place_votes: number
+        second_place_votes: number
+        third_place_votes: number
+        honorable_mention_votes: number
+        partner_votes: number
+        total_points: number
+        weeks_in_first: number
+        weeks_in_second: number
+        weeks_in_third: number
+        weeks_voted_on: number
+        finishes: Array<{
+          week_date: string
+          finish: number | null
+          points: number
+        }>
+      }
+      const memberStats: Record<string, MemberAccumulator> = {}
+      const ensureMember = (rawName: string): MemberAccumulator => {
+        const name = normalizeName(rawName)
+        if (!memberStats[name]) {
+          memberStats[name] = {
+            name,
+            first_place_votes: 0,
+            second_place_votes: 0,
+            third_place_votes: 0,
+            honorable_mention_votes: 0,
+            partner_votes: 0,
+            total_points: 0,
+            weeks_in_first: 0,
+            weeks_in_second: 0,
+            weeks_in_third: 0,
+            weeks_voted_on: 0,
+            finishes: [],
+          }
+        }
+        return memberStats[name]!
+      }
+
+      const sortedWeekDates = Object.keys(weekBuckets).sort()
+      sortedWeekDates.forEach((weekDate) => {
+        const weekBallots = weekBuckets[weekDate]!
+        const weeklyPoints: Record<string, number> = {}
+
+        weekBallots.forEach((ballot: any) => {
+          if (ballot.first_place_name) {
+            const k = normalizeName(ballot.first_place_name)
+            const m = ensureMember(ballot.first_place_name)
+            m.first_place_votes++
+            m.total_points += 3
+            weeklyPoints[k] = (weeklyPoints[k] || 0) + 3
+          }
+          if (ballot.second_place_name) {
+            const k = normalizeName(ballot.second_place_name)
+            const m = ensureMember(ballot.second_place_name)
+            m.second_place_votes++
+            m.total_points += 2
+            weeklyPoints[k] = (weeklyPoints[k] || 0) + 2
+          }
+          if (ballot.third_place_name) {
+            const k = normalizeName(ballot.third_place_name)
+            const m = ensureMember(ballot.third_place_name)
+            m.third_place_votes++
+            m.total_points += 1
+            weeklyPoints[k] = (weeklyPoints[k] || 0) + 1
+          }
+          if (!isYear2026OrLater && ballot.honorable_mention_name) {
+            const k = normalizeName(ballot.honorable_mention_name)
+            const m = ensureMember(ballot.honorable_mention_name)
+            m.honorable_mention_votes++
+            m.total_points += 0.5
+            weeklyPoints[k] = (weeklyPoints[k] || 0) + 0.5
+          }
+          if (!isYear2026OrLater && ballot.partner_vote_name) {
+            const k = normalizeName(ballot.partner_vote_name)
+            const m = ensureMember(ballot.partner_vote_name)
+            m.partner_votes++
+            m.total_points += 5
+            weeklyPoints[k] = (weeklyPoints[k] || 0) + 5
+          }
+        })
+
+        const sorted = Object.entries(weeklyPoints)
+          .map(([name, points]) => ({ name, points }))
+          .sort((a, b) => b.points - a.points)
+
+        const finishByMember: Record<string, number> = {}
+        if (sorted.length > 0) {
+          awardWeeklyPodiumCredit(sorted, (name, place) => {
+            finishByMember[name] = place
+          })
+        }
+
+        Object.entries(weeklyPoints).forEach(([name, points]) => {
+          const m = ensureMember(name)
+          const finish = finishByMember[name] ?? null
+          m.weeks_voted_on++
+          m.finishes.push({ week_date: weekDate, finish, points })
+          if (finish === 1) m.weeks_in_first++
+          else if (finish === 2) m.weeks_in_second++
+          else if (finish === 3) m.weeks_in_third++
+        })
+      })
+
+      const stats = Object.values(memberStats)
+        .filter((m) => !HIDDEN_MEMBERS.includes(m.name))
+        .map((m) => {
+          const startDate = startDateByName[m.name] || null
+          const effectiveStart =
+            startDate && startDate > yearStart ? startDate : yearStart
+          const eligibleWeekDates = allWeekDates.filter(
+            (d) => d >= effectiveStart,
+          )
+          const eligibleWeeks = eligibleWeekDates.length
+
+          const podiumWeeks =
+            m.weeks_in_first + m.weeks_in_second + m.weeks_in_third
+
+          const podiumFinishesOnly = m.finishes.filter(
+            (f) => f.finish !== null,
+          )
+          const avgPodiumFinish =
+            podiumFinishesOnly.length > 0
+              ? podiumFinishesOnly.reduce((s, f) => s + (f.finish || 0), 0) /
+                podiumFinishesOnly.length
+              : null
+
+          // Streak: walk eligible weeks chronologically; consecutive
+          // podium finishes accrue, anything else resets.
+          let bestStreak = 0
+          let runningStreak = 0
+          for (const wd of sortedWeekDates) {
+            if (wd < effectiveStart) continue
+            const f = m.finishes.find((x) => x.week_date === wd)
+            if (f && f.finish !== null) {
+              runningStreak++
+              if (runningStreak > bestStreak) bestStreak = runningStreak
+            } else {
+              runningStreak = 0
+            }
+          }
+          let currentStreak = 0
+          for (let i = sortedWeekDates.length - 1; i >= 0; i--) {
+            const wd = sortedWeekDates[i]!
+            if (wd < effectiveStart) break
+            const f = m.finishes.find((x) => x.week_date === wd)
+            if (f && f.finish !== null) currentStreak++
+            else break
+          }
+
+          const pointsPerEligibleWeek =
+            eligibleWeeks > 0 ? m.total_points / eligibleWeeks : 0
+
+          return {
+            name: m.name,
+            start_date: startDate,
+            eligible_weeks: eligibleWeeks,
+            total_weeks_this_year: totalWeeksThisYear,
+            weeks_voted_on: m.weeks_voted_on,
+            podium_weeks: podiumWeeks,
+            podium_pct:
+              eligibleWeeks > 0 ? podiumWeeks / eligibleWeeks : 0,
+            win_pct:
+              eligibleWeeks > 0 ? m.weeks_in_first / eligibleWeeks : 0,
+            top2_pct:
+              eligibleWeeks > 0
+                ? (m.weeks_in_first + m.weeks_in_second) / eligibleWeeks
+                : 0,
+            vote_share_pct:
+              eligibleWeeks > 0 ? m.weeks_voted_on / eligibleWeeks : 0,
+            weeks_in_first: m.weeks_in_first,
+            weeks_in_second: m.weeks_in_second,
+            weeks_in_third: m.weeks_in_third,
+            first_place_votes: m.first_place_votes,
+            second_place_votes: m.second_place_votes,
+            third_place_votes: m.third_place_votes,
+            honorable_mention_votes: m.honorable_mention_votes,
+            partner_votes: m.partner_votes,
+            total_points: m.total_points,
+            points_per_eligible_week: pointsPerEligibleWeek,
+            avg_podium_finish: avgPodiumFinish,
+            current_streak: currentStreak,
+            best_streak: bestStreak,
+          }
+        })
+        .sort((a, b) => {
+          if (b.podium_pct !== a.podium_pct) return b.podium_pct - a.podium_pct
+          return b.total_points - a.total_points
+        })
+
+      return NextResponse.json({
+        stats,
+        total_weeks_this_year: totalWeeksThisYear,
+        year: targetYear,
+        is_2026_or_later: isYear2026OrLater,
+      })
+    }
+
     // Per-member breakdown:
     //   mode=weekly → list of votes received in the filtered week(s),
     //     grouped by category (1st/2nd/3rd/HM/Partner) with voter names.

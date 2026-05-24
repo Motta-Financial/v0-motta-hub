@@ -400,12 +400,12 @@ function HubHeader({
             </SheetContent>
           </Sheet>
           <a href="/" className="flex items-center gap-3">
-            <img src="/images/alfred-logo.png" alt="Motta Hub" className="h-10 w-auto" />
+            <img src="/images/alfred-logo.png" alt="ALFRED Hub" className="h-10 w-auto" />
             <div className="flex flex-col leading-tight">
               <span className="text-base font-bold tracking-wide" style={{ color: "#6B745D" }}>
-                MOTTA HUB
+                ALFRED HUB
               </span>
-              <span className="text-[10px] text-gray-500 uppercase tracking-wider">Powered by ALFRED AI</span>
+              <span className="text-[10px] text-gray-500 uppercase tracking-wider">A Motta Financial product</span>
             </div>
           </a>
         </div>
