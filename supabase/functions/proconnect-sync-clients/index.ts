@@ -56,25 +56,39 @@ interface ProConnectClient {
   person?: {
     names?: Array<{ firstName?: string; lastName?: string }>
     taxId?: string
+    emailAddresses?: Array<{
+      address?: string
+      properties?: { isPrimary?: string }
+    }>
+    phoneNumbers?: Array<{
+      number?: string
+      properties?: { isPrimary?: string }
+    }>
+    physicalAddresses?: Array<{
+      city?: string
+      stateOrProvince?: string
+      postalCode?: string
+      properties?: { isPrimary?: string }
+    }>
   }
   organization?: {
     names?: Array<{ name?: string }>
     taxId?: string
+    emailAddresses?: Array<{
+      address?: string
+      properties?: { isPrimary?: string }
+    }>
+    phoneNumbers?: Array<{
+      number?: string
+      properties?: { isPrimary?: string }
+    }>
+    physicalAddresses?: Array<{
+      city?: string
+      stateOrProvince?: string
+      postalCode?: string
+      properties?: { isPrimary?: string }
+    }>
   }
-  emailAddresses?: Array<{
-    address?: string
-    properties?: { isPrimary?: string }
-  }>
-  phoneNumbers?: Array<{
-    number?: string
-    properties?: { isPrimary?: string }
-  }>
-  physicalAddresses?: Array<{
-    city?: string
-    stateOrProvince?: string
-    postalCode?: string
-    properties?: { isPrimary?: string }
-  }>
 }
 
 interface SyncLogRow {
@@ -134,9 +148,11 @@ function mapClientToRow(client: ProConnectClient): Record<string, unknown> {
   const { firstName, lastName, businessName, displayName } =
     extractClientName(client)
 
-  const primaryEmail = getPrimary(client.emailAddresses)
-  const primaryPhone = getPrimary(client.phoneNumbers)
-  const primaryAddress = getPrimary(client.physicalAddresses)
+  // Read contact info from the correct nested location based on client type
+  const contactSource = client.person || client.organization
+  const primaryEmail = getPrimary(contactSource?.emailAddresses)
+  const primaryPhone = getPrimary(contactSource?.phoneNumbers)
+  const primaryAddress = getPrimary(contactSource?.physicalAddresses)
 
   // Determine client type — uppercase to match CHECK constraint
   const clientType = client.person
