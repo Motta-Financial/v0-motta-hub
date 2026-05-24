@@ -31,8 +31,6 @@ import {
   TrendingUp,
   Target,
   Award,
-  Medal,
-  FileText,
 } from "lucide-react"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
@@ -47,6 +45,10 @@ interface TommyStatRow {
   win_pct: number
   top2_pct: number
   vote_share_pct: number
+  // Share of all votes the firm cast that landed on this teammate (count
+  // basis, not week basis). Distinct from vote_share_pct, which measures
+  // how often they got *any* votes in a week.
+  vote_count_share_pct: number
   weeks_in_first: number
   weeks_in_second: number
   weeks_in_third: number
@@ -58,6 +60,9 @@ interface TommyStatRow {
   total_points: number
   points_per_eligible_week: number
   avg_podium_finish: number | null
+  // Average rank across every week the teammate received any votes,
+  // including 4th and below. Lower is better.
+  avg_finish: number | null
   current_streak: number
   best_streak: number
 }
@@ -172,40 +177,18 @@ export function TommyStats({ year }: TommyStatsProps) {
   )[0]
   const bestStreak = [...stats].sort((a, b) => b.best_streak - a.best_streak)[0]
 
-  // Firm-wide raw counts. The Tommy Stats tab previously paired the
-  // percentage KPIs with the global "Recent Ballots" feed; per request,
-  // that feed has been removed on this tab and replaced with a panel of
-  // raw firm totals so the page answers "what happened, in absolute
-  // terms?" right next to "what % of weeks did people podium?".
-  //
-  // Each podium-position week is counted once across the whole team.
-  // `weeks_in_first` etc. are per-teammate, so summing them gives the
-  // total number of teammate-weeks at that finish — which equals the
-  // total number of 1st/2nd/3rd-place finishes the firm has handed out.
-  const totalPodiums = stats.reduce(
-    (acc, r) => acc + (r.podium_weeks || 0),
-    0,
-  )
-  const totalFirsts = stats.reduce(
-    (acc, r) => acc + (r.weeks_in_first || 0),
-    0,
-  )
-  const totalSeconds = stats.reduce(
-    (acc, r) => acc + (r.weeks_in_second || 0),
-    0,
-  )
-  const totalThirds = stats.reduce(
-    (acc, r) => acc + (r.weeks_in_third || 0),
-    0,
-  )
-  // Ballots submitted = total first-place votes across the firm.
-  // Each ballot contributes exactly one 1st-place vote, so summing
-  // `first_place_votes` across teammates is a faithful proxy without
-  // requiring a new API field.
-  const ballotsSubmitted = stats.reduce(
-    (acc, r) => acc + (r.first_place_votes || 0),
-    0,
-  )
+  // Per-teammate raw counts, sorted highest podium-finishes first so the
+  // table mirrors the percentage panel above. Replaces the previous
+  // firm-wide tile card per request — the user wants the same "row per
+  // teammate" shape the rest of the page uses.
+  const rawStatsRows = [...stats].sort((a, b) => {
+    const aPodiums = a.podium_weeks
+    const bPodiums = b.podium_weeks
+    if (bPodiums !== aPodiums) return bPodiums - aPodiums
+    if (b.weeks_in_first !== a.weeks_in_first)
+      return b.weeks_in_first - a.weeks_in_first
+    return b.total_points - a.total_points
+  })
 
   return (
     <div className="space-y-4">
@@ -267,11 +250,11 @@ export function TommyStats({ year }: TommyStatsProps) {
       </Card>
 
       {/*
-        Raw Totals — firm-wide absolute counts. Sits between the
-        percentage KPI panel above (which answers "how often did people
-        podium?") and the per-teammate leaderboard below (which answers
-        "who did it most?"). Replaces the global Recent Ballots feed
-        that previously rendered on this tab.
+        Raw Stats — per-teammate absolute counts. The previous version of
+        this card showed a single row of firm-wide totals; per request
+        we now mirror the per-user shape used by the percentage panel
+        above and the leaderboard below so it's easy to scan who racked
+        up the most podiums, wins, and total points in 2026.
       */}
       <Card
         className="border"
@@ -284,44 +267,104 @@ export function TommyStats({ year }: TommyStatsProps) {
           <div className="flex flex-col gap-1.5">
             <CardTitle className="flex items-center gap-2 text-[#F4EFE8]">
               <Trophy className="h-5 w-5" style={{ color: "#A8C566" }} />
-              Raw Totals — {displayYear}
+              Raw Stats — {displayYear}
             </CardTitle>
             <CardDescription className="text-[#F4EFE8]/70">
-              Firm-wide counts across every Tommy week so far this year.
+              Absolute counts per teammate across every Tommy week so far
+              this year.
             </CardDescription>
           </div>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-            <KpiTile
-              icon={<Award className="h-4 w-4" />}
-              label="Podium finishes"
-              value={String(totalPodiums)}
-              hint="1st + 2nd + 3rd"
-            />
-            <KpiTile
-              icon={<Crown className="h-4 w-4" />}
-              label="First place"
-              value={String(totalFirsts)}
-              hint={`across ${totalWeeks} ${totalWeeks === 1 ? "week" : "weeks"}`}
-              accent
-            />
-            <KpiTile
-              icon={<Medal className="h-4 w-4" />}
-              label="Second place"
-              value={String(totalSeconds)}
-            />
-            <KpiTile
-              icon={<Medal className="h-4 w-4" />}
-              label="Third place"
-              value={String(totalThirds)}
-            />
-            <KpiTile
-              icon={<FileText className="h-4 w-4" />}
-              label="Ballots submitted"
-              value={String(ballotsSubmitted)}
-              hint={`in ${displayYear}`}
-            />
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-y border-[rgba(168,197,102,0.20)] text-[#F4EFE8]/70">
+                  <th className="text-left p-3 font-medium">Teammate</th>
+                  <th className="text-right p-3 font-medium">Podiums</th>
+                  <th className="text-right p-3 font-medium">1st</th>
+                  <th className="text-right p-3 font-medium">2nd</th>
+                  <th className="text-right p-3 font-medium">3rd</th>
+                  <th className="text-right p-3 font-medium">
+                    Ballots received
+                  </th>
+                  <th className="text-right p-3 font-medium">Total points</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      className="p-8 text-center text-[#F4EFE8]/60"
+                    >
+                      Loading raw stats…
+                    </td>
+                  </tr>
+                )}
+                {!loading &&
+                  rawStatsRows.map((row) => {
+                    const hero = findHeroProfile(row.name)
+                    const ballotsReceived =
+                      row.first_place_votes +
+                      row.second_place_votes +
+                      row.third_place_votes +
+                      row.honorable_mention_votes +
+                      row.partner_votes
+                    return (
+                      <tr
+                        key={row.name}
+                        className="border-b border-[rgba(168,197,102,0.10)] hover:bg-[rgba(168,197,102,0.04)] transition-colors"
+                      >
+                        <td className="p-3">
+                          <div className="flex items-center gap-2.5 text-[#F4EFE8]">
+                            <Avatar className="h-7 w-7">
+                              {hero?.imageUrl && (
+                                <AvatarImage
+                                  src={hero.imageUrl}
+                                  alt={row.name}
+                                />
+                              )}
+                              <AvatarFallback className="text-[10px] bg-[#1D2620] text-[#A8C566]">
+                                {getInitials(row.name)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="font-medium">{row.name}</span>
+                          </div>
+                        </td>
+                        <td className="p-3 text-right tabular-nums font-semibold text-[#A8C566]">
+                          {row.podium_weeks}
+                        </td>
+                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
+                          {row.weeks_in_first}
+                        </td>
+                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
+                          {row.weeks_in_second}
+                        </td>
+                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
+                          {row.weeks_in_third}
+                        </td>
+                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]/80">
+                          {ballotsReceived}
+                        </td>
+                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
+                          {NUMBER_FORMATTER.format(row.total_points)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                {!loading && rawStatsRows.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      className="p-8 text-center text-[#F4EFE8]/60"
+                    >
+                      No Tommy data yet for {displayYear}.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </CardContent>
       </Card>
@@ -745,19 +788,21 @@ function TeammateCard({ row }: { row: TommyStatRow }) {
         />
         <StatPill
           icon={<TrendingUp className="h-3.5 w-3.5" />}
-          label="Avg podium finish"
+          label="Avg finish"
           value={
-            row.avg_podium_finish !== null
-              ? row.avg_podium_finish.toFixed(2)
-              : "—"
+            row.avg_finish !== null ? row.avg_finish.toFixed(2) : "—"
           }
-          sub="when honored"
+          sub={
+            row.weeks_voted_on > 0
+              ? `across ${row.weeks_voted_on} ${row.weeks_voted_on === 1 ? "week" : "weeks"}`
+              : "no votes yet"
+          }
         />
         <StatPill
           icon={<Target className="h-3.5 w-3.5" />}
           label="Vote share"
-          value={PERCENT_FORMATTER.format(row.vote_share_pct)}
-          sub={`${row.weeks_voted_on}/${row.eligible_weeks} wks voted on`}
+          value={PERCENT_FORMATTER.format(row.vote_count_share_pct)}
+          sub={`${row.first_place_votes + row.second_place_votes + row.third_place_votes + row.honorable_mention_votes + row.partner_votes} of all votes`}
         />
       </CardContent>
     </Card>
