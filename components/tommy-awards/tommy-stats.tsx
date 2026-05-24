@@ -175,8 +175,10 @@ export function TommyStats({ year }: TommyStatsProps) {
       <Card
         className="border"
         style={{
-          backgroundColor: "rgba(168,197,102,0.04)",
-          borderColor: "rgba(168,197,102,0.25)",
+          // Solid forest fill so the section reads as a Tommy-branded
+          // panel and isn't washed out by the cream page background.
+          backgroundColor: "#0F140C",
+          borderColor: "rgba(168,197,102,0.30)",
         }}
       >
         <CardHeader>
@@ -231,8 +233,8 @@ export function TommyStats({ year }: TommyStatsProps) {
         <TabsList
           className="w-full justify-start gap-1 p-1 h-auto"
           style={{
-            backgroundColor: "rgba(168,197,102,0.06)",
-            borderColor: "rgba(168,197,102,0.25)",
+            backgroundColor: "#1D2620",
+            borderColor: "rgba(168,197,102,0.30)",
           }}
         >
           <TabsTrigger
@@ -254,8 +256,8 @@ export function TommyStats({ year }: TommyStatsProps) {
         <TabsContent value="leaderboard" className="m-0">
           <Card
             style={{
-              backgroundColor: "rgba(29,38,32,0.4)",
-              borderColor: "rgba(168,197,102,0.25)",
+              backgroundColor: "#0F140C",
+              borderColor: "rgba(168,197,102,0.30)",
             }}
           >
             <CardContent className="p-0">
@@ -436,8 +438,8 @@ export function TommyStats({ year }: TommyStatsProps) {
               <Card
                 className="md:col-span-2 xl:col-span-3"
                 style={{
-                  backgroundColor: "rgba(29,38,32,0.4)",
-                  borderColor: "rgba(168,197,102,0.25)",
+                  backgroundColor: "#0F140C",
+                  borderColor: "rgba(168,197,102,0.30)",
                 }}
               >
                 <CardContent className="p-8 text-center text-[#F4EFE8]/60">
@@ -451,8 +453,8 @@ export function TommyStats({ year }: TommyStatsProps) {
               <Card
                 className="md:col-span-2 xl:col-span-3"
                 style={{
-                  backgroundColor: "rgba(29,38,32,0.4)",
-                  borderColor: "rgba(168,197,102,0.25)",
+                  backgroundColor: "#0F140C",
+                  borderColor: "rgba(168,197,102,0.30)",
                 }}
               >
                 <CardContent className="p-8 text-center text-[#F4EFE8]/60">
@@ -484,27 +486,35 @@ function KpiTile({
     <div
       className="rounded-md border p-3 flex flex-col gap-1"
       style={{
-        backgroundColor: accent
-          ? "rgba(168,197,102,0.10)"
-          : "rgba(29,38,32,0.5)",
-        borderColor: accent
-          ? "rgba(168,197,102,0.45)"
-          : "rgba(168,197,102,0.20)",
+        // Solid surfaces so the tiles read cleanly regardless of whether
+        // the parent page background is the dark forest or the cream
+        // hub background. Translucent fills produce muddy olive when
+        // layered over cream.
+        backgroundColor: accent ? "#A8C566" : "#1D2620",
+        borderColor: accent ? "#8FAE4F" : "rgba(168,197,102,0.30)",
       }}
     >
-      <div className="flex items-center justify-between text-[#F4EFE8]/70 text-xs uppercase tracking-wide">
+      <div
+        className="flex items-center justify-between text-xs uppercase tracking-wide"
+        style={{ color: accent ? "#1D2620" : "rgba(244,239,232,0.75)" }}
+      >
         <span>{label}</span>
-        <span style={{ color: accent ? "#A8C566" : "rgba(244,239,232,0.5)" }}>
-          {icon}
-        </span>
+        <span style={{ color: accent ? "#1D2620" : "#A8C566" }}>{icon}</span>
       </div>
       <div
         className="text-2xl font-semibold tabular-nums leading-none"
-        style={{ color: accent ? "#A8C566" : "#F4EFE8" }}
+        style={{ color: accent ? "#1D2620" : "#F4EFE8" }}
       >
         {value}
       </div>
-      {hint && <div className="text-xs text-[#F4EFE8]/60 truncate">{hint}</div>}
+      {hint && (
+        <div
+          className="text-xs truncate"
+          style={{ color: accent ? "rgba(29,38,32,0.75)" : "rgba(244,239,232,0.65)" }}
+        >
+          {hint}
+        </div>
+      )}
     </div>
   )
 }
@@ -572,8 +582,8 @@ function TeammateCard({ row }: { row: TommyStatRow }) {
   return (
     <Card
       style={{
-        backgroundColor: "rgba(29,38,32,0.5)",
-        borderColor: "rgba(168,197,102,0.25)",
+        backgroundColor: "#0F140C",
+        borderColor: "rgba(168,197,102,0.30)",
       }}
     >
       <CardHeader className="pb-2">
@@ -674,12 +684,10 @@ function StatPill({
     <div
       className="rounded-md p-2 flex flex-col gap-0.5 border"
       style={{
-        backgroundColor: accent
-          ? "rgba(168,197,102,0.08)"
-          : "rgba(29,38,32,0.6)",
+        backgroundColor: accent ? "rgba(168,197,102,0.18)" : "#1D2620",
         borderColor: accent
-          ? "rgba(168,197,102,0.40)"
-          : "rgba(168,197,102,0.18)",
+          ? "rgba(168,197,102,0.50)"
+          : "rgba(168,197,102,0.20)",
       }}
     >
       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-[#F4EFE8]/65">

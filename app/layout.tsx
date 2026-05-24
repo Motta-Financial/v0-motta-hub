@@ -21,9 +21,9 @@ const sourceCodePro = Source_Code_Pro({
 })
 
 export const metadata: Metadata = {
-  title: "Motta Hub",
-  description: "Internal dashboard for Motta Financial professionals",
-  applicationName: "Motta Hub",
+  title: "ALFRED Hub",
+  description: "Internal operations Ai for Motta Financial professionals",
+  applicationName: "ALFRED Hub",
   authors: [{ name: "Motta Financial" }],
   generator: "v0.app",
   manifest: "/manifest.json",
@@ -43,7 +43,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "Motta Hub",
+    title: "ALFRED Hub",
   },
 }
 

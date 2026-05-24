@@ -562,7 +562,7 @@ function LoginContent() {
               left-aligned greeting that sits flush with the inputs. */}
           <div className="mb-8">
             <h1 className="text-2xl font-semibold text-[#2D2D2D] tracking-tight">
-              Sign in to <span suppressHydrationWarning>Motta Hub</span>
+              Sign in to <span suppressHydrationWarning>ALFRED Hub</span>
             </h1>
             <p className="text-sm text-[#7A7A7A] mt-2" suppressHydrationWarning>
               Welcome back. Powered by ALFRED AI.
