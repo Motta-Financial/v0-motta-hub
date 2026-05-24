@@ -155,12 +155,16 @@ function getLatestEfileStatus(eng: ProConnectEngagement): string | null {
 }
 
 function mapEngagementToRow(eng: ProConnectEngagement): MappedEngagement {
+  if (!eng.type) {
+    console.warn("[v0] Engagement missing type", eng.engagementId)
+  }
+
   return {
     engagement_id: eng.engagementId,
     proconnect_client_id: eng.clientId,
     tax_year: Number.parseInt(eng.period),
-    return_type: eng.type,
-    form_type: eng.type,
+    return_type: eng.type ?? null,
+    form_type: eng.type ?? null,
     engagement_name: eng.name ?? null,
     engagement_state: eng.state ?? null,
     status: eng.status ?? null,
