@@ -99,7 +99,7 @@ export default function WelcomePage() {
 
       {/* Hero — dark forest panel with the motta.cpa hero photograph,
           mirroring the same image-over-gradient treatment used on the
-          public site. */}
+          public site, plus a subtle digital/Ai gradient wash. */}
       <section
         className="relative overflow-hidden"
         style={{ backgroundColor: COLORS.forest, color: COLORS.cream }}
@@ -111,7 +111,32 @@ export default function WelcomePage() {
             backgroundImage: "url('/welcome/hero.jpg')",
             backgroundSize: "cover",
             backgroundPosition: "center",
-            opacity: 0.25,
+            opacity: 0.22,
+          }}
+        />
+        {/* Digital Ai gradient wash — sage → teal → indigo, very low alpha
+            so the forest still reads dark. Two soft radial gradients sit
+            behind everything to give the panel a quiet "thinking" glow. */}
+        <div
+          aria-hidden
+          className="absolute inset-0"
+          style={{
+            background:
+              "radial-gradient(70% 60% at 18% 30%, rgba(168,197,102,0.20) 0%, transparent 60%), radial-gradient(60% 60% at 88% 80%, rgba(56,189,248,0.18) 0%, transparent 65%), radial-gradient(50% 50% at 70% 15%, rgba(125,89,255,0.14) 0%, transparent 70%)",
+          }}
+        />
+        {/* Faint grid for an "instrumented" feel, masked at the edges. */}
+        <div
+          aria-hidden
+          className="absolute inset-0 opacity-[0.18]"
+          style={{
+            backgroundImage:
+              "linear-gradient(rgba(168,197,102,0.18) 1px, transparent 1px), linear-gradient(90deg, rgba(168,197,102,0.18) 1px, transparent 1px)",
+            backgroundSize: "44px 44px",
+            maskImage:
+              "radial-gradient(ellipse at center, black 35%, transparent 75%)",
+            WebkitMaskImage:
+              "radial-gradient(ellipse at center, black 35%, transparent 75%)",
           }}
         />
         <div
@@ -146,7 +171,12 @@ export default function WelcomePage() {
               <Link
                 href="/login"
                 className="inline-flex items-center gap-2 rounded-full px-6 py-3 text-sm font-semibold transition-transform hover:-translate-y-0.5"
-                style={{ backgroundColor: COLORS.sage, color: COLORS.forest }}
+                style={{
+                  // Sage → teal digital gradient on the primary CTA.
+                  backgroundImage:
+                    "linear-gradient(120deg, #A8C566 0%, #7FD1B2 60%, #5EC2D9 100%)",
+                  color: COLORS.forest,
+                }}
               >
                 Team log in
                 <ArrowRight className="h-4 w-4" />
@@ -168,20 +198,81 @@ export default function WelcomePage() {
         </div>
       </section>
 
-      {/* About — framed photograph + checkmark list, the same composition
-          motta.cpa uses for its "About" block. */}
-      <section className="mx-auto max-w-6xl px-6 py-24 lg:py-28">
+      {/* About — replaces the team stock photo with an Ai/digital
+          composition. The "Established 2023" badge moves into the
+          composition so the firm anniversary is still surfaced. */}
+      <section className="relative overflow-hidden">
+        {/* Subtle digital wash on the cream surface — barely there, just
+            enough to feel "instrumented" rather than print. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background:
+              "radial-gradient(60% 50% at 85% 10%, rgba(94,194,217,0.10) 0%, transparent 70%), radial-gradient(50% 50% at 5% 90%, rgba(168,197,102,0.10) 0%, transparent 70%)",
+          }}
+        />
+        <div className="relative mx-auto max-w-6xl px-6 py-24 lg:py-28">
         <div className="grid gap-12 lg:grid-cols-2 lg:items-center lg:gap-16">
           <div className="relative">
             <div
-              className="overflow-hidden rounded-md"
-              style={{ border: `1px solid ${COLORS.rule}` }}
+              className="relative aspect-[4/5] overflow-hidden rounded-md"
+              style={{
+                // Digital Ai gradient panel — forest → indigo → teal, with
+                // a sage glow. Replaces the team photograph.
+                backgroundImage:
+                  "linear-gradient(150deg, #0F140C 0%, #14233A 45%, #1E5C5C 100%)",
+                border: `1px solid ${COLORS.rule}`,
+              }}
             >
-              <img
-                src="/welcome/about.jpg"
-                alt="The Motta Financial team"
-                className="h-full w-full object-cover"
+              {/* Soft sage spotlight */}
+              <div
+                aria-hidden
+                className="absolute inset-0"
+                style={{
+                  background:
+                    "radial-gradient(60% 50% at 70% 25%, rgba(168,197,102,0.35) 0%, transparent 65%), radial-gradient(50% 50% at 20% 80%, rgba(125,89,255,0.30) 0%, transparent 70%)",
+                }}
               />
+              {/* Instrument grid */}
+              <div
+                aria-hidden
+                className="absolute inset-0 opacity-[0.22]"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(rgba(168,197,102,0.30) 1px, transparent 1px), linear-gradient(90deg, rgba(168,197,102,0.30) 1px, transparent 1px)",
+                  backgroundSize: "32px 32px",
+                  maskImage:
+                    "radial-gradient(ellipse at center, black 40%, transparent 80%)",
+                  WebkitMaskImage:
+                    "radial-gradient(ellipse at center, black 40%, transparent 80%)",
+                }}
+              />
+              {/* Wordmark + caption — keeps brand anchored in the panel */}
+              <div className="relative flex h-full flex-col justify-between p-8">
+                <div
+                  className="text-xs font-semibold uppercase tracking-[0.28em]"
+                  style={{ color: COLORS.sage }}
+                >
+                  ALFRED &middot; Operations Ai
+                </div>
+                <div className="space-y-3">
+                  <div
+                    className="text-5xl font-semibold tracking-tight sm:text-6xl"
+                    style={{ color: COLORS.cream, letterSpacing: "-0.02em" }}
+                  >
+                    alfred
+                    <span style={{ color: COLORS.sage }}>.</span>
+                  </div>
+                  <div
+                    className="max-w-sm text-sm leading-relaxed"
+                    style={{ color: "rgba(244,239,232,0.78)" }}
+                  >
+                    Drafted tax returns, meeting-ready briefs, and engagements
+                    on track — without the busywork.
+                  </div>
+                </div>
+              </div>
             </div>
             <div
               className="absolute -bottom-6 -left-6 hidden rounded-md px-5 py-4 shadow-lg sm:block"
@@ -236,15 +327,24 @@ export default function WelcomePage() {
             </ul>
           </div>
         </div>
+        </div>
       </section>
 
       {/* ALFRED Ai dark panel — mirrors motta.cpa's signature dark green
-          differentiator section. */}
+          differentiator section, with a digital gradient wash. */}
       <section
-        className="relative"
+        className="relative overflow-hidden"
         style={{ backgroundColor: COLORS.forest, color: COLORS.cream }}
       >
-        <div className="mx-auto max-w-6xl px-6 py-24 lg:py-28">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background:
+              "radial-gradient(60% 60% at 90% 10%, rgba(94,194,217,0.18) 0%, transparent 65%), radial-gradient(50% 50% at 10% 90%, rgba(168,197,102,0.16) 0%, transparent 70%), radial-gradient(50% 50% at 50% 50%, rgba(125,89,255,0.10) 0%, transparent 80%)",
+          }}
+        />
+        <div className="relative mx-auto max-w-6xl px-6 py-24 lg:py-28">
           <div className="grid gap-12 lg:grid-cols-2 lg:items-center lg:gap-16">
             <div className="space-y-6">
               <p
