@@ -8,10 +8,12 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Trophy, Flame, Target, Users, Zap, Calendar, Filter, X, Send } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Trophy, Flame, Target, Users, Zap, Calendar, Filter, X, Send, Sparkles } from "lucide-react"
 import { TommyLeaderboard } from "./tommy-leaderboard"
 import { TommyYTDLeaderboard } from "./tommy-ytd-leaderboard"
 import { TommyRecentBallots } from "./tommy-recent-ballots"
+import { TommyStats } from "./tommy-stats"
 
 interface Week {
   id: string
@@ -548,15 +550,55 @@ export function TommyAwardsPage() {
         </CardContent>
       </Card>
 
-      {/* Weekly leaderboard sits ABOVE the year-to-date standings — the
-          weekly result is what the team is most curious about right after
-          the recap goes out. The widget reads from the same `filters`
-          object, so when the user applies a multi-week or year filter
-          this section reflects those choices. */}
-      <TommyLeaderboard filters={filters} />
+      {/* Leaderboards are split into tabs so the Year-to-Date Standings
+          have a dedicated, full-bleed surface and aren't competing with
+          the weekly podium for attention. The team filters above apply
+          to both tabs (YTD honors only the year filter — multi-week
+          and team-member filters intentionally don't constrain
+          season-long standings). */}
+      <Tabs defaultValue="weekly" className="space-y-4">
+        <TabsList
+          className="w-full justify-start gap-1 p-1 h-auto"
+          style={{
+            backgroundColor: "rgba(168,197,102,0.06)",
+            borderColor: "rgba(168,197,102,0.25)",
+          }}
+        >
+          <TabsTrigger
+            value="weekly"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#1D2620] text-[#F4EFE8] hover:bg-[rgba(168,197,102,0.10)] gap-2"
+          >
+            <Trophy className="h-4 w-4" />
+            Weekly Leaderboard
+          </TabsTrigger>
+          <TabsTrigger
+            value="ytd"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#1D2620] text-[#F4EFE8] hover:bg-[rgba(168,197,102,0.10)] gap-2"
+          >
+            <Calendar className="h-4 w-4" />
+            Year-to-Date Standings
+          </TabsTrigger>
+          <TabsTrigger
+            value="stats"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#1D2620] text-[#F4EFE8] hover:bg-[rgba(168,197,102,0.10)] gap-2"
+          >
+            <Sparkles className="h-4 w-4" />
+            Tommy Stats
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Year-to-Date Standings (with embedded Scoring System) */}
-      <TommyYTDLeaderboard year={filters.year} />
+        <TabsContent value="weekly" className="m-0">
+          <TommyLeaderboard filters={filters} />
+        </TabsContent>
+
+        <TabsContent value="ytd" className="m-0">
+          <TommyYTDLeaderboard year={filters.year} />
+        </TabsContent>
+
+        <TabsContent value="stats" className="m-0">
+          <TommyStats year={filters.year} />
+        </TabsContent>
+      </Tabs>
 
       {/* Recent ballots — full-width below the leaderboards now that the
           voting form has its own dedicated /tommy-awards/ballot page. */}

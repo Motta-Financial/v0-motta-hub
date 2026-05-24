@@ -35,6 +35,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { format, formatDistanceToNow, parseISO } from "date-fns"
+import { toast } from "sonner"
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -54,6 +55,7 @@ import {
   MessageSquare,
   Phone,
   PiggyBank,
+  Plus,
   Receipt,
   RefreshCw,
   StickyNote,
@@ -83,6 +85,10 @@ import { summarizePayments, isPaid } from "@/lib/ignition/payments"
 import { cn } from "@/lib/utils"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
 import { PlatformLinksCard } from "@/components/clients/platform-links-card"
+import {
+  LinkOrganizationDialog,
+  type LinkOrganizationInitial,
+} from "@/components/clients/link-organization-dialog"
 import { AlfredErrorCard } from "@/components/alfred-error"
 import { clientTypeBadgeClass, type ClientType } from "@/lib/client-type"
 
@@ -419,19 +425,24 @@ export interface ClientBundle {
   }>
   relatedContacts: Array<{
     id: string
+    relationshipId: string | null
     full_name: string | null
     primary_email: string | null
     phone_primary: string | null
     roleOrTitle: string | null
     ownershipPercentage: number | null
+    isPrimaryContact: boolean | null
   }>
   relatedOrganizations: Array<{
     id: string
+    relationshipId: string | null
     name: string | null
     full_name: string | null
     primary_email: string | null
     industry: string | null
     roleOrTitle: string | null
+    ownershipPercentage: number | null
+    isPrimaryContact: boolean | null
   }>
   teamMembers: Array<{ name: string; email: string | null; key: string | null }>
   serviceLinesUsed: string[]
@@ -507,7 +518,7 @@ export interface ClientBundle {
   } | null
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────��────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -746,9 +757,13 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
           <DocumentsTab data={data} />
         </TabsContent>
 
-        <TabsContent value="people" className="mt-4">
-          <PeopleTab data={data} clientId={clientId} />
-        </TabsContent>
+              <TabsContent value="people" className="mt-4">
+                <PeopleTab
+                  data={data}
+                  clientId={clientId}
+                  onChange={fetchClient}
+                />
+              </TabsContent>
       </Tabs>
     </div>
   )
@@ -2512,31 +2527,113 @@ function DocumentsTab({ data }: { data: ClientBundle }) {
 function PeopleTab({
   data,
   clientId,
+  onChange,
 }: {
   data: ClientBundle
   clientId: string
+  onChange?: () => void | Promise<void>
 }) {
   const { client } = data
   const isOrg = client.isOrganization
+
+  // Dialog state for linking / editing a contact↔organization tie.
+  // Only used on the contact side (isOrg === false). When `editing` is
+  // null and the dialog is open, we're creating a new link.
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false)
+  const [editing, setEditing] = useState<LinkOrganizationInitial | null>(null)
+  const [unlinkingId, setUnlinkingId] = useState<string | null>(null)
+
+  function openCreateDialog() {
+    setEditing(null)
+    setLinkDialogOpen(true)
+  }
+
+  function openEditDialog(o: ClientBundle["relatedOrganizations"][number]) {
+    if (!o.relationshipId) return
+    setEditing({
+      relationshipId: o.relationshipId,
+      organizationId: o.id,
+      organizationName: o.name || o.full_name || null,
+      roleOrTitle: o.roleOrTitle,
+      ownershipPercentage: o.ownershipPercentage,
+      isPrimaryContact: o.isPrimaryContact ?? false,
+    })
+    setLinkDialogOpen(true)
+  }
+
+  async function handleUnlink(relationshipId: string, name: string) {
+    if (!relationshipId) return
+    if (
+      !window.confirm(
+        `Remove ${name || "this organization"} from this contact's affiliations?`,
+      )
+    ) {
+      return
+    }
+    try {
+      setUnlinkingId(relationshipId)
+      const res = await fetch(
+        `/api/contacts/${encodeURIComponent(
+          clientId,
+        )}/organizations?relationship_id=${encodeURIComponent(relationshipId)}`,
+        { method: "DELETE" },
+      )
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}))
+        throw new Error(json?.error || `HTTP ${res.status}`)
+      }
+      toast.success("Organization unlinked.")
+      await onChange?.()
+    } catch (err) {
+      console.error("[v0] unlink organization failed:", err)
+      toast.error(err instanceof Error ? err.message : "Unlink failed.")
+    } finally {
+      setUnlinkingId(null)
+    }
+  }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Related people */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base flex items-center gap-2">
             <Users className="h-4 w-4" />
             {isOrg
               ? `Related contacts (${data.relatedContacts.length})`
               : `Affiliated organizations (${data.relatedOrganizations.length})`}
           </CardTitle>
+          {!isOrg && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={openCreateDialog}
+              className="gap-1.5"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Link organization
+            </Button>
+          )}
         </CardHeader>
         <CardContent className="p-0">
           {isOrg && data.relatedContacts.length === 0 && (
             <EmptyState message="No contacts linked to this organization." />
           )}
           {!isOrg && data.relatedOrganizations.length === 0 && (
-            <EmptyState message="No organizations affiliated with this contact." />
+            <div className="px-4 py-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
+              <span>No organizations affiliated with this contact.</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={openCreateDialog}
+                className="gap-1.5"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Link an organization
+              </Button>
+            </div>
           )}
           {isOrg ? (
             <div className="divide-y">
@@ -2575,16 +2672,66 @@ function PeopleTab({
                     <Building2 className="h-4 w-4 text-muted-foreground" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <a
-                      href={`/clients/${o.id}`}
-                      className="font-medium text-sm hover:underline truncate block"
-                    >
-                      {o.name || o.full_name || "(unnamed org)"}
-                    </a>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={`/clients/${o.id}`}
+                        className="font-medium text-sm hover:underline truncate"
+                      >
+                        {o.name || o.full_name || "(unnamed org)"}
+                      </a>
+                      {o.isPrimaryContact && (
+                        <Badge
+                          variant="secondary"
+                          className="text-[10px] px-1.5 py-0"
+                        >
+                          Primary
+                        </Badge>
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground truncate">
-                      {o.roleOrTitle || o.industry || o.primary_email || "—"}
+                      {o.roleOrTitle ? (
+                        <span className="font-medium text-foreground">
+                          {o.roleOrTitle}
+                        </span>
+                      ) : (
+                        <span className="italic">No role set</span>
+                      )}
+                      {o.ownershipPercentage != null
+                        ? ` · ${o.ownershipPercentage}%`
+                        : ""}
+                      {o.industry || o.primary_email
+                        ? ` · ${o.industry || o.primary_email}`
+                        : ""}
                     </p>
                   </div>
+                  {o.relationshipId && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => openEditDialog(o)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() =>
+                          handleUnlink(
+                            o.relationshipId!,
+                            o.name || o.full_name || "",
+                          )
+                        }
+                        disabled={unlinkingId === o.relationshipId}
+                      >
+                        {unlinkingId === o.relationshipId
+                          ? "Removing…"
+                          : "Unlink"}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -2664,6 +2811,21 @@ function PeopleTab({
       <div className="lg:col-span-2">
         <PlatformLinksCard contactId={clientId} />
       </div>
+
+      {!isOrg && (
+        <LinkOrganizationDialog
+          open={linkDialogOpen}
+          onOpenChange={(o) => {
+            setLinkDialogOpen(o)
+            if (!o) setEditing(null)
+          }}
+          contactId={clientId}
+          initial={editing ?? undefined}
+          onSaved={() => {
+            void onChange?.()
+          }}
+        />
+      )}
     </div>
   )
 }
