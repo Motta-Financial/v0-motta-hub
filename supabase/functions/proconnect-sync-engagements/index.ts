@@ -435,7 +435,23 @@ Deno.serve(async (req: Request) => {
           }
 
           const data = await response.json()
-          const engagements: ProConnectEngagement[] = data?.engagements || []
+
+          // [v0] TEMPORARY DEBUG — inspect raw response shape
+          console.log(
+            `[v0] Raw engagements response for client ${client.proconnect_client_id}:`,
+            JSON.stringify(data).slice(0, 3000),
+          )
+
+          const engagements: ProConnectEngagement[] =
+            Array.isArray(data)
+              ? data
+              : Array.isArray(data?.engagements)
+                ? data.engagements
+                : Array.isArray(data?.items)
+                  ? data.items
+                  : Array.isArray(data?.data)
+                    ? data.data
+                    : []
 
           console.log(
             `[v0] Client ${client.proconnect_client_id} (oiiClientId=${oiiClientId}): found ${engagements.length} engagements`,
