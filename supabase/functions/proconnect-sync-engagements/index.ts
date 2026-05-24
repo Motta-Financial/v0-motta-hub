@@ -65,7 +65,8 @@ interface SyncRequest {
 }
 
 interface ProConnectClient {
-  oiiClientId: string
+  proconnect_client_id: string
+  proconnect_entity_id: string | null
 }
 
 interface ProConnectEngagement {
@@ -343,7 +344,7 @@ Deno.serve(async (req: Request) => {
       console.log(`[v0] Fetching single client: ${clientId}`)
       const { data, error } = await supabase
         .from("proconnect_clients")
-        .select("proconnect_client_id")
+        .select("proconnect_client_id, proconnect_entity_id")
         .eq("proconnect_client_id", clientId)
         .single()
 
@@ -351,14 +352,17 @@ Deno.serve(async (req: Request) => {
         throw new Error(`Client not found: ${clientId}`)
       }
 
-      clientsToProcess = [{ oiiClientId: data.proconnect_client_id }]
+      clientsToProcess = [{
+        proconnect_client_id: data.proconnect_client_id,
+        proconnect_entity_id: data.proconnect_entity_id ?? null,
+      }]
     } else {
       console.log(
         `[v0] Fetching ${clientLimit} clients starting at offset ${clientOffset}`,
       )
       const { data, error } = await supabase
         .from("proconnect_clients")
-        .select("proconnect_client_id")
+        .select("proconnect_client_id, proconnect_entity_id")
         .order("proconnect_client_id")
         .range(clientOffset, clientOffset + clientLimit - 1)
 
@@ -367,7 +371,8 @@ Deno.serve(async (req: Request) => {
       }
 
       clientsToProcess = (data || []).map((c: any) => ({
-        oiiClientId: c.proconnect_client_id,
+        proconnect_client_id: c.proconnect_client_id,
+        proconnect_entity_id: c.proconnect_entity_id ?? null,
       }))
     }
 
@@ -399,14 +404,20 @@ Deno.serve(async (req: Request) => {
 
       const batchPromises = batch.map(async (client) => {
         try {
+          // Prefer proconnect_entity_id for the oiiClientId query param —
+          // the ProConnect API expects the OII entity ID, not the internal
+          // client ID. Fall back to proconnect_client_id if entity_id is null.
+          const oiiClientId =
+            client.proconnect_entity_id ?? client.proconnect_client_id
+
           console.log(
-            `[v0] Fetching engagements for client ${client.oiiClientId} year ${year}`,
+            `[v0] Fetching engagements for client ${client.proconnect_client_id} (oiiClientId=${oiiClientId}) year ${year}`,
           )
 
           const url = new URL(PROCONNECT_ENGAGEMENTS_URL)
           url.searchParams.set("source", "ITO")
           url.searchParams.set("period", String(year))
-          url.searchParams.set("oiiClientId", client.oiiClientId)
+          url.searchParams.set("oiiClientId", oiiClientId)
 
           const response = await fetchWithRetry(url.toString(), {
             method: "GET",
@@ -432,7 +443,7 @@ Deno.serve(async (req: Request) => {
 
           return engagements.map(mapEngagementToRow)
         } catch (e) {
-          const msg = `Client ${client.oiiClientId}: ${e instanceof Error ? e.message : String(e)}`
+          const msg = `Client ${client.proconnect_client_id}: ${e instanceof Error ? e.message : String(e)}`
           console.error(`[v0] ${msg}`)
           errors.push(msg)
           return []
