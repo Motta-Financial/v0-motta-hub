@@ -541,7 +541,7 @@ Deno.serve(async (req: Request) => {
       const { error: upsertError } = await supabase
         .from("proconnect_engagements")
         .upsert(batch, {
-          onConflict: "proconnect_client_id,tax_year,return_type",
+          onConflict: "engagement_id",
         })
 
       if (upsertError) {
