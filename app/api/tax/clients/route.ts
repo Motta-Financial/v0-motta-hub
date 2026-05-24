@@ -90,7 +90,7 @@ export async function GET() {
       // Falls back to team_members(full_name) when display_name is null.
       supabase
         .from("proconnect_profiles")
-        .select("profile_id, display_name, team_members(full_name)"),
+        .select("proconnect_profile_id, full_name, team_members(full_name)"),
     ])
 
     if (clientsRes.error) throw clientsRes.error
@@ -109,8 +109,8 @@ export async function GET() {
     const preparerMap = new Map<string, string>()
     for (const p of profilesRes.data || []) {
       const tm = p.team_members as { full_name?: string | null } | null
-      const name = p.display_name || tm?.full_name || null
-      if (name) preparerMap.set(p.profile_id, name)
+      const name = p.full_name || tm?.full_name || null
+      if (name) preparerMap.set(p.proconnect_profile_id, name)
     }
 
     // Build a lookup of mapping rows keyed on proconnect_client_id.
@@ -271,7 +271,12 @@ export async function GET() {
 
     return NextResponse.json({ clients: enriched, stats })
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
+    // Supabase errors are objects with a .message property
+    const msg = e instanceof Error 
+      ? e.message 
+      : (e && typeof e === 'object' && 'message' in e) 
+        ? String((e as { message: unknown }).message)
+        : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })
   }
 }
