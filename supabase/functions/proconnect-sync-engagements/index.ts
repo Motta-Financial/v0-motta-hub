@@ -438,7 +438,7 @@ Deno.serve(async (req: Request) => {
           const engagements: ProConnectEngagement[] = data?.engagements || []
 
           console.log(
-            `[v0] Client ${client.oiiClientId}: found ${engagements.length} engagements`,
+            `[v0] Client ${client.proconnect_client_id} (oiiClientId=${oiiClientId}): found ${engagements.length} engagements`,
           )
 
           return engagements.map(mapEngagementToRow)
