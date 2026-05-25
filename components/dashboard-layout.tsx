@@ -128,28 +128,31 @@ const navigation = [
         children: [
           { name: "Intake", href: "/sales/intake", icon: Inbox },
           { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
+          // Meetings hub — Calendly, Zoom, and Debriefs were originally
+          // top-level routes, but operationally they're all "client
+          // touchpoints" so they belong under Clients. The legacy URLs
+          // (/zoom, /debriefs, /settings/calendly) still work to avoid
+          // breaking bookmarks; this is just the canonical nav location.
+          {
+            name: "Meetings",
+            href: "/clients/meetings",
+            icon: Calendar,
+            children: [
+              { name: "Calendly", href: "/clients/meetings/calendly", icon: Calendar },
+              { name: "Zoom", href: "/clients/meetings/zoom", icon: Video },
+              { name: "Debriefs", href: "/clients/meetings/debriefs", icon: MessageSquare },
+            ],
+          },
         ],
       },
       {
-        // Calendly used to live as a child here ("Calendly Admin").
-        // It moved to /settings/calendly so it sits alongside the
-        // other per-user OAuth connections (and the old /calendly
-        // URL now server-redirects there). Zoom stays since it's a
-        // shared meeting room view, not a per-user setup screen.
+        // Calendar sub-tree no longer carries Zoom — Zoom moved to
+        // Clients → Meetings → Zoom. This entry now only renders the
+        // master team-calendar view (the page already has its own
+        // Calendly admin link in-page for ops).
         name: "Calendar",
         href: "/calendar",
         icon: Calendar,
-        children: [{ name: "Zoom", href: "/zoom", icon: Video }],
-      },
-      {
-        // "New Debrief" used to live as a child here, but the form is now
-        // surfaced exclusively through the header Forms dropdown (alongside
-        // Prospect Form + Tommy Award Ballot). The Debriefs hub itself has
-        // a "+ New Debrief" button on its own page, so keeping a sidebar
-        // child was redundant.
-        name: "Debriefs",
-        href: "/debriefs",
-        icon: MessageSquare,
       },
     ],
   },
