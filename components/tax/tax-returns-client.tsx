@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useEffect } from "react"
 import useSWR from "swr"
+import { ReturnRelationshipChip } from "@/components/tax/return-relationship-chip"
 import {
   FileText,
   CheckCircle2,
@@ -346,6 +347,7 @@ export function TaxReturnsClient() {
                     <TableHead className="w-[160px]">Status</TableHead>
                     <TableHead className="w-[130px]">E-file</TableHead>
                     <TableHead className="w-[120px]">Preparer</TableHead>
+                    <TableHead className="w-[110px]">Related</TableHead>
                     <TableHead className="w-[140px]">Modified</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -393,6 +395,9 @@ export function TaxReturnsClient() {
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {r.preparer || "—"}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        <ReturnRelationshipChip clientId={r.proconnect_client_id} />
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground tabular-nums">
                         {r.proconnect_modified_at
