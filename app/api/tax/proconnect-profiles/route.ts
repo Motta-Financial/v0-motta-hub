@@ -6,6 +6,7 @@ import {
   type ProfileMatchCandidate,
   type TeamMemberLite,
 } from "@/lib/tax/proconnect-profile-match"
+import { loadKarbonSuggestions } from "@/lib/tax/proconnect-karbon-suggester"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -65,11 +66,21 @@ export async function GET() {
     is_active: (t as { is_active: boolean | null }).is_active ?? true,
   }))
 
+  // Karbon co-occurrence is the strongest signal we have when the
+  // ProConnect profile row has no seed data — it cross-references each
+  // GUID against Karbon work-item assignees on the same client/year.
+  // Failures here (e.g. RPC not yet deployed) silently degrade — the
+  // string-similarity matcher below still runs.
+  const karbonByProfile = await loadKarbonSuggestions(
+    supabase,
+    teamMembersTyped,
+  )
+
   const enriched = (profiles || []).map((p) => {
     // Always run the matcher even when already linked — surfaces a "swap"
     // option in the UI for cases where the operator initially picked the
     // wrong teammate.
-    const candidates: ProfileMatchCandidate[] = rankTeamMembers(
+    const stringCandidates: ProfileMatchCandidate[] = rankTeamMembers(
       {
         profileId: p.proconnect_profile_id,
         fullName: p.full_name,
@@ -78,7 +89,49 @@ export async function GET() {
       },
       teamMembersTyped,
     )
-    const autolink = pickAutolinkCandidate(candidates)
+    // Merge in Karbon-derived candidates. Same teamMemberId from both
+    // sources collapses to a single candidate keeping the higher score
+    // and the union of matchedOn reasons.
+    const karbonForProfile = karbonByProfile.get(p.proconnect_profile_id) || []
+    const merged = new Map<string, ProfileMatchCandidate>()
+    for (const c of stringCandidates) merged.set(c.teamMemberId, c)
+    for (const k of karbonForProfile) {
+      const existing = merged.get(k.teamMemberId)
+      if (!existing) {
+        merged.set(k.teamMemberId, {
+          teamMemberId: k.teamMemberId,
+          fullName: k.fullName,
+          email: k.email,
+          role: k.role,
+          isActive: k.isActive,
+          score: k.score,
+          matchedOn: k.matchedOn,
+        })
+      } else {
+        merged.set(k.teamMemberId, {
+          ...existing,
+          score: Math.max(existing.score, k.score),
+          matchedOn: [...existing.matchedOn, ...k.matchedOn],
+        })
+      }
+    }
+    const candidates = [...merged.values()].sort((a, b) => b.score - a.score)
+
+    // Auto-link suggestion: prefer the standard string-based picker
+    // (which only fires above 0.85). If that fails AND there's a Karbon
+    // top-1 with very strong dominance (>= 50% confidence and 2x its
+    // runner-up), promote it as the suggestion — but the bulk
+    // auto-linker will still skip it because the score is < 0.85.
+    let autolink = pickAutolinkCandidate(candidates)
+    if (!autolink && karbonForProfile.length > 0) {
+      const top = karbonForProfile[0]
+      const runnerUp = karbonForProfile[1]
+      const dominant =
+        top.matchCount >= 3 &&
+        top.matchCount / top.totalCooccurrences >= 0.5 &&
+        (!runnerUp || top.matchCount >= 2 * runnerUp.matchCount)
+      if (dominant) autolink = top
+    }
 
     return {
       profileId: p.proconnect_profile_id,
