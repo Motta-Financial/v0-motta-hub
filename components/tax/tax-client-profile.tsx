@@ -4,6 +4,7 @@ import { useState } from "react"
 import useSWR from "swr"
 import Link from "next/link"
 import {
+  AlertCircle,
   ArrowLeft,
   Building2,
   Calendar,
@@ -11,35 +12,36 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  DollarSign,
   ExternalLink,
   FileText,
+  Landmark,
   Link2,
   Mail,
   MapPin,
   Network,
   Phone,
+  Receipt,
+  TrendingUp,
   User,
-  AlertCircle,
+  Wallet,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs"
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { KpiCard, FormBadge, EfileBadge, fmtMoney, fmtNumber } from "@/components/tax/tax-shared"
-import { cn } from "@/lib/utils"
-import { SensitiveValue } from "@/components/security/sensitive-value"
-import { ClientRelationshipsCard } from "@/components/tax/client-relationships-card"
 import {
   Table,
   TableBody,
@@ -48,6 +50,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
+  KpiCard,
+  FormBadge,
+  EfileBadge,
+  fmtMoney,
+  fmtNumber,
+} from "@/components/tax/tax-shared"
+import { cn } from "@/lib/utils"
+import { SensitiveValue } from "@/components/security/sensitive-value"
+import { ClientRelationshipsCard } from "@/components/tax/client-relationships-card"
+import { TaxFinancialTrendChart } from "@/components/tax/tax-financial-trend-chart"
+import { TaxProfilePanel } from "@/components/tax/tax-profile-panel"
 
 type TaxProfileResponse = {
   client: {
@@ -161,21 +180,33 @@ const fetcher = (url: string) =>
     return r.json() as Promise<TaxProfileResponse>
   })
 
+/**
+ * Tax Client Profile — now a "Financial Dashboard with a Tax Profile".
+ *
+ * The page is organized top-to-bottom the way a partner reviews a
+ * client at the start of an engagement:
+ *
+ *   1. Identity strip      — name, type, hub linkage, return-to-list
+ *   2. Financial Snapshot  — 4 KPI cards driven by the LATEST 1040
+ *                            (income, AGI, total tax, refund/owed)
+ *   3. Tax Profile panel   — filing status, schedules, attention flags,
+ *                            ALFRED summary, completeness, YoY AGI delta
+ *   4. Trend chart         — multi-year income/AGI/tax/refund area chart
+ *   5. Tabbed detail       — Returns by year, Documents, Identifiers,
+ *                            Relationships
+ *
+ * The data was already fully computed server-side in
+ * /api/tax/clients/[clientId] — this rewrite mostly surfaces fields
+ * that were previously hidden (taxProfile, agiTrend, attentionReasons,
+ * aiSummary, etc.) and reorders the layout so the most decision-
+ * relevant numbers are above the fold.
+ */
 export function TaxClientProfile({ clientId }: { clientId: string }) {
   const { data, isLoading, error } = useSWR(
     `/api/tax/clients/${clientId}`,
-    fetcher
+    fetcher,
   )
-  const [expandedYears, setExpandedYears] = useState<Set<number>>(new Set())
-
-  const toggleYear = (year: number) => {
-    setExpandedYears((prev) => {
-      const next = new Set(prev)
-      if (next.has(year)) next.delete(year)
-      else next.add(year)
-      return next
-    })
-  }
+  const [activeTab, setActiveTab] = useState("returns")
 
   if (error) {
     return (
@@ -184,7 +215,9 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
           <CardContent className="p-6 flex items-center gap-3">
             <AlertCircle className="h-5 w-5 text-rose-700" />
             <div>
-              <div className="font-medium text-rose-900">Failed to load client profile</div>
+              <div className="font-medium text-rose-900">
+                Failed to load client profile
+              </div>
               <div className="text-sm text-rose-700">{error.message}</div>
             </div>
           </CardContent>
@@ -194,179 +227,236 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
   }
 
   if (isLoading || !data) {
-    return (
-      <div className="p-6 space-y-4">
-        <Skeleton className="h-8 w-64" />
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-24" />
-          ))}
-        </div>
-        <Skeleton className="h-48" />
-        <Skeleton className="h-64" />
-      </div>
-    )
+    return <TaxClientProfileSkeleton />
   }
 
-  const { client, engagements, summary, hubLinkage, taxProfile, documents } = data
+  const { client, engagements, summary, hubLinkage, taxProfile, documents } =
+    data
   const isSubEntity =
     client.proconnectEntityId &&
     client.topLevelEntityId &&
     client.proconnectEntityId !== client.topLevelEntityId
 
+  // Latest year refund/owed handling — both fields are positive numbers
+  // server-side; we infer the sign for display.
+  const latestRefund = taxProfile?.latestRefundOrOwed ?? null
+  const refundPositive = latestRefund != null && latestRefund > 0
+
   return (
-    <div className="p-6 space-y-6">
-      {/* Back nav + Header */}
-      <header className="space-y-4">
-        <Link
-          href="/tax/clients"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to All Clients
-        </Link>
+    <div className="p-6 space-y-6 pb-12">
+      {/* ─── Back nav ─── */}
+      <Link
+        href="/tax/clients"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        Back to All Clients
+      </Link>
 
-        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-          <div className="flex items-start gap-4">
-            <div
-              className={cn(
-                "p-3 rounded-lg",
-                client.clientType === "PERSON"
-                  ? "bg-blue-100 text-blue-700"
-                  : "bg-violet-100 text-violet-700"
-              )}
-            >
-              {client.clientType === "PERSON" ? (
-                <User className="h-6 w-6" />
-              ) : (
-                <Building2 className="h-6 w-6" />
-              )}
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">
-                {client.displayName || client.businessName || "Unnamed Client"}
-              </h1>
-              <div className="flex items-center gap-2 mt-1">
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "text-xs",
-                    client.clientType === "PERSON"
-                      ? "bg-blue-50 text-blue-900 border-blue-200"
-                      : "bg-violet-50 text-violet-900 border-violet-200"
-                  )}
-                >
-                  {client.clientType === "PERSON" ? "Individual" : "Organization"}
-                </Badge>
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "text-xs",
-                    client.clientState === "ACTIVE"
-                      ? "bg-emerald-50 text-emerald-900 border-emerald-200"
-                      : "bg-stone-50 text-stone-700 border-stone-200"
-                  )}
-                >
-                  {client.clientState || "Unknown"}
-                </Badge>
-                {isSubEntity && (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger>
-                        <Badge variant="outline" className="text-xs bg-violet-50 text-violet-700 border-violet-200">
-                          <Network className="h-3 w-3 mr-1" />
-                          Sub-entity
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        This is a sub-entity of a parent ProConnect record
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
-              </div>
-            </div>
+      {/* ─── Identity header ─── */}
+      <header className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+        <div className="flex items-start gap-4 min-w-0 flex-1">
+          <div
+            className={cn(
+              "p-3 rounded-lg shrink-0",
+              client.clientType === "PERSON"
+                ? "bg-blue-100 text-blue-700"
+                : "bg-violet-100 text-violet-700",
+            )}
+          >
+            {client.clientType === "PERSON" ? (
+              <User className="h-6 w-6" />
+            ) : (
+              <Building2 className="h-6 w-6" />
+            )}
           </div>
-
-          {/* Hub linkage badges */}
-          {hubLinkage && hubLinkage.linkedSystems.length > 0 && (
-            <div className="flex items-center gap-2">
-              <Link2 className="h-4 w-4 text-muted-foreground" />
-              {hubLinkage.karbonUrl && (
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight text-balance">
+              {client.displayName || client.businessName || "Unnamed Client"}
+            </h1>
+            <div className="flex flex-wrap items-center gap-2 mt-1.5">
+              <Badge
+                variant="outline"
+                className={cn(
+                  "text-xs",
+                  client.clientType === "PERSON"
+                    ? "bg-blue-50 text-blue-900 border-blue-200"
+                    : "bg-violet-50 text-violet-900 border-violet-200",
+                )}
+              >
+                {client.clientType === "PERSON" ? "Individual" : "Organization"}
+              </Badge>
+              <Badge
+                variant="outline"
+                className={cn(
+                  "text-xs",
+                  client.clientState === "ACTIVE"
+                    ? "bg-emerald-50 text-emerald-900 border-emerald-200"
+                    : "bg-stone-50 text-stone-700 border-stone-200",
+                )}
+              >
+                {client.clientState || "Unknown"}
+              </Badge>
+              {isSubEntity && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge
+                        variant="outline"
+                        className="text-xs bg-violet-50 text-violet-700 border-violet-200 gap-1"
+                      >
+                        <Network className="h-3 w-3" />
+                        Sub-entity
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Sub-entity of a parent ProConnect record
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+              {hubLinkage?.karbonUrl && (
                 <a
                   href={hubLinkage.karbonUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs bg-stone-100 hover:bg-stone-200 px-2 py-1 rounded transition-colors"
+                  className="inline-flex items-center gap-1 text-xs bg-stone-100 hover:bg-stone-200 px-2 py-0.5 rounded-md transition-colors"
                 >
+                  <Link2 className="h-3 w-3" />
                   Karbon
                   <ExternalLink className="h-3 w-3" />
                 </a>
               )}
-              {hubLinkage.ignitionClientId && (
-                <span className="text-xs bg-stone-100 px-2 py-1 rounded">
-                  Ignition linked
+              {hubLinkage?.ignitionClientId && (
+                <span className="inline-flex items-center gap-1 text-xs bg-stone-100 px-2 py-0.5 rounded-md">
+                  <Link2 className="h-3 w-3" />
+                  Ignition
+                </span>
+              )}
+              {hubLinkage?.internalClientId && (
+                <Link
+                  href={`/clients/${hubLinkage.internalClientId}`}
+                  className="inline-flex items-center gap-1 text-xs bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-2 py-0.5 rounded-md transition-colors"
+                >
+                  <Link2 className="h-3 w-3" />
+                  Hub Profile
+                </Link>
+              )}
+            </div>
+
+            {/* Inline contact rail */}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mt-2">
+              {client.email && (
+                <a
+                  href={`mailto:${client.email}`}
+                  className="inline-flex items-center gap-1 hover:text-foreground"
+                >
+                  <Mail className="h-3 w-3" />
+                  {client.email}
+                </a>
+              )}
+              {client.phone && (
+                <a
+                  href={`tel:${client.phone}`}
+                  className="inline-flex items-center gap-1 hover:text-foreground"
+                >
+                  <Phone className="h-3 w-3" />
+                  {client.phone}
+                </a>
+              )}
+              {(client.address.city || client.address.state) && (
+                <span className="inline-flex items-center gap-1">
+                  <MapPin className="h-3 w-3" />
+                  {[client.address.city, client.address.state]
+                    .filter(Boolean)
+                    .join(", ")}
+                  {client.address.zip ? ` ${client.address.zip}` : ""}
+                </span>
+              )}
+              {client.taxId && (
+                <span className="inline-flex items-center gap-1">
+                  <FileText className="h-3 w-3" />
+                  TIN:{" "}
+                  <SensitiveValue
+                    value={client.taxId}
+                    label="Tax ID"
+                    buttonSize="sm"
+                  />
                 </span>
               )}
             </div>
-          )}
+          </div>
         </div>
       </header>
 
-      {/* Contact Info Card */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Contact Information</CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="flex items-start gap-3">
-            <Mail className="h-4 w-4 text-muted-foreground mt-0.5" />
-            <div>
-              <div className="text-xs text-muted-foreground uppercase tracking-wide">Email</div>
-              <div className="text-sm">{client.email || "—"}</div>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <Phone className="h-4 w-4 text-muted-foreground mt-0.5" />
-            <div>
-              <div className="text-xs text-muted-foreground uppercase tracking-wide">Phone</div>
-              <div className="text-sm">{client.phone || "—"}</div>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <MapPin className="h-4 w-4 text-muted-foreground mt-0.5" />
-            <div>
-              <div className="text-xs text-muted-foreground uppercase tracking-wide">Location</div>
-              <div className="text-sm">
-                {[client.address.city, client.address.state].filter(Boolean).join(", ") || "—"}
-                {client.address.zip && (
-                  <span className="text-muted-foreground ml-1">{client.address.zip}</span>
-                )}
-              </div>
-            </div>
-          </div>
-          {client.taxId && (
-            <div className="flex items-start gap-3">
-              <FileText className="h-4 w-4 text-muted-foreground mt-0.5" />
-              <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide">Tax ID</div>
-                <div className="text-sm">
-                  <SensitiveValue value={client.taxId} label="Tax ID" buttonSize="sm" />
-                </div>
-              </div>
-            </div>
+      {/* ─── Financial Snapshot KPIs (latest year) ─── */}
+      <section className="space-y-2">
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            Financial Snapshot
+          </h2>
+          {taxProfile?.lastYearFiled && (
+            <span className="text-xs text-muted-foreground">
+              Latest filed: TY {taxProfile.lastYearFiled}
+            </span>
           )}
-          <div className="flex items-start gap-3">
-            <FileText className="h-4 w-4 text-muted-foreground mt-0.5" />
-            <div>
-              <div className="text-xs text-muted-foreground uppercase tracking-wide">ProConnect ID</div>
-              <div className="text-sm font-mono text-muted-foreground">{client.proconnectClientId}</div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <KpiCard
+            label="Total Income"
+            value={fmtMoney(taxProfile?.latestTotalIncome ?? null)}
+            subtitle={
+              taxProfile?.lastYearFiled
+                ? `TY ${taxProfile.lastYearFiled}`
+                : "No filings"
+            }
+            icon={DollarSign}
+            tone="stone"
+          />
+          <KpiCard
+            label="AGI"
+            value={fmtMoney(taxProfile?.latestAgi ?? null)}
+            subtitle="Adjusted gross income"
+            icon={Wallet}
+            tone="blue"
+          />
+          <KpiCard
+            label="Total Tax"
+            value={fmtMoney(taxProfile?.latestTotalTax ?? null)}
+            subtitle={
+              taxProfile?.latestEffectiveRate != null
+                ? `${(taxProfile.latestEffectiveRate * 100).toFixed(1)}% effective`
+                : "Effective rate n/a"
+            }
+            icon={Landmark}
+            tone="rose"
+          />
+          <KpiCard
+            label={refundPositive ? "Refund" : "Amount Owed"}
+            value={
+              latestRefund != null ? fmtMoney(Math.abs(latestRefund)) : "—"
+            }
+            subtitle={refundPositive ? "Federal refund" : "Federal owed"}
+            icon={refundPositive ? TrendingUp : Receipt}
+            tone={refundPositive ? "emerald" : "amber"}
+          />
+        </div>
+      </section>
 
-      {/* Summary KPIs */}
+      {/* ─── Tax Profile Panel (3-up) ─── */}
+      {taxProfile && <TaxProfilePanel profile={taxProfile} />}
+
+      {/* ─── Multi-year Trend Chart ─── */}
+      {taxProfile && (
+        <TaxFinancialTrendChart
+          incomeTrend={taxProfile.incomeTrend}
+          agiTrend={taxProfile.agiTrend}
+          taxTrend={taxProfile.taxTrend}
+          refundTrend={taxProfile.refundTrend}
+        />
+      )}
+
+      {/* ─── Quick stats strip ─── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiCard
           label="Total Returns"
@@ -376,22 +466,30 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
           tone="stone"
         />
         <KpiCard
-          label="Latest Year"
-          value={summary.years[0]?.toString() || "—"}
-          subtitle={summary.years[0] ? `${summary.byYear[summary.years[0]]} return${summary.byYear[summary.years[0]] !== 1 ? "s" : ""}` : ""}
-          icon={Calendar}
-          tone="blue"
-        />
-        <KpiCard
           label="E-filed"
           value={fmtNumber(
             Object.entries(summary.efileCounts)
               .filter(([k]) => /accept|complete|filed|transmit/i.test(k))
-              .reduce((s, [, v]) => s + v, 0)
+              .reduce((s, [, v]) => s + v, 0),
           )}
           subtitle={`${summary.efileCounts["(not filed)"] || 0} not filed`}
           icon={CheckCircle2}
           tone="emerald"
+        />
+        <KpiCard
+          label="Consecutive"
+          value={
+            taxProfile
+              ? `${taxProfile.consecutiveYears}y`
+              : `${summary.years.length}y`
+          }
+          subtitle={
+            taxProfile?.firstYearFiled
+              ? `Since ${taxProfile.firstYearFiled}`
+              : "Filing streak"
+          }
+          icon={Calendar}
+          tone="blue"
         />
         <KpiCard
           label="Preparers"
@@ -402,275 +500,162 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
         />
       </div>
 
-      {/* Client-Return Relationship Summary */}
-      <Card className="bg-gradient-to-r from-stone-50 to-stone-100 border-stone-200">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Link2 className="h-4 w-4" />
-            Tax Return Linkage
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">ProConnect Client</div>
-              <div className="font-medium">{client.displayName || client.businessName || "Unknown"}</div>
-              <div className="text-xs text-muted-foreground font-mono mt-0.5">{client.proconnectClientId}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Tax Years on File</div>
-              <div className="flex flex-wrap gap-1">
-                {summary.years.slice(0, 6).map((year) => (
-                  <Badge key={year} variant="outline" className="text-xs">
-                    {year} ({summary.byYear[year]})
-                  </Badge>
-                ))}
-                {summary.years.length > 6 && (
-                  <Badge variant="outline" className="text-xs bg-stone-100">
-                    +{summary.years.length - 6} more
-                  </Badge>
-                )}
-              </div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Return Types</div>
-              <div className="flex flex-wrap gap-1">
-                {Object.entries(summary.formCounts)
-                  .sort(([, a], [, b]) => b - a)
-                  .slice(0, 4)
-                  .map(([form, count]) => (
-                    <Badge key={form} variant="outline" className="text-xs">
-                      {form}: {count}
-                    </Badge>
-                  ))}
-              </div>
-            </div>
-          </div>
-          {hubLinkage && (
-            <div className="mt-3 pt-3 border-t border-stone-200 flex flex-wrap gap-3 text-xs">
-              <span className="text-muted-foreground">Also linked to:</span>
-              {hubLinkage.karbonClientId && (
-                <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700">Karbon</Badge>
-              )}
-              {hubLinkage.ignitionClientId && (
-                <Badge variant="outline" className="text-xs bg-violet-50 text-violet-700">Ignition</Badge>
-              )}
-              {hubLinkage.internalClientId && (
-                <Badge variant="outline" className="text-xs bg-emerald-50 text-emerald-700">Hub Contact</Badge>
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Relationship graph (renders only when there's data) */}
-      <ClientRelationshipsCard clientId={clientId} />
-
-      {/* Returns by Year - Expandable */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Tax Returns by Year</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {summary.years.length === 0 ? (
-            <div className="text-sm text-muted-foreground py-4 text-center">
-              No tax returns on file for this client.
-            </div>
-          ) : (
-            summary.years.map((year) => {
-              const yearEngagements = engagements.filter((e) => e.tax_year === year)
-              const isExpanded = expandedYears.has(year)
-
-              return (
-                <Collapsible
-                  key={year}
-                  open={isExpanded}
-                  onOpenChange={() => toggleYear(year)}
-                >
-                  <CollapsibleTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      className="w-full justify-between h-auto py-3 px-4 hover:bg-stone-50"
-                    >
-                      <div className="flex items-center gap-3">
-                        {isExpanded ? (
-                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                        ) : (
-                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                        )}
-                        <span className="text-lg font-semibold">{year}</span>
-                        <Badge variant="outline" className="text-xs">
-                          {yearEngagements.length} return{yearEngagements.length !== 1 ? "s" : ""}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {yearEngagements.map((eng) => (
-                          <FormBadge key={eng.id} form={eng.return_type || "?"} />
-                        ))}
-                      </div>
-                    </Button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <div className="ml-7 mr-4 mb-4 space-y-3">
-                      {yearEngagements.map((eng) => (
-                        <ReturnCard key={eng.id} engagement={eng} clientId={clientId} />
-                      ))}
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
-              )
-            })
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Form breakdown */}
-      {Object.keys(summary.formCounts).length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Returns by Form Type</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-wrap gap-4">
-              {Object.entries(summary.formCounts)
-                .sort(([, a], [, b]) => b - a)
-                .map(([form, count]) => (
-                  <div key={form} className="flex items-center gap-2">
-                    <FormBadge form={form} />
-                    <span className="text-sm font-medium">{count}</span>
-                    <span className="text-xs text-muted-foreground">
-                      ({((count / summary.totalReturns) * 100).toFixed(0)}%)
-                    </span>
-                  </div>
-                ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Documents on File */}
-      {documents && documents.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center justify-between">
-              <span>Documents on File</span>
-              <Badge variant="outline" className="text-xs">
-                {documents.length} document{documents.length !== 1 ? "s" : ""}
+      {/* ─── Tabbed Detail ─── */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-2 md:grid-cols-4">
+          <TabsTrigger value="returns">
+            Returns
+            {summary.totalReturns > 0 && (
+              <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-[10px]">
+                {summary.totalReturns}
               </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Year</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Issuer</TableHead>
-                    <TableHead className="text-right">Amount</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Received</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {documents.map((doc) => (
-                    <TableRow key={doc.id}>
-                      <TableCell className="font-medium">{doc.taxYear}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="text-xs">
-                          {doc.documentType}
-                          {doc.documentSubtype && ` (${doc.documentSubtype})`}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        {doc.issuerName || "—"}
-                      </TableCell>
-                      <TableCell className="text-right text-sm">
-                        {doc.reportedAmount ? fmtMoney(doc.reportedAmount) : "—"}
-                      </TableCell>
-                      <TableCell>
-                        <Badge 
-                          variant="outline" 
-                          className={cn(
-                            "text-xs",
-                            doc.status === "verified" && "bg-emerald-50 text-emerald-700 border-emerald-200",
-                            doc.status === "entered" && "bg-blue-50 text-blue-700 border-blue-200",
-                            doc.status === "received" && "bg-stone-50 text-stone-700 border-stone-200",
-                            doc.status === "pending" && "bg-amber-50 text-amber-700 border-amber-200",
-                            doc.status === "issue" && "bg-rose-50 text-rose-700 border-rose-200"
-                          )}
-                        >
-                          {doc.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {new Date(doc.createdAt).toLocaleDateString()}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="documents">
+            Documents
+            {documents.length > 0 && (
+              <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-[10px]">
+                {documents.length}
+              </Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="relationships">Relationships</TabsTrigger>
+          <TabsTrigger value="identifiers">IDs</TabsTrigger>
+        </TabsList>
 
-      {/* Client Identifiers - For Research/Debugging */}
-      <Card className="border-stone-200 bg-stone-50">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base text-stone-600">Client Identifiers</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
-            <div>
-              <div className="text-xs text-muted-foreground uppercase tracking-wide">ProConnect Client ID</div>
-              <div className="font-mono text-xs mt-1">{client.proconnectClientId}</div>
-            </div>
-            {client.proconnectEntityId && (
-              <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide">Entity ID</div>
-                <div className="font-mono text-xs mt-1">{client.proconnectEntityId}</div>
-              </div>
-            )}
-            {client.topLevelEntityId && client.topLevelEntityId !== client.proconnectEntityId && (
-              <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide">Top-Level Entity</div>
-                <div className="font-mono text-xs mt-1">{client.topLevelEntityId}</div>
-              </div>
-            )}
-            {hubLinkage?.internalClientId && (
-              <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide">Hub Contact ID</div>
-                <div className="font-mono text-xs mt-1">{hubLinkage.internalClientId}</div>
-              </div>
-            )}
-            {hubLinkage?.karbonClientId && (
-              <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide">Karbon Key</div>
-                <div className="font-mono text-xs mt-1">{hubLinkage.karbonClientId}</div>
-              </div>
-            )}
-            {client.taxId && (
-              <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide">Tax ID</div>
-                <div className="text-xs mt-1">
-                  <SensitiveValue
-                    value={client.taxId}
-                    label="Tax ID"
-                    hiddenAs="last4"
-                    className="text-xs"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+        <TabsContent value="returns" className="mt-4 space-y-4">
+          <ReturnsByYear
+            years={summary.years}
+            byYearCount={summary.byYear}
+            engagements={engagements}
+            clientId={clientId}
+          />
+          {Object.keys(summary.formCounts).length > 0 && (
+            <FormBreakdownCard
+              formCounts={summary.formCounts}
+              total={summary.totalReturns}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="documents" className="mt-4">
+          <DocumentsTable documents={documents} />
+        </TabsContent>
+
+        <TabsContent value="relationships" className="mt-4">
+          <ClientRelationshipsCard clientId={clientId} />
+        </TabsContent>
+
+        <TabsContent value="identifiers" className="mt-4">
+          <IdentifiersCard
+            client={client}
+            hubLinkage={hubLinkage}
+          />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
 
-// Individual return card with expand/view capabilities
+// ─────────────────────────────────────────────────────────────────────
+// Returns by year
+// ─────────────────────────────────────────────────────────────────────
+
+function ReturnsByYear({
+  years,
+  byYearCount,
+  engagements,
+  clientId,
+}: {
+  years: number[]
+  byYearCount: Record<number, number>
+  engagements: TaxProfileResponse["engagements"]
+  clientId: string
+}) {
+  const [expandedYears, setExpandedYears] = useState<Set<number>>(
+    () => new Set(years.slice(0, 1)), // expand most recent year by default
+  )
+
+  const toggleYear = (year: number) => {
+    setExpandedYears((prev) => {
+      const next = new Set(prev)
+      if (next.has(year)) next.delete(year)
+      else next.add(year)
+      return next
+    })
+  }
+
+  if (years.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-sm text-muted-foreground">
+          No tax returns on file for this client.
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Tax Returns by Year</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {years.map((year) => {
+          const yearEngagements = engagements.filter((e) => e.tax_year === year)
+          const isExpanded = expandedYears.has(year)
+          return (
+            <Collapsible
+              key={year}
+              open={isExpanded}
+              onOpenChange={() => toggleYear(year)}
+            >
+              <CollapsibleTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between h-auto py-3 px-4 hover:bg-stone-50"
+                >
+                  <div className="flex items-center gap-3">
+                    {isExpanded ? (
+                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    )}
+                    <span className="text-lg font-semibold">{year}</span>
+                    <Badge variant="outline" className="text-xs">
+                      {byYearCount[year]} return
+                      {byYearCount[year] !== 1 ? "s" : ""}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {yearEngagements.map((eng) => (
+                      <FormBadge
+                        key={eng.id}
+                        form={eng.return_type || "?"}
+                      />
+                    ))}
+                  </div>
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="ml-7 mr-4 mb-4 space-y-3">
+                  {yearEngagements.map((eng) => (
+                    <ReturnCard
+                      key={eng.id}
+                      engagement={eng}
+                      clientId={clientId}
+                    />
+                  ))}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          )
+        })}
+      </CardContent>
+    </Card>
+  )
+}
+
 function ReturnCard({
   engagement,
   clientId,
@@ -678,10 +663,7 @@ function ReturnCard({
   engagement: TaxProfileResponse["engagements"][0]
   clientId: string
 }) {
-  const [expanded, setExpanded] = useState(false)
-
   const handleView1040 = () => {
-    // Open 1040 viewer in new tab
     const url = `/tax/returns/${engagement.engagement_id}/1040?clientId=${clientId}`
     window.open(url, "_blank", "noopener,noreferrer")
   }
@@ -691,10 +673,10 @@ function ReturnCard({
       <CardContent className="p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <FormBadge form={engagement.return_type || "?"} />
               <span className="font-medium">
-                {engagement.return_type || "Unknown"} - TY {engagement.tax_year}
+                {engagement.return_type || "Unknown"} — TY {engagement.tax_year}
               </span>
               <EfileBadge status={engagement.efile_status} />
             </div>
@@ -710,7 +692,10 @@ function ReturnCard({
                 <span className="flex items-center gap-1.5">
                   <span
                     className="h-2 w-2 rounded-full"
-                    style={{ backgroundColor: engagement.custom_status_color || "#a8a29e" }}
+                    style={{
+                      backgroundColor:
+                        engagement.custom_status_color || "#a8a29e",
+                    }}
                   />
                   {engagement.custom_status_name}
                 </span>
@@ -718,13 +703,56 @@ function ReturnCard({
               {engagement.updated_at && (
                 <span className="flex items-center gap-1">
                   <Clock className="h-3 w-3" />
-                  Updated {new Date(engagement.updated_at).toLocaleDateString()}
+                  Updated{" "}
+                  {new Date(engagement.updated_at).toLocaleDateString()}
                 </span>
               )}
             </div>
+
+            {/* Inline financial summary — always visible since this is
+                the financial dashboard story */}
+            {(engagement.totalIncome != null ||
+              engagement.agi != null ||
+              engagement.totalTax != null ||
+              engagement.refundAmount != null ||
+              engagement.amountOwed != null) && (
+              <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3 pt-3 border-t border-stone-100">
+                {engagement.totalIncome != null && (
+                  <ReturnStat
+                    label="Total Income"
+                    value={fmtMoney(engagement.totalIncome)}
+                  />
+                )}
+                {engagement.agi != null && (
+                  <ReturnStat label="AGI" value={fmtMoney(engagement.agi)} />
+                )}
+                {engagement.totalTax != null && (
+                  <ReturnStat
+                    label="Total Tax"
+                    value={fmtMoney(engagement.totalTax)}
+                  />
+                )}
+                {engagement.refundAmount != null &&
+                  engagement.refundAmount > 0 && (
+                    <ReturnStat
+                      label="Refund"
+                      value={fmtMoney(engagement.refundAmount)}
+                      tone="emerald"
+                    />
+                  )}
+                {engagement.amountOwed != null &&
+                  engagement.amountOwed > 0 && (
+                    <ReturnStat
+                      label="Amount Owed"
+                      value={fmtMoney(engagement.amountOwed)}
+                      tone="rose"
+                    />
+                  )}
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {engagement.is1040 && (
               <Button
                 variant="outline"
@@ -737,67 +765,302 @@ function ReturnCard({
                 <ExternalLink className="h-3 w-3" />
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setExpanded(!expanded)}
-            >
-              {expanded ? (
-                <ChevronDown className="h-4 w-4" />
-              ) : (
-                <ChevronRight className="h-4 w-4" />
-              )}
-            </Button>
           </div>
         </div>
+      </CardContent>
+    </Card>
+  )
+}
 
-        {expanded && (
-          <div className="mt-4 pt-4 border-t border-stone-100">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {engagement.totalIncome != null && (
-                <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide">Total Income</div>
-                  <div className="text-sm font-medium">{fmtMoney(engagement.totalIncome)}</div>
-                </div>
-              )}
-              {engagement.agi != null && (
-                <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide">AGI</div>
-                  <div className="text-sm font-medium">{fmtMoney(engagement.agi)}</div>
-                </div>
-              )}
-              {engagement.taxableIncome != null && (
-                <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide">Taxable Income</div>
-                  <div className="text-sm font-medium">{fmtMoney(engagement.taxableIncome)}</div>
-                </div>
-              )}
-              {engagement.totalTax != null && (
-                <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide">Total Tax</div>
-                  <div className="text-sm font-medium">{fmtMoney(engagement.totalTax)}</div>
-                </div>
-              )}
-              {engagement.refundAmount != null && engagement.refundAmount > 0 && (
-                <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide">Refund</div>
-                  <div className="text-sm font-medium text-emerald-700">{fmtMoney(engagement.refundAmount)}</div>
-                </div>
-              )}
-              {engagement.amountOwed != null && engagement.amountOwed > 0 && (
-                <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide">Amount Owed</div>
-                  <div className="text-sm font-medium text-rose-700">{fmtMoney(engagement.amountOwed)}</div>
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4 text-xs text-muted-foreground font-mono">
-              Engagement ID: {engagement.engagement_id}
-            </div>
-          </div>
+function ReturnStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: string
+  tone?: "emerald" | "rose"
+}) {
+  return (
+    <div>
+      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">
+        {label}
+      </div>
+      <div
+        className={cn(
+          "text-sm font-medium tabular-nums",
+          tone === "emerald" && "text-emerald-700",
+          tone === "rose" && "text-rose-700",
         )}
+      >
+        {value}
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Form breakdown
+// ─────────────────────────────────────────────────────────────────────
+
+function FormBreakdownCard({
+  formCounts,
+  total,
+}: {
+  formCounts: Record<string, number>
+  total: number
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Returns by Form Type</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap gap-4">
+          {Object.entries(formCounts)
+            .sort(([, a], [, b]) => b - a)
+            .map(([form, count]) => (
+              <div key={form} className="flex items-center gap-2">
+                <FormBadge form={form} />
+                <span className="text-sm font-medium tabular-nums">
+                  {count}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  ({((count / total) * 100).toFixed(0)}%)
+                </span>
+              </div>
+            ))}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Documents
+// ─────────────────────────────────────────────────────────────────────
+
+function DocumentsTable({
+  documents,
+}: {
+  documents: TaxProfileResponse["documents"]
+}) {
+  if (documents.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-sm text-muted-foreground">
+          No documents on file. Documents appear here once received from the
+          client or imported from ProConnect.
         </CardContent>
       </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center justify-between">
+          <span>Documents on File</span>
+          <Badge variant="outline" className="text-xs">
+            {documents.length} document{documents.length !== 1 ? "s" : ""}
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Year</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Issuer</TableHead>
+                <TableHead className="text-right">Amount</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Received</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {documents.map((doc) => (
+                <TableRow key={doc.id}>
+                  <TableCell className="font-medium tabular-nums">
+                    {doc.taxYear}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className="text-xs">
+                      {doc.documentType}
+                      {doc.documentSubtype && ` (${doc.documentSubtype})`}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {doc.issuerName || "—"}
+                  </TableCell>
+                  <TableCell className="text-right text-sm tabular-nums">
+                    {doc.reportedAmount ? fmtMoney(doc.reportedAmount) : "—"}
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "text-xs",
+                        doc.status === "verified" &&
+                          "bg-emerald-50 text-emerald-700 border-emerald-200",
+                        doc.status === "entered" &&
+                          "bg-blue-50 text-blue-700 border-blue-200",
+                        doc.status === "received" &&
+                          "bg-stone-50 text-stone-700 border-stone-200",
+                        doc.status === "pending" &&
+                          "bg-amber-50 text-amber-700 border-amber-200",
+                        doc.status === "issue" &&
+                          "bg-rose-50 text-rose-700 border-rose-200",
+                      )}
+                    >
+                      {doc.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {new Date(doc.createdAt).toLocaleDateString()}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Identifiers (debug / research)
+// ─────────────────────────────────────────────────────────────────────
+
+function IdentifiersCard({
+  client,
+  hubLinkage,
+}: {
+  client: TaxProfileResponse["client"]
+  hubLinkage: TaxProfileResponse["hubLinkage"]
+}) {
+  return (
+    <Card className="border-stone-200 bg-stone-50">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base text-stone-700">
+          Client Identifiers
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Cross-system IDs for research, debugging, and ALFRED context.
+        </p>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
+          <IdField
+            label="ProConnect Client ID"
+            value={client.proconnectClientId}
+            mono
+          />
+          {client.proconnectEntityId && (
+            <IdField
+              label="Entity ID"
+              value={client.proconnectEntityId}
+              mono
+            />
+          )}
+          {client.topLevelEntityId &&
+            client.topLevelEntityId !== client.proconnectEntityId && (
+              <IdField
+                label="Top-Level Entity"
+                value={client.topLevelEntityId}
+                mono
+              />
+            )}
+          {hubLinkage?.internalClientId && (
+            <IdField
+              label="Hub Contact ID"
+              value={hubLinkage.internalClientId}
+              mono
+            />
+          )}
+          {hubLinkage?.karbonClientId && (
+            <IdField
+              label="Karbon Key"
+              value={hubLinkage.karbonClientId}
+              mono
+            />
+          )}
+          {hubLinkage?.ignitionClientId && (
+            <IdField
+              label="Ignition Client ID"
+              value={hubLinkage.ignitionClientId}
+              mono
+            />
+          )}
+          {client.taxId && (
+            <div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wide">
+                Tax ID
+              </div>
+              <div className="text-xs mt-1">
+                <SensitiveValue
+                  value={client.taxId}
+                  label="Tax ID"
+                  hiddenAs="last4"
+                  className="text-xs"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function IdField({
+  label,
+  value,
+  mono,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+}) {
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground uppercase tracking-wide">
+        {label}
+      </div>
+      <div className={cn("text-xs mt-1", mono && "font-mono")}>{value}</div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Skeleton
+// ─────────────────────────────────────────────────────────────────────
+
+function TaxClientProfileSkeleton() {
+  return (
+    <div className="p-6 space-y-6">
+      <Skeleton className="h-4 w-32" />
+      <div className="flex items-center gap-4">
+        <Skeleton className="h-12 w-12 rounded-lg" />
+        <div className="space-y-2">
+          <Skeleton className="h-7 w-64" />
+          <Skeleton className="h-4 w-48" />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-24" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Skeleton key={i} className="h-64" />
+        ))}
+      </div>
+      <Skeleton className="h-72" />
+      <Skeleton className="h-64" />
+    </div>
   )
 }
