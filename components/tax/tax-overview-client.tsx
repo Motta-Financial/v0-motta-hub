@@ -231,11 +231,7 @@ export function TaxOverviewClient() {
         />
         <KpiCard
           label="E-filed"
-          value={fmtNumber(
-            Object.entries(data.byEfileStatus)
-              .filter(([k]) => /accept|complete|filed|transmit/i.test(k))
-              .reduce((s, [, v]) => s + v, 0),
-          )}
+          value={fmtNumber(data.byEfileStatus["(filed)"] || 0)}
           subtitle={`${fmtNumber(data.byEfileStatus["(not filed)"] || 0)} not filed`}
           icon={CheckCircle2}
           tone="emerald"
@@ -243,7 +239,11 @@ export function TaxOverviewClient() {
         <KpiCard
           label="Unassigned"
           value={fmtNumber(data.unassignedReturns)}
-          subtitle={`${fmtNumber(data.preparerLeaderboard.length)} active preparers`}
+          subtitle={
+            data.profileMapping.mapped > 0
+              ? `${fmtNumber(data.profileMapping.mapped)} of ${fmtNumber(data.profileMapping.distinct)} preparers mapped`
+              : `${fmtNumber(data.profileMapping.distinct)} preparers need mapping`
+          }
           icon={Clock}
           tone={data.unassignedReturns > 100 ? "amber" : "stone"}
         />
@@ -252,23 +252,27 @@ export function TaxOverviewClient() {
       {/* ── Profile-mapping warning (only if anything unmapped) ───── */}
       {data.profileMapping.unmapped > 0 ? (
         <Card className="border-amber-200 bg-amber-50/50">
-          <CardContent className="p-4 flex items-center gap-3">
-            <AlertTriangle className="h-5 w-5 text-amber-700 flex-shrink-0" />
+          <CardContent className="p-4 flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-amber-700 flex-shrink-0 mt-0.5" />
             <div className="flex-1 text-sm text-amber-900">
-              <span className="font-medium">
-                {data.profileMapping.unmapped} of {data.profileMapping.distinct}
-              </span>{" "}
-              ProConnect preparer profile IDs aren&apos;t mapped to a team
-              member yet. Returns assigned to those IDs show as
-              &quot;(unassigned)&quot; until you populate{" "}
-              <code className="px-1 py-0.5 rounded bg-white border text-xs">
-                proconnect_profiles.display_name
-              </code>{" "}
-              or link a{" "}
-              <code className="px-1 py-0.5 rounded bg-white border text-xs">
-                team_member_id
-              </code>
-              .
+              <div className="font-medium">
+                {data.profileMapping.unmapped} of {data.profileMapping.distinct}{" "}
+                ProConnect preparer profiles aren&apos;t mapped to a team
+                member yet.
+              </div>
+              <p className="mt-1 text-amber-900/90">
+                ProConnect&apos;s API only ships preparer GUIDs (not names or
+                emails), so each profile has to be linked once. Until then,
+                returns assigned to those IDs show as{" "}
+                <span className="font-medium">&quot;(unassigned)&quot;</span>.
+              </p>
+              <Link
+                href="/tax/settings"
+                className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-amber-900 underline underline-offset-2 hover:text-amber-700"
+              >
+                Open Preparer Mapping
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
             </div>
           </CardContent>
         </Card>
@@ -428,7 +432,7 @@ export function TaxOverviewClient() {
         </Card>
       </section>
 
-      {/* ── Preparer leaderboard ──────────────────────────────────── */}
+      {/* ── Preparer leaderboard ───────────────────────────────────�� */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Top Preparers (active)</CardTitle>
