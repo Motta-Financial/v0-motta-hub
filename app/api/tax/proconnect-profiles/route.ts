@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import {
+  pickAutolinkCandidate,
+  rankTeamMembers,
+  type ProfileMatchCandidate,
+  type TeamMemberLite,
+} from "@/lib/tax/proconnect-profile-match"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -32,7 +38,8 @@ export async function GET() {
       .order("proconnect_profile_id"),
     supabase
       .from("team_members")
-      .select("id, full_name, email, role")
+      .select("id, full_name, first_name, last_name, email, role, is_active")
+      .order("is_active", { ascending: false })
       .order("full_name"),
   ])
 
@@ -48,28 +55,59 @@ export async function GET() {
     countByProfile[id] = (countByProfile[id] || 0) + 1
   }
 
-  const enriched = (profiles || []).map((p) => ({
-    profileId: p.proconnect_profile_id,
-    authId: p.proconnect_auth_id,
-    fullName:
-      (p.team_members as { full_name?: string } | null)?.full_name ||
-      p.full_name ||
-      null,
-    email:
-      (p.team_members as { email?: string } | null)?.email || p.email || null,
-    teamMemberId: p.team_member_id,
-    teamMemberRole:
-      (p.team_members as { role?: string } | null)?.role || null,
-    engagementCount: countByProfile[p.proconnect_profile_id] || 0,
-    isActive: p.is_active,
-    notes: p.notes,
-    updatedAt: p.updated_at,
+  const teamMembersTyped: TeamMemberLite[] = (teamMembers || []).map((t) => ({
+    id: (t as { id: string }).id,
+    full_name: (t as { full_name: string | null }).full_name,
+    first_name: (t as { first_name: string | null }).first_name ?? null,
+    last_name: (t as { last_name: string | null }).last_name ?? null,
+    email: (t as { email: string | null }).email,
+    role: (t as { role: string | null }).role,
+    is_active: (t as { is_active: boolean | null }).is_active ?? true,
   }))
+
+  const enriched = (profiles || []).map((p) => {
+    // Always run the matcher even when already linked — surfaces a "swap"
+    // option in the UI for cases where the operator initially picked the
+    // wrong teammate.
+    const candidates: ProfileMatchCandidate[] = rankTeamMembers(
+      {
+        profileId: p.proconnect_profile_id,
+        fullName: p.full_name,
+        email: p.email,
+        notes: p.notes,
+      },
+      teamMembersTyped,
+    )
+    const autolink = pickAutolinkCandidate(candidates)
+
+    return {
+      profileId: p.proconnect_profile_id,
+      authId: p.proconnect_auth_id,
+      fullName:
+        (p.team_members as { full_name?: string } | null)?.full_name ||
+        p.full_name ||
+        null,
+      email:
+        (p.team_members as { email?: string } | null)?.email || p.email || null,
+      teamMemberId: p.team_member_id,
+      teamMemberRole:
+        (p.team_members as { role?: string } | null)?.role || null,
+      teamMemberIsActive:
+        (p.team_members as { is_active?: boolean } | null)?.is_active ?? null,
+      engagementCount: countByProfile[p.proconnect_profile_id] || 0,
+      isActive: p.is_active,
+      notes: p.notes,
+      updatedAt: p.updated_at,
+      candidates,
+      autolinkSuggestion: autolink && !p.team_member_id ? autolink : null,
+    }
+  })
 
   return NextResponse.json({
     profiles: enriched,
-    teamMembers: teamMembers || [],
+    teamMembers: teamMembersTyped,
     unmappedCount: enriched.filter((p) => !p.fullName).length,
+    autolinkableCount: enriched.filter((p) => p.autolinkSuggestion).length,
   })
 }
 
