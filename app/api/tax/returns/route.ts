@@ -2,8 +2,6 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 
 // ── Return type mapping ───────────────────────────────────────────────
-// ProConnect uses codes like IND, COR, PAR, etc. We map them to form
-// numbers for display.
 const RETURN_TYPE_TO_FORM: Record<string, string> = {
   IND: "1040",
   COR: "1120",
@@ -13,59 +11,180 @@ const RETURN_TYPE_TO_FORM: Record<string, string> = {
   EXM: "990",
 }
 
-// Unified row shape for the Returns pages
-type UnifiedReturn = {
-  id: string
-  engagement_id: string | null
-  proconnect_client_id: string | null
-  client_name: string | null
-  tax_year: number | null
-  form: string
-  return_type: string | null
-  status: string | null
-  efile_status: string | null
-  work_status: string | null
-  preparer: string | null
-  preparer_profile_id: string | null
-  user_defined_status_name: string | null
-  user_defined_status_color: string | null
-  proconnect_modified_at: string | null
-  synced_at: string | null
-  updated_at: string | null
-  raw: Record<string, unknown>
+const FORM_TO_RETURN_TYPES: Record<string, string[]> = {
+  "1040": ["IND"],
+  "1120": ["COR"],
+  "1065": ["PAR"],
+  "1120S": ["SCO"],
+  "1041": ["FID"],
+  "990": ["EXM"],
 }
+
+const PAGE_SIZE = 50
 
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url)
     const form = url.searchParams.get("form") || "all"
     const taxYear = url.searchParams.get("taxYear")
-    const limit = Math.min(Number(url.searchParams.get("limit")) || 500, 2000)
+    const page = Math.max(1, Number(url.searchParams.get("page")) || 1)
+    const search = url.searchParams.get("search")?.trim().toLowerCase() || ""
 
     const supabase = createAdminClient()
 
-    // Pull from the enriched view — it already joins client display_name,
-    // proconnect_profiles + team_members (preparer_name), and the
-    // custom-status name/color. One query, zero secondary lookups.
-    let query = supabase
+    // Determine which form types to query
+    let formTypes: string[] = []
+    if (form === "all") {
+      formTypes = ["1040", "1065", "1120", "1120S", "990", "1041"]
+    } else if (form === "business") {
+      formTypes = ["1065", "1120", "1120S"]
+    } else if (form === "individual") {
+      formTypes = ["1040"]
+    } else if (form === "nonprofit") {
+      formTypes = ["990"]
+    } else {
+      formTypes = [form]
+    }
+
+    // Get corresponding return_type codes for Supabase filter
+    const returnTypeCodes = formTypes.flatMap(
+      (f) => FORM_TO_RETURN_TYPES[f] || [],
+    )
+
+    // ══════════════════════════════════════════════════════════════════
+    // STAT CARD QUERIES — each uses count: 'exact', head: true
+    // ══════════════════════════════════════════════════════════════════
+
+    // Build base filter for stats (applies form and year filters)
+    const buildStatsQuery = () => {
+      let q = supabase
+        .from("proconnect_engagements")
+        .select("*", { count: "exact", head: true })
+
+      if (returnTypeCodes.length > 0) {
+        q = q.in("return_type", returnTypeCodes)
+      }
+      if (taxYear) {
+        q = q.eq("tax_year", Number(taxYear))
+      }
+      return q
+    }
+
+    // Total count
+    const totalCountPromise = buildStatsQuery()
+
+    // E-filed (accepted) — check user_defined_status_id or raw_json customStatus
+    // We use a text search on raw_json for filed/accepted patterns
+    const efiledCountPromise = supabase
+      .from("proconnect_engagements")
+      .select("*", { count: "exact", head: true })
+      .in("return_type", returnTypeCodes.length > 0 ? returnTypeCodes : ["IND", "COR", "PAR", "SCO", "EXM", "FID"])
+      .or("efile_status.ilike.%accept%,efile_status.ilike.%filed%,efile_status.ilike.%complete%")
+      .then((res) => res)
+
+    // Count by form type — run individual counts
+    const formCountsPromise = Promise.all(
+      formTypes.map(async (formType) => {
+        const codes = FORM_TO_RETURN_TYPES[formType] || []
+        if (codes.length === 0) return { form: formType, count: 0 }
+
+        let q = supabase
+          .from("proconnect_engagements")
+          .select("*", { count: "exact", head: true })
+          .in("return_type", codes)
+
+        if (taxYear) {
+          q = q.eq("tax_year", Number(taxYear))
+        }
+
+        const { count } = await q
+        return { form: formType, count: count ?? 0 }
+      }),
+    )
+
+    // Count by year — get distinct years first, then count each
+    const yearsPromise = supabase
+      .from("proconnect_engagements")
+      .select("tax_year")
+      .in("return_type", returnTypeCodes.length > 0 ? returnTypeCodes : ["IND", "COR", "PAR", "SCO", "EXM", "FID"])
+      .order("tax_year", { ascending: false })
+      .limit(20)
+
+    // Run all stat queries in parallel
+    const [totalRes, efiledRes, formCounts, yearsRes] = await Promise.all([
+      totalCountPromise,
+      efiledCountPromise,
+      formCountsPromise,
+      yearsPromise,
+    ])
+
+    const totalCount = totalRes.count ?? 0
+    const efiledCount = efiledRes.count ?? 0
+
+    // Build byForm map
+    const byForm: Record<string, { count: number }> = {}
+    for (const fc of formCounts) {
+      if (fc.count > 0) {
+        byForm[fc.form] = { count: fc.count }
+      }
+    }
+
+    // Get unique years for filter chips
+    const uniqueYears = [
+      ...new Set((yearsRes.data || []).map((r) => r.tax_year).filter(Boolean)),
+    ] as number[]
+
+    // Count by year
+    const byYear: Record<string, number> = {}
+    await Promise.all(
+      uniqueYears.slice(0, 10).map(async (year) => {
+        let q = supabase
+          .from("proconnect_engagements")
+          .select("*", { count: "exact", head: true })
+          .eq("tax_year", year)
+
+        if (returnTypeCodes.length > 0) {
+          q = q.in("return_type", returnTypeCodes)
+        }
+
+        const { count } = await q
+        byYear[String(year)] = count ?? 0
+      }),
+    )
+
+    // ══════════════════════════════════════════════════════════════════
+    // PAGINATED TABLE DATA — uses .range()
+    // ══════════════════════════════════════════════════════════════════
+
+    const from = (page - 1) * PAGE_SIZE
+    const to = from + PAGE_SIZE - 1
+
+    let dataQuery = supabase
       .from("proconnect_engagements_enriched")
       .select("*")
       .order("proconnect_modified_at", { ascending: false, nullsFirst: false })
-      .limit(limit * 2)
 
+    if (returnTypeCodes.length > 0) {
+      dataQuery = dataQuery.in("return_type", returnTypeCodes)
+    }
     if (taxYear) {
-      query = query.eq("tax_year", Number(taxYear))
+      dataQuery = dataQuery.eq("tax_year", Number(taxYear))
     }
 
-    const { data: engagements, error: engError } = await query
+    // Apply search filter if provided
+    if (search) {
+      dataQuery = dataQuery.or(
+        `client_display_name.ilike.%${search}%,proconnect_client_id.ilike.%${search}%,preparer_name.ilike.%${search}%`,
+      )
+    }
+
+    dataQuery = dataQuery.range(from, to)
+
+    const { data: engagements, error: engError } = await dataQuery
     if (engError) throw engError
 
-    // Transform to unified shape. The view already gives us
-    // client_display_name + preparer_name, so no second lookup needed.
-    // The view does not include `id` or `raw_json` (kept on the base
-    // table for forensics) — engagement_id is the canonical identifier
-    // for downstream UI links.
-    const unified: UnifiedReturn[] = (engagements || []).map((eng) => {
+    // Transform to unified shape
+    const returns = (engagements || []).map((eng) => {
       const formType =
         eng.form_type ||
         RETURN_TYPE_TO_FORM[eng.return_type || ""] ||
@@ -90,60 +209,60 @@ export async function GET(req: Request) {
         proconnect_modified_at: eng.proconnect_modified_at,
         synced_at: eng.synced_at,
         updated_at: eng.updated_at,
+        // These fields may not exist in enriched view but keep for compat
+        amended: null,
+        revenue: null,
+        income: null,
+        tax: null,
+        refund: null,
+        amount_owed: null,
         raw: {},
       }
     })
 
-    // Form filter (kept in JS because the source `type` is in raw_json
-    // for legacy rows — the form_type column isn't always populated).
-    let filteredUnified = unified
-    if (form !== "all") {
-      let formTypes: string[] = []
-      if (form === "business") formTypes = ["1065", "1120", "1120S"]
-      else if (form === "individual") formTypes = ["1040"]
-      else if (form === "nonprofit") formTypes = ["990"]
-      else formTypes = [form]
-      filteredUnified = unified.filter((r) => formTypes.includes(r.form))
-    }
-
-    filteredUnified = filteredUnified.slice(0, limit)
+    const totalPages = Math.ceil(totalCount / PAGE_SIZE)
 
     const stats = {
-      totalReturns: filteredUnified.length,
-      byForm: {} as Record<string, { count: number }>,
-      byYear: {} as Record<string, number>,
-      byEfileStatus: {} as Record<string, number>,
-      byStatus: {} as Record<string, number>,
-      byPreparer: {} as Record<string, number>,
+      totalReturns: totalCount,
+      efiledCount,
+      pendingCount: totalCount - efiledCount,
+      byForm,
+      byYear,
+      byEfileStatus: {
+        "(filed)": efiledCount,
+        "(not filed)": totalCount - efiledCount,
+      },
+      // Legacy fields for backward compat
+      totalRevenue: 0,
+      totalIncome: 0,
+      totalTax: 0,
+      totalRefunds: 0,
+      totalOwed: 0,
+      amendedCount: 0,
+      byPreparer: {},
     }
-
-    for (const r of filteredUnified) {
-      const fb = stats.byForm[r.form] ?? (stats.byForm[r.form] = { count: 0 })
-      fb.count += 1
-      const yKey = r.tax_year ? String(r.tax_year) : "(unknown)"
-      stats.byYear[yKey] = (stats.byYear[yKey] || 0) + 1
-      const eKey = r.efile_status ?? "(not filed)"
-      stats.byEfileStatus[eKey] = (stats.byEfileStatus[eKey] || 0) + 1
-      const sKey = r.user_defined_status_name ?? r.status ?? "(unknown)"
-      stats.byStatus[sKey] = (stats.byStatus[sKey] || 0) + 1
-      const pKey = r.preparer || "(unassigned)"
-      stats.byPreparer[pKey] = (stats.byPreparer[pKey] || 0) + 1
-    }
-
-    let formsQueried: string[]
-    if (form === "all") formsQueried = ["1040", "1065", "1120", "1120S", "990"]
-    else if (form === "business") formsQueried = ["1065", "1120", "1120S"]
-    else if (form === "individual") formsQueried = ["1040"]
-    else if (form === "nonprofit") formsQueried = ["990"]
-    else formsQueried = [form]
 
     return NextResponse.json({
-      returns: filteredUnified,
+      returns,
       stats,
-      forms: formsQueried,
+      forms: formTypes,
+      pagination: {
+        page,
+        pageSize: PAGE_SIZE,
+        totalCount,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+      availableYears: uniqueYears,
     })
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
+    const msg =
+      e instanceof Error
+        ? e.message
+        : e && typeof e === "object" && "message" in e
+          ? String((e as { message: unknown }).message)
+          : String(e)
     console.error("[v0] Tax returns API error:", e)
     return NextResponse.json({ error: msg }, { status: 500 })
   }
