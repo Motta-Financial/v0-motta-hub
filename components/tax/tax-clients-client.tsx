@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/table"
 import { KpiCard, FormBadge, fmtNumber } from "./tax-shared"
 import { cn } from "@/lib/utils"
+import { SensitiveValue } from "@/components/security/sensitive-value"
 
 // ── Client row shape ─────────────────────────────────────────────────
 type ClientRow = {
@@ -375,8 +376,13 @@ export function TaxClientsClient() {
                               </Tooltip>
                             </TooltipProvider>
                             {c.tax_id ? (
-                              <div className="text-[11px] text-muted-foreground font-mono">
-                                TIN · {c.tax_id}
+                              <div className="text-[11px] text-muted-foreground flex items-center gap-1">
+                                <span>TIN ·</span>
+                                <SensitiveValue
+                                  value={c.tax_id}
+                                  label="Tax ID"
+                                  className="text-[11px]"
+                                />
                               </div>
                             ) : null}
                           </TableCell>
