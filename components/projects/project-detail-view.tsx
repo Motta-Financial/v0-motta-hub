@@ -56,7 +56,10 @@ import {
   PlusCircle,
   Trash2,
   User,
+  Users,
   Video,
+  Wallet,
+  X,
 } from "lucide-react"
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -68,12 +71,29 @@ type Project = {
   description: string | null
   organization_id: string | null
   contact_id: string | null
+  project_type_key: string | null
+  project_template_key: string | null
   work_type_pattern: string | null
   work_template_pattern: string | null
   start_date: string | null
   end_date: string | null
   owner_team_member_id: string | null
   owner: { id: string; full_name: string; avatar_url: string | null } | null
+  project_type: {
+    karbon_work_type_key: string
+    name: string
+    is_recurring: boolean | null
+    default_budget_minutes: number | null
+  } | null
+  project_template: {
+    karbon_work_template_key: string
+    title: string
+    description: string | null
+    estimated_budget_minutes: number | null
+    estimated_time_minutes: number | null
+    has_scheduled_client_task_groups: boolean | null
+    published_date: string | null
+  } | null
   created_at: string
   updated_at: string
 }
@@ -89,6 +109,14 @@ type Client = {
   industry?: string | null
   entity_type?: string | null
   status?: string | null
+}
+
+type ProjectClient = Client & {
+  link_id: string
+  role: string
+  is_primary: boolean
+  ownership_pct: number | null
+  notes: string | null
 }
 
 type System = {
@@ -197,6 +225,7 @@ type Recording = {
 type ProjectResponse = {
   project: Project
   client: Client | null
+  clients: ProjectClient[]
   systems: System[]
   work_items: {
     all: WorkItem[]
@@ -374,7 +403,7 @@ export function ProjectDetailView({ projectId }: { projectId: string }) {
     )
   }
 
-  const { project, client, systems, work_items, related_services, intakes, debriefs, meetings, recordings } = data
+  const { project, client, clients, systems, work_items, related_services, intakes, debriefs, meetings, recordings } = data
 
   const periodGroups = groupByMonth(work_items.all)
   const upcomingItems = work_items.open
@@ -393,30 +422,37 @@ export function ProjectDetailView({ projectId }: { projectId: string }) {
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Background</h2>
         </div>
         <div className="grid gap-4 lg:grid-cols-3">
-          <ClientCard client={client} />
+          <ClientsCard projectId={project.id} clients={clients} onChange={reload} />
           <SystemsCard projectId={project.id} systems={systems} onChange={reload} />
           <ServicesCard services={related_services} />
         </div>
       </section>
 
       {/* ── Tabs ───────────────────────────────────────────────────────── */}
-      <Tabs defaultValue="work-items" className="flex flex-col gap-4">
-        <TabsList className="w-full max-w-2xl">
-          <TabsTrigger value="work-items" className="flex-1">
-            Work Items
-            <span className="ml-1.5 text-xs text-muted-foreground">{work_items.total}</span>
+      <Tabs defaultValue="overview" className="flex flex-col gap-4">
+        <TabsList className="w-full max-w-3xl">
+          <TabsTrigger value="overview" className="flex-1">
+            Project Overview
           </TabsTrigger>
           <TabsTrigger value="intakes" className="flex-1">
             Intakes
             <span className="ml-1.5 text-xs text-muted-foreground">{intakes.length}</span>
           </TabsTrigger>
+          <TabsTrigger value="recordings" className="flex-1">
+            Recordings
+            <span className="ml-1.5 text-xs text-muted-foreground">{recordings.length}</span>
+          </TabsTrigger>
           <TabsTrigger value="debriefs" className="flex-1">
             Debriefs
             <span className="ml-1.5 text-xs text-muted-foreground">{debriefs.length}</span>
           </TabsTrigger>
-          <TabsTrigger value="recordings" className="flex-1">
-            Recordings
-            <span className="ml-1.5 text-xs text-muted-foreground">{recordings.length}</span>
+          <TabsTrigger value="proposal" className="flex-1">
+            Proposal
+            <span className="ml-1.5 text-xs text-muted-foreground">{related_services.length}</span>
+          </TabsTrigger>
+          <TabsTrigger value="work-items" className="flex-1">
+            Karbon Work Items
+            <span className="ml-1.5 text-xs text-muted-foreground">{work_items.total}</span>
           </TabsTrigger>
           <TabsTrigger value="meetings" className="flex-1">
             Meetings
@@ -424,6 +460,17 @@ export function ProjectDetailView({ projectId }: { projectId: string }) {
           </TabsTrigger>
         </TabsList>
 
+        <TabsContent value="overview" className="m-0">
+          <OverviewTab
+            project={project}
+            workItems={work_items}
+            intakes={intakes}
+            recordings={recordings}
+            debriefs={debriefs}
+            relatedServices={related_services}
+            clients={clients}
+          />
+        </TabsContent>
         <TabsContent value="work-items" className="m-0">
           <WorkItemsTab
             project={project}
@@ -440,6 +487,9 @@ export function ProjectDetailView({ projectId }: { projectId: string }) {
         </TabsContent>
         <TabsContent value="recordings" className="m-0">
           <RecordingsTab recordings={recordings} />
+        </TabsContent>
+        <TabsContent value="proposal" className="m-0">
+          <ProposalTab proposals={data.proposals} relatedServices={related_services} />
         </TabsContent>
         <TabsContent value="meetings" className="m-0">
           <MeetingsTab meetings={meetings} />
@@ -469,7 +519,7 @@ function ProjectHeader({
           Projects
         </Link>
         <ChevronRight className="h-3.5 w-3.5" aria-hidden />
-        <span>{kindLabel(project.kind)}</span>
+        <span>{project.project_type?.name || kindLabel(project.kind)}</span>
         <ChevronRight className="h-3.5 w-3.5" aria-hidden />
         <span className="text-foreground">{client?.name || "Unknown client"}</span>
       </div>
@@ -484,15 +534,26 @@ function ProjectHeader({
             <Badge variant="outline" className={statusBadgeClasses(project.status)}>
               {project.status}
             </Badge>
-            <Badge variant="outline" className="border-muted text-muted-foreground">
-              {kindLabel(project.kind)}
-            </Badge>
-            {project.work_template_pattern && (
+            {project.project_type ? (
+              <Badge variant="outline" className="border-muted text-muted-foreground">
+                {project.project_type.name}
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-muted text-muted-foreground">
+                {kindLabel(project.kind)}
+              </Badge>
+            )}
+            {project.project_template && (
+              <Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">
+                Template: {project.project_template.title}
+              </Badge>
+            )}
+            {!project.project_template && project.work_template_pattern && (
               <Badge variant="outline" className="border-muted text-muted-foreground">
                 Template ~ &ldquo;{project.work_template_pattern}&rdquo;
               </Badge>
             )}
-            {project.work_type_pattern && (
+            {!project.project_type && project.work_type_pattern && (
               <Badge variant="outline" className="border-muted text-muted-foreground">
                 Type ~ &ldquo;{project.work_type_pattern}&rdquo;
               </Badge>
@@ -538,6 +599,360 @@ function Stat({
 }
 
 // ── Background cards ────────────────────────────────────────────────────────
+function ClientsCard({
+  projectId,
+  clients,
+  onChange,
+}: {
+  projectId: string
+  clients: ProjectClient[]
+  onChange: () => void
+}) {
+  const [addOpen, setAddOpen] = useState(false)
+
+  async function removeClient(linkId: string, name: string | null) {
+    if (!confirm(`Remove ${name || "this client"} from the project?`)) return
+    try {
+      const res = await fetch(`/api/projects/${projectId}/clients/${linkId}`, { method: "DELETE" })
+      if (!res.ok) throw new Error("Failed")
+      onChange()
+    } catch (e) {
+      console.error("[v0] remove client failed:", e)
+      alert("Failed to remove client")
+    }
+  }
+
+  async function makePrimary(linkId: string) {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/clients/${linkId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ is_primary: true }),
+      })
+      if (!res.ok) throw new Error("Failed")
+      onChange()
+    } catch (e) {
+      console.error("[v0] make primary failed:", e)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <Users className="h-4 w-4 text-muted-foreground" aria-hidden />
+          Clients
+          <span className="ml-1 text-xs text-muted-foreground">{clients.length}</span>
+        </CardTitle>
+        <Button variant="ghost" size="sm" onClick={() => setAddOpen(true)}>
+          <PlusCircle className="mr-1 h-3.5 w-3.5" aria-hidden />
+          Add
+        </Button>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2 text-sm">
+        {clients.length === 0 ? (
+          <p className="py-4 text-center text-xs text-muted-foreground">
+            No clients linked yet.
+          </p>
+        ) : (
+          clients.map((c) => {
+            const Icon = c.kind === "organization" ? Building2 : User
+            return (
+              <div
+                key={c.link_id}
+                className="group flex items-start justify-between gap-2 rounded-md border p-2.5"
+              >
+                <div className="flex min-w-0 flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <Link
+                      href={`/clients/${c.id}`}
+                      className="truncate font-medium hover:underline"
+                      title={c.name || ""}
+                    >
+                      {c.name || "Untitled"}
+                    </Link>
+                    {c.is_primary && (
+                      <Badge
+                        variant="outline"
+                        className="border-emerald-200 bg-emerald-50 text-[10px] text-emerald-700"
+                      >
+                        Primary
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge
+                      variant="outline"
+                      className="border-muted text-[10px] text-muted-foreground"
+                    >
+                      {c.role}
+                    </Badge>
+                    {c.ownership_pct != null && (
+                      <Badge
+                        variant="outline"
+                        className="border-muted text-[10px] text-muted-foreground"
+                      >
+                        {c.ownership_pct}%
+                      </Badge>
+                    )}
+                    {c.entity_type && (
+                      <span className="text-xs text-muted-foreground">{c.entity_type}</span>
+                    )}
+                  </div>
+                  {c.email && (
+                    <span className="truncate text-xs text-muted-foreground">{c.email}</span>
+                  )}
+                </div>
+                <div className="flex shrink-0 gap-1 opacity-0 transition group-hover:opacity-100">
+                  {!c.is_primary && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => makePrimary(c.link_id)}
+                    >
+                      Make primary
+                    </Button>
+                  )}
+                  {c.karbon_url && (
+                    <Button variant="ghost" size="icon" className="h-7 w-7" asChild>
+                      <a
+                        href={c.karbon_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label="Open in Karbon"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                      </a>
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-destructive"
+                    onClick={() => removeClient(c.link_id, c.name)}
+                    aria-label="Remove"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                  </Button>
+                </div>
+              </div>
+            )
+          })
+        )}
+      </CardContent>
+      <AddProjectClientDialog
+        open={addOpen}
+        setOpen={setAddOpen}
+        projectId={projectId}
+        onAdded={onChange}
+      />
+    </Card>
+  )
+}
+
+function AddProjectClientDialog({
+  open,
+  setOpen,
+  projectId,
+  onAdded,
+}: {
+  open: boolean
+  setOpen: (v: boolean) => void
+  projectId: string
+  onAdded: () => void
+}) {
+  const [query, setQuery] = useState("")
+  const [results, setResults] = useState<
+    Array<{ id: string; name: string; kind: "organization" | "contact" }>
+  >([])
+  const [searching, setSearching] = useState(false)
+  const [selected, setSelected] = useState<{
+    id: string
+    name: string
+    kind: "organization" | "contact"
+  } | null>(null)
+  const [role, setRole] = useState("primary")
+  const [ownershipPct, setOwnershipPct] = useState<string>("")
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setQuery("")
+    setSelected(null)
+    setResults([])
+    setRole("primary")
+    setOwnershipPct("")
+    setErr(null)
+  }, [open])
+
+  useEffect(() => {
+    let cancelled = false
+    const q = query.trim()
+    if (q.length < 2) {
+      setResults([])
+      return
+    }
+    setSearching(true)
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/clients?search=${encodeURIComponent(q)}&limit=15`, {
+          cache: "no-store",
+        })
+        const json = await res.json()
+        if (cancelled) return
+        const items: Array<{ id: string; name: string; kind: "organization" | "contact" }> = []
+        for (const row of json?.clients || []) {
+          const k = String(row.type || "").toLowerCase() === "organization" ? "organization" : "contact"
+          items.push({ id: row.id, name: row.name || "Untitled", kind: k })
+        }
+        setResults(items.slice(0, 12))
+      } catch {
+        if (!cancelled) setResults([])
+      } finally {
+        if (!cancelled) setSearching(false)
+      }
+    }, 200)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [query])
+
+  async function submit() {
+    if (!selected) {
+      setErr("Pick a client first.")
+      return
+    }
+    setSubmitting(true)
+    setErr(null)
+    try {
+      const payload: Record<string, any> = { role }
+      if (selected.kind === "organization") payload.organization_id = selected.id
+      else payload.contact_id = selected.id
+      if (ownershipPct) {
+        const n = Number(ownershipPct)
+        if (!Number.isNaN(n)) payload.ownership_pct = n
+      }
+      const res = await fetch(`/api/projects/${projectId}/clients`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error || "Failed to add client")
+      setOpen(false)
+      onAdded()
+    } catch (e: any) {
+      setErr(e?.message || "Failed to add client")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Add client to project</DialogTitle>
+          <DialogDescription>
+            Link an additional contact or organization. Useful for joint 1040 filers,
+            spouses, dependents, related businesses, or beneficial owners.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="add-client-q">Client</Label>
+            {selected ? (
+              <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                <span>
+                  {selected.name}{" "}
+                  <span className="text-xs text-muted-foreground">({selected.kind})</span>
+                </span>
+                <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
+                  Change
+                </Button>
+              </div>
+            ) : (
+              <>
+                <Input
+                  id="add-client-q"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search organizations or contacts…"
+                />
+                {searching ? (
+                  <p className="text-xs text-muted-foreground">Searching…</p>
+                ) : results.length > 0 ? (
+                  <div className="max-h-44 overflow-y-auto rounded-md border">
+                    {results.map((r) => (
+                      <button
+                        type="button"
+                        key={`${r.kind}-${r.id}`}
+                        onClick={() => setSelected(r)}
+                        className="flex w-full items-center justify-between border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
+                      >
+                        <span>{r.name}</span>
+                        <span className="text-xs uppercase text-muted-foreground">{r.kind}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="add-client-role">Role</Label>
+              <Select value={role} onValueChange={setRole}>
+                <SelectTrigger id="add-client-role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="primary">Primary</SelectItem>
+                  <SelectItem value="spouse">Spouse</SelectItem>
+                  <SelectItem value="dependent">Dependent</SelectItem>
+                  <SelectItem value="related_business">Related business</SelectItem>
+                  <SelectItem value="officer">Officer</SelectItem>
+                  <SelectItem value="shareholder">Shareholder</SelectItem>
+                  <SelectItem value="partner">Partner</SelectItem>
+                  <SelectItem value="beneficiary">Beneficiary</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="add-client-pct">Ownership %</Label>
+              <Input
+                id="add-client-pct"
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={ownershipPct}
+                onChange={(e) => setOwnershipPct(e.target.value)}
+                placeholder="optional"
+              />
+            </div>
+          </div>
+          {err && <p className="text-sm text-destructive">{err}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Add client
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function ClientCard({ client }: { client: Client | null }) {
   if (!client) {
     return (
@@ -922,6 +1337,257 @@ function ServicesCard({ services }: { services: RelatedService[] }) {
 }
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
+function OverviewTab({
+  project,
+  workItems,
+  intakes,
+  recordings,
+  debriefs,
+  relatedServices,
+  clients,
+}: {
+  project: Project
+  workItems: ProjectResponse["work_items"]
+  intakes: Intake[]
+  recordings: Recording[]
+  debriefs: Debrief[]
+  relatedServices: RelatedService[]
+  clients: ProjectClient[]
+}) {
+  const recurringRevenue = relatedServices
+    .filter((s) => (s.billing_frequency || "").toLowerCase() !== "one-time")
+    .reduce((a, s) => a + (s.total_amount || 0), 0)
+  const oneTimeRevenue = relatedServices
+    .filter((s) => (s.billing_frequency || "").toLowerCase() === "one-time")
+    .reduce((a, s) => a + (s.total_amount || 0), 0)
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      {/* What this project is */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">About</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3 text-sm">
+          {project.project_type && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                Project Type
+              </span>
+              <span className="font-medium">{project.project_type.name}</span>
+              {project.project_type.is_recurring && (
+                <span className="text-xs text-muted-foreground">Recurring engagement</span>
+              )}
+            </div>
+          )}
+          {project.project_template && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                Project Template
+              </span>
+              <span className="font-medium">{project.project_template.title}</span>
+              {project.project_template.description && (
+                <p className="text-xs text-muted-foreground">
+                  {project.project_template.description}
+                </p>
+              )}
+              {project.project_template.estimated_budget_minutes != null && (
+                <span className="text-xs text-muted-foreground">
+                  Estimated budget:{" "}
+                  {Math.round((project.project_template.estimated_budget_minutes || 0) / 60)}h
+                </span>
+              )}
+            </div>
+          )}
+          {project.description && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                Description
+              </span>
+              <p className="whitespace-pre-wrap text-sm">{project.description}</p>
+            </div>
+          )}
+          {project.owner && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs uppercase tracking-wide text-muted-foreground">Owner</span>
+              <span className="text-sm">{project.owner.full_name}</span>
+            </div>
+          )}
+          {clients.length > 1 && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                Linked clients
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {clients.map((c) => (
+                  <Badge
+                    key={c.link_id}
+                    variant="outline"
+                    className={
+                      c.is_primary
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-muted text-muted-foreground"
+                    }
+                  >
+                    {c.name} · {c.role}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* At-a-glance counters */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">At a glance</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 gap-3">
+          <MiniStat label="Open work items" value={String(workItems.open_count)} icon={CircleDot} />
+          <MiniStat label="Completed" value={String(workItems.completed_count)} icon={CheckCircle2} />
+          <MiniStat label="Intakes" value={String(intakes.length)} icon={Inbox} />
+          <MiniStat label="Recordings" value={String(recordings.length)} icon={Video} />
+          <MiniStat label="Debriefs" value={String(debriefs.length)} icon={MessageSquare} />
+          <MiniStat label="Services" value={String(relatedServices.length)} icon={Wallet} />
+          {recurringRevenue > 0 && (
+            <MiniStat
+              label="Recurring revenue"
+              value={formatMoney(recurringRevenue, relatedServices[0]?.currency || "USD")}
+              icon={Wallet}
+            />
+          )}
+          {oneTimeRevenue > 0 && (
+            <MiniStat
+              label="One-time revenue"
+              value={formatMoney(oneTimeRevenue, relatedServices[0]?.currency || "USD")}
+              icon={Wallet}
+            />
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function MiniStat({
+  label,
+  value,
+  icon: Icon,
+}: {
+  label: string
+  value: string
+  icon: React.ComponentType<{ className?: string }>
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border p-3">
+      <Icon className="h-4 w-4 text-muted-foreground" aria-hidden />
+      <div className="flex min-w-0 flex-col">
+        <span className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</span>
+        <span className="truncate text-base font-semibold leading-tight">{value}</span>
+      </div>
+    </div>
+  )
+}
+
+function ProposalTab({
+  proposals,
+  relatedServices,
+}: {
+  proposals: any[]
+  relatedServices: RelatedService[]
+}) {
+  if (!proposals.length && !relatedServices.length) {
+    return <EmptyTab icon={Wallet} label="No Ignition proposal linked to this client yet." />
+  }
+  return (
+    <div className="flex flex-col gap-4">
+      {proposals.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Proposals</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {proposals.map((p) => (
+              <div key={p.proposal_id} className="flex items-start justify-between gap-3 rounded-md border p-3">
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="truncate text-sm font-medium">
+                    {p.title || `Proposal ${p.proposal_number || ""}`}
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    {p.status && (
+                      <Badge variant="outline" className={statusBadgeClasses(p.status)}>
+                        {p.status}
+                      </Badge>
+                    )}
+                    {p.recurring_total != null && p.recurring_total > 0 && (
+                      <span>
+                        {formatMoney(p.recurring_total, p.currency)} {p.recurring_frequency || "recurring"}
+                      </span>
+                    )}
+                    {p.total_value != null && (
+                      <span>· Total {formatMoney(p.total_value, p.currency)}</span>
+                    )}
+                    {p.accepted_at && <span>· Accepted {formatDate(p.accepted_at)}</span>}
+                    {p.sent_at && !p.accepted_at && <span>· Sent {formatDate(p.sent_at)}</span>}
+                  </div>
+                </div>
+                {p.signed_url && (
+                  <Button variant="ghost" size="sm" asChild>
+                    <a href={p.signed_url} target="_blank" rel="noopener noreferrer">
+                      Open
+                      <ExternalLink className="ml-1 h-3 w-3" aria-hidden />
+                    </a>
+                  </Button>
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {relatedServices.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Services</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {relatedServices.map((s) => (
+              <div key={s.id} className="flex items-start justify-between gap-3 rounded-md border p-3">
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="truncate text-sm font-medium">{s.service_name}</span>
+                  {s.description && (
+                    <p className="line-clamp-2 text-xs text-muted-foreground">{s.description}</p>
+                  )}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {s.billing_frequency && (
+                      <Badge variant="outline" className="border-muted text-[10px] text-muted-foreground">
+                        {s.billing_frequency}
+                      </Badge>
+                    )}
+                    {s.billing_type && (
+                      <Badge variant="outline" className="border-muted text-[10px] text-muted-foreground">
+                        {s.billing_type}
+                      </Badge>
+                    )}
+                    {s.proposal_title && (
+                      <span className="text-xs text-muted-foreground">{s.proposal_title}</span>
+                    )}
+                  </div>
+                </div>
+                <span className="shrink-0 text-sm font-semibold">
+                  {formatMoney(s.total_amount, s.currency)}
+                </span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+// ── Tabs (legacy) ───────────────────────────────────────────────────────────
 function WorkItemsTab({
   workItems,
   periodGroups,

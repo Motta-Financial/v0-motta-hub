@@ -1,29 +1,18 @@
 "use client"
 
 import useSWR from "swr"
-import { useMemo } from "react"
+import { useState, useEffect } from "react"
 import {
   Building2,
   TrendingUp,
   DollarSign,
-  Users,
-  PieChart as PieChartIcon,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react"
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Table,
   TableBody,
@@ -36,19 +25,9 @@ import {
   KpiCard,
   FormBadge,
   EfileBadge,
-  fmtMoney,
-  fmtMoneyCompact,
   fmtNumber,
-  EmptyChartFallback,
 } from "./tax-shared"
-import { cn } from "@/lib/utils"
 
-// 1065 + 1120 + 1120S share the "business return" surface. Each form
-// carries slightly different financials (1065 has partner capital
-// movements, 1120 has officer compensation, 1120S has both), so we
-// read the `raw` payload for form-specific cells. Pass-through forms
-// (1065, 1120S) have no entity-level tax — the table renders "—" for
-// those rather than implying $0 tax was owed.
 type BusinessReturn = {
   id: string
   proconnect_client_id: string | null
@@ -56,100 +35,67 @@ type BusinessReturn = {
   tax_year: number | null
   form: string
   efile_status: string | null
-  amended: boolean | null
   preparer: string | null
-  revenue: number | null
-  income: number | null
-  tax: number | null
-  refund: number | null
-  amount_owed: number | null
-  raw: {
-    business_activity_code?: string | null
-    k1_count?: number | null
-    cost_of_goods_sold?: number | string | null
-    gross_profit?: number | string | null
-    total_deductions?: number | string | null
-    depreciation?: number | string | null
-    cash_distributions?: number | string | null
-    partners_ending_capital?: number | string | null
-    officer_compensation?: number | string | null
-    compensation_of_officers?: number | string | null
-    ending_assets?: number | string | null
-    is_domestic_llc?: boolean | null
-    is_domestic_general_partnership?: boolean | null
-    is_domestic_limited_partnership?: boolean | null
-    is_domestic_llp?: boolean | null
+  user_defined_status_name: string | null
+  user_defined_status_color: string | null
+  proconnect_modified_at: string | null
+}
+
+type Pagination = {
+  page: number
+  pageSize: number
+  totalCount: number
+  totalPages: number
+  hasNext: boolean
+  hasPrev: boolean
+}
+
+type ReturnsResponse = {
+  returns: BusinessReturn[]
+  stats: {
+    totalReturns: number
+    efiledCount: number
+    pendingCount: number
+    byForm: Record<string, { count: number }>
+    byYear: Record<string, number>
   }
+  pagination: Pagination
+  availableYears: number[]
 }
 
 const fetcher = (u: string) =>
   fetch(u).then(async (r) => {
     if (!r.ok) throw new Error(await r.text())
-    return r.json() as Promise<{
-      returns: BusinessReturn[]
-      stats: {
-        totalReturns: number
-        totalRevenue: number
-        totalIncome: number
-        totalTax: number
-        byForm: Record<string, { count: number; revenue: number; income: number }>
-      }
-    }>
+    return r.json() as Promise<ReturnsResponse>
   })
 
-const FORM_COLOR: Record<string, string> = {
-  "1065": "#8B5CF6",
-  "1120": "#6366F1",
-  "1120S": "#14B8A6",
-}
-
-// Translate the four "is_domestic_*" boolean flags on a 1065 row into
-// a single human entity-type label. Falls back to the form code when
-// nothing's set.
-function entityType(r: BusinessReturn): string {
-  if (r.form === "1120") return "C-corp"
-  if (r.form === "1120S") return "S-corp"
-  if (r.raw.is_domestic_llc) return "LLC (1065)"
-  if (r.raw.is_domestic_limited_partnership) return "LP"
-  if (r.raw.is_domestic_general_partnership) return "GP"
-  if (r.raw.is_domestic_llp) return "LLP"
-  return r.form
-}
-
 export function TaxBusinessClient() {
+  const [taxYear, setTaxYear] = useState<string>("all")
+  const [page, setPage] = useState(1)
+
+  // Reset page when year changes
+  useEffect(() => {
+    setPage(1)
+  }, [taxYear])
+
+  const params = new URLSearchParams()
+  params.set("form", "business")
+  params.set("page", String(page))
+  if (taxYear !== "all") params.set("taxYear", taxYear)
+
   const { data, isLoading, error } = useSWR(
-    "/api/tax/returns?form=business",
+    `/api/tax/returns?${params.toString()}`,
     fetcher,
   )
 
-  const derived = useMemo(() => {
-    const rows = data?.returns ?? []
-    const totalK1s = rows.reduce((s, r) => s + (r.raw.k1_count ?? 0), 0)
-    const totalDistributions = rows.reduce(
-      (s, r) => s + Number(r.raw.cash_distributions ?? 0),
-      0,
-    )
-    const totalDepreciation = rows.reduce(
-      (s, r) => s + Number(r.raw.depreciation ?? 0),
-      0,
-    )
+  const availableYears = data?.availableYears ?? []
 
-    const entityMix = new Map<string, number>()
-    for (const r of rows) {
-      const k = entityType(r)
-      entityMix.set(k, (entityMix.get(k) ?? 0) + 1)
-    }
-
-    return {
-      totalK1s,
-      totalDistributions,
-      totalDepreciation,
-      entityMix: Array.from(entityMix.entries()).map(([name, value]) => ({
-        name,
-        value,
-      })),
-    }
-  }, [data])
+  // Form breakdown for subtitle
+  const formBreakdown = data?.stats?.byForm
+    ? Object.entries(data.stats.byForm)
+        .map(([k, v]) => `${v.count} ${k}`)
+        .join(" · ")
+    : ""
 
   return (
     <div className="space-y-4">
@@ -158,8 +104,7 @@ export function TaxBusinessClient() {
           Business Tax (1065 / 1120 / 1120S)
         </h1>
         <p className="text-sm text-muted-foreground">
-          Partnership, C-corp, and S-corp returns from ProConnect — gross
-          receipts, ordinary business income, K-1 counts, and entity-type
+          Partnership, C-corp, and S-corp returns from ProConnect — entity
           distribution across the firm&apos;s business book.
         </p>
       </header>
@@ -169,177 +114,62 @@ export function TaxBusinessClient() {
         <KpiCard
           label="Business Returns"
           value={data ? fmtNumber(data.stats.totalReturns) : "—"}
-          subtitle={
-            data
-              ? Object.entries(data.stats.byForm)
-                  .map(([k, v]) => `${v.count} ${k}`)
-                  .join(" · ")
-              : ""
-          }
+          subtitle={formBreakdown || "1065, 1120, 1120S"}
           icon={Building2}
           tone="stone"
         />
         <KpiCard
-          label="Total Gross Receipts"
-          value={data ? fmtMoney(data.stats.totalRevenue) : "—"}
-          subtitle="Across all business returns"
+          label="E-Filed"
+          value={data ? fmtNumber(data.stats.efiledCount) : "—"}
+          subtitle="Accepted / Complete"
           icon={DollarSign}
           tone="emerald"
         />
         <KpiCard
-          label="Ordinary Business Income"
-          value={data ? fmtMoney(data.stats.totalIncome) : "—"}
-          subtitle={
-            data
-              ? `${fmtMoney(derived.totalDistributions)} distributed to owners`
-              : ""
-          }
+          label="Pending"
+          value={data ? fmtNumber(data.stats.pendingCount) : "—"}
+          subtitle="Awaiting filing"
           icon={TrendingUp}
-          tone={
-            data && data.stats.totalIncome < 0 ? "rose" : "blue"
-          }
-        />
-        <KpiCard
-          label="K-1s Issued"
-          value={data ? fmtNumber(derived.totalK1s) : "—"}
-          subtitle={
-            data
-              ? `${derived.entityMix.length} entity type${
-                  derived.entityMix.length === 1 ? "" : "s"
-                }`
-              : ""
-          }
-          icon={Users}
           tone="amber"
         />
+        <KpiCard
+          label="This Year"
+          value={
+            data && availableYears[0]
+              ? fmtNumber(data.stats.byYear[String(availableYears[0])] ?? 0)
+              : "—"
+          }
+          subtitle={availableYears[0] ? `Tax year ${availableYears[0]}` : ""}
+          icon={Building2}
+          tone="blue"
+        />
       </div>
 
-      {/* Charts row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <Card className="lg:col-span-2">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <TrendingUp className="h-4 w-4 text-stone-500" />
-              <h3 className="text-sm font-semibold text-stone-900">
-                Gross receipts vs. ordinary income by form
-              </h3>
-            </div>
-            {data && Object.keys(data.stats.byForm).length > 0 ? (
-              <div className="h-[220px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={Object.entries(data.stats.byForm).map(([k, v]) => ({
-                      form: k,
-                      revenue: v.revenue,
-                      income: v.income,
-                    }))}
-                    margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
-                  >
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke="#E7E5E4"
-                      vertical={false}
-                    />
-                    <XAxis
-                      dataKey="form"
-                      tick={{ fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      tickFormatter={(v) => fmtMoneyCompact(v as number)}
-                      tick={{ fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                      width={56}
-                    />
-                    <Tooltip
-                      formatter={(v: number) => fmtMoney(v)}
-                      contentStyle={{
-                        borderRadius: 6,
-                        fontSize: 12,
-                        border: "1px solid #E7E5E4",
-                      }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" />
-                    <Bar
-                      dataKey="revenue"
-                      name="Gross receipts"
-                      fill="#6366F1"
-                      radius={[3, 3, 0, 0]}
-                    />
-                    <Bar
-                      dataKey="income"
-                      name="Ordinary income"
-                      fill="#14B8A6"
-                      radius={[3, 3, 0, 0]}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <EmptyChartFallback message="No business returns yet" />
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <PieChartIcon className="h-4 w-4 text-stone-500" />
-              <h3 className="text-sm font-semibold text-stone-900">
-                Entity types
-              </h3>
-            </div>
-            {data && derived.entityMix.length > 0 ? (
-              <div className="h-[220px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={derived.entityMix}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius={50}
-                      outerRadius={80}
-                      paddingAngle={2}
-                      stroke="#fff"
-                    >
-                      {derived.entityMix.map((entry, idx) => {
-                        const palette = [
-                          "#6366F1",
-                          "#14B8A6",
-                          "#8B5CF6",
-                          "#F59E0B",
-                          "#EC4899",
-                        ]
-                        return (
-                          <Cell
-                            key={entry.name}
-                            fill={palette[idx % palette.length]}
-                          />
-                        )
-                      })}
-                    </Pie>
-                    <Tooltip
-                      formatter={(v: number) =>
-                        `${v} return${v === 1 ? "" : "s"}`
-                      }
-                      contentStyle={{
-                        borderRadius: 6,
-                        fontSize: 12,
-                        border: "1px solid #E7E5E4",
-                      }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 10 }} iconType="circle" />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <EmptyChartFallback message="No entity data" />
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      {/* Year filter */}
+      <Card>
+        <CardContent className="p-3 flex items-center gap-2">
+          <span className="text-xs text-muted-foreground mr-2">Tax Year:</span>
+          <Button
+            size="sm"
+            variant={taxYear === "all" ? "default" : "outline"}
+            onClick={() => setTaxYear("all")}
+            className="h-7 px-2 text-xs"
+          >
+            All years
+          </Button>
+          {availableYears.slice(0, 6).map((y) => (
+            <Button
+              key={y}
+              size="sm"
+              variant={taxYear === String(y) ? "default" : "outline"}
+              onClick={() => setTaxYear(String(y))}
+              className="h-7 px-2 text-xs"
+            >
+              {y}
+            </Button>
+          ))}
+        </CardContent>
+      </Card>
 
       {/* Returns Table */}
       <Card>
@@ -365,16 +195,10 @@ export function TaxBusinessClient() {
                     <TableHead className="w-[80px]">Form</TableHead>
                     <TableHead>Entity</TableHead>
                     <TableHead className="w-[80px]">Year</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead className="w-[100px]">NAICS</TableHead>
+                    <TableHead className="w-[160px]">Status</TableHead>
                     <TableHead className="w-[120px]">E-file</TableHead>
                     <TableHead className="w-[110px]">Preparer</TableHead>
-                    <TableHead className="text-right">Gross receipts</TableHead>
-                    <TableHead className="text-right">Gross profit</TableHead>
-                    <TableHead className="text-right">Ord. income</TableHead>
-                    <TableHead className="text-right">Tax</TableHead>
-                    <TableHead className="text-right">Distributions</TableHead>
-                    <TableHead className="text-right">K-1s</TableHead>
+                    <TableHead className="w-[140px]">Modified</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -396,9 +220,25 @@ export function TaxBusinessClient() {
                       <TableCell className="tabular-nums">
                         {r.tax_year ?? "—"}
                       </TableCell>
-                      <TableCell className="text-sm">{entityType(r)}</TableCell>
-                      <TableCell className="font-mono text-[11px]">
-                        {r.raw.business_activity_code || "—"}
+                      <TableCell>
+                        {r.user_defined_status_name ? (
+                          <Badge
+                            variant="outline"
+                            className="text-xs"
+                            style={{
+                              backgroundColor: r.user_defined_status_color
+                                ? `${r.user_defined_status_color}20`
+                                : undefined,
+                              borderColor:
+                                r.user_defined_status_color || undefined,
+                              color: r.user_defined_status_color || undefined,
+                            }}
+                          >
+                            {r.user_defined_status_name}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <EfileBadge status={r.efile_status} />
@@ -406,35 +246,10 @@ export function TaxBusinessClient() {
                       <TableCell className="text-xs text-muted-foreground">
                         {r.preparer || "—"}
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {fmtMoneyCompact(r.revenue)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {r.raw.gross_profit != null
-                          ? fmtMoneyCompact(Number(r.raw.gross_profit))
+                      <TableCell className="text-xs text-muted-foreground tabular-nums">
+                        {r.proconnect_modified_at
+                          ? new Date(r.proconnect_modified_at).toLocaleDateString()
                           : "—"}
-                      </TableCell>
-                      <TableCell
-                        className={cn(
-                          "text-right tabular-nums font-medium",
-                          r.income != null && r.income < 0
-                            ? "text-rose-700"
-                            : "text-emerald-700",
-                        )}
-                      >
-                        {fmtMoneyCompact(r.income)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {/* Pass-through (1065, 1120S) has no entity tax */}
-                        {r.tax != null ? fmtMoneyCompact(r.tax) : "—"}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums text-blue-700">
-                        {r.raw.cash_distributions != null
-                          ? fmtMoneyCompact(Number(r.raw.cash_distributions))
-                          : "—"}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {r.raw.k1_count ?? "—"}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -444,6 +259,67 @@ export function TaxBusinessClient() {
           )}
         </CardContent>
       </Card>
+
+      {/* Pagination */}
+      {data && data.pagination.totalPages > 1 && (
+        <div className="flex items-center justify-between px-1">
+          <div className="text-sm text-muted-foreground">
+            Showing {(page - 1) * data.pagination.pageSize + 1}–
+            {Math.min(page * data.pagination.pageSize, data.pagination.totalCount)}{" "}
+            of {fmtNumber(data.pagination.totalCount)} returns
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={!data.pagination.hasPrev}
+              className="h-8 px-2"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Previous
+            </Button>
+            <div className="flex items-center gap-1 mx-2">
+              {Array.from(
+                { length: Math.min(5, data.pagination.totalPages) },
+                (_, i) => {
+                  let pageNum: number
+                  if (data.pagination.totalPages <= 5) {
+                    pageNum = i + 1
+                  } else if (page <= 3) {
+                    pageNum = i + 1
+                  } else if (page >= data.pagination.totalPages - 2) {
+                    pageNum = data.pagination.totalPages - 4 + i
+                  } else {
+                    pageNum = page - 2 + i
+                  }
+                  return (
+                    <Button
+                      key={pageNum}
+                      variant={page === pageNum ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPage(pageNum)}
+                      className="h-8 w-8 p-0"
+                    >
+                      {pageNum}
+                    </Button>
+                  )
+                },
+              )}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(data.pagination.totalPages, p + 1))}
+              disabled={!data.pagination.hasNext}
+              className="h-8 px-2"
+            >
+              Next
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

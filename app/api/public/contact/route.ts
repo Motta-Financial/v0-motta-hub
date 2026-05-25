@@ -3,8 +3,8 @@ import { createAdminClient } from "@/lib/supabase/server"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 import {
   buildCorsHeaders,
-  isAllowedOrigin,
   handleCorsPreflight,
+  isTrustedPublicRequest,
   rateLimitFor,
 } from "@/lib/cors"
 import { sendEmail } from "@/lib/email"
@@ -72,12 +72,12 @@ export async function POST(req: NextRequest) {
   const origin = req.headers.get("origin")
   const corsHeaders = buildCorsHeaders(origin)
 
-  // A missing Origin (server-to-server / curl) is allowed — browser
-  // CORS doesn't apply, and the rate limiter + honeypot below are
-  // the real bot defenses.
-  if (origin && !isAllowedOrigin(origin)) {
+  // Trust gate: CORS allowlisted origin OR shared secret. The
+  // marketing site uses CORS in the browser path and the secret in
+  // its server-to-server path; both are first-party.
+  if (!isTrustedPublicRequest(req)) {
     return NextResponse.json(
-      { error: "Origin not allowed" },
+      { error: "untrusted_request" },
       { status: 403, headers: corsHeaders },
     )
   }

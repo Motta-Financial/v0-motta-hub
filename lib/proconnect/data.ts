@@ -92,12 +92,26 @@ export type ImportRequest = {
   entries: ImportEntry[]
 }
 
+/**
+ * Per-entry rejection detail. Per Phase 1 spec §B.6 + Appendix A, the
+ * server returns an *array* of per-field failures for each rejected
+ * entry — e.g. a single c808 entry can fail with both a value rule and
+ * a length rule simultaneously, producing two ErrorDetail rows. Do NOT
+ * collapse this into scalar `errorCode`/`errorMessage`; downstream
+ * code (proconnect_import_entry_results.error_details jsonb) stores
+ * the array verbatim.
+ */
+export type ErrorDetail = {
+  code: string
+  field: string
+  message: string
+}
+
 export type ImportEntryError = {
   prefixId: string
   codeId: string
   suffixId: string
-  errorCode: string
-  errorMessage: string
+  errorDetails: ErrorDetail[]
 }
 
 export type ImportSeriesResult = {
@@ -123,9 +137,14 @@ export type ImportResponse = {
 // ---------------------------------------------------------------------------
 
 export type ProconnectApiError =
+  | { kind: "unauthenticated"; status: 401; body: string }
+  /** 401/403 with body indicating scope is missing — caller should re-consent. */
   | { kind: "scope_missing"; status: 401 | 403; body: string }
+  /** 403 ACCESS_DENIED — token's firm doesn't own (clientId, returnId). */
+  | { kind: "access_denied"; status: 403; body: string }
   | { kind: "not_found"; status: 404; body: string }
-  | { kind: "locked"; status: 423; body: string; retryAfterMs?: number }
+  /** Export-side lock per §A.7 surfaces as 403 RETURN_LOCKED; import side is 423. */
+  | { kind: "locked"; status: 403 | 423; body: string; retryAfterMs?: number }
   | { kind: "rate_limited"; status: 429; body: string; retryAfterMs?: number }
   | { kind: "payload_too_large"; status: 413; body: string }
   | { kind: "bad_request"; status: 400; body: string }
@@ -137,19 +156,42 @@ export type Result<T> =
   | { ok: false; error: ProconnectApiError; intuitTid: string | null }
 
 function classify(status: number, body: string): ProconnectApiError {
-  if (status === 401 || status === 403) {
-    // The Phase 1 doc explicitly notes 401/403 fires when scope is
-    // missing or the firm doesn't own the return. We can't always
-    // distinguish; we tag it `scope_missing` and surface body so the
-    // UI can render the actual server message.
-    return { kind: "scope_missing", status: status as 401 | 403, body }
+  // Inspect the upstream errorCode in the body so we can disambiguate the
+  // overloaded 401/403 statuses (§A.7 + §B.8). The body shape per spec is
+  // `{ "errorCode": "...", "errorMessage": "..." }` — we read it best-effort.
+  const upstreamCode = parseUpstreamErrorCode(body)
+
+  if (status === 401) {
+    // 401 UNAUTHENTICATED is either an expired/invalid token or a
+    // missing-scope condition. The Phase 1 doc explicitly calls out
+    // that the `com.intuit.proconnect.taxreturns` scope must be
+    // allow-listed; until it is, we'll see 401s on these endpoints.
+    // We surface as scope_missing so the UI can prompt re-consent.
+    return { kind: "scope_missing", status: 401, body }
+  }
+  if (status === 403) {
+    // §A.7: export uses `403 RETURN_LOCKED` (import uses 423).
+    if (upstreamCode === "RETURN_LOCKED") return { kind: "locked", status: 403, body }
+    if (upstreamCode === "ACCESS_DENIED") return { kind: "access_denied", status: 403, body }
+    // Default: treat unattributed 403 as scope-missing (consent flow).
+    return { kind: "scope_missing", status: 403, body }
   }
   if (status === 404) return { kind: "not_found", status, body }
-  if (status === 423) return { kind: "locked", status, body }
+  if (status === 423) return { kind: "locked", status: 423, body }
   if (status === 429) return { kind: "rate_limited", status, body }
   if (status === 413) return { kind: "payload_too_large", status, body }
   if (status === 400) return { kind: "bad_request", status, body }
   return { kind: "server", status, body }
+}
+
+function parseUpstreamErrorCode(body: string): string | null {
+  if (!body) return null
+  try {
+    const parsed = JSON.parse(body) as { errorCode?: string }
+    return typeof parsed.errorCode === "string" ? parsed.errorCode : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -178,9 +220,14 @@ async function fetchWithRetry(
   const tid = res.headers.get("intuit-tid")
   const body = await res.text()
 
-  // Retryable: 429, 423, 502, 503, 504. Phase 1 doc explicitly calls
-  // out 423 (locked — return is being saved) as transient.
-  const retryable = res.status === 429 || res.status === 423 || (res.status >= 502 && res.status <= 504)
+  // Retryable: 429, 423, 500, 502, 503, 504. Phase 1 doc §B.8 instructs
+  // clients to "retry with backoff" on 500 INTERNAL_ERROR, and §A.7
+  // says the same for export-side 500s. 423 (locked) is transient
+  // because the return is mid-save in the PTO UI.
+  const retryable =
+    res.status === 429 ||
+    res.status === 423 ||
+    (res.status >= 500 && res.status <= 504)
   if (retryable && attempt < MAX_ATTEMPTS - 1) {
     const retryAfterHeader = res.headers.get("retry-after")
     const retryAfterMs = retryAfterHeader

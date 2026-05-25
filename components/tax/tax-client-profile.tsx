@@ -38,6 +38,8 @@ import {
 } from "@/components/ui/tooltip"
 import { KpiCard, FormBadge, EfileBadge, fmtMoney, fmtNumber } from "@/components/tax/tax-shared"
 import { cn } from "@/lib/utils"
+import { SensitiveValue } from "@/components/security/sensitive-value"
+import { ClientRelationshipsCard } from "@/components/tax/client-relationships-card"
 import {
   Table,
   TableBody,
@@ -348,7 +350,9 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
               <FileText className="h-4 w-4 text-muted-foreground mt-0.5" />
               <div>
                 <div className="text-xs text-muted-foreground uppercase tracking-wide">Tax ID</div>
-                <div className="text-sm font-mono">{client.taxId}</div>
+                <div className="text-sm">
+                  <SensitiveValue value={client.taxId} label="Tax ID" buttonSize="sm" />
+                </div>
               </div>
             </div>
           )}
@@ -458,6 +462,9 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
           )}
         </CardContent>
       </Card>
+
+      {/* Relationship graph (renders only when there's data) */}
+      <ClientRelationshipsCard clientId={clientId} />
 
       {/* Returns by Year - Expandable */}
       <Card>
@@ -645,8 +652,15 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
             )}
             {client.taxId && (
               <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide">Tax ID (Last 4)</div>
-                <div className="font-mono text-xs mt-1">***-**-{client.taxId.slice(-4)}</div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide">Tax ID</div>
+                <div className="text-xs mt-1">
+                  <SensitiveValue
+                    value={client.taxId}
+                    label="Tax ID"
+                    hiddenAs="last4"
+                    className="text-xs"
+                  />
+                </div>
               </div>
             )}
           </div>

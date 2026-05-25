@@ -14,6 +14,7 @@ import { TommyLeaderboard } from "./tommy-leaderboard"
 import { TommyYTDLeaderboard } from "./tommy-ytd-leaderboard"
 import { TommyRecentBallots } from "./tommy-recent-ballots"
 import { TommyStats } from "./tommy-stats"
+import { TommyWeeklyStats } from "./tommy-weekly-stats"
 
 interface Week {
   id: string
@@ -621,8 +622,16 @@ export function TommyAwardsPage() {
         firm-wide raw-stats panel (rendered inside <TommyStats/>), so we
         hide the recent-ballots stream there to avoid duplicating the
         "what's the team doing" surface.
+
+        On the Weekly tab specifically we tuck a `<TommyWeeklyStats/>`
+        panel UNDER the ballots feed. It surfaces the same vote-share
+        definition used by the Tommy Stats KPI Leaderboard
+        (points received ÷ firm total points cast in scope) so a single
+        week can be inspected at a glance without leaving the Weekly
+        tab.
       */}
       {activeTab !== "stats" && <TommyRecentBallots filters={filters} />}
+      {activeTab === "weekly" && <TommyWeeklyStats filters={filters} />}
     </div>
   )
 }

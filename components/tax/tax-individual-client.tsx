@@ -1,31 +1,19 @@
 "use client"
 
 import useSWR from "swr"
-import { useMemo } from "react"
+import { useState, useEffect } from "react"
 import {
   Users,
   TrendingUp,
-  DollarSign,
   ArrowDownCircle,
   ArrowUpCircle,
-  Receipt,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react"
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Table,
   TableBody,
@@ -40,138 +28,68 @@ import {
   fmtMoney,
   fmtMoneyCompact,
   fmtNumber,
-  EmptyChartFallback,
 } from "./tax-shared"
 import { cn } from "@/lib/utils"
 
-// ── 1040-specific row shape ──────────────────────────────────────────
-// We need fields the unified shape doesn't carry — filing_status, the
-// schedule flags, dependent counts — so we read the `raw` payload that
-// the API tucks onto every row. Wrapping it in a typed accessor keeps
-// the rest of the component honest about which columns it touches.
 type IndividualReturn = {
   id: string
   proconnect_client_id: string | null
   client_name: string | null
   tax_year: number | null
   efile_status: string | null
-  amended: boolean | null
   preparer: string | null
-  revenue: number | null // wages_salaries_tips
-  income: number | null // AGI
-  tax: number | null // total_tax
-  refund: number | null
-  amount_owed: number | null
-  raw: {
-    filing_status?: string | null
-    taxpayer_occupation?: string | null
-    taxable_income?: number | string | null
-    federal_tax_withheld?: number | string | null
-    qualified_business_income_deduction?: number | string | null
-    total_itemized_or_standard_deduction?: number | string | null
-    has_schedule_c?: boolean | null
-    has_schedule_e?: boolean | null
-    qualifying_children_count?: number | null
-    other_dependents_count?: number | null
+  user_defined_status_name: string | null
+  user_defined_status_color: string | null
+  proconnect_modified_at: string | null
+}
+
+type Pagination = {
+  page: number
+  pageSize: number
+  totalCount: number
+  totalPages: number
+  hasNext: boolean
+  hasPrev: boolean
+}
+
+type ReturnsResponse = {
+  returns: IndividualReturn[]
+  stats: {
+    totalReturns: number
+    efiledCount: number
+    pendingCount: number
+    byYear: Record<string, number>
   }
+  pagination: Pagination
+  availableYears: number[]
 }
 
 const fetcher = (u: string) =>
   fetch(u).then(async (r) => {
     if (!r.ok) throw new Error(await r.text())
-    return r.json() as Promise<{
-      returns: IndividualReturn[]
-      stats: { totalReturns: number; totalRefunds: number; totalTax: number; totalOwed: number }
-    }>
+    return r.json() as Promise<ReturnsResponse>
   })
 
-const FILING_STATUS_COLOR: Record<string, string> = {
-  "Married filing jointly": "#3B82F6",
-  "Single": "#14B8A6",
-  "Head of household": "#8B5CF6",
-  "Married filing separately": "#F59E0B",
-  "Qualifying widow(er)": "#EC4899",
-}
-
 export function TaxIndividualClient() {
+  const [taxYear, setTaxYear] = useState<string>("all")
+  const [page, setPage] = useState(1)
+
+  // Reset page when year changes
+  useEffect(() => {
+    setPage(1)
+  }, [taxYear])
+
+  const params = new URLSearchParams()
+  params.set("form", "1040")
+  params.set("page", String(page))
+  if (taxYear !== "all") params.set("taxYear", taxYear)
+
   const { data, isLoading, error } = useSWR(
-    "/api/tax/returns?form=1040",
+    `/api/tax/returns?${params.toString()}`,
     fetcher,
   )
 
-  // Derived metrics. Only 1040s carry filing_status, schedule flags
-  // and dependents, so we calculate them here rather than asking the
-  // generic returns endpoint to special-case the individual form.
-  const derived = useMemo(() => {
-    const rows = data?.returns ?? []
-    const refundCount = rows.filter((r) => (r.refund ?? 0) > 0).length
-    const oweCount = rows.filter((r) => (r.amount_owed ?? 0) > 0).length
-    const avgRefund =
-      refundCount > 0
-        ? rows.reduce((s, r) => s + (r.refund ?? 0), 0) / refundCount
-        : 0
-    const avgAgi =
-      rows.length > 0
-        ? rows.reduce((s, r) => s + (r.income ?? 0), 0) / rows.length
-        : 0
-    const totalDependents = rows.reduce(
-      (s, r) =>
-        s +
-        (r.raw.qualifying_children_count ?? 0) +
-        (r.raw.other_dependents_count ?? 0),
-      0,
-    )
-    const scheduleC = rows.filter((r) => r.raw.has_schedule_c).length
-    const scheduleE = rows.filter((r) => r.raw.has_schedule_e).length
-
-    // Filing-status mix for the donut.
-    const filingMix = new Map<string, number>()
-    for (const r of rows) {
-      const fs = r.raw.filing_status ?? "(unknown)"
-      filingMix.set(fs, (filingMix.get(fs) ?? 0) + 1)
-    }
-
-    // Refund vs. balance-due histogram. We bin in $5k buckets up to
-    // $25k, then a final "$25k+" bucket — chosen by inspecting the
-    // current data so most rows fall in the first 3 buckets.
-    type Bin = { label: string; refunds: number; owed: number }
-    const bins: Bin[] = [
-      { label: "$0", refunds: 0, owed: 0 },
-      { label: "$0–5k", refunds: 0, owed: 0 },
-      { label: "$5k–10k", refunds: 0, owed: 0 },
-      { label: "$10k–25k", refunds: 0, owed: 0 },
-      { label: "$25k+", refunds: 0, owed: 0 },
-    ]
-    function placeBin(amount: number, key: "refunds" | "owed") {
-      const a = Math.abs(amount)
-      let idx = 0
-      if (a === 0) idx = 0
-      else if (a <= 5_000) idx = 1
-      else if (a <= 10_000) idx = 2
-      else if (a <= 25_000) idx = 3
-      else idx = 4
-      bins[idx][key] += 1
-    }
-    for (const r of rows) {
-      if ((r.refund ?? 0) > 0) placeBin(r.refund ?? 0, "refunds")
-      else if ((r.amount_owed ?? 0) > 0) placeBin(r.amount_owed ?? 0, "owed")
-    }
-
-    return {
-      refundCount,
-      oweCount,
-      avgRefund,
-      avgAgi,
-      totalDependents,
-      scheduleC,
-      scheduleE,
-      filingMix: Array.from(filingMix.entries()).map(([name, value]) => ({
-        name,
-        value,
-      })),
-      bins,
-    }
-  }, [data])
+  const availableYears = data?.availableYears ?? []
 
   return (
     <div className="space-y-4">
@@ -180,9 +98,8 @@ export function TaxIndividualClient() {
           Individual Tax (1040)
         </h1>
         <p className="text-sm text-muted-foreground">
-          Form 1040 returns from ProConnect — AGI, filing status, refunds vs.
-          balance due, and schedule C / E activity across the firm&apos;s
-          individual clients.
+          Form 1040 returns from ProConnect — filing status, refunds vs. balance
+          due across the firm&apos;s individual clients.
         </p>
       </header>
 
@@ -191,160 +108,62 @@ export function TaxIndividualClient() {
         <KpiCard
           label="1040 Returns"
           value={data ? fmtNumber(data.stats.totalReturns) : "—"}
-          subtitle={
-            data
-              ? `${derived.totalDependents.toLocaleString()} dependents claimed`
-              : ""
-          }
+          subtitle="Individual tax returns"
           icon={Users}
           tone="stone"
         />
         <KpiCard
-          label="Total Refunds Issued"
-          value={data ? fmtMoney(data.stats.totalRefunds) : "—"}
-          subtitle={
-            data
-              ? `${derived.refundCount} clients · avg ${fmtMoneyCompact(derived.avgRefund)}`
-              : ""
-          }
+          label="E-Filed"
+          value={data ? fmtNumber(data.stats.efiledCount) : "—"}
+          subtitle="Accepted / Complete"
           icon={ArrowDownCircle}
           tone="emerald"
         />
         <KpiCard
-          label="Total Owed"
-          value={data ? fmtMoney(data.stats.totalOwed) : "—"}
-          subtitle={data ? `${derived.oweCount} clients owe` : ""}
+          label="Pending"
+          value={data ? fmtNumber(data.stats.pendingCount) : "—"}
+          subtitle="Awaiting filing"
           icon={ArrowUpCircle}
-          tone="rose"
+          tone="amber"
         />
         <KpiCard
-          label="Average AGI"
-          value={data ? fmtMoney(derived.avgAgi) : "—"}
-          subtitle={
-            data
-              ? `${derived.scheduleC} Sch C · ${derived.scheduleE} Sch E`
-              : ""
+          label="This Year"
+          value={
+            data && availableYears[0]
+              ? fmtNumber(data.stats.byYear[String(availableYears[0])] ?? 0)
+              : "—"
           }
+          subtitle={availableYears[0] ? `Tax year ${availableYears[0]}` : ""}
           icon={TrendingUp}
           tone="blue"
         />
       </div>
 
-      {/* Charts row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <Card className="lg:col-span-2">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Receipt className="h-4 w-4 text-stone-500" />
-              <h3 className="text-sm font-semibold text-stone-900">
-                Refunds vs. balance due
-              </h3>
-              <span className="ml-auto text-xs text-muted-foreground">
-                Client counts by amount bucket
-              </span>
-            </div>
-            {data && data.returns.length > 0 ? (
-              <div className="h-[220px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={derived.bins}
-                    margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
-                  >
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke="#E7E5E4"
-                      vertical={false}
-                    />
-                    <XAxis
-                      dataKey="label"
-                      tick={{ fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      tick={{ fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                      allowDecimals={false}
-                      width={36}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        borderRadius: 6,
-                        fontSize: 12,
-                        border: "1px solid #E7E5E4",
-                      }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" />
-                    <Bar
-                      dataKey="refunds"
-                      name="Refunds"
-                      fill="#059669"
-                      radius={[3, 3, 0, 0]}
-                    />
-                    <Bar
-                      dataKey="owed"
-                      name="Owed"
-                      fill="#E11D48"
-                      radius={[3, 3, 0, 0]}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <EmptyChartFallback message="No 1040 returns yet" />
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Users className="h-4 w-4 text-stone-500" />
-              <h3 className="text-sm font-semibold text-stone-900">
-                Filing status mix
-              </h3>
-            </div>
-            {data && derived.filingMix.length > 0 ? (
-              <div className="h-[220px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={derived.filingMix}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius={50}
-                      outerRadius={80}
-                      paddingAngle={2}
-                      stroke="#fff"
-                    >
-                      {derived.filingMix.map((entry) => (
-                        <Cell
-                          key={entry.name}
-                          fill={FILING_STATUS_COLOR[entry.name] || "#A8A29E"}
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      formatter={(v: number) =>
-                        `${v} return${v === 1 ? "" : "s"}`
-                      }
-                      contentStyle={{
-                        borderRadius: 6,
-                        fontSize: 12,
-                        border: "1px solid #E7E5E4",
-                      }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 10 }} iconType="circle" />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <EmptyChartFallback message="No filing-status data" />
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      {/* Year filter */}
+      <Card>
+        <CardContent className="p-3 flex items-center gap-2">
+          <span className="text-xs text-muted-foreground mr-2">Tax Year:</span>
+          <Button
+            size="sm"
+            variant={taxYear === "all" ? "default" : "outline"}
+            onClick={() => setTaxYear("all")}
+            className="h-7 px-2 text-xs"
+          >
+            All years
+          </Button>
+          {availableYears.slice(0, 6).map((y) => (
+            <Button
+              key={y}
+              size="sm"
+              variant={taxYear === String(y) ? "default" : "outline"}
+              onClick={() => setTaxYear(String(y))}
+              className="h-7 px-2 text-xs"
+            >
+              {y}
+            </Button>
+          ))}
+        </CardContent>
+      </Card>
 
       {/* 1040 Table */}
       <Card>
@@ -369,104 +188,128 @@ export function TaxIndividualClient() {
                   <TableRow>
                     <TableHead>Taxpayer</TableHead>
                     <TableHead className="w-[80px]">Year</TableHead>
-                    <TableHead>Filing status</TableHead>
+                    <TableHead className="w-[160px]">Status</TableHead>
                     <TableHead className="w-[120px]">E-file</TableHead>
                     <TableHead className="w-[110px]">Preparer</TableHead>
-                    <TableHead className="text-right">Wages</TableHead>
-                    <TableHead className="text-right">AGI</TableHead>
-                    <TableHead className="text-right">Tax</TableHead>
-                    <TableHead className="text-right">Refund</TableHead>
-                    <TableHead className="text-right">Owed</TableHead>
-                    <TableHead className="text-center">Sch C/E</TableHead>
-                    <TableHead className="text-center">Deps</TableHead>
+                    <TableHead className="w-[140px]">Modified</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.returns.map((r) => {
-                    const deps =
-                      (r.raw.qualifying_children_count ?? 0) +
-                      (r.raw.other_dependents_count ?? 0)
-                    return (
-                      <TableRow key={r.id}>
-                        <TableCell>
-                          <div className="font-medium text-stone-900 text-sm">
-                            {r.client_name || "—"}
+                  {data.returns.map((r) => (
+                    <TableRow key={r.id}>
+                      <TableCell>
+                        <div className="font-medium text-stone-900 text-sm">
+                          {r.client_name || "—"}
+                        </div>
+                        {r.proconnect_client_id ? (
+                          <div className="text-[11px] text-muted-foreground font-mono">
+                            {r.proconnect_client_id}
                           </div>
-                          {r.raw.taxpayer_occupation ? (
-                            <div className="text-[11px] text-muted-foreground">
-                              {r.raw.taxpayer_occupation}
-                            </div>
-                          ) : null}
-                        </TableCell>
-                        <TableCell className="tabular-nums">
-                          {r.tax_year ?? "—"}
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {r.raw.filing_status || "—"}
-                        </TableCell>
-                        <TableCell>
-                          <EfileBadge status={r.efile_status} />
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {r.preparer || "—"}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {fmtMoneyCompact(r.revenue)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums font-medium">
-                          {fmtMoneyCompact(r.income)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {fmtMoneyCompact(r.tax)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums text-emerald-700">
-                          {r.refund != null ? fmtMoneyCompact(r.refund) : "—"}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums text-rose-700">
-                          {r.amount_owed != null
-                            ? fmtMoneyCompact(r.amount_owed)
-                            : "—"}
-                        </TableCell>
-                        <TableCell className="text-center text-xs">
-                          <div className="flex justify-center gap-1">
-                            {r.raw.has_schedule_c ? (
-                              <Badge
-                                variant="outline"
-                                className="text-[10px] bg-violet-50 text-violet-900 border-violet-200"
-                              >
-                                C
-                              </Badge>
-                            ) : null}
-                            {r.raw.has_schedule_e ? (
-                              <Badge
-                                variant="outline"
-                                className="text-[10px] bg-indigo-50 text-indigo-900 border-indigo-200"
-                              >
-                                E
-                              </Badge>
-                            ) : null}
-                            {!r.raw.has_schedule_c && !r.raw.has_schedule_e ? (
-                              <span className="text-stone-300">—</span>
-                            ) : null}
-                          </div>
-                        </TableCell>
-                        <TableCell
-                          className={cn(
-                            "text-center tabular-nums",
-                            deps > 0 ? "text-stone-900 font-medium" : "text-stone-300",
-                          )}
-                        >
-                          {deps > 0 ? deps : "—"}
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })}
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="tabular-nums">
+                        {r.tax_year ?? "—"}
+                      </TableCell>
+                      <TableCell>
+                        {r.user_defined_status_name ? (
+                          <Badge
+                            variant="outline"
+                            className="text-xs"
+                            style={{
+                              backgroundColor: r.user_defined_status_color
+                                ? `${r.user_defined_status_color}20`
+                                : undefined,
+                              borderColor:
+                                r.user_defined_status_color || undefined,
+                              color: r.user_defined_status_color || undefined,
+                            }}
+                          >
+                            {r.user_defined_status_name}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <EfileBadge status={r.efile_status} />
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {r.preparer || "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground tabular-nums">
+                        {r.proconnect_modified_at
+                          ? new Date(r.proconnect_modified_at).toLocaleDateString()
+                          : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody>
               </Table>
             </div>
           )}
         </CardContent>
       </Card>
+
+      {/* Pagination */}
+      {data && data.pagination.totalPages > 1 && (
+        <div className="flex items-center justify-between px-1">
+          <div className="text-sm text-muted-foreground">
+            Showing {(page - 1) * data.pagination.pageSize + 1}–
+            {Math.min(page * data.pagination.pageSize, data.pagination.totalCount)}{" "}
+            of {fmtNumber(data.pagination.totalCount)} returns
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={!data.pagination.hasPrev}
+              className="h-8 px-2"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Previous
+            </Button>
+            <div className="flex items-center gap-1 mx-2">
+              {Array.from(
+                { length: Math.min(5, data.pagination.totalPages) },
+                (_, i) => {
+                  let pageNum: number
+                  if (data.pagination.totalPages <= 5) {
+                    pageNum = i + 1
+                  } else if (page <= 3) {
+                    pageNum = i + 1
+                  } else if (page >= data.pagination.totalPages - 2) {
+                    pageNum = data.pagination.totalPages - 4 + i
+                  } else {
+                    pageNum = page - 2 + i
+                  }
+                  return (
+                    <Button
+                      key={pageNum}
+                      variant={page === pageNum ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPage(pageNum)}
+                      className="h-8 w-8 p-0"
+                    >
+                      {pageNum}
+                    </Button>
+                  )
+                },
+              )}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(data.pagination.totalPages, p + 1))}
+              disabled={!data.pagination.hasNext}
+              className="h-8 px-2"
+            >
+              Next
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

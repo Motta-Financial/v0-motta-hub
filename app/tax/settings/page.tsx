@@ -2,6 +2,7 @@ import { DashboardLayout } from "@/components/dashboard-layout"
 import { ProconnectConnectionCard } from "@/components/tax/proconnect-connection-card"
 import { ProconnectFullImportCard } from "@/components/tax/proconnect-full-import-card"
 import { ProconnectProfilesCard } from "@/components/tax/proconnect-profiles-card"
+import { ProconnectClientLinksCard } from "@/components/tax/proconnect-client-links-card"
 
 export const dynamic = "force-dynamic"
 
@@ -33,6 +34,7 @@ export default function TaxSettingsPage() {
         <ProconnectConnectionCard />
         <ProconnectFullImportCard />
         <ProconnectProfilesCard />
+        <ProconnectClientLinksCard />
       </div>
     </DashboardLayout>
   )

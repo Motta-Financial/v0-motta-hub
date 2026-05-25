@@ -1,0 +1,19 @@
+{
+  "name": "@motta/public-sdk",
+  "version": "0.1.0",
+  "description": "Drop-in TypeScript SDK for the motta.cpa marketing site to talk to the ALFRED Hub public API. Copy this folder into the marketing repo as `lib/motta` (or `packages/motta-public-sdk`) and import from your server routes.",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./client": "./client.ts",
+    "./direct": "./direct.ts",
+    "./react": "./react.tsx"
+  },
+  "peerDependencies": {
+    "@supabase/supabase-js": "^2.40.0",
+    "react": "^18.0.0 || ^19.0.0"
+  }
+}

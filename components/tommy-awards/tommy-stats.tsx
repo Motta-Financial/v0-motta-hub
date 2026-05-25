@@ -44,7 +44,13 @@ interface TommyStatRow {
   podium_pct: number
   win_pct: number
   top2_pct: number
+  // Share of all points the firm has cast since the user started.
+  // Numerator: this teammate's total_points across the year.
+  // Denominator: sum of points distributed firm-wide during weeks the
+  // teammate was eligible for (week_date >= start_date). Replaces the
+  // older "weeks voted on" share which was a participation rate.
   vote_share_pct: number
+  firm_eligible_points: number
   // Share of all votes the firm cast that landed on this teammate (count
   // basis, not week basis). Distinct from vote_share_pct, which measures
   // how often they got *any* votes in a week.
@@ -242,134 +248,34 @@ export function TommyStats({ year }: TommyStatsProps) {
             <KpiTile
               icon={<Flame className="h-4 w-4" />}
               label="Best podium streak"
-              value={bestStreak ? `${bestStreak.best_streak} wks` : "—"}
-              hint={bestStreak ? bestStreak.name : undefined}
+              value={
+                bestStreak ? `${bestStreak.best_streak} wks in a row` : "—"
+              }
+              hint={
+                bestStreak
+                  ? `${bestStreak.name} · consecutive podium finishes`
+                  : undefined
+              }
             />
           </div>
         </CardContent>
       </Card>
 
       {/*
-        Raw Stats — per-teammate absolute counts. The previous version of
-        this card showed a single row of firm-wide totals; per request
-        we now mirror the per-user shape used by the percentage panel
-        above and the leaderboard below so it's easy to scan who racked
-        up the most podiums, wins, and total points in 2026.
+        Raw Stats now lives inside the sub-tabs below — see the
+        <TabsContent value="raw"> block. Kept the per-teammate calc
+        (rawStatsRows) up top so all three sub-tabs share the same
+        sorted data without re-running the work per render.
       */}
-      <Card
-        className="border"
-        style={{
-          backgroundColor: "#0F140C",
-          borderColor: "rgba(168,197,102,0.30)",
-        }}
-      >
-        <CardHeader className="pb-3">
-          <div className="flex flex-col gap-1.5">
-            <CardTitle className="flex items-center gap-2 text-[#F4EFE8]">
-              <Trophy className="h-5 w-5" style={{ color: "#A8C566" }} />
-              Raw Stats — {displayYear}
-            </CardTitle>
-            <CardDescription className="text-[#F4EFE8]/70">
-              Absolute counts per teammate across every Tommy week so far
-              this year.
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-y border-[rgba(168,197,102,0.20)] text-[#F4EFE8]/70">
-                  <th className="text-left p-3 font-medium">Teammate</th>
-                  <th className="text-right p-3 font-medium">Podiums</th>
-                  <th className="text-right p-3 font-medium">1st</th>
-                  <th className="text-right p-3 font-medium">2nd</th>
-                  <th className="text-right p-3 font-medium">3rd</th>
-                  <th className="text-right p-3 font-medium">
-                    Ballots received
-                  </th>
-                  <th className="text-right p-3 font-medium">Total points</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading && (
-                  <tr>
-                    <td
-                      colSpan={7}
-                      className="p-8 text-center text-[#F4EFE8]/60"
-                    >
-                      Loading raw stats…
-                    </td>
-                  </tr>
-                )}
-                {!loading &&
-                  rawStatsRows.map((row) => {
-                    const hero = findHeroProfile(row.name)
-                    const ballotsReceived =
-                      row.first_place_votes +
-                      row.second_place_votes +
-                      row.third_place_votes +
-                      row.honorable_mention_votes +
-                      row.partner_votes
-                    return (
-                      <tr
-                        key={row.name}
-                        className="border-b border-[rgba(168,197,102,0.10)] hover:bg-[rgba(168,197,102,0.04)] transition-colors"
-                      >
-                        <td className="p-3">
-                          <div className="flex items-center gap-2.5 text-[#F4EFE8]">
-                            <Avatar className="h-7 w-7">
-                              {hero?.imageUrl && (
-                                <AvatarImage
-                                  src={hero.imageUrl}
-                                  alt={row.name}
-                                />
-                              )}
-                              <AvatarFallback className="text-[10px] bg-[#1D2620] text-[#A8C566]">
-                                {getInitials(row.name)}
-                              </AvatarFallback>
-                            </Avatar>
-                            <span className="font-medium">{row.name}</span>
-                          </div>
-                        </td>
-                        <td className="p-3 text-right tabular-nums font-semibold text-[#A8C566]">
-                          {row.podium_weeks}
-                        </td>
-                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
-                          {row.weeks_in_first}
-                        </td>
-                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
-                          {row.weeks_in_second}
-                        </td>
-                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
-                          {row.weeks_in_third}
-                        </td>
-                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]/80">
-                          {ballotsReceived}
-                        </td>
-                        <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
-                          {NUMBER_FORMATTER.format(row.total_points)}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                {!loading && rawStatsRows.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={7}
-                      className="p-8 text-center text-[#F4EFE8]/60"
-                    >
-                      No Tommy data yet for {displayYear}.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
 
-      <Tabs defaultValue="leaderboard" className="space-y-3">
+      {/*
+        Sub-tabs — Raw Stats, KPIs, and Per-Teammate are now siblings
+        inside the Tommy Stats page rather than stacked vertically.
+        The user wanted a calmer surface where the dense per-row tables
+        don't all render at once. Default lands on KPIs so the firm-wide
+        leaderboard is what people see first.
+      */}
+      <Tabs defaultValue="kpis" className="space-y-3">
         <TabsList
           className="w-full justify-start gap-1 p-1 h-auto border"
           style={{
@@ -378,22 +284,154 @@ export function TommyStats({ year }: TommyStatsProps) {
           }}
         >
           <TabsTrigger
-            value="leaderboard"
+            value="kpis"
             className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#0F140C] data-[state=active]:shadow data-[state=inactive]:text-[#F4EFE8] data-[state=inactive]:hover:bg-[rgba(168,197,102,0.12)] data-[state=inactive]:hover:text-[#A8C566] gap-2 font-semibold"
           >
             <Trophy className="h-4 w-4" />
             KPI Leaderboard
           </TabsTrigger>
           <TabsTrigger
+            value="raw"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#0F140C] data-[state=active]:shadow data-[state=inactive]:text-[#F4EFE8] data-[state=inactive]:hover:bg-[rgba(168,197,102,0.12)] data-[state=inactive]:hover:text-[#A8C566] gap-2 font-semibold"
+          >
+            <Award className="h-4 w-4" />
+            Raw Stats
+          </TabsTrigger>
+          <TabsTrigger
             value="cards"
             className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#0F140C] data-[state=active]:shadow data-[state=inactive]:text-[#F4EFE8] data-[state=inactive]:hover:bg-[rgba(168,197,102,0.12)] data-[state=inactive]:hover:text-[#A8C566] gap-2 font-semibold"
           >
             <Target className="h-4 w-4" />
-            Per-teammate Cards
+            Per-Teammate
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="leaderboard" className="m-0">
+        <TabsContent value="raw" className="m-0">
+          {/*
+            Raw Stats — per-teammate absolute counts. Mirrors the
+            per-user shape used by the KPI panel and the leaderboard
+            below so it's easy to scan who racked up the most podiums,
+            wins, and total points so far this year.
+          */}
+          <Card
+            className="border"
+            style={{
+              backgroundColor: "#0F140C",
+              borderColor: "rgba(168,197,102,0.30)",
+            }}
+          >
+            <CardHeader className="pb-3">
+              <div className="flex flex-col gap-1.5">
+                <CardTitle className="flex items-center gap-2 text-[#F4EFE8]">
+                  <Trophy className="h-5 w-5" style={{ color: "#A8C566" }} />
+                  Raw Stats — {displayYear}
+                </CardTitle>
+                <CardDescription className="text-[#F4EFE8]/70">
+                  Absolute counts per teammate across every Tommy week so far
+                  this year.
+                </CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-y border-[rgba(168,197,102,0.20)] text-[#F4EFE8]/70">
+                      <th className="text-left p-3 font-medium">Teammate</th>
+                      <th className="text-right p-3 font-medium">Podiums</th>
+                      <th className="text-right p-3 font-medium">1st</th>
+                      <th className="text-right p-3 font-medium">2nd</th>
+                      <th className="text-right p-3 font-medium">3rd</th>
+                      <th className="text-right p-3 font-medium">
+                        Ballots received
+                      </th>
+                      <th className="text-right p-3 font-medium">
+                        Total points
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading && (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          className="p-8 text-center text-[#F4EFE8]/60"
+                        >
+                          Loading raw stats…
+                        </td>
+                      </tr>
+                    )}
+                    {!loading &&
+                      rawStatsRows.map((row) => {
+                        const hero = findHeroProfile(row.name)
+                        const ballotsReceived =
+                          row.first_place_votes +
+                          row.second_place_votes +
+                          row.third_place_votes +
+                          row.honorable_mention_votes +
+                          row.partner_votes
+                        return (
+                          <tr
+                            key={row.name}
+                            className="border-b border-[rgba(168,197,102,0.10)] hover:bg-[rgba(168,197,102,0.04)] transition-colors"
+                          >
+                            <td className="p-3">
+                              <div className="flex items-center gap-2.5 text-[#F4EFE8]">
+                                <Avatar className="h-7 w-7">
+                                  {hero?.imageUrl && (
+                                    <AvatarImage
+                                      src={hero.imageUrl}
+                                      alt={row.name}
+                                    />
+                                  )}
+                                  <AvatarFallback className="text-[10px] bg-[#1D2620] text-[#A8C566]">
+                                    {getInitials(row.name)}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <span className="font-medium">
+                                  {row.name}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="p-3 text-right tabular-nums font-semibold text-[#A8C566]">
+                              {row.podium_weeks}
+                            </td>
+                            <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
+                              {row.weeks_in_first}
+                            </td>
+                            <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
+                              {row.weeks_in_second}
+                            </td>
+                            <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
+                              {row.weeks_in_third}
+                            </td>
+                            <td className="p-3 text-right tabular-nums text-[#F4EFE8]/80">
+                              {ballotsReceived}
+                            </td>
+                            <td className="p-3 text-right tabular-nums text-[#F4EFE8]">
+                              {NUMBER_FORMATTER.format(row.total_points)}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    {!loading && rawStatsRows.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          className="p-8 text-center text-[#F4EFE8]/60"
+                        >
+                          No Tommy data yet for {displayYear}.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="kpis" className="m-0">
           <Card
             style={{
               backgroundColor: "#0F140C",
@@ -432,25 +470,19 @@ export function TommyStats({ year }: TommyStatsProps) {
                         onClick={() => toggleSort("total_points")}
                       />
                       <SortableHeader
-                        label="1st"
-                        active={sortKey === "weeks_in_first"}
-                        dir={sortDir}
-                        onClick={() => toggleSort("weeks_in_first")}
-                      />
-                      <SortableHeader
                         label="Vote share"
                         active={sortKey === "vote_share_pct"}
                         dir={sortDir}
                         onClick={() => toggleSort("vote_share_pct")}
                       />
                       <SortableHeader
-                        label="Streak"
+                        label="Podium streak"
                         active={sortKey === "current_streak"}
                         dir={sortDir}
                         onClick={() => toggleSort("current_streak")}
                       />
                       <SortableHeader
-                        label="Best"
+                        label="Best podium streak"
                         active={sortKey === "best_streak"}
                         dir={sortDir}
                         onClick={() => toggleSort("best_streak")}
@@ -461,7 +493,7 @@ export function TommyStats({ year }: TommyStatsProps) {
                     {loading && (
                       <tr>
                         <td
-                          colSpan={10}
+                          colSpan={9}
                           className="p-8 text-center text-[#F4EFE8]/60"
                         >
                           Loading Tommy Stats…
@@ -521,27 +553,40 @@ export function TommyStats({ year }: TommyStatsProps) {
                             <td className="p-3 text-[#F4EFE8] text-right tabular-nums">
                               {NUMBER_FORMATTER.format(row.total_points)}
                             </td>
-                            <td className="p-3 text-[#F4EFE8] text-right tabular-nums">
-                              {row.weeks_in_first}
+                            <td className="p-3 text-right tabular-nums">
+                              <div
+                                className="font-medium"
+                                style={{
+                                  color:
+                                    sortKey === "vote_share_pct"
+                                      ? "#A8C566"
+                                      : "#F4EFE8",
+                                }}
+                              >
+                                {PERCENT_FORMATTER.format(row.vote_share_pct)}
+                              </div>
+                              <div className="text-[10px] text-[#F4EFE8]/50">
+                                {NUMBER_FORMATTER.format(row.total_points)}/
+                                {NUMBER_FORMATTER.format(
+                                  row.firm_eligible_points,
+                                )}{" "}
+                                pts
+                              </div>
                             </td>
-                            <PercentCell
-                              value={row.vote_share_pct}
-                              numerator={row.weeks_voted_on}
-                              denominator={row.eligible_weeks}
-                              accent={sortKey === "vote_share_pct"}
-                            />
                             <td className="p-3 text-right tabular-nums">
                               {row.current_streak > 0 ? (
                                 <span className="inline-flex items-center gap-1 text-[#A8C566]">
                                   <Flame className="h-3.5 w-3.5" />
-                                  {row.current_streak}
+                                  {row.current_streak} wks
                                 </span>
                               ) : (
-                                <span className="text-[#F4EFE8]/40">0</span>
+                                <span className="text-[#F4EFE8]/40">
+                                  0 wks
+                                </span>
                               )}
                             </td>
                             <td className="p-3 text-[#F4EFE8] text-right tabular-nums">
-                              {row.best_streak}
+                              {row.best_streak} wks
                             </td>
                           </tr>
                         )
@@ -549,7 +594,7 @@ export function TommyStats({ year }: TommyStatsProps) {
                     {!loading && sortedStats.length === 0 && (
                       <tr>
                         <td
-                          colSpan={10}
+                          colSpan={9}
                           className="p-8 text-center text-[#F4EFE8]/60"
                         >
                           No Tommy data yet for {displayYear}.
@@ -567,8 +612,13 @@ export function TommyStats({ year }: TommyStatsProps) {
             today. Percentages divide by eligible weeks so a 4-podium / 4-week
             stretch reads as 100%, while a 17-podium / 23-week stretch reads as
             ~74%.{" "}
-            <span className="font-medium text-[#F4EFE8]/70">Streak</span> is
-            consecutive eligible weeks finishing on the podium.
+            <span className="font-medium text-[#F4EFE8]/70">Vote share</span> is
+            points received ÷ total points the firm cast during this
+            teammate&apos;s eligible weeks (1st = 3, 2nd = 2, 3rd = 1, plus
+            HM/Partner pre-2026).{" "}
+            <span className="font-medium text-[#F4EFE8]/70">Podium streak</span>{" "}
+            is consecutive eligible weeks finishing 1st/2nd/3rd —{" "}
+            <em>Best podium streak</em> is the longest such run this year.
           </p>
         </TabsContent>
 
@@ -778,11 +828,11 @@ function TeammateCard({ row }: { row: TommyStatRow }) {
         />
         <StatPill
           icon={<Award className="h-3.5 w-3.5" />}
-          label="Best streak"
+          label="Best podium streak"
           value={`${row.best_streak} wks`}
           sub={
             row.current_streak > 0
-              ? `Active: ${row.current_streak}`
+              ? `Active: ${row.current_streak} wks`
               : "Not active"
           }
         />
@@ -801,8 +851,8 @@ function TeammateCard({ row }: { row: TommyStatRow }) {
         <StatPill
           icon={<Target className="h-3.5 w-3.5" />}
           label="Vote share"
-          value={PERCENT_FORMATTER.format(row.vote_count_share_pct)}
-          sub={`${row.first_place_votes + row.second_place_votes + row.third_place_votes + row.honorable_mention_votes + row.partner_votes} of all votes`}
+          value={PERCENT_FORMATTER.format(row.vote_share_pct)}
+          sub={`${NUMBER_FORMATTER.format(row.total_points)} of ${NUMBER_FORMATTER.format(row.firm_eligible_points)} pts`}
         />
       </CardContent>
     </Card>

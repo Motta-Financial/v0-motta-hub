@@ -87,6 +87,7 @@ export async function GET(request: NextRequest) {
     token_type: string
     expires_in: number
     x_refresh_token_expires_in?: number
+    scope?: string
   }
 
   // Persist tokens to Supabase (singleton row)
@@ -98,13 +99,18 @@ export async function GET(request: NextRequest) {
 
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
   const now = new Date().toISOString()
+  // Persist the *granted* scope from Intuit (not the requested one) so
+  // the dashboard can detect when the Phase 1 tax-returns scope was
+  // not actually granted (Intuit must explicitly allow-list it per
+  // spec §2.1) and prompt re-consent.
+  const grantedScope = tokens.scope ?? "com.intuit.proconnect.taxreturns"
   const payload = {
     is_singleton: true,
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
     token_type: tokens.token_type,
     expires_at: expiresAt,
-    scope: "com.intuit.proconnect.taxreturns",
+    scope: grantedScope,
     realm_id: realmId,
     updated_at: now,
   }

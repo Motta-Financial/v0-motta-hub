@@ -657,6 +657,29 @@ export async function GET(request: NextRequest) {
           0,
         )
 
+      // Per-week firm-wide point totals — needed to compute each
+      // teammate's share of points cast in their *eligible* window only.
+      // Vote share = sum(points received) ÷ sum(points cast firm-wide
+      // during weeks where week_date >= teammate.start_date). This is a
+      // fairer "share of attention" metric than the previous
+      // weeks_voted_on / eligible_weeks calc, because it weights by
+      // points (1st = 3, 2nd = 2, 3rd = 1) instead of treating any vote
+      // as equal, and it credits an HM/partner pickup proportionally
+      // pre-2026 too.
+      const pointsByWeek: Record<string, number> = {}
+      sortedWeekDates.forEach((wd) => {
+        const ballotsThisWeek = weekBuckets[wd] || []
+        let total = 0
+        ballotsThisWeek.forEach((b: any) => {
+          if (b.first_place_name) total += 3
+          if (b.second_place_name) total += 2
+          if (b.third_place_name) total += 1
+          if (!isYear2026OrLater && b.honorable_mention_name) total += 0.5
+          if (!isYear2026OrLater && b.partner_vote_name) total += 5
+        })
+        pointsByWeek[wd] = total
+      })
+
       const stats = Object.values(memberStats)
         .filter((m) => !HIDDEN_MEMBERS.includes(m.name))
         .map((m) => {
@@ -715,6 +738,14 @@ export async function GET(request: NextRequest) {
           const pointsPerEligibleWeek =
             eligibleWeeks > 0 ? m.total_points / eligibleWeeks : 0
 
+          // Vote share = points received ÷ points cast firm-wide during
+          // this teammate's eligible weeks. Newer hires aren't penalized
+          // for points distributed before their start date.
+          const eligibleFirmPoints = eligibleWeekDates.reduce(
+            (acc, wd) => acc + (pointsByWeek[wd] || 0),
+            0,
+          )
+
           return {
             name: m.name,
             start_date: startDate,
@@ -730,8 +761,14 @@ export async function GET(request: NextRequest) {
               eligibleWeeks > 0
                 ? (m.weeks_in_first + m.weeks_in_second) / eligibleWeeks
                 : 0,
+            // NOTE: changed from weeks_voted_on / eligible_weeks to
+            // points-based share over eligible weeks. See comment above
+            // pointsByWeek for rationale.
             vote_share_pct:
-              eligibleWeeks > 0 ? m.weeks_voted_on / eligibleWeeks : 0,
+              eligibleFirmPoints > 0
+                ? m.total_points / eligibleFirmPoints
+                : 0,
+            firm_eligible_points: eligibleFirmPoints,
             // Share of all votes cast firm-wide that landed on this
             // teammate. Includes 1st/2nd/3rd in 2026+ and additionally
             // HM + Partner pre-2026, matching the points model above.

@@ -95,8 +95,8 @@ export function buildCorsHeaders(origin: string | null | undefined): Record<stri
     // session lives at hub.motta.cpa and cross-site auth would
     // require a separate flow anyway.
     "Access-Control-Allow-Credentials": "false",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Motta-Source",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-Motta-Source, X-Motta-Public-Secret",
     // Vary header is critical so a misconfigured CDN doesn't cache
     // a CORS-allowed response and serve it to a different origin.
     Vary: "Origin",
@@ -143,6 +143,61 @@ export function corsFor(req: NextRequest) {
         headers: { "Content-Type": "application/json" },
       }),
   }
+}
+
+/**
+ * Shared-secret check for cross-project, server-to-server calls.
+ *
+ * The marketing site (`prj_EuqYEqjELxtf52nD7RbY4XxGrlAp`) calls into
+ * the Hub from its OWN Next.js API routes (browser → marketing API
+ * route → Hub `/api/public/*`) so the secret never touches the
+ * browser. Both projects share `MOTTA_PUBLIC_SECRET` as an env var.
+ *
+ * Header: `x-motta-public-secret: <hex>`
+ *
+ * Trust policy at every public endpoint:
+ *   - Browser-direct calls from an allowlisted origin (CORS) → trusted
+ *   - Server-to-server calls with a matching secret → trusted
+ *   - Anything else → 401/403
+ *
+ * Either gate is sufficient. This way the marketing site can either
+ * post directly from the browser (CORS path) or proxy through its own
+ * server (secret path) — both work, both are first-party, neither
+ * leaks the service role key.
+ */
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let mismatch = 0
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  }
+  return mismatch === 0
+}
+
+export function hasValidSharedSecret(req: NextRequest): boolean {
+  const expected = process.env.MOTTA_PUBLIC_SECRET
+  if (!expected) return false
+  const got = req.headers.get("x-motta-public-secret") ?? ""
+  if (!got) return false
+  return constantTimeEqual(got, expected)
+}
+
+/**
+ * Returns true if the request is trusted under EITHER policy:
+ *   - allowlisted browser origin, OR
+ *   - matching shared secret.
+ *
+ * Use this as the authoritative gate for write-side public endpoints.
+ */
+export function isTrustedPublicRequest(req: NextRequest): boolean {
+  const origin = req.headers.get("origin")
+  if (origin && isAllowedOrigin(origin)) return true
+  if (hasValidSharedSecret(req)) return true
+  // Server-to-server with no origin AND no secret = untrusted.
+  // (Previously we let no-origin requests through for curl/dev. Now
+  // that we have a secret, prefer it — drop curl convenience to keep
+  // the surface tight.)
+  return false
 }
 
 /**
@@ -221,9 +276,12 @@ type Handler = (req: NextRequest) => Promise<Response> | Response
 export function withPublicCors(handler: Handler): Handler {
   return async (req: NextRequest) => {
     const origin = req.headers.get("origin")
-    // Server-to-server (no Origin) is allowed; only browsers send it.
-    if (origin && !isAllowedOrigin(origin)) {
-      return new Response(JSON.stringify({ error: "origin_not_allowed" }), {
+    // Trust policy: allowlisted CORS origin OR shared-secret header.
+    // Either is sufficient — browser-direct from motta.cpa works via
+    // CORS; server-to-server from the marketing project's API routes
+    // works via the secret. No-origin + no-secret is denied.
+    if (!isTrustedPublicRequest(req)) {
+      return new Response(JSON.stringify({ error: "untrusted_request" }), {
         status: 403,
         headers: { "Content-Type": "application/json" },
       })

@@ -1,16 +1,15 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 
-// ── ProConnect client roster ─────────────────────────────────────────
-// Returns one row per row in proconnect_clients, enriched with:
-//   1. the count of engagements (returns) we have synced for that client
-//      from the proconnect_engagements table,
-//   2. the matching row from master_client_mapping (the unified view
-//      we built earlier today), so the UI can deep-link out to the
-//      Karbon / Ignition / Motta Hub identity for the same client.
-//
-// We keep the join logic on the server so the page component stays
-// declarative and doesn't have to coordinate multiple queries.
+// ── ProConnect client roster with pagination ─────────────────────────
+// Stat cards use count queries (no data transfer, works past 1000 rows).
+// The table uses .range() pagination — 50 rows per page by default.
+// For rollups PostgREST can't express (distinct counts, column-level
+// comparisons, group-by) we walk the table in 1,000-row pages so we
+// don't silently truncate at the cap.
+
+const TABLE_PAGE_SIZE = 50
+const SCAN_PAGE_SIZE = 1000
 
 type ProconnectClient = {
   id: string
@@ -63,63 +62,244 @@ type ProconnectEngagement = {
   updated_at: string | null
 }
 
-export async function GET() {
+// Paged fetch — see explanation in /api/tax/overview/route.ts. Walks the
+// table 1,000 rows at a time so we get every row, no PostgREST truncation.
+async function fetchAllPaged<T>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  queryFactory: () => any,
+): Promise<T[]> {
+  const out: T[] = []
+  let from = 0
+  for (;;) {
+    const to = from + SCAN_PAGE_SIZE - 1
+    const { data, error } = await queryFactory().range(from, to)
+    if (error) throw error
+    const batch = (data || []) as T[]
+    out.push(...batch)
+    if (batch.length < SCAN_PAGE_SIZE) break
+    from += SCAN_PAGE_SIZE
+  }
+  return out
+}
+
+export async function GET(request: NextRequest) {
   try {
     const supabase = createAdminClient()
 
-    // Run the client query, the mapping query, and the engagements query in parallel
-    const [clientsRes, mappingRes, engagementsRes, profilesRes] = await Promise.all([
+    // Parse pagination params
+    const { searchParams } = new URL(request.url)
+    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10))
+    const search = searchParams.get("search")?.trim().toLowerCase() || ""
+    const typeFilter = searchParams.get("type") || "all"
+    const stateFilter = searchParams.get("state") || "all"
+    // Default view: only clients with at least one tax return on file.
+    // Anything else is a ProConnect record we don't actually serve as a
+    // tax client. Pass `withReturns=false` to include the full roster.
+    const withReturnsFilter =
+      (searchParams.get("withReturns") ?? "true").toLowerCase() !== "false"
+
+    // ── Pure count queries (head: true = no data, just count) ────────
+    // These run in parallel and each returns only a count, not rows.
+    const [
+      totalRes,
+      personsRes,
+      orgsRes,
+      totalReturnsRes,
+      linkedToKarbonRes,
+      mappedRes,
+      linkedToIgnitionRes,
+    ] = await Promise.all([
       supabase
         .from("proconnect_clients")
-        .select(
-          "id, proconnect_client_id, proconnect_entity_id, top_level_entity_id, client_type, client_state, display_name, business_name, name_for_matching, first_name, last_name, email, phone, city, state, zip, tax_id, created_at, updated_at",
-        )
-        .order("display_name", { ascending: true }),
+        .select("*", { count: "exact", head: true }),
       supabase
-        .from("master_client_mapping")
-        .select(
-          "internal_client_id, client_type, display_name, primary_email, karbon_client_id, ignition_client_id, proconnect_client_id, karbon_url, linked_systems, link_count",
-        )
-        .not("proconnect_client_id", "is", null),
+        .from("proconnect_clients")
+        .select("*", { count: "exact", head: true })
+        .eq("client_type", "PERSON"),
+      supabase
+        .from("proconnect_clients")
+        .select("*", { count: "exact", head: true })
+        .eq("client_type", "ORGANIZATION"),
       supabase
         .from("proconnect_engagements")
-        .select(
-          "id, engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, work_status, assignee_profile_id, raw_json, synced_at, updated_at",
-        ),
-      // Profile mapping: see scripts/120_proconnect_profiles_mapping.sql.
-      // Falls back to team_members(full_name) when display_name is null.
+        .select("*", { count: "exact", head: true }),
       supabase
-        .from("proconnect_profiles")
-        .select("profile_id, display_name, team_members(full_name)"),
+        .from("master_client_mapping")
+        .select("*", { count: "exact", head: true })
+        .not("proconnect_client_id", "is", null)
+        .not("karbon_client_id", "is", null),
+      supabase
+        .from("master_client_mapping")
+        .select("*", { count: "exact", head: true })
+        .not("proconnect_client_id", "is", null),
+      supabase
+        .from("master_client_mapping")
+        .select("*", { count: "exact", head: true })
+        .not("proconnect_client_id", "is", null)
+        .not("ignition_client_id", "is", null),
     ])
 
-    if (clientsRes.error) throw clientsRes.error
-    if (mappingRes.error) throw mappingRes.error
-    if (engagementsRes.error) throw engagementsRes.error
-    if (profilesRes.error) throw profilesRes.error
+    if (totalRes.error) throw totalRes.error
+    if (personsRes.error) throw personsRes.error
+    if (orgsRes.error) throw orgsRes.error
+    if (totalReturnsRes.error) throw totalReturnsRes.error
+    if (linkedToKarbonRes.error) throw linkedToKarbonRes.error
+    if (mappedRes.error) throw mappedRes.error
+    if (linkedToIgnitionRes.error) throw linkedToIgnitionRes.error
 
-    const clients = (clientsRes.data || []) as ProconnectClient[]
-    const mappings = (mappingRes.data || []) as MasterMappingRow[]
-    const engagements = (engagementsRes.data || []) as ProconnectEngagement[]
+    const totalClients = totalRes.count ?? 0
+    const mappedCount = mappedRes.count ?? 0
+    const unmappedToHub = totalClients - mappedCount
 
-    // profileId → human display name. Keep null when unmapped — never
-    // leak the raw GUID to the dashboard. Once an admin fills in the
-    // proconnect_profiles row (or links team_member_id), the next page
-    // refresh starts showing the name with no code change.
-    const preparerMap = new Map<string, string>()
-    for (const p of profilesRes.data || []) {
-      const tm = p.team_members as { full_name?: string | null } | null
-      const name = p.display_name || tm?.full_name || null
-      if (name) preparerMap.set(p.profile_id, name)
+    // ── Rollups that PostgREST can't express ─────────────────────────
+    // Run in parallel. Each is a paged scan, not a single .select(),
+    // so they survive past 1,000 rows.
+    const [
+      distinctClientsForReturns,
+      stateRows,
+      entityRows,
+    ] = await Promise.all([
+      // Distinct clients with at least one engagement.
+      // Postgres has no PostgREST way to express COUNT(DISTINCT col),
+      // so we scan the (small) projection and dedupe in JS.
+      fetchAllPaged<{ proconnect_client_id: string | null }>(() =>
+        supabase.from("proconnect_engagements").select("proconnect_client_id"),
+      ),
+      // by-state rollup — same reason, no PostgREST GROUP BY.
+      fetchAllPaged<{ client_state: string | null }>(() =>
+        supabase.from("proconnect_clients").select("client_state"),
+      ),
+      // Sub-entity check requires comparing two columns; PostgREST
+      // can't do that without a SQL view, so scan and compare in JS.
+      fetchAllPaged<{
+        proconnect_entity_id: string | null
+        top_level_entity_id: string | null
+      }>(() =>
+        supabase
+          .from("proconnect_clients")
+          .select("proconnect_entity_id, top_level_entity_id"),
+      ),
+    ])
+
+    const withReturnsCount = new Set(
+      distinctClientsForReturns
+        .map((d) => d.proconnect_client_id)
+        .filter((id): id is string => Boolean(id)),
+    ).size
+
+    // Cached for the table query when `withReturnsFilter` is on.
+    const clientIdsWithReturns = Array.from(
+      new Set(
+        distinctClientsForReturns
+          .map((d) => d.proconnect_client_id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    )
+
+    const byState: Record<string, number> = {}
+    for (const row of stateRows) {
+      const key = row.client_state || "UNKNOWN"
+      byState[key] = (byState[key] || 0) + 1
     }
 
-    // Build a lookup of mapping rows keyed on proconnect_client_id.
+    const subEntitiesCount = entityRows.filter(
+      (c) =>
+        c.proconnect_entity_id &&
+        c.top_level_entity_id &&
+        c.proconnect_entity_id !== c.top_level_entity_id,
+    ).length
+
+    // ── Filtered + paginated table data ──────────────────────────────
+    let query = supabase
+      .from("proconnect_clients")
+      .select(
+        "id, proconnect_client_id, proconnect_entity_id, top_level_entity_id, client_type, client_state, display_name, business_name, name_for_matching, first_name, last_name, email, phone, city, state, zip, tax_id, created_at, updated_at",
+        { count: "exact" },
+      )
+      .order("display_name", { ascending: true })
+
+    if (typeFilter !== "all") {
+      query = query.eq("client_type", typeFilter)
+    }
+    if (stateFilter !== "all") {
+      query = query.eq("client_state", stateFilter)
+    }
+    if (withReturnsFilter) {
+      // Constrain the roster to ProConnect clients we actually have at
+      // least one engagement for. Without this filter the page also
+      // surfaces ProConnect records that aren't really our tax clients.
+      if (clientIdsWithReturns.length === 0) {
+        // No engagements at all — short-circuit so we don't pass an
+        // empty `in()` list (PostgREST treats `in.()` as a syntax err).
+        query = query.eq("proconnect_client_id", "__none__")
+      } else {
+        query = query.in("proconnect_client_id", clientIdsWithReturns)
+      }
+    }
+    if (search) {
+      query = query.or(
+        `display_name.ilike.%${search}%,email.ilike.%${search}%,proconnect_client_id.ilike.%${search}%,business_name.ilike.%${search}%,tax_id.ilike.%${search}%`,
+      )
+    }
+
+    const from = (page - 1) * TABLE_PAGE_SIZE
+    const to = from + TABLE_PAGE_SIZE - 1
+    query = query.range(from, to)
+
+    const clientsRes = await query
+    if (clientsRes.error) throw clientsRes.error
+
+    const clients = (clientsRes.data || []) as ProconnectClient[]
+    const filteredTotal = clientsRes.count ?? 0
+    const totalPages = Math.ceil(filteredTotal / TABLE_PAGE_SIZE)
+
+    // ── Related data for the current page only (small set, capped) ───
+    const clientIds = clients
+      .map((c) => c.proconnect_client_id)
+      .filter(Boolean) as string[]
+
+    let mappings: MasterMappingRow[] = []
+    let engagements: ProconnectEngagement[] = []
+    const preparerMap = new Map<string, string>()
+
+    if (clientIds.length > 0) {
+      const [mappingRes, engagementsRes, profilesRes] = await Promise.all([
+        supabase
+          .from("master_client_mapping")
+          .select(
+            "internal_client_id, client_type, display_name, primary_email, karbon_client_id, ignition_client_id, proconnect_client_id, karbon_url, linked_systems, link_count",
+          )
+          .in("proconnect_client_id", clientIds),
+        supabase
+          .from("proconnect_engagements")
+          .select(
+            "id, engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, work_status, assignee_profile_id, raw_json, synced_at, updated_at",
+          )
+          .in("proconnect_client_id", clientIds),
+        supabase
+          .from("proconnect_profiles")
+          .select("proconnect_profile_id, full_name, team_members(full_name)"),
+      ])
+
+      if (mappingRes.error) throw mappingRes.error
+      if (engagementsRes.error) throw engagementsRes.error
+      if (profilesRes.error) throw profilesRes.error
+
+      mappings = (mappingRes.data || []) as MasterMappingRow[]
+      engagements = (engagementsRes.data || []) as ProconnectEngagement[]
+
+      for (const p of profilesRes.data || []) {
+        const tm = p.team_members as { full_name?: string | null } | null
+        const name = p.full_name || tm?.full_name || null
+        if (name) preparerMap.set(p.proconnect_profile_id, name)
+      }
+    }
+
     const mappingByPc = new Map<string, MasterMappingRow>()
     for (const m of mappings) {
       if (m.proconnect_client_id) mappingByPc.set(m.proconnect_client_id, m)
     }
 
-    // Build a per-client engagements rollup from the new proconnect_engagements table
     type ClientReturnRollup = {
       total: number
       amendedCount: number
@@ -137,7 +317,6 @@ export async function GET() {
     }
     const rollupByPc = new Map<string, ClientReturnRollup>()
 
-    // Group engagements by client and form type
     for (const eng of engagements) {
       if (!eng.proconnect_client_id) continue
 
@@ -151,26 +330,28 @@ export async function GET() {
             preparers: new Set<string>(),
             forms: [],
           }
-          rollupByPc.set(eng.proconnect_client_id, fresh)
+          rollupByPc.set(eng.proconnect_client_id!, fresh)
           return fresh
         })()
 
       rollup.total += 1
 
-      // Resolve preparer profile_id → human name via the proconnect_profiles
-      // map (falls back to linked team_members.full_name). If the profileId
-      // hasn't been mapped yet, we just skip — never display a raw GUID.
+      const rawAssignee =
+        (eng.raw_json as Record<string, unknown> | null)?.assignee
+      const rawAssigneeProfileId =
+        rawAssignee && typeof rawAssignee === "object"
+          ? ((rawAssignee as Record<string, unknown>).profileId as
+              | string
+              | null
+              | undefined)
+          : null
       const preparerProfileId =
-        eng.assignee_profile_id ||
-        ((eng.raw_json as Record<string, unknown> | null)?.assignee as Record<string, unknown> | null)?.profileId as
-          | string
-          | null
-          | undefined ||
-        null
-      const preparerName = preparerProfileId ? preparerMap.get(preparerProfileId) || null : null
+        eng.assignee_profile_id || rawAssigneeProfileId || null
+      const preparerName = preparerProfileId
+        ? preparerMap.get(preparerProfileId) || null
+        : null
       if (preparerName) rollup.preparers.add(preparerName)
 
-      // Track latest activity
       if (eng.updated_at || eng.synced_at) {
         const timestamp = eng.updated_at || eng.synced_at
         if (
@@ -181,11 +362,10 @@ export async function GET() {
         }
       }
 
-      // Group by form type (1040, 1065, 1120, 1120S, 990)
-      // Extract from raw_json.type since form_type column may not be populated
       const rawJson = eng.raw_json as Record<string, unknown> | null
       const formFromJson = (rawJson?.type as string) || null
-      const formType = formFromJson || eng.form_type || eng.return_type || "Unknown"
+      const formType =
+        formFromJson || eng.form_type || eng.return_type || "Unknown"
       const existingForm = rollup.forms.find((f) => f.form === formType)
 
       if (existingForm) {
@@ -214,8 +394,9 @@ export async function GET() {
       const m = c.proconnect_client_id
         ? mappingByPc.get(c.proconnect_client_id)
         : undefined
-      const rollup =
-        c.proconnect_client_id ? rollupByPc.get(c.proconnect_client_id) : undefined
+      const rollup = c.proconnect_client_id
+        ? rollupByPc.get(c.proconnect_client_id)
+        : undefined
       return {
         ...c,
         return_count: rollup?.total ?? 0,
@@ -236,42 +417,43 @@ export async function GET() {
       }
     })
 
-    // Aggregate stats
-    const byState: Record<string, number> = {}
-    for (const c of enriched) {
-      const key = c.client_state || "UNKNOWN"
-      byState[key] = (byState[key] || 0) + 1
-    }
-
-    const subEntities = enriched.filter(
-      (c) =>
-        !!c.proconnect_entity_id &&
-        !!c.top_level_entity_id &&
-        c.proconnect_entity_id !== c.top_level_entity_id,
-    ).length
-
     const stats = {
-      totalClients: enriched.length,
-      persons: enriched.filter((c) => c.client_type === "PERSON").length,
-      organizations: enriched.filter((c) => c.client_type === "ORGANIZATION")
-        .length,
-      withReturns: enriched.filter((c) => c.return_count > 0).length,
-      withoutReturns: enriched.filter((c) => c.return_count === 0).length,
-      totalReturns: enriched.reduce((s, c) => s + c.return_count, 0),
-      totalAmended: enriched.reduce((s, c) => s + c.amended_count, 0),
-      linkedToKarbon: enriched.filter((c) => !!c.mapping?.karbon_client_id)
-        .length,
-      linkedToIgnition: enriched.filter(
-        (c) => !!c.mapping?.ignition_client_id,
-      ).length,
-      unmappedToHub: enriched.filter((c) => !c.mapping).length,
+      totalClients,
+      persons: personsRes.count ?? 0,
+      organizations: orgsRes.count ?? 0,
+      withReturns: withReturnsCount,
+      withoutReturns: totalClients - withReturnsCount,
+      totalReturns: totalReturnsRes.count ?? 0,
+      totalAmended: 0, // amended detection requires status parsing; not currently exposed
+      linkedToKarbon: linkedToKarbonRes.count ?? 0,
+      linkedToIgnition: linkedToIgnitionRes.count ?? 0,
+      unmappedToHub,
       byState,
-      subEntities,
+      subEntities: subEntitiesCount,
     }
 
-    return NextResponse.json({ clients: enriched, stats })
+    return NextResponse.json({
+      clients: enriched,
+      stats,
+      filters: {
+        withReturns: withReturnsFilter,
+      },
+      pagination: {
+        page,
+        pageSize: TABLE_PAGE_SIZE,
+        totalPages,
+        totalRows: filteredTotal,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    })
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
+    const msg =
+      e instanceof Error
+        ? e.message
+        : e && typeof e === "object" && "message" in e
+          ? String((e as { message: unknown }).message)
+          : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })
   }
 }

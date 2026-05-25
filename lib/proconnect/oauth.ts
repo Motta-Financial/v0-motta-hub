@@ -31,6 +31,8 @@ interface TokenResponse {
   token_type: string
   expires_in: number
   x_refresh_token_expires_in?: number
+  /** Space-delimited list of *granted* scopes per OAuth 2.0 RFC 6749 §5.1. */
+  scope?: string
 }
 
 interface StoredToken {
@@ -102,7 +104,10 @@ async function storeTokens(tokens: TokenResponse): Promise<void> {
     refresh_token: tokens.refresh_token,
     token_type: tokens.token_type,
     expires_at: expiresAt,
-    scope: "com.intuit.proconnect.taxreturns",
+    // Persist the *granted* scope so /tax/settings can detect when
+    // `com.intuit.proconnect.taxreturns` was not actually allow-listed
+    // for this app (Phase 1 §2.1) and surface a re-consent CTA.
+    scope: tokens.scope ?? "com.intuit.proconnect.taxreturns",
     realm_id: PROCONNECT_REALM_ID,
     updated_at: now,
   }
@@ -122,6 +127,7 @@ async function storeTokens(tokens: TokenResponse): Promise<void> {
           refresh_token: tokens.refresh_token,
           token_type: tokens.token_type,
           expires_at: expiresAt,
+          scope: tokens.scope ?? "com.intuit.proconnect.taxreturns",
           updated_at: now,
         })
         .eq("is_singleton", true)
