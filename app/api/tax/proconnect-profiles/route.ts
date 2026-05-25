@@ -117,21 +117,21 @@ export async function GET() {
     }
     const candidates = [...merged.values()].sort((a, b) => b.score - a.score)
 
-    // Auto-link suggestion: prefer the standard string-based picker
-    // (which only fires above 0.85). If that fails AND there's a Karbon
-    // top-1 with very strong dominance (>= 50% confidence and 2x its
-    // runner-up), promote it as the suggestion — but the bulk
-    // auto-linker will still skip it because the score is < 0.85.
-    let autolink = pickAutolinkCandidate(candidates)
-    if (!autolink && karbonForProfile.length > 0) {
-      const top = karbonForProfile[0]
-      const runnerUp = karbonForProfile[1]
-      const dominant =
-        top.matchCount >= 3 &&
-        top.matchCount / top.totalCooccurrences >= 0.5 &&
-        (!runnerUp || top.matchCount >= 2 * runnerUp.matchCount)
-      if (dominant) autolink = top
-    }
+    // Auto-link suggestion: ONLY the standard string-based picker
+    // (>= 0.85 confidence on full_name / email). We deliberately do NOT
+    // promote Karbon co-occurrence to auto-link, even when dominant.
+    //
+    // Why: ProConnect's `assigneeProfileId` is the *primary* assignee of
+    // record, while Karbon work-item assignees are typically the
+    // prep-handler. The two roles don't correlate cleanly — e.g.
+    // profile 9130356180193166 has Andrew Gianares as its top Karbon
+    // co-occurrence (35 matches), but ProConnect's own
+    // "time spent in return" report shows Andrew worked on 49 returns
+    // total in 2025 vs 159 for that GUID. Auto-linking by co-occurrence
+    // would silently mis-attribute partner-of-record across ~300 returns.
+    // Karbon hints stay visible in `candidates` as advisory ranked
+    // suggestions; the operator confirms each mapping at /tax/settings.
+    const autolink = pickAutolinkCandidate(candidates)
 
     return {
       profileId: p.proconnect_profile_id,
