@@ -39,6 +39,7 @@ import {
 import { KpiCard, FormBadge, EfileBadge, fmtMoney, fmtNumber } from "@/components/tax/tax-shared"
 import { cn } from "@/lib/utils"
 import { SensitiveValue } from "@/components/security/sensitive-value"
+import { ClientRelationshipsCard } from "@/components/tax/client-relationships-card"
 import {
   Table,
   TableBody,
@@ -461,6 +462,9 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
           )}
         </CardContent>
       </Card>
+
+      {/* Relationship graph (renders only when there's data) */}
+      <ClientRelationshipsCard clientId={clientId} />
 
       {/* Returns by Year - Expandable */}
       <Card>

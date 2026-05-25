@@ -32,6 +32,7 @@ import {
   deleteClient,
 } from "@/lib/proconnect/sync"
 import { exportReturnData, flattenSeriesMap } from "@/lib/proconnect/data"
+import { scanRelationships } from "@/lib/tax/relationships/scanner"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -238,6 +239,20 @@ async function processTaxReturnEvent(
         await sb.from("proconnect_return_field_cells").insert(rows.slice(i, i + 1000))
       }
     }
+    // Re-scan relationships against the freshly imported snapshot so
+    // newly visible K-1 issuers / Schedule-E payers / business owners
+    // surface in the review queue without waiting for the next cron.
+    // We scope to this engagement only — full sweeps stay on the
+    // nightly cadence so a chatty webhook day can't DOS the scorer.
+    try {
+      await scanRelationships(sb, { kind: "engagement", engagementId: entity.id })
+    } catch (relErr) {
+      console.warn(
+        "[ProConnect Webhook] relationship rescan failed (non-fatal):",
+        relErr instanceof Error ? relErr.message : relErr,
+      )
+    }
+
     return { success: true }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) }
