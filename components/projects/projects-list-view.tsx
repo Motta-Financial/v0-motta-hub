@@ -342,9 +342,14 @@ function ProjectCard({ project }: { project: ProjectRow }) {
       <Card className="h-full transition hover:border-primary/40 hover:shadow-sm">
         <CardContent className="flex h-full flex-col gap-3 p-4">
           <div className="flex items-start justify-between gap-2">
-            <div className="flex flex-col gap-1">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {project.client_name}
+            <div className="flex min-w-0 flex-col gap-1">
+              <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <span className="truncate">{project.client_name}</span>
+                {project.client_count > 1 && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+                    <Users className="h-3 w-3" aria-hidden />+{project.client_count - 1}
+                  </span>
+                )}
               </p>
               <h3 className="text-base font-semibold leading-tight text-pretty group-hover:text-primary">
                 {project.name}
@@ -357,9 +362,20 @@ function ProjectCard({ project }: { project: ProjectRow }) {
             <Badge variant="outline" className={statusBadgeClasses(project.status)}>
               {project.status}
             </Badge>
-            <Badge variant="outline" className="border-muted text-muted-foreground">
-              {kindLabel(project.kind)}
-            </Badge>
+            {project.project_type_name && (
+              <Badge variant="outline" className="border-muted text-muted-foreground">
+                {project.project_type_name}
+              </Badge>
+            )}
+            {project.project_template_title && (
+              <Badge
+                variant="outline"
+                className="max-w-[180px] truncate border-blue-200 bg-blue-50 text-blue-700"
+                title={project.project_template_title}
+              >
+                {project.project_template_title}
+              </Badge>
+            )}
           </div>
 
           <div className="mt-auto flex items-center justify-between border-t pt-3 text-xs text-muted-foreground">
@@ -380,14 +396,29 @@ function ProjectCard({ project }: { project: ProjectRow }) {
 }
 
 // ── Create dialog ────────────────────────────────────────────────────────────
+type WorkTypeRow = {
+  id: string
+  karbon_work_type_key: string
+  name: string
+  is_recurring: boolean | null
+}
+type WorkTemplateRow = {
+  karbon_work_template_key: string
+  karbon_work_type_key: string | null
+  title: string
+  estimated_budget_minutes: number | null
+}
+
 function CreateProjectDialog({
   open,
   setOpen,
   onCreated,
+  prefill,
 }: {
   open: boolean
   setOpen: (v: boolean) => void
   onCreated: () => void
+  prefill?: { typeKey?: string | null; templateKey?: string | null }
 }) {
   const [clientQuery, setClientQuery] = useState("")
   const [clientResults, setClientResults] = useState<
@@ -396,12 +427,59 @@ function CreateProjectDialog({
   const [searching, setSearching] = useState(false)
   const [selected, setSelected] = useState<{ id: string; name: string; kind: "organization" | "contact" } | null>(null)
   const [name, setName] = useState("")
-  const [kind, setKind] = useState<string>("monthly_bookkeeping")
-  const [templatePattern, setTemplatePattern] = useState("Monthly Bookkeeping")
-  const [typePattern, setTypePattern] = useState("Bookkeeping")
+  const [typeKey, setTypeKey] = useState<string>("")
+  const [templateKey, setTemplateKey] = useState<string>("")
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
+  // ── Karbon types/templates load (pulled from project_types_published view) ──
+  const [types, setTypes] = useState<WorkTypeRow[]>([])
+  const [templates, setTemplates] = useState<WorkTemplateRow[]>([])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [tRes, tplRes] = await Promise.all([
+          fetch("/api/project-types?limit=200", { cache: "no-store" }),
+          fetch("/api/project-templates?limit=500", { cache: "no-store" }),
+        ])
+        const t = await tRes.json()
+        const tpl = await tplRes.json()
+        if (cancelled) return
+        setTypes(t?.types || [])
+        setTemplates(tpl?.templates || [])
+      } catch (e) {
+        console.error("[v0] load types/templates failed:", e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  // Apply prefill once data loads.
+  useEffect(() => {
+    if (!open) return
+    if (prefill?.typeKey && !typeKey) setTypeKey(prefill.typeKey)
+    if (prefill?.templateKey && !templateKey) setTemplateKey(prefill.templateKey)
+  }, [open, prefill, typeKey, templateKey])
+
+  // Reset on close.
+  useEffect(() => {
+    if (!open) {
+      setSelected(null)
+      setName("")
+      setTypeKey("")
+      setTemplateKey("")
+      setClientQuery("")
+      setClientResults([])
+      setErr(null)
+    }
+  }, [open])
+
+  // Client search.
   useEffect(() => {
     let cancelled = false
     const q = clientQuery.trim()
@@ -417,8 +495,8 @@ function CreateProjectDialog({
         if (cancelled) return
         const items: Array<{ id: string; name: string; kind: "organization" | "contact" }> = []
         for (const row of json?.clients || []) {
-          const kind = String(row.type || "").toLowerCase() === "organization" ? "organization" : "contact"
-          items.push({ id: row.id, name: row.name || "Untitled", kind })
+          const k = String(row.type || "").toLowerCase() === "organization" ? "organization" : "contact"
+          items.push({ id: row.id, name: row.name || "Untitled", kind: k })
         }
         setClientResults(items.slice(0, 12))
       } catch {
@@ -433,52 +511,45 @@ function CreateProjectDialog({
     }
   }, [clientQuery])
 
-  // When the user picks a client + a kind, suggest a name.
-  useEffect(() => {
-    if (selected && !name) {
-      const label =
-        kind === "monthly_bookkeeping"
-          ? "Monthly Bookkeeping"
-          : kind === "quarterly_bookkeeping"
-          ? "Quarterly Bookkeeping"
-          : kind === "tax_return"
-          ? "Tax Return"
-          : kind === "payroll"
-          ? "Payroll"
-          : kind === "advisory"
-          ? "Advisory"
-          : kind === "onboarding"
-          ? "Onboarding"
-          : "Project"
-      setName(`${selected.name} — ${label}`)
-    }
-  }, [selected, kind]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Suggest a project name when client + type/template are known.
+  const selectedType = useMemo(() => types.find((t) => t.karbon_work_type_key === typeKey) || null, [types, typeKey])
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.karbon_work_template_key === templateKey) || null,
+    [templates, templateKey],
+  )
 
-  // Sensible pattern defaults per kind
+  // Filter templates to the chosen type (when set).
+  const filteredTemplates = useMemo(() => {
+    const arr = typeKey ? templates.filter((t) => t.karbon_work_type_key === typeKey) : templates
+    return arr.slice().sort((a, b) => a.title.localeCompare(b.title))
+  }, [templates, typeKey])
+
+  // When a template is picked, auto-set its type if not already set.
   useEffect(() => {
-    if (kind === "monthly_bookkeeping") {
-      setTemplatePattern("Monthly Bookkeeping")
-      setTypePattern("Bookkeeping")
-    } else if (kind === "quarterly_bookkeeping") {
-      setTemplatePattern("Quarterly Bookkeeping")
-      setTypePattern("Bookkeeping")
-    } else if (kind === "payroll") {
-      setTemplatePattern("")
-      setTypePattern("Payroll")
-    } else if (kind === "tax_return") {
-      setTemplatePattern("")
-      setTypePattern("Tax")
-    } else if (kind === "onboarding") {
-      setTemplatePattern("Onboarding")
-      setTypePattern("Onboarding")
-    } else if (kind === "advisory") {
-      setTemplatePattern("")
-      setTypePattern("Advisory")
-    } else {
-      setTemplatePattern("")
-      setTypePattern("")
+    if (selectedTemplate && !typeKey && selectedTemplate.karbon_work_type_key) {
+      setTypeKey(selectedTemplate.karbon_work_type_key)
     }
-  }, [kind])
+  }, [selectedTemplate, typeKey])
+
+  // Auto-suggest a project name.
+  useEffect(() => {
+    if (!selected || name) return
+    const label = selectedTemplate?.title || selectedType?.name || "Project"
+    setName(`${selected.name} — ${label}`)
+  }, [selected, selectedTemplate, selectedType]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Map Karbon type → legacy `kind` enum (for backwards compatibility).
+  function kindForType(typeName: string | undefined): string {
+    const n = (typeName || "").toLowerCase()
+    if (n.includes("monthly") && n.includes("bookkeeping")) return "monthly_bookkeeping"
+    if (n.includes("quarterly") && n.includes("bookkeeping")) return "quarterly_bookkeeping"
+    if (n.includes("bookkeeping")) return "monthly_bookkeeping"
+    if (n.includes("tax")) return "tax_return"
+    if (n.includes("payroll")) return "payroll"
+    if (n.includes("advisory") || n.includes("cas")) return "advisory"
+    if (n.includes("onboarding")) return "onboarding"
+    return "custom"
+  }
 
   async function submit() {
     if (!selected) {
@@ -489,15 +560,23 @@ function CreateProjectDialog({
       setErr("Project name is required.")
       return
     }
+    if (!typeKey && !templateKey) {
+      setErr("Pick a project type or template.")
+      return
+    }
     setSubmitting(true)
     setErr(null)
     try {
       const payload: Record<string, any> = {
         name: name.trim(),
-        kind,
+        kind: kindForType(selectedTemplate?.title || selectedType?.name),
         status: "active",
-        work_template_pattern: templatePattern.trim() || null,
-        work_type_pattern: typePattern.trim() || null,
+        project_type_key: typeKey || selectedTemplate?.karbon_work_type_key || null,
+        project_template_key: templateKey || null,
+        // Keep the legacy substring patterns populated so the existing
+        // `projectMatches` work-item filter keeps attaching items.
+        work_type_pattern: selectedType?.name || null,
+        work_template_pattern: selectedTemplate?.title || null,
       }
       if (selected.kind === "organization") payload.organization_id = selected.id
       else payload.contact_id = selected.id
@@ -510,10 +589,6 @@ function CreateProjectDialog({
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error || "Failed to create project")
       setOpen(false)
-      setSelected(null)
-      setName("")
-      setClientQuery("")
-      setKind("monthly_bookkeeping")
       onCreated()
     } catch (e: any) {
       setErr(e?.message || "Failed to create project")
@@ -534,8 +609,9 @@ function CreateProjectDialog({
         <DialogHeader>
           <DialogTitle>Create project</DialogTitle>
           <DialogDescription>
-            A project auto-attaches any Karbon work items for the chosen client whose template name or work type
-            matches the patterns below — newly synced items appear automatically.
+            Pick a Project Type and/or Template — these come straight from your firm&apos;s
+            published Karbon library, so newly synced work items in that template auto-attach
+            to this project.
           </DialogDescription>
         </DialogHeader>
 
@@ -579,53 +655,56 @@ function CreateProjectDialog({
                 ) : null}
               </>
             )}
+            <p className="text-xs text-muted-foreground">
+              You can link additional clients (spouse, related entities, etc.) after the
+              project is created.
+            </p>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="kind">Kind</Label>
-              <Select value={kind} onValueChange={setKind}>
-                <SelectTrigger id="kind">
-                  <SelectValue />
+              <Label htmlFor="type-key">Project type</Label>
+              <Select value={typeKey || "__none"} onValueChange={(v) => setTypeKey(v === "__none" ? "" : v)}>
+                <SelectTrigger id="type-key">
+                  <SelectValue placeholder="Pick a type…" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="monthly_bookkeeping">Monthly Bookkeeping</SelectItem>
-                  <SelectItem value="quarterly_bookkeeping">Quarterly Bookkeeping</SelectItem>
-                  <SelectItem value="tax_return">Tax Return</SelectItem>
-                  <SelectItem value="payroll">Payroll</SelectItem>
-                  <SelectItem value="advisory">Advisory</SelectItem>
-                  <SelectItem value="onboarding">Onboarding</SelectItem>
-                  <SelectItem value="custom">Custom</SelectItem>
+                  <SelectItem value="__none">— None —</SelectItem>
+                  {types
+                    .slice()
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((t) => (
+                      <SelectItem key={t.karbon_work_type_key} value={t.karbon_work_type_key}>
+                        {t.name}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="name">Name</Label>
-              <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" />
+              <Label htmlFor="tpl-key">Template</Label>
+              <Select
+                value={templateKey || "__none"}
+                onValueChange={(v) => setTemplateKey(v === "__none" ? "" : v)}
+              >
+                <SelectTrigger id="tpl-key">
+                  <SelectValue placeholder="Optional template…" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none">— No template —</SelectItem>
+                  {filteredTemplates.map((t) => (
+                    <SelectItem key={t.karbon_work_template_key} value={t.karbon_work_template_key}>
+                      {t.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="tpl-pattern">Template pattern</Label>
-              <Input
-                id="tpl-pattern"
-                value={templatePattern}
-                onChange={(e) => setTemplatePattern(e.target.value)}
-                placeholder="e.g. Monthly Bookkeeping"
-              />
-              <p className="text-xs text-muted-foreground">Case-insensitive substring match on work template name.</p>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="type-pattern">Work-type pattern</Label>
-              <Input
-                id="type-pattern"
-                value={typePattern}
-                onChange={(e) => setTypePattern(e.target.value)}
-                placeholder="e.g. Bookkeeping"
-              />
-              <p className="text-xs text-muted-foreground">Case-insensitive substring match on work type.</p>
-            </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="name">Project name</Label>
+            <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" />
           </div>
 
           {err && <p className="text-sm text-destructive">{err}</p>}

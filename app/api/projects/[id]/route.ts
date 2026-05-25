@@ -69,7 +69,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
     const linkedOrgIds = (pcRows || []).map((r: any) => r.organization_id).filter(Boolean) as string[]
     const linkedContactIds = (pcRows || []).map((r: any) => r.contact_id).filter(Boolean) as string[]
-    const allLinkedIds = [...linkedOrgIds, ...linkedContactIds]
 
     // Resolve project type / template (text keys → human metadata).
     const [typeRes, tmplRes] = await Promise.all([
@@ -174,7 +173,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
     // Dedupe items that match more than one linked client (e.g. a meeting
     // linked to both an org and its officer contact).
-    function dedupe<T extends { id?: any; zoom_meeting_id?: any }>(rows: T[]): T[] {
+    function dedupe<T extends Record<string, any>>(rows: T[]): T[] {
       const seen = new Set<any>()
       const out: T[] = []
       for (const r of rows) {

@@ -210,10 +210,10 @@ export default function WelcomePage() {
         </div>
         <ul className="mx-auto mt-12 grid max-w-3xl gap-3 text-left sm:grid-cols-2">
           {[
-            "Drafted tax returns in minutes, not days",
+            "ProConnect-powered tax returns",
             "Pre-meeting briefs for every engagement",
             "Always-on document organization",
-            "Calendar, Zoom, and email kept in sync",
+            "Client communications kept in sync",
           ].map((point) => (
             <li key={point} className="flex items-start gap-3">
               <span
@@ -250,29 +250,32 @@ export default function WelcomePage() {
                 className="text-pretty leading-relaxed"
                 style={{ color: "rgba(244,239,232,0.78)" }}
               >
-                ALFRED is the connective tissue between ProConnect, Karbon,
-                Calendly, Zoom, and the rest of the firm&apos;s stack. The
-                team sees one calm dashboard. ALFRED handles everything else.
+                ALFRED Ai is the integrator and optimizer behind every Motta
+                engagement &mdash; a virtual butler that centralizes client
+                information, projects, and notes, surfaces live dashboards
+                across the platforms we already use (including ProConnect for
+                tax), and brings the latest Ai models into one assistant
+                grounded in client context and the latest communications.
               </p>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               {[
                 {
                   title: "Tax returns, drafted in minutes",
-                  body: "Phase 1 import + computed lines + carryovers, ready for review.",
+                  body: "ProConnect-powered Phase 1 import, computed lines, and carryovers ready for review.",
                   highlight: true,
                 },
                 {
                   title: "Always meeting-ready",
-                  body: "Pre-call briefs assembled from Karbon, ProConnect, and prior chats.",
+                  body: "Pre-call briefs assembled from every system the firm uses, anchored in client context.",
                 },
                 {
                   title: "Engagements on track",
-                  body: "ALFRED watches deadlines, work statuses, and waiting items.",
+                  body: "ALFRED watches deadlines, work statuses, and waiting items in real time.",
                 },
                 {
-                  title: "Tag, every time",
-                  body: "Calendly + Zoom auto-tagged to clients, work items, and services.",
+                  title: "Tagged, every time",
+                  body: "Calls and meetings auto-tagged to clients, projects, and services without manual filing.",
                 },
               ].map((card) => (
                 <div
