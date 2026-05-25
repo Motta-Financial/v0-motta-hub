@@ -92,6 +92,11 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get("search")?.trim().toLowerCase() || ""
     const typeFilter = searchParams.get("type") || "all"
     const stateFilter = searchParams.get("state") || "all"
+    // Default view: only clients with at least one tax return on file.
+    // Anything else is a ProConnect record we don't actually serve as a
+    // tax client. Pass `withReturns=false` to include the full roster.
+    const withReturnsFilter =
+      (searchParams.get("withReturns") ?? "true").toLowerCase() !== "false"
 
     // ── Pure count queries (head: true = no data, just count) ────────
     // These run in parallel and each returns only a count, not rows.
@@ -182,6 +187,15 @@ export async function GET(request: NextRequest) {
         .filter((id): id is string => Boolean(id)),
     ).size
 
+    // Cached for the table query when `withReturnsFilter` is on.
+    const clientIdsWithReturns = Array.from(
+      new Set(
+        distinctClientsForReturns
+          .map((d) => d.proconnect_client_id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    )
+
     const byState: Record<string, number> = {}
     for (const row of stateRows) {
       const key = row.client_state || "UNKNOWN"
@@ -209,6 +223,18 @@ export async function GET(request: NextRequest) {
     }
     if (stateFilter !== "all") {
       query = query.eq("client_state", stateFilter)
+    }
+    if (withReturnsFilter) {
+      // Constrain the roster to ProConnect clients we actually have at
+      // least one engagement for. Without this filter the page also
+      // surfaces ProConnect records that aren't really our tax clients.
+      if (clientIdsWithReturns.length === 0) {
+        // No engagements at all — short-circuit so we don't pass an
+        // empty `in()` list (PostgREST treats `in.()` as a syntax err).
+        query = query.eq("proconnect_client_id", "__none__")
+      } else {
+        query = query.in("proconnect_client_id", clientIdsWithReturns)
+      }
     }
     if (search) {
       query = query.or(
@@ -409,6 +435,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       clients: enriched,
       stats,
+      filters: {
+        withReturns: withReturnsFilter,
+      },
       pagination: {
         page,
         pageSize: TABLE_PAGE_SIZE,

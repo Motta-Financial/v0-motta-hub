@@ -106,6 +106,9 @@ type ApiResponse = {
     hasNext: boolean
     hasPrev: boolean
   }
+  filters?: {
+    withReturns: boolean
+  }
 }
 
 const fetcher = (u: string) =>
@@ -120,6 +123,10 @@ export function TaxClientsClient() {
   const [debouncedSearch, setDebouncedSearch] = useState("")
   const [typeFilter, setTypeFilter] = useState<"all" | "PERSON" | "ORGANIZATION">("all")
   const [stateFilter, setStateFilter] = useState<string>("all")
+  // Default: only show ProConnect records that are actual tax clients
+  // (i.e. have at least one engagement on file). Operators can flip
+  // this on if they need to see the full ProConnect roster.
+  const [withReturnsOnly, setWithReturnsOnly] = useState(true)
 
   // Debounce search input
   const handleSearchChange = (value: string) => {
@@ -140,8 +147,12 @@ export function TaxClientsClient() {
     if (debouncedSearch) params.set("search", debouncedSearch)
     if (typeFilter !== "all") params.set("type", typeFilter)
     if (stateFilter !== "all") params.set("state", stateFilter)
+    // Only set the param when overriding the default (true). The API
+    // defaults to true, so omitting it on the default path keeps URLs
+    // shorter without changing behavior.
+    if (!withReturnsOnly) params.set("withReturns", "false")
     return `/api/tax/clients?${params.toString()}`
-  }, [page, debouncedSearch, typeFilter, stateFilter])
+  }, [page, debouncedSearch, typeFilter, stateFilter, withReturnsOnly])
 
   const { data, isLoading, error } = useSWR(apiUrl, fetcher)
 
@@ -153,6 +164,11 @@ export function TaxClientsClient() {
 
   const handleStateFilterChange = (s: string) => {
     setStateFilter(s)
+    setPage(1)
+  }
+
+  const handleWithReturnsChange = (next: boolean) => {
+    setWithReturnsOnly(next)
     setPage(1)
   }
 
@@ -174,9 +190,9 @@ export function TaxClientsClient() {
           ProConnect Clients
         </h1>
         <p className="text-sm text-muted-foreground">
-          The full ProConnect client roster, enriched with the returns we have
-          on file and cross-system links to the Motta Hub master record
-          (Karbon, Ignition).
+          {withReturnsOnly
+            ? "Showing ProConnect records with at least one tax return on file. These are our active tax clients."
+            : "Showing the full ProConnect roster, including records that are not currently tax clients."}
         </p>
       </header>
 
@@ -235,6 +251,39 @@ export function TaxClientsClient() {
         <CardContent className="p-3 flex flex-wrap items-center gap-2">
           <FilterIcon className="h-4 w-4 text-stone-500 ml-1" />
           <div className="flex items-center gap-1">
+            {(
+              [
+                { key: true, label: "Tax clients" },
+                { key: false, label: "All ProConnect records" },
+              ] as const
+            ).map((opt) => (
+              <Button
+                key={String(opt.key)}
+                size="sm"
+                variant={withReturnsOnly === opt.key ? "default" : "outline"}
+                onClick={() => handleWithReturnsChange(opt.key)}
+                className="h-7 px-2 text-xs"
+                title={
+                  opt.key
+                    ? "Only ProConnect records with at least one return on file"
+                    : "Include ProConnect records without any returns"
+                }
+              >
+                {opt.label}
+                {data && opt.key ? (
+                  <span className="ml-1 text-[10px] text-muted-foreground">
+                    {fmtNumber(data.stats.withReturns)}
+                  </span>
+                ) : null}
+                {data && !opt.key ? (
+                  <span className="ml-1 text-[10px] text-muted-foreground">
+                    {fmtNumber(data.stats.totalClients)}
+                  </span>
+                ) : null}
+              </Button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1 border-l pl-2 ml-1">
             {(["all", "PERSON", "ORGANIZATION"] as const).map((t) => (
               <Button
                 key={t}
