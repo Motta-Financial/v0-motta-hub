@@ -7,10 +7,15 @@
  * with a live work-item count. Filtering is client-side on the already-fetched
  * collection — projects total ~50-100 rows in practice, so that's fast and
  * keeps the filter UI snappy.
+ *
+ * Project Type / Project Template are sourced from the Karbon
+ * `work_types` / `work_templates` tables — we treat Karbon as the source of
+ * truth so any new work_type the firm publishes shows up here automatically.
  */
 
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -22,9 +27,11 @@ import {
   CalendarDays,
   ClipboardList,
   FolderKanban,
+  Library,
   Loader2,
   Search,
   Sparkles,
+  Users,
 } from "lucide-react"
 import {
   Dialog,
@@ -45,6 +52,10 @@ type ProjectRow = {
   description: string | null
   organization_id: string | null
   contact_id: string | null
+  project_type_key: string | null
+  project_template_key: string | null
+  project_type_name: string | null
+  project_template_title: string | null
   work_type_pattern: string | null
   work_template_pattern: string | null
   start_date: string | null
@@ -52,6 +63,15 @@ type ProjectRow = {
   client_name: string
   client_kind: "organization" | "contact"
   client_id: string | null
+  client_count: number
+  clients: Array<{
+    id: string
+    kind: "organization" | "contact"
+    client_id: string
+    name: string
+    role: string
+    is_primary: boolean
+  }>
   karbon_url: string | null
   work_item_count: number
   open_work_item_count: number
@@ -94,13 +114,28 @@ function statusBadgeClasses(status: string): string {
 }
 
 export function ProjectsListView() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [projects, setProjects] = useState<ProjectRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [kind, setKind] = useState<string>("all")
+  const [typeKey, setTypeKey] = useState<string>("all")
   const [status, setStatus] = useState<string>("active")
   const [search, setSearch] = useState<string>("")
   const [createOpen, setCreateOpen] = useState(false)
+  const [prefill, setPrefill] = useState<{ typeKey?: string | null; templateKey?: string | null }>({})
+
+  // Open the Create dialog when ?new=1 is in the URL (e.g. coming from the
+  // Project Templates page after picking a template).
+  useEffect(() => {
+    if (searchParams.get("new") === "1") {
+      setPrefill({
+        typeKey: searchParams.get("typeKey"),
+        templateKey: searchParams.get("templateKey"),
+      })
+      setCreateOpen(true)
+    }
+  }, [searchParams])
 
   async function load() {
     setLoading(true)
@@ -127,38 +162,45 @@ export function ProjectsListView() {
 
   const filtered = useMemo(() => {
     let arr = projects
-    if (kind !== "all") arr = arr.filter((p) => p.kind === kind)
+    if (typeKey !== "all") {
+      arr = arr.filter((p) => p.project_type_key === typeKey)
+    }
     const q = search.trim().toLowerCase()
     if (q) {
       arr = arr.filter(
         (p) =>
           p.name.toLowerCase().includes(q) ||
           (p.client_name || "").toLowerCase().includes(q) ||
-          (p.description || "").toLowerCase().includes(q),
+          (p.description || "").toLowerCase().includes(q) ||
+          (p.project_type_name || "").toLowerCase().includes(q) ||
+          (p.project_template_title || "").toLowerCase().includes(q),
       )
     }
     return arr
-  }, [projects, kind, search])
+  }, [projects, typeKey, search])
 
   const groups = useMemo(() => {
     const m = new Map<string, ProjectRow[]>()
     for (const p of filtered) {
-      const key = p.kind
+      const key = p.project_type_name || kindLabel(p.kind)
       const arr = m.get(key) || []
       arr.push(p)
       m.set(key, arr)
     }
-    // Sort groups by Monthly Bookkeeping first, then alphabetical
-    return Array.from(m.entries()).sort(([a], [b]) => {
-      if (a === "monthly_bookkeeping") return -1
-      if (b === "monthly_bookkeeping") return 1
-      return kindLabel(a).localeCompare(kindLabel(b))
-    })
+    return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b))
   }, [filtered])
 
-  const kindCounts = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const p of projects) m.set(p.kind, (m.get(p.kind) || 0) + 1)
+  const typeCounts = useMemo(() => {
+    const m = new Map<string, { count: number; name: string }>()
+    for (const p of projects) {
+      if (!p.project_type_key) continue
+      const cur = m.get(p.project_type_key) || {
+        count: 0,
+        name: p.project_type_name || p.project_type_key,
+      }
+      cur.count += 1
+      m.set(p.project_type_key, cur)
+    }
     return m
   }, [projects])
 
@@ -172,11 +214,32 @@ export function ProjectsListView() {
           </div>
           <h1 className="text-balance text-2xl font-semibold tracking-tight">Projects</h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Each project groups recurring Karbon work items (e.g. 12 monthly bookkeeping items per year) into one
-            engagement so you can see status, scope, systems, and related Ignition services at a glance.
+            Each project groups Karbon work items into one engagement, sourced from the
+            firm&apos;s published <strong>Project Types</strong> and <strong>Templates</strong>.
+            New work items appear automatically as they sync.
           </p>
         </div>
-        <CreateProjectDialog open={createOpen} setOpen={setCreateOpen} onCreated={load} />
+        <div className="flex items-center gap-2">
+          <Button variant="outline" asChild>
+            <Link href="/projects/templates">
+              <Library className="mr-2 h-4 w-4" aria-hidden />
+              Browse templates
+            </Link>
+          </Button>
+          <CreateProjectDialog
+            open={createOpen}
+            setOpen={(v) => {
+              setCreateOpen(v)
+              if (!v) {
+                setPrefill({})
+                // Strip the new=1 query when the dialog closes.
+                if (searchParams.get("new")) router.replace("/projects")
+              }
+            }}
+            onCreated={load}
+            prefill={prefill}
+          />
+        </div>
       </header>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -190,17 +253,17 @@ export function ProjectsListView() {
             aria-label="Search projects"
           />
         </div>
-        <Select value={kind} onValueChange={setKind}>
-          <SelectTrigger className="w-[220px]" aria-label="Filter by kind">
+        <Select value={typeKey} onValueChange={setTypeKey}>
+          <SelectTrigger className="w-[260px]" aria-label="Filter by project type">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All kinds ({projects.length})</SelectItem>
-            {Array.from(kindCounts.entries())
-              .sort(([a], [b]) => kindLabel(a).localeCompare(kindLabel(b)))
-              .map(([k, n]) => (
-                <SelectItem key={k} value={k}>
-                  {kindLabel(k)} ({n})
+            <SelectItem value="all">All project types ({projects.length})</SelectItem>
+            {Array.from(typeCounts.entries())
+              .sort(([, a], [, b]) => a.name.localeCompare(b.name))
+              .map(([key, info]) => (
+                <SelectItem key={key} value={key}>
+                  {info.name} ({info.count})
                 </SelectItem>
               ))}
           </SelectContent>
@@ -246,13 +309,15 @@ export function ProjectsListView() {
         </Card>
       ) : (
         <div className="flex flex-col gap-8">
-          {groups.map(([groupKind, rows]) => (
-            <section key={groupKind} className="flex flex-col gap-3">
+          {groups.map(([groupName, rows]) => (
+            <section key={groupName} className="flex flex-col gap-3">
               <div className="flex items-baseline justify-between">
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                  {kindLabel(groupKind)}
+                  {groupName}
                 </h2>
-                <span className="text-xs text-muted-foreground">{rows.length} project{rows.length === 1 ? "" : "s"}</span>
+                <span className="text-xs text-muted-foreground">
+                  {rows.length} project{rows.length === 1 ? "" : "s"}
+                </span>
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {rows.map((p) => (

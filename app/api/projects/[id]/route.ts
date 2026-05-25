@@ -53,31 +53,54 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     if (pErr) throw pErr
     if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 })
 
-    const isOrg = !!project.organization_id
-    const entityId = project.organization_id || project.contact_id
-    const idCol = isOrg ? "organization_id" : "contact_id"
+    // Pull all linked clients (multi-client model) up front. The previous
+    // single-client API stays backwards-compatible by returning the row
+    // marked is_primary as `client`.
+    const { data: pcRows, error: pcErr } = await supabase
+      .from("project_clients")
+      .select(
+        `id, organization_id, contact_id, role, is_primary, ownership_pct, notes,
+         organization:organizations (id, name, full_name, karbon_organization_key, karbon_url, primary_email, phone, industry, entity_type, status),
+         contact:contacts (id, full_name, primary_email, phone_primary, karbon_contact_key, karbon_url, entity_type, status)`,
+      )
+      .eq("project_id", id)
+      .order("is_primary", { ascending: false })
+    if (pcErr) throw pcErr
 
-    // Fan out related lookups in parallel.
-    const [orgRes, contactRes, systemsRes, workItemsRes, proposalsRes, intakesRes, debriefsRes, meetingsRes, recordingsRes, ownerRes] = await Promise.all([
-      isOrg
+    const linkedOrgIds = (pcRows || []).map((r: any) => r.organization_id).filter(Boolean) as string[]
+    const linkedContactIds = (pcRows || []).map((r: any) => r.contact_id).filter(Boolean) as string[]
+    const allLinkedIds = [...linkedOrgIds, ...linkedContactIds]
+
+    // Resolve project type / template (text keys → human metadata).
+    const [typeRes, tmplRes] = await Promise.all([
+      project.project_type_key
         ? supabase
-            .from("organizations")
-            .select(
-              "id, name, full_name, karbon_organization_key, karbon_url, primary_email, phone, industry, entity_type, status",
-            )
-            .eq("id", entityId)
+            .from("work_types")
+            .select("karbon_work_type_key, name, is_recurring, default_budget_minutes")
+            .eq("karbon_work_type_key", project.project_type_key)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
-      !isOrg
+      project.project_template_key
         ? supabase
-            .from("contacts")
+            .from("work_templates")
             .select(
-              "id, full_name, primary_email, phone_primary, karbon_contact_key, karbon_url, entity_type, status",
+              "karbon_work_template_key, title, description, estimated_budget_minutes, estimated_time_minutes, has_scheduled_client_task_groups, published_date",
             )
-            .eq("id", entityId)
+            .eq("karbon_work_template_key", project.project_template_key)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
+    ])
 
+    // For per-client related lookups we union both organization_id and
+    // contact_id ranges. Empty arrays are tolerated by the helpers below.
+    const orRangeFor = (col: "organization_id" | "contact_id", ids: string[]) =>
+      ids.length ? `${col}.in.(${ids.map((x) => `"${x}"`).join(",")})` : null
+
+    const orgIn = orRangeFor("organization_id", linkedOrgIds)
+    const contactIn = orRangeFor("contact_id", linkedContactIds)
+    const anyClientFilter = [orgIn, contactIn].filter(Boolean).join(",") || "id.eq.00000000-0000-0000-0000-000000000000"
+
+    const [systemsRes, workItemsRes, proposalsRes, intakesRes, debriefsRes, meetingsRes, recordingsRes, ownerRes] = await Promise.all([
       supabase
         .from("project_systems")
         .select("*")
@@ -88,59 +111,57 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       supabase
         .from("work_items")
         .select(
-          "id, karbon_work_item_key, title, work_type, work_template_name, status, primary_status, secondary_status, workflow_status, assignee_name, due_date, start_date, completed_date, period_start, period_end, karbon_url, priority, todo_count, completed_todo_count, has_blocking_todos, karbon_modified_at, deleted_in_karbon_at",
+          "id, karbon_work_item_key, title, work_type, work_template_name, status, primary_status, secondary_status, workflow_status, assignee_name, due_date, start_date, completed_date, period_start, period_end, karbon_url, priority, todo_count, completed_todo_count, has_blocking_todos, karbon_modified_at, deleted_in_karbon_at, organization_id, contact_id",
         )
-        .eq(idCol, entityId)
+        .or(anyClientFilter)
         .is("deleted_in_karbon_at", null)
         .order("start_date", { ascending: false, nullsFirst: false })
-        .limit(500),
+        .limit(1000),
 
-      // Ignition proposals + services for this client (background context)
       supabase
         .from("ignition_proposals")
         .select(
-          `proposal_id, proposal_number, title, status, total_value, recurring_total, recurring_frequency, currency, sent_at, accepted_at, completed_at, lost_at, signed_url,
+          `proposal_id, proposal_number, title, status, total_value, recurring_total, recurring_frequency, currency, sent_at, accepted_at, completed_at, lost_at, signed_url, organization_id, contact_id,
            services:ignition_proposal_services (
              id, service_name, description, quantity, unit_price, total_amount, currency, billing_frequency, billing_type, status, start_date, end_date
            )`,
         )
-        .eq(idCol, entityId)
+        .or(anyClientFilter)
         .order("accepted_at", { ascending: false, nullsFirst: false })
         .limit(50),
 
       supabase
         .from("jotform_intake_submissions")
         .select(
-          "id, jotform_submission_id, jotform_created_at, submitter_full_name, submitter_email, business_name, service_focus, services_requested, lead_status, link_method, karbon_work_item_url",
+          "id, jotform_submission_id, jotform_created_at, submitter_full_name, submitter_email, business_name, service_focus, services_requested, lead_status, link_method, karbon_work_item_url, organization_id, contact_id",
         )
-        .eq(idCol, entityId)
+        .or(anyClientFilter)
         .order("jotform_created_at", { ascending: false, nullsFirst: false })
-        .limit(20),
+        .limit(50),
 
       supabase
         .from("debriefs_full")
         .select(
-          "id, debrief_date, debrief_type, status, follow_up_date, tax_year, notes, action_items, work_item_id, work_item_title, work_item_karbon_url, team_member_full_name, created_at",
+          "id, debrief_date, debrief_type, status, follow_up_date, tax_year, notes, action_items, work_item_id, work_item_title, work_item_karbon_url, team_member_full_name, created_at, organization_id, contact_id",
         )
-        .eq(idCol, entityId)
+        .or(anyClientFilter)
         .order("debrief_date", { ascending: false, nullsFirst: false })
-        .limit(50),
+        .limit(100),
 
       supabase
         .from("meetings")
         .select(
-          "id, title, meeting_type, status, scheduled_start, scheduled_end, duration_minutes, video_link, zoom_meeting_id",
+          "id, title, meeting_type, status, scheduled_start, scheduled_end, duration_minutes, video_link, zoom_meeting_id, organization_id, contact_id",
         )
-        .eq(idCol, entityId)
+        .or(anyClientFilter)
         .order("scheduled_start", { ascending: false, nullsFirst: false })
-        .limit(50),
+        .limit(100),
 
-      // Zoom recordings (linked via the join table to either the org or contact)
       supabase
         .from("zoom_meeting_clients")
-        .select("zoom_meeting:zoom_meetings(zoom_meeting_id, topic, start_time, duration, status, join_url)")
-        .eq(idCol, entityId)
-        .limit(50),
+        .select("organization_id, contact_id, zoom_meeting:zoom_meetings(zoom_meeting_id, topic, start_time, duration, status, join_url)")
+        .or(anyClientFilter)
+        .limit(100),
 
       project.owner_team_member_id
         ? supabase
@@ -151,44 +172,70 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
         : Promise.resolve({ data: null, error: null }),
     ])
 
-    const allWorkItems = workItemsRes.data || []
+    // Dedupe items that match more than one linked client (e.g. a meeting
+    // linked to both an org and its officer contact).
+    function dedupe<T extends { id?: any; zoom_meeting_id?: any }>(rows: T[]): T[] {
+      const seen = new Set<any>()
+      const out: T[] = []
+      for (const r of rows) {
+        const k = (r as any).id ?? (r as any).zoom_meeting_id
+        if (k != null && seen.has(k)) continue
+        if (k != null) seen.add(k)
+        out.push(r)
+      }
+      return out
+    }
+
+    const allWorkItems = dedupe(workItemsRes.data || [])
     const matchedWorkItems = allWorkItems.filter((w) => projectMatches(project, w))
 
     const open = matchedWorkItems.filter((w) => !isCompleted(w))
     const completed = matchedWorkItems.filter((w) => isCompleted(w))
 
-    const client = isOrg
-      ? orgRes.data
-        ? {
-            kind: "organization" as const,
-            id: orgRes.data.id,
-            name: orgRes.data.name || orgRes.data.full_name,
-            karbon_key: orgRes.data.karbon_organization_key,
-            karbon_url: orgRes.data.karbon_url,
-            email: orgRes.data.primary_email,
-            phone: orgRes.data.phone,
-            industry: orgRes.data.industry,
-            entity_type: orgRes.data.entity_type,
-            status: orgRes.data.status,
-          }
-        : null
-      : contactRes.data
+    // Build clients list (multi). The legacy `client` field returns the row
+    // marked is_primary so existing UI keeps rendering correctly.
+    const clients = (pcRows || []).map((row: any) => {
+      const isOrgRow = !!row.organization_id
+      const o = row.organization
+      const c = row.contact
+      return {
+        link_id: row.id,
+        kind: isOrgRow ? ("organization" as const) : ("contact" as const),
+        id: isOrgRow ? o?.id : c?.id,
+        role: row.role,
+        is_primary: row.is_primary,
+        ownership_pct: row.ownership_pct,
+        notes: row.notes,
+        name: isOrgRow ? o?.name || o?.full_name : c?.full_name,
+        karbon_key: isOrgRow ? o?.karbon_organization_key : c?.karbon_contact_key,
+        karbon_url: isOrgRow ? o?.karbon_url : c?.karbon_url,
+        email: isOrgRow ? o?.primary_email : c?.primary_email,
+        phone: isOrgRow ? o?.phone : c?.phone_primary,
+        industry: isOrgRow ? o?.industry : null,
+        entity_type: (isOrgRow ? o?.entity_type : c?.entity_type) || null,
+        status: isOrgRow ? o?.status : c?.status,
+      }
+    })
+
+    const primary = clients.find((c) => c.is_primary) || clients[0] || null
+    const client = primary
       ? {
-          kind: "contact" as const,
-          id: contactRes.data.id,
-          name: contactRes.data.full_name,
-          karbon_key: contactRes.data.karbon_contact_key,
-          karbon_url: contactRes.data.karbon_url,
-          email: contactRes.data.primary_email,
-          phone: contactRes.data.phone_primary,
-          entity_type: contactRes.data.entity_type,
-          status: contactRes.data.status,
+          kind: primary.kind,
+          id: primary.id,
+          name: primary.name,
+          karbon_key: primary.karbon_key,
+          karbon_url: primary.karbon_url,
+          email: primary.email,
+          phone: primary.phone,
+          industry: primary.industry,
+          entity_type: primary.entity_type,
+          status: primary.status,
         }
       : null
 
     // Pull all proposal services into a flat "related services" list, with the
-    // parent proposal context attached. De-duplicate by service_name.
-    const proposals = proposalsRes.data || []
+    // parent proposal context attached.
+    const proposals = dedupe(proposalsRes.data || [])
     const relatedServices: Array<{
       id: string
       service_name: string
@@ -206,7 +253,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       proposal_status: string | null
     }> = []
     for (const prop of proposals) {
-      for (const svc of (prop.services || []) as any[]) {
+      for (const svc of ((prop as any).services || []) as any[]) {
         relatedServices.push({
           id: svc.id,
           service_name: svc.service_name,
@@ -215,13 +262,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
           billing_type: svc.billing_type,
           unit_price: svc.unit_price,
           total_amount: svc.total_amount,
-          currency: svc.currency || prop.currency,
+          currency: svc.currency || (prop as any).currency,
           status: svc.status,
           start_date: svc.start_date,
           end_date: svc.end_date,
-          proposal_id: prop.proposal_id,
-          proposal_title: prop.title,
-          proposal_status: prop.status,
+          proposal_id: (prop as any).proposal_id,
+          proposal_title: (prop as any).title,
+          proposal_status: (prop as any).status,
         })
       }
     }
@@ -230,8 +277,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       project: {
         ...project,
         owner: ownerRes.data || null,
+        project_type: typeRes.data || null,
+        project_template: tmplRes.data || null,
       },
       client,
+      clients,
       systems: systemsRes.data || [],
       work_items: {
         all: matchedWorkItems,
@@ -243,10 +293,18 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       },
       proposals,
       related_services: relatedServices,
-      intakes: intakesRes.data || [],
-      debriefs: debriefsRes.data || [],
-      meetings: meetingsRes.data || [],
-      recordings: (recordingsRes.data || []).map((r: any) => r.zoom_meeting).filter(Boolean),
+      intakes: dedupe(intakesRes.data || []),
+      debriefs: dedupe(debriefsRes.data || []),
+      meetings: dedupe(meetingsRes.data || []),
+      recordings: (() => {
+        const m = new Map<any, any>()
+        for (const r of (recordingsRes.data || []) as any[]) {
+          const meeting = r.zoom_meeting
+          if (!meeting?.zoom_meeting_id) continue
+          if (!m.has(meeting.zoom_meeting_id)) m.set(meeting.zoom_meeting_id, meeting)
+        }
+        return Array.from(m.values())
+      })(),
     })
   } catch (err: any) {
     console.error("[v0] /api/projects/[id] GET failed:", err?.message || err)
@@ -265,6 +323,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       "kind",
       "status",
       "description",
+      "project_type_key",
+      "project_template_key",
       "work_type_pattern",
       "work_template_pattern",
       "start_date",
