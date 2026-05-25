@@ -323,6 +323,15 @@ export interface ImportEntry {
   val: string
 }
 
+/**
+ * Phase 1 spec caps a single import-series call at 500 entries (§B.5
+ * `entries.length ≤ 500`, error `ENTRIES_LIMIT_EXCEEDED`). The composer
+ * chunks any over-cap series into multiple { seriesId, entries } batches
+ * so callers can iterate and POST each one — preserving series identity
+ * across chunks because every chunk targets the same seriesId.
+ */
+export const MAX_ENTRIES_PER_IMPORT = 500
+
 export async function composeImportEntries(
   taxYear: number,
   data: Form1040Data,
@@ -368,8 +377,17 @@ export async function composeImportEntries(
       })
     }
 
-    if (entries.length > 0) {
-      result.push({ seriesId, entries })
+    if (entries.length === 0) continue
+
+    // Chunk to satisfy the 500-entry cap. A single series with > 500
+    // mapped lines is unlikely on Form 1040 today, but the schedule
+    // flow-ins (Schedule A/B/C/D/E with detail lines) can blow past
+    // 500 — so we chunk defensively.
+    for (let i = 0; i < entries.length; i += MAX_ENTRIES_PER_IMPORT) {
+      result.push({
+        seriesId,
+        entries: entries.slice(i, i + MAX_ENTRIES_PER_IMPORT),
+      })
     }
   }
 

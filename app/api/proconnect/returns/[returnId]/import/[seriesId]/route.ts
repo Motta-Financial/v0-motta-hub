@@ -162,12 +162,16 @@ export async function POST(
   // cleanly searchable error table without unwrapping JSON in the UI.
   const errors = seriesResult?.errors ?? []
   if (errors.length > 0) {
+    // Per Phase 1 spec §B.6, each rejected entry carries an *array* of
+    // ErrorDetail objects (a single entry can fail multiple field rules
+    // — e.g. value + length + oneOf). We persist the full array verbatim
+    // into proconnect_import_entry_results.error_details (jsonb).
     const rows = errors.map((e) => ({
       job_id: jobId,
       prefix_id: e.prefixId,
       code_id: e.codeId,
       suffix_id: e.suffixId,
-      error_details: { code: e.errorCode, message: e.errorMessage },
+      error_details: e.errorDetails ?? [],
     }))
     const { error: errInsErr } = await sb.from("proconnect_import_entry_results").insert(rows)
     if (errInsErr) console.error("[v0] failed to write entry-results rows", errInsErr)
