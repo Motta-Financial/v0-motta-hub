@@ -4,8 +4,12 @@ import { createAdminClient } from "@/lib/supabase/server"
 // ── ProConnect client roster with pagination ─────────────────────────
 // Stat cards use count queries (no data transfer, works past 1000 rows).
 // The table uses .range() pagination — 50 rows per page by default.
+// For rollups PostgREST can't express (distinct counts, column-level
+// comparisons, group-by) we walk the table in 1,000-row pages so we
+// don't silently truncate at the cap.
 
-const PAGE_SIZE = 50
+const TABLE_PAGE_SIZE = 50
+const SCAN_PAGE_SIZE = 1000
 
 type ProconnectClient = {
   id: string
@@ -58,6 +62,26 @@ type ProconnectEngagement = {
   updated_at: string | null
 }
 
+// Paged fetch — see explanation in /api/tax/overview/route.ts. Walks the
+// table 1,000 rows at a time so we get every row, no PostgREST truncation.
+async function fetchAllPaged<T>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  queryFactory: () => any,
+): Promise<T[]> {
+  const out: T[] = []
+  let from = 0
+  for (;;) {
+    const to = from + SCAN_PAGE_SIZE - 1
+    const { data, error } = await queryFactory().range(from, to)
+    if (error) throw error
+    const batch = (data || []) as T[]
+    out.push(...batch)
+    if (batch.length < SCAN_PAGE_SIZE) break
+    from += SCAN_PAGE_SIZE
+  }
+  return out
+}
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = createAdminClient()
@@ -69,82 +93,117 @@ export async function GET(request: NextRequest) {
     const typeFilter = searchParams.get("type") || "all"
     const stateFilter = searchParams.get("state") || "all"
 
-    // ── Stat card counts (head: true = no data, just count) ──────────
+    // ── Pure count queries (head: true = no data, just count) ────────
     // These run in parallel and each returns only a count, not rows.
     const [
       totalRes,
       personsRes,
       orgsRes,
-      withReturnsRes,
+      totalReturnsRes,
       linkedToKarbonRes,
-      unmappedRes,
+      mappedRes,
+      linkedToIgnitionRes,
     ] = await Promise.all([
-      // Total clients
       supabase
         .from("proconnect_clients")
         .select("*", { count: "exact", head: true }),
-
-      // Persons
       supabase
         .from("proconnect_clients")
         .select("*", { count: "exact", head: true })
         .eq("client_type", "PERSON"),
-
-      // Organizations
       supabase
         .from("proconnect_clients")
         .select("*", { count: "exact", head: true })
         .eq("client_type", "ORGANIZATION"),
-
-      // With returns on file (has at least one engagement)
       supabase
         .from("proconnect_engagements")
-        .select("proconnect_client_id", { count: "exact", head: true }),
-
-      // Linked to Karbon (exists in master_client_mapping with karbon_client_id)
+        .select("*", { count: "exact", head: true }),
       supabase
         .from("master_client_mapping")
         .select("*", { count: "exact", head: true })
         .not("proconnect_client_id", "is", null)
         .not("karbon_client_id", "is", null),
-
-      // Unmapped to Hub (proconnect_client_id NOT IN master_client_mapping)
-      // We count total - mapped to get unmapped
       supabase
         .from("master_client_mapping")
         .select("*", { count: "exact", head: true })
         .not("proconnect_client_id", "is", null),
+      supabase
+        .from("master_client_mapping")
+        .select("*", { count: "exact", head: true })
+        .not("proconnect_client_id", "is", null)
+        .not("ignition_client_id", "is", null),
     ])
 
-    // Check for errors
     if (totalRes.error) throw totalRes.error
     if (personsRes.error) throw personsRes.error
     if (orgsRes.error) throw orgsRes.error
-    if (withReturnsRes.error) throw withReturnsRes.error
+    if (totalReturnsRes.error) throw totalReturnsRes.error
     if (linkedToKarbonRes.error) throw linkedToKarbonRes.error
-    if (unmappedRes.error) throw unmappedRes.error
-
-    // Count unique clients with returns (the query above counts engagements)
-    const { count: uniqueClientsWithReturns } = await supabase
-      .from("proconnect_engagements")
-      .select("proconnect_client_id", { count: "exact", head: true })
-      // Unfortunately Supabase doesn't support COUNT(DISTINCT) in .select()
-      // so we'll compute this from the data query below
+    if (mappedRes.error) throw mappedRes.error
+    if (linkedToIgnitionRes.error) throw linkedToIgnitionRes.error
 
     const totalClients = totalRes.count ?? 0
-    const mappedCount = unmappedRes.count ?? 0
+    const mappedCount = mappedRes.count ?? 0
     const unmappedToHub = totalClients - mappedCount
 
-    // ── Build filtered query for table data ──────────────────────────
+    // ── Rollups that PostgREST can't express ─────────────────────────
+    // Run in parallel. Each is a paged scan, not a single .select(),
+    // so they survive past 1,000 rows.
+    const [
+      distinctClientsForReturns,
+      stateRows,
+      entityRows,
+    ] = await Promise.all([
+      // Distinct clients with at least one engagement.
+      // Postgres has no PostgREST way to express COUNT(DISTINCT col),
+      // so we scan the (small) projection and dedupe in JS.
+      fetchAllPaged<{ proconnect_client_id: string | null }>(() =>
+        supabase.from("proconnect_engagements").select("proconnect_client_id"),
+      ),
+      // by-state rollup — same reason, no PostgREST GROUP BY.
+      fetchAllPaged<{ client_state: string | null }>(() =>
+        supabase.from("proconnect_clients").select("client_state"),
+      ),
+      // Sub-entity check requires comparing two columns; PostgREST
+      // can't do that without a SQL view, so scan and compare in JS.
+      fetchAllPaged<{
+        proconnect_entity_id: string | null
+        top_level_entity_id: string | null
+      }>(() =>
+        supabase
+          .from("proconnect_clients")
+          .select("proconnect_entity_id, top_level_entity_id"),
+      ),
+    ])
+
+    const withReturnsCount = new Set(
+      distinctClientsForReturns
+        .map((d) => d.proconnect_client_id)
+        .filter((id): id is string => Boolean(id)),
+    ).size
+
+    const byState: Record<string, number> = {}
+    for (const row of stateRows) {
+      const key = row.client_state || "UNKNOWN"
+      byState[key] = (byState[key] || 0) + 1
+    }
+
+    const subEntitiesCount = entityRows.filter(
+      (c) =>
+        c.proconnect_entity_id &&
+        c.top_level_entity_id &&
+        c.proconnect_entity_id !== c.top_level_entity_id,
+    ).length
+
+    // ── Filtered + paginated table data ──────────────────────────────
     let query = supabase
       .from("proconnect_clients")
       .select(
         "id, proconnect_client_id, proconnect_entity_id, top_level_entity_id, client_type, client_state, display_name, business_name, name_for_matching, first_name, last_name, email, phone, city, state, zip, tax_id, created_at, updated_at",
-        { count: "exact" }
+        { count: "exact" },
       )
       .order("display_name", { ascending: true })
 
-    // Apply filters
     if (typeFilter !== "all") {
       query = query.eq("client_type", typeFilter)
     }
@@ -152,50 +211,43 @@ export async function GET(request: NextRequest) {
       query = query.eq("client_state", stateFilter)
     }
     if (search) {
-      // Use ilike for case-insensitive search across multiple columns
       query = query.or(
-        `display_name.ilike.%${search}%,email.ilike.%${search}%,proconnect_client_id.ilike.%${search}%,business_name.ilike.%${search}%,tax_id.ilike.%${search}%`
+        `display_name.ilike.%${search}%,email.ilike.%${search}%,proconnect_client_id.ilike.%${search}%,business_name.ilike.%${search}%,tax_id.ilike.%${search}%`,
       )
     }
 
-    // Get total count for filtered results (for pagination)
-    const countQuery = query
-
-    // Apply pagination
-    const from = (page - 1) * PAGE_SIZE
-    const to = from + PAGE_SIZE - 1
+    const from = (page - 1) * TABLE_PAGE_SIZE
+    const to = from + TABLE_PAGE_SIZE - 1
     query = query.range(from, to)
 
     const clientsRes = await query
-
     if (clientsRes.error) throw clientsRes.error
 
     const clients = (clientsRes.data || []) as ProconnectClient[]
     const filteredTotal = clientsRes.count ?? 0
-    const totalPages = Math.ceil(filteredTotal / PAGE_SIZE)
+    const totalPages = Math.ceil(filteredTotal / TABLE_PAGE_SIZE)
 
-    // ── Get related data for the current page of clients ─────────────
+    // ── Related data for the current page only (small set, capped) ───
     const clientIds = clients
       .map((c) => c.proconnect_client_id)
       .filter(Boolean) as string[]
 
-    // Only fetch related data if we have clients
     let mappings: MasterMappingRow[] = []
     let engagements: ProconnectEngagement[] = []
-    let preparerMap = new Map<string, string>()
+    const preparerMap = new Map<string, string>()
 
     if (clientIds.length > 0) {
       const [mappingRes, engagementsRes, profilesRes] = await Promise.all([
         supabase
           .from("master_client_mapping")
           .select(
-            "internal_client_id, client_type, display_name, primary_email, karbon_client_id, ignition_client_id, proconnect_client_id, karbon_url, linked_systems, link_count"
+            "internal_client_id, client_type, display_name, primary_email, karbon_client_id, ignition_client_id, proconnect_client_id, karbon_url, linked_systems, link_count",
           )
           .in("proconnect_client_id", clientIds),
         supabase
           .from("proconnect_engagements")
           .select(
-            "id, engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, work_status, assignee_profile_id, raw_json, synced_at, updated_at"
+            "id, engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, work_status, assignee_profile_id, raw_json, synced_at, updated_at",
           )
           .in("proconnect_client_id", clientIds),
         supabase
@@ -210,7 +262,6 @@ export async function GET(request: NextRequest) {
       mappings = (mappingRes.data || []) as MasterMappingRow[]
       engagements = (engagementsRes.data || []) as ProconnectEngagement[]
 
-      // Build preparer map
       for (const p of profilesRes.data || []) {
         const tm = p.team_members as { full_name?: string | null } | null
         const name = p.full_name || tm?.full_name || null
@@ -218,13 +269,11 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Build lookup maps
     const mappingByPc = new Map<string, MasterMappingRow>()
     for (const m of mappings) {
       if (m.proconnect_client_id) mappingByPc.set(m.proconnect_client_id, m)
     }
 
-    // Build per-client engagements rollup
     type ClientReturnRollup = {
       total: number
       amendedCount: number
@@ -255,20 +304,26 @@ export async function GET(request: NextRequest) {
             preparers: new Set<string>(),
             forms: [],
           }
-          rollupByPc.set(eng.proconnect_client_id, fresh)
+          rollupByPc.set(eng.proconnect_client_id!, fresh)
           return fresh
         })()
 
       rollup.total += 1
 
+      const rawAssignee =
+        (eng.raw_json as Record<string, unknown> | null)?.assignee
+      const rawAssigneeProfileId =
+        rawAssignee && typeof rawAssignee === "object"
+          ? ((rawAssignee as Record<string, unknown>).profileId as
+              | string
+              | null
+              | undefined)
+          : null
       const preparerProfileId =
-        eng.assignee_profile_id ||
-        ((eng.raw_json as Record<string, unknown> | null)?.assignee as Record<string, unknown> | null)?.profileId as
-          | string
-          | null
-          | undefined ||
-        null
-      const preparerName = preparerProfileId ? preparerMap.get(preparerProfileId) || null : null
+        eng.assignee_profile_id || rawAssigneeProfileId || null
+      const preparerName = preparerProfileId
+        ? preparerMap.get(preparerProfileId) || null
+        : null
       if (preparerName) rollup.preparers.add(preparerName)
 
       if (eng.updated_at || eng.synced_at) {
@@ -283,7 +338,8 @@ export async function GET(request: NextRequest) {
 
       const rawJson = eng.raw_json as Record<string, unknown> | null
       const formFromJson = (rawJson?.type as string) || null
-      const formType = formFromJson || eng.form_type || eng.return_type || "Unknown"
+      const formType =
+        formFromJson || eng.form_type || eng.return_type || "Unknown"
       const existingForm = rollup.forms.find((f) => f.form === formType)
 
       if (existingForm) {
@@ -308,13 +364,13 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Enrich clients
     const enriched = clients.map((c) => {
       const m = c.proconnect_client_id
         ? mappingByPc.get(c.proconnect_client_id)
         : undefined
-      const rollup =
-        c.proconnect_client_id ? rollupByPc.get(c.proconnect_client_id) : undefined
+      const rollup = c.proconnect_client_id
+        ? rollupByPc.get(c.proconnect_client_id)
+        : undefined
       return {
         ...c,
         return_count: rollup?.total ?? 0,
@@ -335,83 +391,27 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    // Get count of clients with returns for stats (count distinct)
-    const { count: engagementCount } = await supabase
-      .from("proconnect_engagements")
-      .select("proconnect_client_id", { count: "exact", head: true })
-
-    // For withReturns, we need distinct client count. Use a raw count approach:
-    const { data: distinctClientsData } = await supabase
-      .from("proconnect_engagements")
-      .select("proconnect_client_id")
-    const withReturnsCount = new Set(
-      (distinctClientsData || []).map((d: { proconnect_client_id: string }) => d.proconnect_client_id)
-    ).size
-
-    // Get total returns count
-    const { count: totalReturns } = await supabase
-      .from("proconnect_engagements")
-      .select("*", { count: "exact", head: true })
-
-    // Get linked to Ignition count
-    const { count: linkedToIgnition } = await supabase
-      .from("master_client_mapping")
-      .select("*", { count: "exact", head: true })
-      .not("proconnect_client_id", "is", null)
-      .not("ignition_client_id", "is", null)
-
-    // Get sub-entities count
-    const { count: subEntities } = await supabase
-      .from("proconnect_clients")
-      .select("*", { count: "exact", head: true })
-      .not("proconnect_entity_id", "is", null)
-      .not("top_level_entity_id", "is", null)
-      .neq("proconnect_entity_id", "top_level_entity_id" as never)
-
-    // Note: The subEntities query above won't work correctly because we can't
-    // compare two columns directly. We'll compute it differently.
-    const { data: allClientsForSubEntity } = await supabase
-      .from("proconnect_clients")
-      .select("proconnect_entity_id, top_level_entity_id")
-    const subEntitiesCount = (allClientsForSubEntity || []).filter(
-      (c: { proconnect_entity_id: string | null; top_level_entity_id: string | null }) =>
-        c.proconnect_entity_id &&
-        c.top_level_entity_id &&
-        c.proconnect_entity_id !== c.top_level_entity_id
-    ).length
-
     const stats = {
-      totalClients: totalRes.count ?? 0,
+      totalClients,
       persons: personsRes.count ?? 0,
       organizations: orgsRes.count ?? 0,
       withReturns: withReturnsCount,
-      withoutReturns: (totalRes.count ?? 0) - withReturnsCount,
-      totalReturns: totalReturns ?? 0,
-      totalAmended: 0, // Would need separate query
+      withoutReturns: totalClients - withReturnsCount,
+      totalReturns: totalReturnsRes.count ?? 0,
+      totalAmended: 0, // amended detection requires status parsing; not currently exposed
       linkedToKarbon: linkedToKarbonRes.count ?? 0,
-      linkedToIgnition: linkedToIgnition ?? 0,
+      linkedToIgnition: linkedToIgnitionRes.count ?? 0,
       unmappedToHub,
-      byState: {} as Record<string, number>, // Computed below
+      byState,
       subEntities: subEntitiesCount,
     }
-
-    // Get byState counts
-    const { data: stateData } = await supabase
-      .from("proconnect_clients")
-      .select("client_state")
-    const byState: Record<string, number> = {}
-    for (const row of stateData || []) {
-      const key = (row as { client_state: string | null }).client_state || "UNKNOWN"
-      byState[key] = (byState[key] || 0) + 1
-    }
-    stats.byState = byState
 
     return NextResponse.json({
       clients: enriched,
       stats,
       pagination: {
         page,
-        pageSize: PAGE_SIZE,
+        pageSize: TABLE_PAGE_SIZE,
         totalPages,
         totalRows: filteredTotal,
         hasNext: page < totalPages,

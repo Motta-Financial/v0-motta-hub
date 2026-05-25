@@ -2,18 +2,13 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 
 // ── Tax Department Overview API ──────────────────────────────────────
-// One call → everything the parent /tax dashboard needs to render. We
-// roll up directly off the live ProConnect tables (proconnect_engagements
-// + proconnect_clients + proconnect_sync_logs + proconnect_profiles) so
-// this view is a strict mirror of the firm's actual ProConnect ledger,
-// not a Karbon-task approximation.
-//
-// Why one route instead of reusing /api/tax/returns + /api/tax/clients:
-//   - The overview only needs *aggregates*, never the row-level list, so
-//     we can answer in a single query roundtrip + a tiny rollup loop.
-//   - Surfacing freshness (last sync, last error) here lets the page
-//     show a "live data, X minutes ago" pill, which the row-level
-//     endpoints don't carry.
+// Aggregates all the rollups the parent /tax dashboard needs.
+// Uses count queries where possible, and a paged loop where we genuinely
+// need to scan every row to compute a rollup PostgREST can't express.
+// This avoids the silent 1,000-row truncation cap that PostgREST applies
+// to bare .select() queries.
+
+const PAGE_SIZE = 1000
 
 type EngagementRow = {
   engagement_id: string
@@ -31,6 +26,12 @@ type EngagementRow = {
   preparer_email: string | null
   preparer_team_member_id: string | null
   proconnect_modified_at: string | null
+}
+
+type ClientRow = {
+  proconnect_client_id: string
+  client_type: string | null
+  synced_at: string | null
 }
 
 const RETURN_TYPE_TO_FORM: Record<string, string> = {
@@ -58,35 +59,63 @@ function bucketCategory(form: string): "individual" | "business" | "nonprofit" |
   return "other"
 }
 
+// Paged fetch — walks the table 1,000 rows at a time so we get every row,
+// no PostgREST truncation. Used only for rollups that genuinely require
+// every row (e.g. distinct counts, column-level rollups Postgres can't
+// express via PostgREST count queries).
+async function fetchAllPaged<T>(
+  // The query factory must return a "fresh" PostgrestFilterBuilder every
+  // time it's invoked, because .range() is destructive on the builder.
+  // We type this as `any` because @supabase/supabase-js's filter builder
+  // generic chain is too complex to thread cleanly here.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  queryFactory: () => any,
+): Promise<T[]> {
+  const out: T[] = []
+  let from = 0
+  for (;;) {
+    const to = from + PAGE_SIZE - 1
+    const { data, error } = await queryFactory().range(from, to)
+    if (error) throw error
+    const batch = (data || []) as T[]
+    out.push(...batch)
+    if (batch.length < PAGE_SIZE) break
+    from += PAGE_SIZE
+  }
+  return out
+}
+
 export async function GET() {
   try {
     const supabase = createAdminClient()
 
-    const [engagementsRes, clientsRes, lastSyncRes] = await Promise.all([
-      // The enriched view already joins client display_name +
-      // proconnect_profiles + team_members, so we get preparer_name
-      // for free. No secondary lookup needed.
-      supabase
-        .from("proconnect_engagements_enriched")
-        .select(
-          "engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, user_defined_status_id, user_defined_status_name, user_defined_status_color, assignee_profile_id, preparer_name, preparer_email, preparer_team_member_id, proconnect_modified_at",
-        ),
-      supabase
-        .from("proconnect_clients")
-        .select("proconnect_client_id, client_type, synced_at"),
+    const [engagements, clients, lastSyncRes] = await Promise.all([
+      // Walk the enriched view in 1,000-row pages so we don't silently
+      // truncate at the PostgREST cap. The view already joins client
+      // display_name + proconnect_profiles + team_members, so preparer_name
+      // arrives prejoined.
+      fetchAllPaged<EngagementRow>(() =>
+        supabase
+          .from("proconnect_engagements_enriched")
+          .select(
+            "engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, user_defined_status_id, user_defined_status_name, user_defined_status_color, assignee_profile_id, preparer_name, preparer_email, preparer_team_member_id, proconnect_modified_at",
+          ),
+      ),
+      // Same for clients — paged so we count past 1,000.
+      fetchAllPaged<ClientRow>(() =>
+        supabase
+          .from("proconnect_clients")
+          .select("proconnect_client_id, client_type, synced_at"),
+      ),
       supabase
         .from("proconnect_sync_logs")
-        .select("id, status, started_at, completed_at, clients_synced, engagements_synced, error_message")
+        .select(
+          "id, status, started_at, completed_at, clients_synced, engagements_synced, error_message",
+        )
         .order("started_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
     ])
-
-    if (engagementsRes.error) throw engagementsRes.error
-    if (clientsRes.error) throw clientsRes.error
-
-    const engagements = (engagementsRes.data || []) as EngagementRow[]
-    const clients = clientsRes.data || []
 
     // ── Single rollup pass ──────────────────────────────────────────
     // Avoid N table walks by computing every metric the page needs in
@@ -101,10 +130,13 @@ export async function GET() {
     > = {}
     const byPreparer: Record<string, number> = {}
     const byCategory = { individual: 0, business: 0, nonprofit: 0, other: 0 }
-    const yearForm: Record<string, Record<string, number>> = {} // year -> form -> count
+    const yearForm: Record<string, Record<string, number>> = {}
     let unassigned = 0
 
-    const currentTaxYear = new Date().getMonth() < 4 ? new Date().getFullYear() - 1 : new Date().getFullYear()
+    const currentTaxYear =
+      new Date().getMonth() < 4
+        ? new Date().getFullYear() - 1
+        : new Date().getFullYear()
     let currentYearReturns = 0
 
     for (const eng of engagements) {
@@ -145,8 +177,9 @@ export async function GET() {
       }
     }
 
-    // Sort year-form rows ascending by year, all forms aligned for chart consumption.
-    const allForms = Array.from(new Set(engagements.map((e) => classifyForm(e)))).sort()
+    const allForms = Array.from(
+      new Set(engagements.map((e) => classifyForm(e))),
+    ).sort()
     const yearFormSeries = Object.keys(yearForm)
       .filter((y) => y !== "(unknown)")
       .sort()
@@ -156,22 +189,16 @@ export async function GET() {
         return row
       })
 
-    // Top 10 preparers, descending. "(unassigned)" is reported separately.
     const preparerLeaderboard = Object.entries(byPreparer)
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 10)
 
-    // Coverage of the profile mapping table — surfaces the "needs attention"
-    // banner on the dashboard so admins know they have unmapped IDs.
     const distinctAssignees = new Set(
       engagements
         .map((e) => e.assignee_profile_id)
         .filter((x): x is string => Boolean(x)),
     )
-    // An assignee is "mapped" if any row with that profile_id resolved
-    // a non-null preparer_name (which the view computed by joining
-    // proconnect_profiles + team_members).
     const mappedAssigneeIds = new Set(
       engagements
         .filter((e) => e.assignee_profile_id && e.preparer_name)
@@ -180,22 +207,20 @@ export async function GET() {
     const mappedAssignees = mappedAssigneeIds.size
     const unmappedAssignees = distinctAssignees.size - mappedAssignees
 
-    // Sort custom-status array for the page chart.
     const customStatusList = Object.entries(byCustomStatus)
       .map(([name, { count, color }]) => ({ name, count, color }))
       .sort((a, b) => b.count - a.count)
 
     return NextResponse.json({
-      // Headline KPIs
       totalEngagements: engagements.length,
       totalClients: clients.length,
       personClients: clients.filter((c) => c.client_type === "PERSON").length,
-      orgClients: clients.filter((c) => c.client_type === "ORGANIZATION").length,
+      orgClients: clients.filter((c) => c.client_type === "ORGANIZATION")
+        .length,
       currentTaxYear,
       currentYearReturns,
       unassignedReturns: unassigned,
 
-      // Distributions
       byForm,
       byYear,
       byCategory,
@@ -203,18 +228,15 @@ export async function GET() {
       customStatusList,
       preparerLeaderboard,
 
-      // Time-series for charts
       yearFormSeries,
       formsTracked: allForms,
 
-      // Profile mapping coverage
       profileMapping: {
         distinct: distinctAssignees.size,
         mapped: mappedAssignees,
         unmapped: unmappedAssignees,
       },
 
-      // Sync freshness
       lastSync: lastSyncRes.data
         ? {
             id: lastSyncRes.data.id,
