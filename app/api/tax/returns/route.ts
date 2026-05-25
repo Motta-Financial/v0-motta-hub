@@ -1,24 +1,12 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 
-// ── Return type mapping ───────────────────────────────────────────────
-const RETURN_TYPE_TO_FORM: Record<string, string> = {
-  IND: "1040",
-  COR: "1120",
-  PAR: "1065",
-  SCO: "1120S",
-  FID: "1041",
-  EXM: "990",
-}
-
-const FORM_TO_RETURN_TYPES: Record<string, string[]> = {
-  "1040": ["IND"],
-  "1120": ["COR"],
-  "1065": ["PAR"],
-  "1120S": ["SCO"],
-  "1041": ["FID"],
-  "990": ["EXM"],
-}
+// ── Known form types (stored directly in database) ────────────────────
+// Real values: "1040", "1065", "1120", "1120S", "990", "1041", "709"
+const ALL_FORM_TYPES = ["1040", "1065", "1120", "1120S", "990", "1041", "709"]
+const INDIVIDUAL_FORMS = ["1040"]
+const BUSINESS_FORMS = ["1065", "1120", "1120S"]
+const NONPROFIT_FORMS = ["990"]
 
 const PAGE_SIZE = 50
 
@@ -32,24 +20,21 @@ export async function GET(req: Request) {
 
     const supabase = createAdminClient()
 
-    // Determine which form types to query
-    let formTypes: string[] = []
+    // Determine which form types to filter by
+    // When "all", we don't apply any form_type filter (returns all 892 rows)
+    let formTypes: string[] | null = null
     if (form === "all") {
-      formTypes = ["1040", "1065", "1120", "1120S", "990", "1041"]
+      formTypes = null // No filter — return all forms
     } else if (form === "business") {
-      formTypes = ["1065", "1120", "1120S"]
+      formTypes = BUSINESS_FORMS
     } else if (form === "individual") {
-      formTypes = ["1040"]
+      formTypes = INDIVIDUAL_FORMS
     } else if (form === "nonprofit") {
-      formTypes = ["990"]
+      formTypes = NONPROFIT_FORMS
     } else {
+      // Specific form like "1040", "1065", etc.
       formTypes = [form]
     }
-
-    // Get corresponding return_type codes for Supabase filter
-    const returnTypeCodes = formTypes.flatMap(
-      (f) => FORM_TO_RETURN_TYPES[f] || [],
-    )
 
     // ══════════════════════════════════════════════════════════════════
     // STAT CARD QUERIES — each uses count: 'exact', head: true
@@ -61,8 +46,8 @@ export async function GET(req: Request) {
         .from("proconnect_engagements")
         .select("*", { count: "exact", head: true })
 
-      if (returnTypeCodes.length > 0) {
-        q = q.in("return_type", returnTypeCodes)
+      if (formTypes !== null) {
+        q = q.in("form_type", formTypes)
       }
       if (taxYear) {
         q = q.eq("tax_year", Number(taxYear))
@@ -73,34 +58,28 @@ export async function GET(req: Request) {
     // Total count
     const totalCountPromise = buildStatsQuery()
 
-    // E-filed count — use raw_json->>'customStatus' = 'E-Filed'
-    const allReturnTypeCodes =
-      returnTypeCodes.length > 0
-        ? returnTypeCodes
-        : ["IND", "COR", "PAR", "SCO", "EXM", "FID"]
-
+    // E-filed count — filter where raw_json->>'customStatus' = 'E-Filed'
     let efiledQuery = supabase
       .from("proconnect_engagements")
       .select("*", { count: "exact", head: true })
-      .in("return_type", allReturnTypeCodes)
       .eq("raw_json->>customStatus", "E-Filed")
 
+    if (formTypes !== null) {
+      efiledQuery = efiledQuery.in("form_type", formTypes)
+    }
     if (taxYear) {
       efiledQuery = efiledQuery.eq("tax_year", Number(taxYear))
     }
 
     const efiledCountPromise = efiledQuery
 
-    // Count by form type — run individual counts
+    // Count by form type — run individual counts for display
     const formCountsPromise = Promise.all(
-      formTypes.map(async (formType) => {
-        const codes = FORM_TO_RETURN_TYPES[formType] || []
-        if (codes.length === 0) return { form: formType, count: 0 }
-
+      ALL_FORM_TYPES.map(async (formType) => {
         let q = supabase
           .from("proconnect_engagements")
           .select("*", { count: "exact", head: true })
-          .in("return_type", codes)
+          .eq("form_type", formType)
 
         if (taxYear) {
           q = q.eq("tax_year", Number(taxYear))
@@ -111,13 +90,18 @@ export async function GET(req: Request) {
       }),
     )
 
-    // Count by year — get distinct years first, then count each
-    const yearsPromise = supabase
+    // Get distinct years for filter chips
+    let yearsQuery = supabase
       .from("proconnect_engagements")
       .select("tax_year")
-      .in("return_type", allReturnTypeCodes)
       .order("tax_year", { ascending: false })
-      .limit(20)
+      .limit(100)
+
+    if (formTypes !== null) {
+      yearsQuery = yearsQuery.in("form_type", formTypes)
+    }
+
+    const yearsPromise = yearsQuery
 
     // Run all stat queries in parallel
     const [totalRes, efiledRes, formCounts, yearsRes] = await Promise.all([
@@ -143,7 +127,7 @@ export async function GET(req: Request) {
       ...new Set((yearsRes.data || []).map((r) => r.tax_year).filter(Boolean)),
     ] as number[]
 
-    // Count by year
+    // Count by year (for chart)
     const byYear: Record<string, number> = {}
     await Promise.all(
       uniqueYears.slice(0, 10).map(async (year) => {
@@ -152,8 +136,8 @@ export async function GET(req: Request) {
           .select("*", { count: "exact", head: true })
           .eq("tax_year", year)
 
-        if (returnTypeCodes.length > 0) {
-          q = q.in("return_type", returnTypeCodes)
+        if (formTypes !== null) {
+          q = q.in("form_type", formTypes)
         }
 
         const { count } = await q
@@ -173,8 +157,8 @@ export async function GET(req: Request) {
       .select("*")
       .order("proconnect_modified_at", { ascending: false, nullsFirst: false })
 
-    if (returnTypeCodes.length > 0) {
-      dataQuery = dataQuery.in("return_type", returnTypeCodes)
+    if (formTypes !== null) {
+      dataQuery = dataQuery.in("form_type", formTypes)
     }
     if (taxYear) {
       dataQuery = dataQuery.eq("tax_year", Number(taxYear))
@@ -194,11 +178,7 @@ export async function GET(req: Request) {
 
     // Transform to unified shape
     const returns = (engagements || []).map((eng) => {
-      const formType =
-        eng.form_type ||
-        RETURN_TYPE_TO_FORM[eng.return_type || ""] ||
-        eng.return_type ||
-        "Unknown"
+      const formType = eng.form_type || eng.return_type || "Unknown"
 
       return {
         id: eng.engagement_id,
@@ -218,7 +198,6 @@ export async function GET(req: Request) {
         proconnect_modified_at: eng.proconnect_modified_at,
         synced_at: eng.synced_at,
         updated_at: eng.updated_at,
-        // These fields may not exist in enriched view but keep for compat
         amended: null,
         revenue: null,
         income: null,
@@ -254,7 +233,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       returns,
       stats,
-      forms: formTypes,
+      forms: formTypes ?? ALL_FORM_TYPES,
       pagination: {
         page,
         pageSize: PAGE_SIZE,
