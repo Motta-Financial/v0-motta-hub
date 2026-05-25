@@ -49,6 +49,8 @@ export type ProfileMatchCandidate = {
   matchedOn: string[]
 }
 
+import { aliasesForHubName } from "./proconnect-known-preparers"
+
 const norm = (s: string | null | undefined) =>
   (s || "")
     .toLowerCase()
@@ -113,6 +115,21 @@ export function scorePair(
   const tmFirst = norm(tm.first_name)
   const tmLast = norm(tm.last_name)
   const tmFullTokens = tokens(tm.full_name || `${tm.first_name || ""} ${tm.last_name || ""}`)
+
+  // Alias resolution: if the team_member is a known ProConnect preparer
+  // who has an alternate spelling (e.g. team_members holds "Micaela
+  // Palacios" but ProConnect's profile seed says "Micaela Verastegui"),
+  // a normalized form match against any alias counts as a strong
+  // first+last hit. We do this BEFORE the standard exact-match block so
+  // it short-circuits cleanly. See `proconnect-known-preparers.ts`.
+  if (seedNames.full.length) {
+    const seedFull = seedNames.full.join(" ")
+    const tmAliases = aliasesForHubName(tm.full_name)
+    if (tmAliases.includes(seedFull)) {
+      matched.push("alias")
+      score = Math.max(score, 0.95)
+    }
+  }
 
   // First + last exact
   if (seedNames.first && seedNames.last && tmFirst && tmLast) {

@@ -33,6 +33,7 @@ import type {
   ProfileMatchCandidate,
   TeamMemberLite,
 } from "./proconnect-profile-match"
+import { isCanonicalPreparer, resolveCanonicalPreparer, aliasesForHubName } from "./proconnect-known-preparers"
 
 export type KarbonSuggestion = ProfileMatchCandidate & {
   matchCount: number
@@ -58,8 +59,27 @@ function findTeamMember(
 ): TeamMemberLite | null {
   const target = norm(name)
   if (!target) return null
+  // Direct full_name match first.
   for (const tm of teamMembers) {
     if (norm(tm.full_name) === target) return tm
+  }
+  // Alias-aware match: resolve `name` to its canonical preparer entry,
+  // then look for any team_member whose own aliases overlap. Lets a
+  // Karbon assignee "Micaela Verastegui" resolve to a Hub row stored as
+  // "Micaela Palacios" without renaming the Hub record.
+  const canonical = resolveCanonicalPreparer(name)
+  if (canonical) {
+    for (const tm of teamMembers) {
+      const tmAliases = aliasesForHubName(tm.full_name)
+      if (tmAliases.length === 0) continue
+      // tmAliases already includes the canonical name, so any overlap
+      // with the resolved preparer's aliases means same person.
+      const candidateAliases = new Set([
+        norm(canonical.canonicalName),
+        ...canonical.aliases,
+      ])
+      if (tmAliases.some((a) => candidateAliases.has(a))) return tm
+    }
   }
   // Fallback: match by first+last token overlap (handles "Andrew Gianares"
   // vs a team_member where full_name is "Andrew J. Gianares").
@@ -99,6 +119,17 @@ export async function loadKarbonSuggestions(
   }
 
   for (const r of data as Row[]) {
+    // Hard filter: Karbon co-occurrence is only a useful signal when the
+    // teammate is also someone who actually touches ProConnect. Many
+    // accounting/admin staff share a client roster with the tax team
+    // but never appear in the ProConnect "time spent in return" report
+    // (the canonical list of ProConnect users). Without this filter,
+    // Andrew Gianares dominated as the top hint for 3 of the 5 active
+    // 2025 GUIDs because he's the prep-handler on most Karbon work
+    // items — even though ProConnect's own report shows he worked on
+    // only 49 returns vs 159+101+19 for those GUIDs combined. See
+    // `proconnect-known-preparers.ts` for the full registry.
+    if (!isCanonicalPreparer(r.karbon_assignee_name)) continue
     const tm = findTeamMember(r.karbon_assignee_name, teamMembers)
     if (!tm) continue // Karbon name has no Hub teammate row — skip.
     const confidence =
