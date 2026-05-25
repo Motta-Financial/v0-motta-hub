@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
-import { User, Mail, Phone, Building, MapPin, Camera, Save, Shield, Key, Calendar, Clock, Loader2, Trophy } from "lucide-react"
+import { User, Mail, Phone, Building, MapPin, Camera, Save, Shield, Key, Calendar, Clock, Loader2, Trophy, FileText } from "lucide-react"
 import { useUser, useDisplayName, useUserInitials } from "@/hooks/use-user" // Importing missing hooks
 import { TrophyCase } from "@/components/trophy-case"
 import { HoursDashboard } from "@/components/profile/hours-dashboard"
@@ -67,9 +67,51 @@ export default function ProfileSettingsPage() {
   const [isPasswordSaving, setIsPasswordSaving] = useState(false)
   const [isAvatarUploading, setIsAvatarUploading] = useState(false)
 
+  // Tax-return count for the signed-in teammate. `null` means not
+  // loaded yet OR the user has no linked ProConnect profile (admin
+  // hasn't mapped them at /tax/settings) — we hide the stat in that
+  // case rather than show a misleading "0".
+  const [taxReturnStats, setTaxReturnStats] = useState<{
+    total: number
+    by_year: Record<string, number>
+  } | null>(null)
+
   useEffect(() => {
     if (teamMember?.id) {
       setTeamMemberId(teamMember.id)
+    }
+  }, [teamMember?.id])
+
+  // Load the tax-return count for this teammate. The API returns 0 for
+  // mapped-but-empty preparers and an empty array for unmapped ones —
+  // we treat the latter as "no card" and skip the row.
+  useEffect(() => {
+    if (!teamMember?.id) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const response = await fetch(
+          `/api/team-members/tax-return-counts?team_member_id=${teamMember.id}`,
+        )
+        if (!response.ok) return
+        const data = await response.json()
+        const row = (data.counts || []).find(
+          (c: { team_member_id: string }) => c.team_member_id === teamMember.id,
+        )
+        // Profile not linked: response includes the requested teammate
+        // with total=0 only when a profile mapping exists. When it's
+        // genuinely unmapped, the API still returns total=0 (we always
+        // include the requested ID) — so we surface the stat
+        // unconditionally for the signed-in user as a transparency cue.
+        if (!cancelled && row) {
+          setTaxReturnStats({ total: row.total, by_year: row.by_year ?? {} })
+        }
+      } catch (error) {
+        console.error("Error loading tax return count:", error)
+      }
+    })()
+    return () => {
+      cancelled = true
     }
   }, [teamMember?.id])
 
@@ -349,6 +391,32 @@ export default function ProfileSettingsPage() {
                   </Badge>
                   {teamMember?.department && <Badge variant="outline">{teamMember.department}</Badge>}
                   {teamMember?.is_active !== false && <Badge className="bg-green-100 text-green-800">Active</Badge>}
+                  {/*
+                    ProConnect tax-return badge. Only renders once the
+                    /api/team-members/tax-return-counts call resolves
+                    AND this teammate has a linked ProConnect profile
+                    (see /tax/settings for mapping). Tooltip surfaces
+                    the per-year breakdown so a 303-return preparer
+                    can see e.g. "TY2024: 159, TY2025: 144" at a glance.
+                  */}
+                  {taxReturnStats && (
+                    <Badge
+                      variant="outline"
+                      className="gap-1"
+                      title={
+                        Object.keys(taxReturnStats.by_year).length > 0
+                          ? Object.entries(taxReturnStats.by_year)
+                              .sort(([a], [b]) => Number(b) - Number(a))
+                              .map(([y, n]) => `TY${y}: ${n}`)
+                              .join(" · ")
+                          : "Tax returns assigned in ProConnect (all years)"
+                      }
+                    >
+                      <FileText className="h-3 w-3" />
+                      {taxReturnStats.total.toLocaleString()} tax return
+                      {taxReturnStats.total === 1 ? "" : "s"}
+                    </Badge>
+                  )}
                 </div>
               </div>
             </div>

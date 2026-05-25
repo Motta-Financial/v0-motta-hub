@@ -696,9 +696,14 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
       {/* ═════ Sticky KPI strip ═════ */}
       <KpiStrip data={data} />
 
-      {/* ═════ Tabs ═════ */}
+      {/* ═════ Tabs ═════
+        TabsList is wrapped in a sticky container so navigation stays
+        visible on long pages (Comms / Projects / Finance can each have
+        hundreds of rows). The KPI strip above is non-sticky so the tab
+        bar can dock cleanly to the top of the viewport. */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-3 sm:grid-cols-7">
+        <div className="sticky top-0 z-20 -mx-6 px-6 py-2 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b border-stone-200">
+          <TabsList className="grid w-full grid-cols-3 sm:grid-cols-7">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="communications">
             Comms
@@ -728,6 +733,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
           </TabsTrigger>
           <TabsTrigger value="people">People</TabsTrigger>
         </TabsList>
+        </div>
 
         <TabsContent value="overview" className="mt-4">
           <OverviewTab data={data} onJump={setActiveTab} />

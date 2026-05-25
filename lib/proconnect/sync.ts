@@ -204,26 +204,6 @@ async function getPreviousSyncCounts(supabase: SupabaseClient): Promise<{
 }
 
 /**
- * Match client email to Hub contact
- */
-async function matchClientToContact(
-  supabase: SupabaseClient,
-  email: string | null
-): Promise<string | null> {
-  if (!email) return null
-
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("id")
-    .ilike("primary_email", email)
-    .limit(1)
-    .single()
-
-  if (error || !data) return null
-  return data.id
-}
-
-/**
  * Sync all clients from ProConnect
  */
 async function syncClients(
@@ -256,7 +236,23 @@ async function syncClients(
 
       const email = extractClientEmail(client)
       const names = extractClientName(client)
-      const hubContactId = await matchClientToContact(supabase, email)
+      // NOTE: We deliberately do NOT pass hub_contact_id /
+      // hub_organization_id in the upsert payload below. Three reasons:
+      //   1. INSERTs are handled by the BEFORE INSERT trigger
+      //      `auto_link_proconnect_to_hub` (scripts/151_*.sql), which
+      //      already does the email + exact-name match.
+      //   2. UPDATEs would otherwise clobber any auto_fuzzy mapping
+      //      previously written by /api/tax/client-links/auto-link
+      //      (e.g. the 198 organizations linked on
+      //      2025-05-25 by scripts/apply-proconnect-auto-link.ts) —
+      //      because matchClientToContact() returns null for any
+      //      ORGANIZATION client (it only looks at contacts.email).
+      //   3. Manual links written via /tax/settings (link_source=
+      //      'manual') must also survive sync. Omitting the field is
+      //      the only way Postgres preserves the existing value on a
+      //      conflict-update.
+      // If you ever need to *change* a hub link from sync, do it as a
+      // dedicated UPDATE that respects link_source priority instead.
 
       // Upsert client
       const { error } = await supabase
@@ -271,7 +267,9 @@ async function syncClients(
             display_name: names.displayName,
             name_for_matching: names.displayName?.toLowerCase(),
             raw_json: client,
-            hub_contact_id: hubContactId,
+            // hub_contact_id intentionally omitted — see syncClients
+            // for the full rationale. Trigger handles INSERTs; UPDATEs
+            // preserve existing fuzzy/manual mappings.
             synced_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           },
@@ -878,7 +876,10 @@ export async function syncSingleClient(
     const client = response.data
     const email = extractClientEmail(client)
     const names = extractClientName(client)
-    const hubContactId = await matchClientToContact(supabase, email)
+    // hub_contact_id intentionally omitted from the upsert payload —
+    // see syncClients() above for the full rationale. INSERTs are
+    // handled by the BEFORE-INSERT trigger; UPDATEs must preserve any
+    // auto_fuzzy / manual mappings already on the row.
 
     const { error } = await supabase
       .from("proconnect_clients")
@@ -892,7 +893,7 @@ export async function syncSingleClient(
           display_name: names.displayName,
           name_for_matching: names.displayName?.toLowerCase(),
           raw_json: client,
-          hub_contact_id: hubContactId,
+          // hub_contact_id intentionally omitted (see syncClients).
           synced_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
