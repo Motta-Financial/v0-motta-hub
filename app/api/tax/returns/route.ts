@@ -73,14 +73,23 @@ export async function GET(req: Request) {
     // Total count
     const totalCountPromise = buildStatsQuery()
 
-    // E-filed (accepted) — check user_defined_status_id or raw_json customStatus
-    // We use a text search on raw_json for filed/accepted patterns
-    const efiledCountPromise = supabase
+    // E-filed count — use raw_json->>'customStatus' = 'E-Filed'
+    const allReturnTypeCodes =
+      returnTypeCodes.length > 0
+        ? returnTypeCodes
+        : ["IND", "COR", "PAR", "SCO", "EXM", "FID"]
+
+    let efiledQuery = supabase
       .from("proconnect_engagements")
       .select("*", { count: "exact", head: true })
-      .in("return_type", returnTypeCodes.length > 0 ? returnTypeCodes : ["IND", "COR", "PAR", "SCO", "EXM", "FID"])
-      .or("efile_status.ilike.%accept%,efile_status.ilike.%filed%,efile_status.ilike.%complete%")
-      .then((res) => res)
+      .in("return_type", allReturnTypeCodes)
+      .eq("raw_json->>customStatus", "E-Filed")
+
+    if (taxYear) {
+      efiledQuery = efiledQuery.eq("tax_year", Number(taxYear))
+    }
+
+    const efiledCountPromise = efiledQuery
 
     // Count by form type — run individual counts
     const formCountsPromise = Promise.all(
@@ -106,7 +115,7 @@ export async function GET(req: Request) {
     const yearsPromise = supabase
       .from("proconnect_engagements")
       .select("tax_year")
-      .in("return_type", returnTypeCodes.length > 0 ? returnTypeCodes : ["IND", "COR", "PAR", "SCO", "EXM", "FID"])
+      .in("return_type", allReturnTypeCodes)
       .order("tax_year", { ascending: false })
       .limit(20)
 
