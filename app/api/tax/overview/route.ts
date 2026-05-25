@@ -28,6 +28,36 @@ type EngagementRow = {
   proconnect_modified_at: string | null
 }
 
+// ── Filing-state classifier ──────────────────────────────────────────
+// ProConnect doesn't populate the `efile_status` column reliably — it's
+// NULL on every one of our 892 current rows. The actual "is this return
+// filed?" signal lives in `raw_json->>'customStatus'`, the same field
+// /tax/returns uses to compute its 426 e-filed count. We mirror that
+// taxonomy here so /tax (the parent dashboard) agrees with /tax/returns.
+//
+// Filed states observed in production:
+//   "E-Filed" (426), "EXT | eFiled" (52), "Filed (Manual)" (6),
+//   "eFiled | Pending" (5), "REVIEWED | Sent for eSig" (rare),
+//   "SIGNED | Ready to eFile" — the last two are *not* filed yet.
+// Any in-progress or review state is "not filed".
+const FILED_STATES = new Set<string>([
+  "E-Filed",
+  "EXT | eFiled",
+  "Filed (Manual)",
+  "eFiled | Pending",
+])
+
+function isFiledCustomStatus(s: string | null | undefined): boolean {
+  if (!s) return false
+  if (FILED_STATES.has(s)) return true
+  // Be slightly forgiving for future spellings ProConnect ships, but
+  // exclude any "not filed" / "ready to" / "pending" / "review" phrases.
+  const lower = s.toLowerCase()
+  if (/not\s*filed|ready\s*to|pending|review|cancelled|forecast|draft|input/i.test(lower)) return false
+  if (/efiled|e-?filed|filed/i.test(lower)) return true
+  return false
+}
+
 type ClientRow = {
   proconnect_client_id: string
   client_type: string | null
@@ -89,17 +119,30 @@ export async function GET() {
   try {
     const supabase = createAdminClient()
 
-    const [engagements, clients, lastSyncRes] = await Promise.all([
+    // Two parallel reads:
+    //   1. The enriched view — gives us prejoined preparer_name +
+    //      custom-status name/color from `proconnect_custom_statuses`.
+    //   2. The base `proconnect_engagements` table — only place that
+    //      exposes `raw_json->>'customStatus'`, which is the real
+    //      filing-state signal (efile_status is NULL on every row).
+    // We then merge by engagement_id so the dashboard rolls up the same
+    // filed-count as /tax/returns.
+    const [engagements, customStatusRows, clients, lastSyncRes] = await Promise.all([
       // Walk the enriched view in 1,000-row pages so we don't silently
-      // truncate at the PostgREST cap. The view already joins client
-      // display_name + proconnect_profiles + team_members, so preparer_name
-      // arrives prejoined.
+      // truncate at the PostgREST cap.
       fetchAllPaged<EngagementRow>(() =>
         supabase
           .from("proconnect_engagements_enriched")
           .select(
             "engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, user_defined_status_id, user_defined_status_name, user_defined_status_color, assignee_profile_id, preparer_name, preparer_email, preparer_team_member_id, proconnect_modified_at",
           ),
+      ),
+      // Pull customStatus from the base table. PostgREST projects
+      // raw_json->>customStatus as a string column.
+      fetchAllPaged<{ engagement_id: string; custom_status: string | null }>(() =>
+        supabase
+          .from("proconnect_engagements")
+          .select("engagement_id, custom_status:raw_json->>customStatus"),
       ),
       // Same for clients — paged so we count past 1,000.
       fetchAllPaged<ClientRow>(() =>
@@ -116,6 +159,13 @@ export async function GET() {
         .limit(1)
         .maybeSingle(),
     ])
+
+    // Build engagement_id → customStatus lookup. We attach it to the
+    // enriched rows below for the rollup pass.
+    const customStatusByEngagement = new Map<string, string | null>()
+    for (const row of customStatusRows) {
+      customStatusByEngagement.set(row.engagement_id, row.custom_status)
+    }
 
     // ── Single rollup pass ──────────────────────────────────────────
     // Avoid N table walks by computing every metric the page needs in
@@ -148,7 +198,12 @@ export async function GET() {
 
       if (eng.tax_year === currentTaxYear) currentYearReturns++
 
-      const eKey = eng.efile_status || "(not filed)"
+      // Prefer customStatus → it's the real signal. Fall back to
+      // efile_status only if customStatus is blank (it's NULL on the
+      // 227 rows that ProConnect hasn't categorised yet).
+      const cs = customStatusByEngagement.get(eng.engagement_id) ?? null
+      const filed = isFiledCustomStatus(cs)
+      const eKey = filed ? "(filed)" : "(not filed)"
       byEfileStatus[eKey] = (byEfileStatus[eKey] || 0) + 1
 
       if (eng.user_defined_status_name) {
