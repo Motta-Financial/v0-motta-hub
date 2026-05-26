@@ -345,7 +345,36 @@ function LoginContent() {
       // single line was adding ~500ms–2s to perceived sign-in time,
       // which is exactly what users were reporting as "slow login".
       clearUserCache()
-      router.push("/")
+
+      // Honor a ?redirect= param when it points to a trusted motta.cpa
+      // host. This is what alfred.motta.cpa relies on to bounce users
+      // back after sign-in, since auth cookies are scoped to the apex
+      // domain. Anything off-host (or malformed) silently falls back
+      // to "/" so this can't be abused as an open redirect.
+      const redirectParam = searchParams.get("redirect")
+      let safeRedirect: string | null = null
+      if (redirectParam) {
+        try {
+          const candidate = new URL(redirectParam)
+          const host = candidate.hostname.toLowerCase()
+          if (
+            candidate.protocol === "https:" &&
+            (host === "motta.cpa" || host.endsWith(".motta.cpa"))
+          ) {
+            safeRedirect = candidate.toString()
+          }
+        } catch {
+          // Invalid URL -- ignore and use the default below.
+        }
+      }
+      if (safeRedirect) {
+        // Use a full-page navigation so the destination origin
+        // (e.g. alfred.motta.cpa) re-runs its middleware against the
+        // freshly-set, .motta.cpa-scoped auth cookies.
+        window.location.assign(safeRedirect)
+      } else {
+        router.push("/")
+      }
     } catch (err) {
       if (err instanceof TypeError && err.message.includes("fetch")) {
         setError("Unable to connect. Please check your internet connection.")
