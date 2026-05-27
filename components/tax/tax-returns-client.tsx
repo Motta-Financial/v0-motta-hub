@@ -269,13 +269,12 @@ export function TaxReturnsClient() {
                 {Object.entries(data.stats.byYear)
                   .sort(([a], [b]) => Number(b) - Number(a))
                   .map(([year, count]) => (
-                    <button
+                    <div
                       key={year}
-                      onClick={() => setTaxYear(taxYear === year ? "all" : year)}
-                      className={`flex-shrink-0 text-center p-3 rounded-lg border transition-colors min-w-[64px] ${
+                      className={`flex-shrink-0 text-center p-3 rounded-lg border min-w-[64px] ${
                         taxYear === year
                           ? "bg-stone-900 border-stone-900 text-white"
-                          : "bg-stone-50 border-stone-100 hover:border-stone-300 hover:bg-stone-100"
+                          : "bg-stone-50 border-stone-100"
                       }`}
                     >
                       <div className={`text-lg font-semibold ${taxYear === year ? "text-white" : "text-stone-900"}`}>
@@ -284,7 +283,7 @@ export function TaxReturnsClient() {
                       <div className={`text-xs ${taxYear === year ? "text-stone-300" : "text-muted-foreground"}`}>
                         {year}
                       </div>
-                    </button>
+                    </div>
                   ))}
               </div>
             ) : (
