@@ -103,12 +103,29 @@ export async function GET(req: Request) {
 
     const yearsPromise = yearsQuery
 
+    // Status breakdown — fetch distinct status values for the filtered set.
+    // We use proconnect_engagements_enriched because user_defined_status_name
+    // lives there (joined in from proconnect_profiles). We pull ALL matching
+    // rows for the status group-by rather than a paginated slice so the strip
+    // counts are always correct regardless of current page.
+    const buildStatusQuery = () => {
+      let q = supabase
+        .from("proconnect_engagements_enriched")
+        .select("user_defined_status_name, user_defined_status_color")
+
+      if (formTypes !== null) q = q.in("form_type", formTypes)
+      if (taxYear) q = q.eq("tax_year", Number(taxYear))
+      return q
+    }
+    const statusBreakdownPromise = buildStatusQuery()
+
     // Run all stat queries in parallel
-    const [totalRes, efiledRes, formCounts, yearsRes] = await Promise.all([
+    const [totalRes, efiledRes, formCounts, yearsRes, statusRes] = await Promise.all([
       totalCountPromise,
       efiledCountPromise,
       formCountsPromise,
       yearsPromise,
+      statusBreakdownPromise,
     ])
 
     const totalCount = totalRes.count ?? 0
@@ -120,6 +137,14 @@ export async function GET(req: Request) {
       if (fc.count > 0) {
         byForm[fc.form] = { count: fc.count }
       }
+    }
+
+    // Build byStatus map { statusName: { count, color } }
+    const byStatus: Record<string, { count: number; color: string | null }> = {}
+    for (const row of statusRes.data || []) {
+      const key = row.user_defined_status_name || "(no status)"
+      if (!byStatus[key]) byStatus[key] = { count: 0, color: row.user_defined_status_color ?? null }
+      byStatus[key].count++
     }
 
     // Get unique years for filter chips
@@ -216,6 +241,7 @@ export async function GET(req: Request) {
       pendingCount: totalCount - efiledCount,
       byForm,
       byYear,
+      byStatus,
       byEfileStatus: {
         "(filed)": efiledCount,
         "(not filed)": totalCount - efiledCount,

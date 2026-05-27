@@ -41,7 +41,12 @@ import {
   EmptyChartFallback,
 } from "./tax-shared"
 
-const FORM_OPTIONS = ["all", "1040", "1065", "1120", "1120S", "990"] as const
+const FORM_OPTIONS = ["all", "1040", "1041", "1065", "1120", "1120S", "990", "709"] as const
+
+// Static year list shown in filter chips. We always show 2019–2025 regardless
+// of what availableYears returns, so the chip row is predictable. The "Returns
+// by tax year" card grid is driven by live data from the API.
+const YEAR_CHIPS = ["2025", "2024", "2023", "2022", "2021", "2020", "2019"] as const
 
 type UnifiedReturn = {
   id: string
@@ -73,6 +78,7 @@ type ReturnsResponse = {
     pendingCount: number
     byForm: Record<string, { count: number }>
     byYear: Record<string, number>
+    byStatus: Record<string, { count: number; color: string | null }>
   }
   pagination: Pagination
   availableYears: number[]
@@ -126,7 +132,9 @@ export function TaxReturnsClient() {
 
   const availableYears = data?.availableYears ?? []
 
-  // Form mix for pie chart
+  // Form mix for pie chart — naturally respects the active year filter
+  // because byForm comes from the API response which already applies
+  // both the form and taxYear params. No extra client-side calculation.
   const formMixData = useMemo(() => {
     if (!data?.stats?.byForm) return []
     return Object.entries(data.stats.byForm).map(([name, val]) => ({
@@ -146,7 +154,8 @@ export function TaxReturnsClient() {
         </p>
       </header>
 
-      {/* KPI Strip */}
+      {/* KPI Strip — all four cards respect the active year + form filters.
+          "This Year" dynamically labels to the selected year chip. */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiCard
           label="Total Returns"
@@ -176,13 +185,21 @@ export function TaxReturnsClient() {
           tone="amber"
         />
         <KpiCard
-          label="This Year"
+          label={taxYear !== "all" ? `TAX YEAR ${taxYear}` : "This Year"}
           value={
             data && availableYears[0]
-              ? fmtNumber(data.stats.byYear[String(availableYears[0])] ?? 0)
+              ? fmtNumber(
+                  data.stats.byYear[taxYear !== "all" ? taxYear : String(availableYears[0])] ?? 0,
+                )
               : "—"
           }
-          subtitle={availableYears[0] ? `Tax year ${availableYears[0]}` : ""}
+          subtitle={
+            taxYear !== "all"
+              ? `${form !== "all" ? form + " · " : ""}${taxYear}`
+              : availableYears[0]
+                ? `Tax year ${availableYears[0]}`
+                : ""
+          }
           icon={FileText}
           tone="blue"
         />
@@ -236,7 +253,9 @@ export function TaxReturnsClient() {
           </CardContent>
         </Card>
 
-        {/* Year breakdown */}
+        {/* Year breakdown — one mini-tile per year present in tax_returns,
+            sorted newest-first. No cap — all years with data are rendered
+            in a horizontally-scrollable row so the card stays compact. */}
         <Card className="lg:col-span-2">
           <CardContent className="p-4">
             <div className="flex items-center gap-2 mb-3">
@@ -246,19 +265,26 @@ export function TaxReturnsClient() {
               </h3>
             </div>
             {data && Object.keys(data.stats.byYear).length > 0 ? (
-              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+              <div className="flex gap-2 overflow-x-auto pb-1">
                 {Object.entries(data.stats.byYear)
                   .sort(([a], [b]) => Number(b) - Number(a))
                   .map(([year, count]) => (
-                    <div
+                    <button
                       key={year}
-                      className="text-center p-3 rounded-lg bg-stone-50 border border-stone-100"
+                      onClick={() => setTaxYear(taxYear === year ? "all" : year)}
+                      className={`flex-shrink-0 text-center p-3 rounded-lg border transition-colors min-w-[64px] ${
+                        taxYear === year
+                          ? "bg-stone-900 border-stone-900 text-white"
+                          : "bg-stone-50 border-stone-100 hover:border-stone-300 hover:bg-stone-100"
+                      }`}
                     >
-                      <div className="text-lg font-semibold text-stone-900">
+                      <div className={`text-lg font-semibold ${taxYear === year ? "text-white" : "text-stone-900"}`}>
                         {fmtNumber(count)}
                       </div>
-                      <div className="text-xs text-muted-foreground">{year}</div>
-                    </div>
+                      <div className={`text-xs ${taxYear === year ? "text-stone-300" : "text-muted-foreground"}`}>
+                        {year}
+                      </div>
+                    </button>
                   ))}
               </div>
             ) : (
@@ -272,7 +298,8 @@ export function TaxReturnsClient() {
       <Card>
         <CardContent className="p-3 flex flex-wrap items-center gap-2">
           <FilterIcon className="h-4 w-4 text-stone-500 ml-1" />
-          <div className="flex items-center gap-1">
+          {/* Form chips: All forms + 1040, 1041, 1065, 1120, 1120S, 990, 709 */}
+          <div className="flex items-center flex-wrap gap-1">
             {FORM_OPTIONS.map((f) => (
               <Button
                 key={f}
@@ -286,7 +313,8 @@ export function TaxReturnsClient() {
             ))}
           </div>
           <div className="h-5 w-px bg-stone-200 mx-1" />
-          <div className="flex items-center gap-1">
+          {/* Year chips: All years + static 2025–2019 */}
+          <div className="flex items-center flex-wrap gap-1">
             <Button
               size="sm"
               variant={taxYear === "all" ? "default" : "outline"}
@@ -295,12 +323,12 @@ export function TaxReturnsClient() {
             >
               All years
             </Button>
-            {availableYears.slice(0, 6).map((y) => (
+            {YEAR_CHIPS.map((y) => (
               <Button
                 key={y}
                 size="sm"
-                variant={taxYear === String(y) ? "default" : "outline"}
-                onClick={() => setTaxYear(String(y))}
+                variant={taxYear === y ? "default" : "outline"}
+                onClick={() => setTaxYear(y)}
                 className="h-7 px-2 text-xs"
               >
                 {y}
@@ -318,6 +346,34 @@ export function TaxReturnsClient() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Status breakdown strip — one pill per distinct status in the
+          filtered set. Hidden while loading or when no data. */}
+      {data && Object.keys(data.stats.byStatus).length > 0 && (
+        <div className="flex flex-wrap gap-1.5 px-1">
+          {Object.entries(data.stats.byStatus)
+            .sort(([, a], [, b]) => b.count - a.count)
+            .map(([status, { count, color }]) => (
+              <span
+                key={status}
+                className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium border"
+                style={{
+                  backgroundColor: color ? `${color}18` : "#F5F5F4",
+                  borderColor: color ?? "#D6D3D1",
+                  color: color ?? "#57534E",
+                }}
+              >
+                {status}
+                <span
+                  className="font-semibold tabular-nums"
+                  style={{ color: color ?? "#44403C" }}
+                >
+                  {fmtNumber(count)}
+                </span>
+              </span>
+            ))}
+        </div>
+      )}
 
       {/* Returns table */}
       <Card>
