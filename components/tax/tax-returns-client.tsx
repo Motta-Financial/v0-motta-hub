@@ -256,7 +256,7 @@ export function TaxReturnsClient() {
         {/* Year breakdown — one mini-tile per year present in tax_returns,
             sorted newest-first. No cap — all years with data are rendered
             in a horizontally-scrollable row so the card stays compact. */}
-        <Card className="lg:col-span-2">
+        <Card className="lg:col-span-1">
           <CardContent className="p-4">
             <div className="flex items-center gap-2 mb-3">
               <FileText className="h-4 w-4 text-stone-500" />
@@ -289,6 +289,46 @@ export function TaxReturnsClient() {
               </div>
             ) : (
               <EmptyChartFallback message="No year data" />
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Status breakdown — vertical list of statuses with count badges,
+            sorted by descending count. Respects active form + year filters. */}
+        <Card className="lg:col-span-1">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <FileText className="h-4 w-4 text-stone-500" />
+              <h3 className="text-sm font-semibold text-stone-900">
+                Status breakdown
+              </h3>
+            </div>
+            {data && Object.keys(data.stats.byStatus).length > 0 ? (
+              <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+                {Object.entries(data.stats.byStatus)
+                  .sort(([, a], [, b]) => b.count - a.count)
+                  .map(([status, { count, color }]) => (
+                    <div
+                      key={status}
+                      className="flex items-center justify-between px-2 py-1.5 rounded-md text-sm"
+                      style={{
+                        backgroundColor: color ? `${color}12` : "#F5F5F4",
+                      }}
+                    >
+                      <span className="truncate" style={{ color: color ?? "#57534E" }}>
+                        {status}
+                      </span>
+                      <span
+                        className="ml-2 font-semibold tabular-nums flex-shrink-0"
+                        style={{ color: color ?? "#44403C" }}
+                      >
+                        {fmtNumber(count)}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            ) : (
+              <EmptyChartFallback message="No status data" />
             )}
           </CardContent>
         </Card>
@@ -335,45 +375,17 @@ export function TaxReturnsClient() {
               </Button>
             ))}
           </div>
-          <div className="relative ml-auto w-72">
+          <div className="relative ml-auto w-48">
             <SearchIcon className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by client, ID, or preparer…"
+              placeholder="Search…"
               className="h-8 pl-8 text-sm"
             />
           </div>
         </CardContent>
       </Card>
-
-      {/* Status breakdown strip — one pill per distinct status in the
-          filtered set. Hidden while loading or when no data. */}
-      {data && Object.keys(data.stats.byStatus).length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-1">
-          {Object.entries(data.stats.byStatus)
-            .sort(([, a], [, b]) => b.count - a.count)
-            .map(([status, { count, color }]) => (
-              <span
-                key={status}
-                className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium border"
-                style={{
-                  backgroundColor: color ? `${color}18` : "#F5F5F4",
-                  borderColor: color ?? "#D6D3D1",
-                  color: color ?? "#57534E",
-                }}
-              >
-                {status}
-                <span
-                  className="font-semibold tabular-nums"
-                  style={{ color: color ?? "#44403C" }}
-                >
-                  {fmtNumber(count)}
-                </span>
-              </span>
-            ))}
-        </div>
-      )}
 
       {/* Returns table */}
       <Card>
