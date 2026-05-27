@@ -90,18 +90,23 @@ export async function GET(req: Request) {
       }),
     )
 
-    // Get distinct years for filter chips
+    // Get distinct years for filter chips AND for the byYear card.
+    // IMPORTANT: This query must NOT filter by taxYear — it should always
+    // return ALL years with returns (optionally filtered by formTypes).
+    // We fetch up to 10,000 rows (just the tax_year column) and dedupe
+    // client-side. This ensures we capture all distinct years even if
+    // most rows are from recent years.
     let yearsQuery = supabase
       .from("proconnect_engagements")
       .select("tax_year")
-      .order("tax_year", { ascending: false })
-      .limit(100)
+      .limit(10000)
 
     if (formTypes !== null) {
       yearsQuery = yearsQuery.in("form_type", formTypes)
     }
 
-    const yearsPromise = yearsQuery
+    // Fetch tax_year values and dedupe client-side
+    const yearsPromise = yearsQuery.order("tax_year", { ascending: false })
 
     // Status breakdown — fetch distinct status values for the filtered set.
     // We use proconnect_engagements_enriched because user_defined_status_name
