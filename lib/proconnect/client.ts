@@ -223,12 +223,12 @@ export function extractClientEmail(client: unknown): string | null {
     const person = c.person as Record<string, unknown>
     if (Array.isArray(person.emailAddresses)) {
       // Find primary or first
-      const primary = person.emailAddresses.find(
-        (e: unknown) =>
-          e &&
-          typeof e === "object" &&
-          (e as Record<string, unknown>).properties?.isPrimary === "true"
-      )
+      const primary = person.emailAddresses.find((e: unknown) => {
+        if (!e || typeof e !== "object") return false
+        const properties = (e as Record<string, unknown>).properties
+        if (!properties || typeof properties !== "object") return false
+        return (properties as Record<string, unknown>).isPrimary === "true"
+      })
       const email = primary || person.emailAddresses[0]
       if (email && typeof email === "object") {
         return (email as Record<string, unknown>).address as string | null

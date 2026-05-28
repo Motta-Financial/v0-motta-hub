@@ -220,14 +220,24 @@ async function fetchWithRetry(
   const tid = res.headers.get("intuit-tid")
   const body = await res.text()
 
-  // Retryable: 429, 423, 500, 502, 503, 504. Phase 1 doc §B.8 instructs
-  // clients to "retry with backoff" on 500 INTERNAL_ERROR, and §A.7
-  // says the same for export-side 500s. 423 (locked) is transient
-  // because the return is mid-save in the PTO UI.
+  // Idempotency-aware retry. Phase 1 doc §4 is explicit: "Import is not
+  // idempotent — repeated calls accumulate writes." So we MUST NOT blindly
+  // re-issue a POST import after a 5xx, since the write may have partially
+  // landed before the failure — a retry would double-write tax values.
+  //
+  //   - 429 RATE_LIMITED and 423 RETURN_LOCKED are guaranteed *no-write*
+  //     states (the request was rejected before processing), so they're
+  //     safe to retry for any method.
+  //   - 5xx INTERNAL_ERROR is only auto-retried for idempotent reads (GET
+  //     Export). For POST Import we surface the 5xx to the caller, which
+  //     records the attempt in proconnect_import_jobs so a human/dedup
+  //     step can decide whether to re-issue. (Doc §4: "Clients should
+  //     de-duplicate before retrying.")
+  const isIdempotent = (init.method ?? "GET").toUpperCase() === "GET"
   const retryable =
     res.status === 429 ||
     res.status === 423 ||
-    (res.status >= 500 && res.status <= 504)
+    (isIdempotent && res.status >= 500 && res.status <= 504)
   if (retryable && attempt < MAX_ATTEMPTS - 1) {
     const retryAfterHeader = res.headers.get("retry-after")
     const retryAfterMs = retryAfterHeader
