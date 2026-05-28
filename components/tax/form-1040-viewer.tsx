@@ -34,14 +34,14 @@ import { cn } from "@/lib/utils"
 type LineValue = {
   value: string | number | boolean | null
   line: {
-    lineNumber: string
-    lineLabel: string
-    lineType: string
-    category: string
+    lineCode: string
+    label: string
+    shortLabel: string | null
+    dataType: string
+    section: string
     isComputed: boolean
-    computeFormula: string | null
-    scheduleSource: string | null
-    instructions: string | null
+    scheduleRef: string | null
+    notes: string | null
   }
   source: "proconnect" | "computed" | "input"
 }
@@ -67,16 +67,13 @@ const fetcher = (url: string) =>
     return r.json() as Promise<Form1040Response>
   })
 
-// Category display order and labels
+// Section display order and labels — keys match form_1040_lines.section
 const CATEGORY_ORDER = [
   { key: "filing_status", label: "Filing Status" },
-  { key: "personal_info", label: "Personal Information" },
+  { key: "digital_assets", label: "Digital Assets" },
   { key: "dependents", label: "Dependents" },
   { key: "income", label: "Income" },
-  { key: "adjustments", label: "Adjustments to Income" },
-  { key: "deductions", label: "Deductions" },
   { key: "tax_credits", label: "Tax and Credits" },
-  { key: "other_taxes", label: "Other Taxes" },
   { key: "payments", label: "Payments" },
   { key: "refund", label: "Refund" },
   { key: "amount_owed", label: "Amount You Owe" },
@@ -98,7 +95,7 @@ export function Form1040Viewer({
     fetcher
   )
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(["income", "deductions", "tax_credits", "payments", "refund", "amount_owed"])
+    new Set(["income", "tax_credits", "payments", "refund", "amount_owed"])
   )
   const [showAllLines, setShowAllLines] = useState(false)
 
@@ -117,17 +114,18 @@ export function Form1040Viewer({
 
     const grouped = new Map<string, LineValue[]>()
     for (const [_, lineVal] of Object.entries(data.lines)) {
-      const cat = lineVal.line.category
+      const cat = lineVal.line.section
       if (!grouped.has(cat)) grouped.set(cat, [])
       grouped.get(cat)!.push(lineVal)
     }
 
-    // Sort lines within each category by line number
+    // Sort lines within each section by line code (numeric part, then suffix)
     for (const [_, lines] of grouped) {
       lines.sort((a, b) => {
-        const numA = parseInt(a.line.lineNumber.replace(/\D/g, "")) || 0
-        const numB = parseInt(b.line.lineNumber.replace(/\D/g, "")) || 0
-        return numA - numB
+        const numA = parseInt(a.line.lineCode.replace(/\D/g, "")) || 0
+        const numB = parseInt(b.line.lineCode.replace(/\D/g, "")) || 0
+        if (numA !== numB) return numA - numB
+        return a.line.lineCode.localeCompare(b.line.lineCode)
       })
     }
 
@@ -319,7 +317,7 @@ export function Form1040Viewer({
 
             const isExpanded = expandedCategories.has(key)
             const categoryTotal = lines.reduce((sum, l) => {
-              if (l.line.lineType === "currency" && typeof l.value === "number") {
+              if (l.line.dataType === "currency" && typeof l.value === "number") {
                 return sum + l.value
               }
               return sum
@@ -354,7 +352,7 @@ export function Form1040Viewer({
                     <CardContent className="pt-0">
                       <div className="divide-y divide-stone-100">
                         {visibleLines.map((lineVal) => (
-                          <LineRow key={lineVal.line.lineNumber} lineVal={lineVal} />
+                          <LineRow key={lineVal.line.lineCode} lineVal={lineVal} />
                         ))}
                       </div>
                     </CardContent>
@@ -423,7 +421,7 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
   const formatValue = () => {
     if (value === null || value === "") return <span className="text-stone-400">—</span>
 
-    switch (line.lineType) {
+    switch (line.dataType) {
       case "currency":
         return (
           <span className="font-medium tabular-nums">
@@ -436,7 +434,7 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
             {typeof value === "number" ? fmtNumber(value) : value}
           </span>
         )
-      case "checkbox":
+      case "boolean":
         return value ? (
           <CheckCircle2 className="h-4 w-4 text-emerald-600" />
         ) : (
@@ -460,23 +458,23 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-xs font-mono text-muted-foreground w-8 flex-shrink-0">
-            {line.lineNumber}
+            {line.lineCode}
           </span>
-          <span className="text-sm">{line.lineLabel}</span>
+          <span className="text-sm">{line.label}</span>
           {line.isComputed && (
             <Badge variant="outline" className="text-[10px] px-1.5 py-0">
               computed
             </Badge>
           )}
-          {line.scheduleSource && (
+          {line.scheduleRef && (
             <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-              {line.scheduleSource}
+              {line.scheduleRef}
             </Badge>
           )}
         </div>
-        {line.instructions && (
+        {line.notes && (
           <div className="text-xs text-muted-foreground mt-0.5 ml-10 line-clamp-1">
-            {line.instructions}
+            {line.notes}
           </div>
         )}
       </div>

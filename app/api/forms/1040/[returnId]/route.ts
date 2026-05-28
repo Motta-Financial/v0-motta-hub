@@ -59,10 +59,12 @@ export async function GET(
     )
   }
 
-  // 2. Fetch the flat field cells
+  // 2. Fetch the flat field cells. We read every leaf field (not just
+  //    `val`) so the renderer can resolve mappings whose cell_field points
+  //    at desc / src / tsj / scope (e.g. text or T/S/J-keyed lines).
   const { data: cellRows, error: cellErr } = await sb
     .from("proconnect_return_field_cells")
-    .select("series_id, prefix_id, code_id, suffix_id, val")
+    .select("series_id, prefix_id, code_id, suffix_id, val, description, src, tsj, scope, source, city_abbrev")
     .eq("return_id", returnId)
 
   if (cellErr) {
@@ -75,13 +77,20 @@ export async function GET(
     codeId: r.code_id,
     suffixId: r.suffix_id,
     val: r.val,
+    desc: r.description,
+    src: r.src,
+    tsj: r.tsj,
+    scope: r.scope,
+    source: r.source,
+    cityAbbrev: r.city_abbrev,
   }))
 
-  // 3. Render into Form 1040 structure
-  const form1040 = await renderForm1040(taxYear, cells)
+  // 3. Render into Form 1040 structure, scoped to this return's type.
+  const returnType = snapshot.return_type ?? "IND"
+  const form1040 = await renderForm1040(taxYear, cells, returnType)
 
   // 4. Load schema for metadata
-  const schema = await loadSchema(taxYear)
+  const schema = await loadSchema(taxYear, returnType)
 
   return NextResponse.json({
     returnId,
@@ -102,6 +111,7 @@ export async function GET(
 
 interface PostBody {
   taxYear?: number
+  returnType?: string
   clientId: string
   lines: Record<string, string | number | boolean>
   dryRun?: boolean
@@ -122,10 +132,10 @@ export async function POST(
   }
 
   const taxYear = body.taxYear ?? 2025
-  const sb = admin()
+  const returnType = body.returnType ?? "IND"
 
-  // 1. Load schema
-  const schema = await loadSchema(taxYear)
+  // 1. Load schema (lines + constants + discovered ProConnect mappings)
+  const schema = await loadSchema(taxYear, returnType)
   const { lines, constants, mappings } = schema
 
   if (mappings.length === 0) {
@@ -134,28 +144,29 @@ export async function POST(
         error:
           "No ProConnect mappings configured for TY" +
           taxYear +
-          ". Export a return first to discover the series/code structure, then populate form_1040_proconnect_map.",
+          " (" +
+          returnType +
+          "). Export a return first to discover the series/code structure, then populate form_1040_proconnect_map.",
       },
       { status: 422 },
     )
   }
 
-  // 2. Build Form1040Data from user input
+  // 2. Build Form1040Data from user input (keyed by IRS line_code)
   const data: Form1040Data = {}
   for (const line of lines) {
-    const userVal = body.lines[line.lineNumber]
-    if (userVal !== undefined && userVal !== null && userVal !== "") {
-      data[line.lineNumber] = { value: userVal, line, source: "input" }
-    } else {
-      data[line.lineNumber] = { value: null, line, source: "input" }
-    }
+    const userVal = body.lines[line.lineCode]
+    data[line.lineCode] =
+      userVal !== undefined && userVal !== null && userVal !== ""
+        ? { value: userVal, line, source: "input" }
+        : { value: null, line, source: "input" }
   }
 
   // 3. Evaluate computed lines
   const evaluated = evaluateComputedLines(data, lines, constants)
 
-  // 4. Compose import entries
-  const importPayloads = await composeImportEntries(taxYear, evaluated)
+  // 4. Compose import entries (routed to the correct cell_field per mapping)
+  const importPayloads = await composeImportEntries(taxYear, evaluated, returnType)
 
   // 5. Return the composed payload (caller can POST to /api/proconnect/returns/[returnId]/import/[seriesId])
   return NextResponse.json({
