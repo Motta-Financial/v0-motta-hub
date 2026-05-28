@@ -10,6 +10,7 @@
  */
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { getRedirectUri } from "@/lib/proconnect/oauth"
 
 const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 
@@ -21,7 +22,10 @@ export async function GET(request: NextRequest) {
   const error = searchParams.get("error")
   const errorDescription = searchParams.get("error_description")
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+  // The /tax dashboard lives on the Hub host, not the marketing site, so
+  // post-OAuth UI redirects use APP_BASE_URL (hub.motta.cpa) rather than
+  // NEXT_PUBLIC_APP_URL (motta.cpa).
+  const baseUrl = process.env.APP_BASE_URL || "https://hub.motta.cpa"
 
   // Handle user-denied consent or other errors from Intuit
   if (error) {
@@ -54,9 +58,11 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  // Exchange the authorization code for tokens
+  // Exchange the authorization code for tokens. The redirect_uri here must
+  // be byte-for-byte identical to the one sent in /connect and registered
+  // with Intuit, so it comes from the same resolver.
   const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64")
-  const redirectUri = `${baseUrl}/api/proconnect/oauth/callback`
+  const redirectUri = getRedirectUri()
 
   const tokenResponse = await fetch(TOKEN_URL, {
     method: "POST",

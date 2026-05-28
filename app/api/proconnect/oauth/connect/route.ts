@@ -14,13 +14,13 @@
  */
 import { NextRequest, NextResponse } from "next/server"
 import { randomBytes } from "node:crypto"
+import { getRedirectUri } from "@/lib/proconnect/oauth"
 
 const AUTHORIZE_URL = "https://appcenter.intuit.com/connect/oauth2"
 const SCOPE = "com.intuit.proconnect.taxreturns openid profile email"
 
 export async function GET(request: NextRequest) {
   const clientId = process.env.PROCONNECT_CLIENT_ID
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
 
   if (!clientId) {
     return NextResponse.json(
@@ -31,7 +31,9 @@ export async function GET(request: NextRequest) {
 
   // CSRF protection — store state in a short-lived cookie
   const state = randomBytes(32).toString("hex")
-  const redirectUri = `${baseUrl}/api/proconnect/oauth/callback`
+  // Must match the registered Intuit redirect URI exactly and be identical
+  // to the value used in the token exchange (/callback).
+  const redirectUri = getRedirectUri()
 
   const params = new URLSearchParams({
     client_id: clientId,
