@@ -1,10 +1,18 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   eslint: {
+    // No ESLint config is checked into this repo yet. Adopting the Next.js
+    // "strict" ruleset across ~174k lines would surface a large backlog of
+    // warnings, so build-time lint enforcement is intentionally deferred
+    // until a ruleset is adopted as a focused effort. Type safety is still
+    // enforced via the `typescript` block below.
     ignoreDuringBuilds: true,
   },
   typescript: {
-    ignoreBuildErrors: true,
+    // The app type-checks cleanly (`tsc --noEmit` = 0 errors). Enforce it at
+    // build time so type regressions can no longer ship silently. One-off ops
+    // scripts under `scripts/` are excluded from the check via tsconfig.
+    ignoreBuildErrors: false,
   },
   images: {
     unoptimized: true,

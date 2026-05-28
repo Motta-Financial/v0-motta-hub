@@ -249,7 +249,10 @@ function isCompleted(w: any): boolean {
   return s.includes("complete") || s.includes("cancel") || s.includes("archived")
 }
 
-export function projectMatches(p: Project, w: any): boolean {
+// NOTE: not exported — Next.js route files may only export route handlers
+// (GET/POST/etc.) and a fixed set of config fields. Exporting an arbitrary
+// helper from a route module fails the build under strict type checking.
+function projectMatches(p: Project, w: any): boolean {
   // If the project specifies neither pattern, we treat any work item for this
   // client as a match — useful for free-form "everything for this client"
   // engagement projects.
