@@ -193,11 +193,16 @@ export async function POST(req: NextRequest) {
         // Platform-push intent. Karbon "queued" only when actually
         // pushing; the others stay queued until their workers run.
         push_to_karbon: pushToKarbon,
-        karbon_push_status: pushToKarbon ? "queued" : "skipped",
+        // The CHECK constraint on prospect_submissions only accepts
+        // 'pending' | 'success' | 'failed' | 'skipped' (see
+        // scripts/161_prospect_platform_push.sql). Earlier code wrote
+        // 'queued' / 'pushed' which silently 500'd the form. Keep these
+        // string literals aligned with the constraint at all times.
+        karbon_push_status: pushToKarbon ? "pending" : "skipped",
         push_to_proconnect: pushToProconnect,
-        proconnect_push_status: pushToProconnect ? "queued" : "skipped",
+        proconnect_push_status: pushToProconnect ? "pending" : "skipped",
         push_to_ignition: pushToIgnition,
-        ignition_push_status: pushToIgnition ? "queued" : "skipped",
+        ignition_push_status: pushToIgnition ? "pending" : "skipped",
       })
       .select("id")
       .single()
@@ -271,7 +276,7 @@ export async function POST(req: NextRequest) {
           .from("prospect_submissions")
           .update({
             karbon_push_status: linkResult.contact_id || linkResult.organization_id
-              ? "pushed"
+              ? "success"
               : "failed",
             karbon_pushed_at: new Date().toISOString(),
           })
