@@ -184,6 +184,24 @@ export const HERO_PROFILES: HeroProfile[] = [
     ],
   },
   {
+    slug: "terry-song",
+    name: "Terry Song",
+    alias: "The Tax Strategist",
+    role: "Tax Advisory. Flow-Through Command. The Flow-Through Forecast.",
+    quote: "Complex structures don't scare me. That's where the strategy lives.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Terry_Song-DCPCjeFaV5eot8FPp13UHkP7WlmDb7.png",
+    appearance:
+      "Adult man, East Asian, short dark spiky hair, clean-shaven, composed expression. Black tactical suit with white lotus chest emblem, olive-green accents. Signature: glowing holographic tax-strategy, flow-through-analysis, and K-1 / entity-structure dashboards orbiting him.",
+    aliases: [
+      "terry song",
+      "the tax strategist",
+      "terry.song@mottafinancial.com",
+      "terry",
+    ],
+  },
+  {
     slug: "alfred",
     name: "ALFRED",
     alias: "The AI Operative",
