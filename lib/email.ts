@@ -20,6 +20,12 @@ export const EMAIL_CATEGORIES = {
   // don't miss prospect intros, but appears under the same email
   // preferences UI so anyone can opt out.
   intake: { label: "New Intake Submissions", description: "ALFRED Ai alert when a prospect submits an intake form" },
+  // ALFRED-authored alert when a new meeting is booked via Calendly.
+  // Defaults to ON so the firm stays informed of every new booking,
+  // but lives under the standard email preferences UI so anyone can
+  // opt out. Unlike the "meeting_summary" digest, this fires in
+  // real-time on every `invitee.created` webhook.
+  meeting_booked: { label: "New Meeting Booked", description: "ALFRED Ai alert when a prospect or client books a meeting via Calendly" },
   // ALFRED-authored alert when a new edition of the Motta Alliance comic
   // book series is issued through the in-app uploader. Defaults to ON so
   // every teammate sees new lore drops, but lives under the standard
@@ -43,6 +49,7 @@ export function mapNotificationTypeToCategory(notificationType?: string | null):
   if (t.includes("tommy_recap") || t.includes("tommy-recap")) return "tommy_recap"
   if (t.includes("tommy")) return "tommy_reminder"
   if (t.includes("daily_brief") || t.includes("daily-brief") || t.includes("morning_brief")) return "daily_briefing"
+  if (t.includes("meeting_booked") || t.includes("calendly_booked") || t.includes("new_booking")) return "meeting_booked"
   if (t.includes("meeting") || t.includes("calendly") || t.includes("zoom")) return "meeting_summary"
   if (t.includes("broadcast") || t.includes("announcement")) return "broadcast"
   if (t.includes("intake") || t.includes("jotform_intake") || t.includes("prospect")) return "intake"

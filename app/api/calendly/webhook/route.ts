@@ -14,6 +14,8 @@ import {
 import { runAlfredCalendlyTriage } from "@/lib/alfred/calendly-triage"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
+import { notifyTeamOfNewBooking } from "@/lib/calendly/notify"
+import { pushHubContactToKarbon } from "@/lib/karbon/client-sync"
 
 /**
  * Calendly webhook receiver.
@@ -189,6 +191,7 @@ async function upsertInvitee(
 ): Promise<{
   inviteeUuid: string | null
   deterministicMatch: { contactId: string | null; matchMethod: "email" | "name_phone" | "name" | null }
+  wasNewContact: boolean
   invitee: any
 }> {
   const uuid = extractUuid(invitee.uri)
@@ -196,6 +199,7 @@ async function upsertInvitee(
     return {
       inviteeUuid: null,
       deterministicMatch: { contactId: null, matchMethod: null },
+      wasNewContact: false,
       invitee,
     }
 
@@ -220,8 +224,8 @@ async function upsertInvitee(
   // intake channels (alongside Jotform and Zoom) — every booked
   // invitee should exist as a Hub contact even if a teammate has not
   // yet manually linked them. We tag the row with source=calendly and
-  // is_prospect=true; pushing to Karbon/ProConnect/Ignition stays
-  // teammate-driven from the contact detail page.
+  // is_prospect=true; pushing to Karbon happens fire-and-forget below.
+  let wasNewContact = false
   if (!contactId && (invitee.email || invitee.name)) {
     try {
       const created = await findOrCreateHubContact(
@@ -234,10 +238,21 @@ async function upsertInvitee(
       )
       if (created.contact_id) {
         contactId = created.contact_id
+        wasNewContact = !!created.created
         contactMatchMethod = created.created ? "auto_created" : "email"
         console.log(
           `[calendly] hub auto-${created.created ? "created" : "matched"} contact ${created.contact_id}: ${created.reason}`,
         )
+
+        // Fire-and-forget Karbon push for newly-created contacts only.
+        // This ensures direct Calendly bookings (prospects who skipped
+        // the intake form) still land in Karbon. Existing contacts
+        // already have a Karbon key or will be linked manually.
+        if (wasNewContact) {
+          void pushHubContactToKarbon(contactId, { source: "Calendly Booking" }).catch((err) => {
+            console.error("[calendly] karbon push failed (non-blocking):", err)
+          })
+        }
       }
     } catch (err) {
       console.error("[calendly] hub auto-create failed (non-blocking):", err)
@@ -282,6 +297,7 @@ async function upsertInvitee(
       matchMethod:
         contactMatchMethod === "auto_created" ? "email" : contactMatchMethod,
     },
+    wasNewContact,
     invitee,
   }
 }
@@ -413,6 +429,33 @@ async function handleInviteeCreated(payload: any) {
   }
 
   await notifyTeamMembers(supabase, event, invitee, "created", connection)
+
+  // Fire-and-forget ALFRED email to all team members (opt-out honored via
+  // the meeting_booked email category). The email includes everything the
+  // team needs at a glance: who booked, when, whether they're new or
+  // existing, and a link to the Hub record. Dedupe happens inside
+  // notifyTeamOfNewBooking via the team_notified_at column.
+  const firstInvitee = processed[0]
+  if (firstInvitee?.inviteeUuid) {
+    void notifyTeamOfNewBooking({
+      eventId: saved.id,
+      eventUuid: saved.calendly_uuid,
+      eventName: event?.name ?? "Meeting",
+      startTime: event?.start_time ?? new Date().toISOString(),
+      endTime: event?.end_time ?? new Date().toISOString(),
+      joinUrl: event?.location?.join_url ?? null,
+      hostName: connection?.calendly_user_name ?? null,
+      inviteeName: firstInvitee.invitee?.name ?? "Unknown",
+      inviteeEmail: firstInvitee.invitee?.email ?? "",
+      inviteePhone: extractPhoneFromInvitee(firstInvitee.invitee),
+      wasNewContact: firstInvitee.wasNewContact ?? false,
+      contactId: firstInvitee.deterministicMatch?.contactId ?? null,
+      karbonKey: null, // Karbon push is async; email goes out immediately
+    }).catch((err) => {
+      console.error("[calendly] team email failed (non-blocking):", err)
+    })
+  }
+
   return { success: true, action: "invitee_created" }
 }
 
