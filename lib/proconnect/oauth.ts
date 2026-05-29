@@ -262,3 +262,25 @@ export async function getTokenStatus(): Promise<{
 export function getRealmId(): string {
   return PROCONNECT_REALM_ID
 }
+
+/**
+ * Resolve the OAuth redirect_uri. This MUST be byte-for-byte identical to
+ * the value registered in the Intuit Developer app's "Redirect URIs"
+ * section AND identical between the authorize request (/connect) and the
+ * token exchange (/callback) — otherwise Intuit returns
+ * "The redirect_uri query parameter value is invalid."
+ *
+ * Source of truth is PROCONNECT_REDIRECT_URI. We deliberately do NOT fall
+ * back to NEXT_PUBLIC_APP_URL: that points at the marketing site
+ * (motta.cpa), whereas ProConnect is registered against the Hub host
+ * (hub.motta.cpa). Falling back to it produced the wrong subdomain and
+ * caused the invalid-redirect_uri error. The secondary fallback is the
+ * Hub's own APP_BASE_URL.
+ */
+export function getRedirectUri(): string {
+  const explicit = process.env.PROCONNECT_REDIRECT_URI
+  if (explicit) return explicit
+
+  const hubBase = process.env.APP_BASE_URL || "https://hub.motta.cpa"
+  return `${hubBase.replace(/\/$/, "")}/api/proconnect/oauth/callback`
+}

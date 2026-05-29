@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { FileText, ChevronDown, ChevronUp, Quote, Calendar } from "lucide-react"
+import { FileText, ChevronDown, ChevronUp, Quote, Calendar, Lock } from "lucide-react"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 
 interface Ballot {
@@ -44,6 +44,14 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
   const [ballots, setBallots] = useState<Ballot[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedBallot, setExpandedBallot] = useState<string | null>(null)
+  // Mirrors the reveal gate used by <TommyLeaderboard/>. Ballots expose
+  // exactly who voted for whom, so the current/in-flight week's ballots
+  // must stay sealed until the Friday recap drops — otherwise the feed
+  // spoils (and can influence) the vote before results are released. We
+  // pull the same `weekly_recap` endpoint the leaderboard uses to learn
+  // the selected week's Friday date and whether its recap email shipped.
+  const [recapEmailSent, setRecapEmailSent] = useState(false)
+  const [selectedWeekDate, setSelectedWeekDate] = useState<string | null>(null)
 
   useEffect(() => {
     fetchBallots()
@@ -57,16 +65,42 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
       if (filters.weekIds.length > 0) params.append("week_ids", filters.weekIds.join(","))
       if (filters.teamMemberId && filters.teamMemberId !== "all") params.append("team_member_id", filters.teamMemberId)
 
-      const res = await fetch(`/api/tommy-awards?${params}`)
+      // The recap endpoint short-circuits to `null` unless exactly one
+      // week is selected, so fetching it alongside the ballots is cheap.
+      const recapParams = new URLSearchParams({ type: "weekly_recap" })
+      if (filters.weekIds.length > 0) recapParams.append("week_ids", filters.weekIds.join(","))
+
+      const [res, recapRes] = await Promise.all([
+        fetch(`/api/tommy-awards?${params}`),
+        fetch(`/api/tommy-awards?${recapParams}`),
+      ])
       const data = await res.json()
+      const recapData = await recapRes.json().catch(() => ({ recap: null, week_date: null }))
 
       setBallots(data.ballots || [])
+      setRecapEmailSent(!!recapData?.recap?.email_sent_at)
+      setSelectedWeekDate(recapData?.week_date ?? null)
     } catch (err) {
       console.error("Error fetching ballots:", err)
     } finally {
       setLoading(false)
     }
   }
+
+  // A single in-flight week is "sealed" — same rule as the leaderboard:
+  // single-week scope, recap email not yet sent, and we're still before
+  // the Friday reveal threshold (week_date + 24h grace, covering the
+  // Friday-noon recap cron). Multi-week / all-weeks views and any week
+  // past its cutoff are never sealed.
+  const isSingleWeekView = filters.weekIds.length === 1
+  const isCurrentWeekStillSealed = (() => {
+    if (!isSingleWeekView) return false
+    if (recapEmailSent) return false
+    if (!selectedWeekDate) return false
+    const weekFriday = new Date(`${selectedWeekDate}T00:00:00Z`)
+    const revealThreshold = weekFriday.getTime() + 24 * 60 * 60 * 1000
+    return Date.now() < revealThreshold
+  })()
 
   const getInitials = (name: string) => {
     return name
@@ -139,6 +173,37 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
         <CardDescription style={{ color: "#B8B3AA" }}>Tommy Award submissions from the team</CardDescription>
       </CardHeader>
       <CardContent>
+        {isCurrentWeekStillSealed ? (
+          /* Ballots Sealed — the current week's individual votes stay
+             hidden until the Friday recap email ships, matching the
+             "Results Sealed" gate on the leaderboard so the feed can't
+             spoil or sway the vote before results are released. */
+          <div
+            className="rounded-xl border-2 px-6 py-12 text-center"
+            style={{
+              borderColor: "rgba(168,197,102,0.30)",
+              backgroundColor: "rgba(168,197,102,0.04)",
+            }}
+          >
+            <div
+              className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg"
+              style={{ backgroundColor: "rgba(168,197,102,0.15)" }}
+            >
+              <Lock className="h-6 w-6" style={{ color: "#A8C566" }} />
+            </div>
+            <p
+              className="text-xs uppercase tracking-[0.18em] font-bold mb-2"
+              style={{ color: "#A8C566" }}
+            >
+              Ballots Sealed
+            </p>
+            <p className="text-sm leading-relaxed max-w-md mx-auto" style={{ color: "#E8E3DA" }}>
+              This week&apos;s ballots stay private until the Friday recap ships
+              to the firm. Individual votes unlock the moment results are
+              released — check back after the dispatch hits your inbox.
+            </p>
+          </div>
+        ) : (
         <ScrollArea className="h-[500px] pr-4">
           {ballots.length === 0 ? (
             <div className="text-center py-8" style={{ color: "#B8B3AA" }}>
@@ -280,6 +345,7 @@ export function TommyRecentBallots({ filters }: TommyRecentBallotsProps) {
             </div>
           )}
         </ScrollArea>
+        )}
       </CardContent>
     </Card>
   )

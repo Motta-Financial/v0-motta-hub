@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   XCircle,
   Minus,
+  Loader2,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -90,10 +91,54 @@ export function Form1040Viewer({
   taxYear?: number
   clientId?: string
 }) {
-  const { data, isLoading, error } = useSWR(
+  const { data, isLoading, error, mutate } = useSWR(
     `/api/forms/1040/${returnId}?taxYear=${taxYear}`,
     fetcher
   )
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  // Trigger a Phase 1 export from ProConnect, persist the snapshot, then
+  // re-render the 1040 from the freshly cached cells. Lives here (not just
+  // the API docs) so the "not exported yet" empty state is actionable.
+  const handleExport = async () => {
+    if (!clientId) return
+    setExporting(true)
+    setExportError(null)
+    try {
+      const res = await fetch(`/api/proconnect/returns/${returnId}/data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId }),
+      })
+      const payload = await res.json().catch(() => ({}) as Record<string, unknown>)
+      if (!res.ok) {
+        const errObj = (payload as { error?: unknown }).error
+        const kind =
+          errObj && typeof errObj === "object"
+            ? (errObj as { kind?: string }).kind
+            : undefined
+        if (kind === "scope_missing") {
+          setExportError(
+            "ProConnect hasn't granted this firm the tax-return data scope yet. An admin needs to re-consent before returns can be exported.",
+          )
+        } else if (typeof errObj === "string") {
+          setExportError(errObj)
+        } else if (errObj && typeof errObj === "object") {
+          setExportError((errObj as { message?: string }).message || `Export failed (HTTP ${res.status})`)
+        } else {
+          setExportError(`Export failed (HTTP ${res.status})`)
+        }
+        return
+      }
+      // Snapshot + field cells persisted — refetch the rendered form.
+      await mutate()
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : "Export failed")
+    } finally {
+      setExporting(false)
+    }
+  }
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
     new Set(["income", "tax_credits", "payments", "refund", "amount_owed"])
   )
@@ -167,16 +212,33 @@ export function Form1040Viewer({
               </div>
               <div className={cn("text-sm mt-1", isNotFound ? "text-amber-700" : "text-rose-700")}>
                 {isNotFound
-                  ? "This return hasn't been exported from ProConnect yet. Export the return data first via the ProConnect API."
+                  ? "This return hasn't been exported from ProConnect yet. Export it now to pull the latest return data into the Hub."
                   : error.message}
               </div>
-              {clientId && (
-                <Link
-                  href={`/tax/clients/${clientId}`}
-                  className="inline-flex items-center gap-1 mt-3 text-sm text-blue-700 hover:underline"
-                >
-                  Return to client profile
-                </Link>
+              <div className="flex flex-wrap items-center gap-3 mt-3">
+                {isNotFound && clientId && (
+                  <Button size="sm" onClick={handleExport} disabled={exporting}>
+                    {exporting ? (
+                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4 mr-1.5" />
+                    )}
+                    {exporting ? "Exporting from ProConnect…" : "Export from ProConnect"}
+                  </Button>
+                )}
+                {clientId && (
+                  <Link
+                    href={`/tax/clients/${clientId}`}
+                    className="inline-flex items-center gap-1 text-sm text-blue-700 hover:underline"
+                  >
+                    Return to client profile
+                  </Link>
+                )}
+              </div>
+              {exportError && (
+                <div className="text-sm text-rose-700 mt-2" role="alert">
+                  {exportError}
+                </div>
               )}
             </div>
           </CardContent>
