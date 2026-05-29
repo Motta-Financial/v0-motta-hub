@@ -128,10 +128,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       groupMembersRes,
       contactOrgsRes,
       ignitionClientsRes,
-      intakeSubmissionsRes,
-      ignitionPaymentsRes,
-      calendlyEventLinksRes,
-      zoomMeetingLinksRes,
+  intakeSubmissionsRes,
+  prospectSubmissionsRes,
+  ignitionPaymentsRes,
+  calendlyEventLinksRes,
+  zoomMeetingLinksRes,
       pcMappingRes,
     ] = await Promise.all([
       // Work items: filter by karbon_client_key (always populated) — covers both
@@ -350,6 +351,28 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
            lead_status, link_method, linked_at,
            karbon_work_item_key, karbon_work_item_title, karbon_work_item_url,
            raw_answers`,
+        )
+        .or(`${idCol}.eq.${entityId}`)
+        .order("created_at", { ascending: false, nullsFirst: false })
+        .limit(20),
+
+      // Internal prospect submissions — the teammate-filed intake form
+      // (components/prospects/prospect-form.tsx). Linked to the master Hub
+      // contact/org at submit time. Surfaced in the same Intakes tab as
+      // Jotform intakes so the full intake history lives in one place.
+      supabase
+        .from("prospect_submissions")
+        .select(
+          `id, created_at, prospect_type,
+           submitter_full_name, submitter_email, submitter_phone,
+           service_focus, services_requested, business_name, business_state,
+           business_situation, entity_types,
+           website, linkedin_url, twitter_url, facebook_url, instagram_url,
+           business_website,
+           referred_by_raw, internal_notes,
+           link_method, linked_at,
+           karbon_work_item_key, karbon_work_item_title, karbon_work_item_url,
+           enrichment`,
         )
         .or(`${idCol}.eq.${entityId}`)
         .order("created_at", { ascending: false, nullsFirst: false })
@@ -875,7 +898,49 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const debriefs = debriefsRes.data || []
     const groupMembers = (groupMembersRes.data || []) as any[]
     const contactOrgs = (contactOrgsRes.data || []) as any[]
-    const intakeSubmissions = intakeSubmissionsRes.data || []
+    // Merge Jotform intakes + internal prospect submissions into one
+    // chronologically-sorted list for the Intakes tab. Both are mapped to
+    // the same shape; `source` lets the UI badge them differently.
+    const jotformIntakes = (intakeSubmissionsRes.data || []).map((s: any) => ({
+      ...s,
+      source: "jotform" as const,
+    }))
+    const prospectIntakes = (prospectSubmissionsRes.data || []).map((s: any) => ({
+      id: s.id,
+      created_at: s.created_at,
+      submitter_full_name: s.submitter_full_name,
+      submitter_email: s.submitter_email,
+      submitter_phone: s.submitter_phone,
+      service_focus: s.service_focus,
+      services_requested: s.services_requested,
+      business_name: s.business_name,
+      business_state: s.business_state,
+      business_situation: s.business_situation,
+      entity_types: s.entity_types,
+      // Prospect form has no explicit "questions" field; surface the
+      // teammate's internal notes there so the card isn't empty.
+      questions_or_concerns: null,
+      additional_notes: s.internal_notes,
+      referral_source: s.referred_by_raw,
+      lead_status: null,
+      link_method: s.link_method,
+      linked_at: s.linked_at,
+      karbon_work_item_key: s.karbon_work_item_key,
+      karbon_work_item_title: s.karbon_work_item_title,
+      karbon_work_item_url: s.karbon_work_item_url,
+      raw_answers: null,
+      source: "prospect" as const,
+      prospect_type: s.prospect_type,
+      website: s.website || s.business_website || null,
+      linkedin_url: s.linkedin_url,
+      twitter_url: s.twitter_url,
+      facebook_url: s.facebook_url,
+      instagram_url: s.instagram_url,
+      enrichment: s.enrichment,
+    }))
+    const intakeSubmissions = [...jotformIntakes, ...prospectIntakes].sort(
+      (a: any, b: any) => dateMs(b.created_at) - dateMs(a.created_at),
+    )
 
     // ── Derived data ───────────────────────────────────────────────────────
 
