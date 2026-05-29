@@ -56,6 +56,7 @@ import { ClientPicker, type ClientPickerValue } from "@/components/clients/clien
 import { WorkItemPicker, type WorkItemPickerValue } from "@/components/work-items/work-item-picker"
 import { ServicePicker, type ServicePickerValue } from "@/components/services/service-picker"
 import type { TeamCalendarEvent } from "./types"
+import { MeetingDebriefSection } from "./meeting-debrief-section"
 
 interface ClientTag {
   id: string
@@ -471,6 +472,11 @@ export function EventDetailDialog({ event, open, onOpenChange, timeZone, current
                 </div>
               </div>
             )}
+
+            {/* Debrief — start a prefilled debrief for this meeting, or link
+                one that's already been submitted. Shown for both Calendly
+                and Zoom meetings. */}
+            <MeetingDebriefSection event={event} currentUser={currentUser} />
           </TabsContent>
 
           {/* TAGS */}

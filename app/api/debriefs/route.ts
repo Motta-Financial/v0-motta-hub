@@ -105,6 +105,13 @@ export async function POST(request: NextRequest) {
     // dashboard filter and email subject downstream.
     const primaryContact = body.primary_contact || null
 
+    // Optional link to the specific meeting this debrief covers. The form
+    // forwards exactly one of these when launched from a meeting's detail
+    // dialog (or the post-meeting ALFRED email). They map to the
+    // debriefs.calendly_event_id / zoom_meeting_id FKs added in migration 332.
+    const calendlyEventId: string | null = body.calendly_event_id || null
+    const zoomMeetingId: string | null = body.zoom_meeting_id || null
+
     // Determine contact_id and organization_id, preferring the explicit
     // primary contact and falling back to the first related client for
     // back-compat with any older form payloads still in flight.
@@ -175,6 +182,9 @@ export async function POST(request: NextRequest) {
       karbon_client_key: karbonClientKey || null,
       status: body.status || "completed",
       debrief_type: body.debrief_type || "meeting",
+      // Link to the specific meeting this debrief covers (one or neither).
+      calendly_event_id: toUuidOrNull(calendlyEventId),
+      zoom_meeting_id: toUuidOrNull(zoomMeetingId),
     }
 
     // Store all extra data in the action_items JSONB column
@@ -219,6 +229,30 @@ export async function POST(request: NextRequest) {
 }
   
   const createdDebrief = data[0]
+
+    // If this debrief was filed against a specific meeting, stamp that meeting
+    // so the hourly debrief-reminder cron treats it as handled and never emails
+    // a (now-redundant) request for it. Best-effort — failure must not block.
+    try {
+      if (calendlyEventId) {
+        await supabase
+          .from("calendly_events")
+          .update({ debrief_requested_at: new Date().toISOString() })
+          .eq("id", calendlyEventId)
+          .is("debrief_requested_at", null)
+      } else if (zoomMeetingId) {
+        await supabase
+          .from("zoom_meetings")
+          .update({ debrief_requested_at: new Date().toISOString() })
+          .eq("id", zoomMeetingId)
+          .is("debrief_requested_at", null)
+      }
+    } catch (markErr) {
+      console.warn(
+        "[v0] Failed to stamp meeting debrief_requested_at:",
+        markErr instanceof Error ? markErr.message : markErr,
+      )
+    }
 
     await createDebriefNotifications(createdDebrief, body.team_member, body)
 

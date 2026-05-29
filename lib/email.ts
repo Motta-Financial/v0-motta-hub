@@ -26,6 +26,12 @@ export const EMAIL_CATEGORIES = {
   // opt out. Unlike the "meeting_summary" digest, this fires in
   // real-time on every `invitee.created` webhook.
   meeting_booked: { label: "New Meeting Booked", description: "ALFRED Ai alert when a prospect or client books a meeting via Calendly" },
+  // ALFRED-authored reminder, sent shortly after a client/prospect meeting
+  // ends, asking the host + internal attendees to submit a debrief. Defaults
+  // ON (operational) but lives under the standard email preferences UI so
+  // anyone can opt out. One email per meeting, deduped via
+  // calendly_events/zoom_meetings.debrief_requested_at.
+  meeting_debrief: { label: "Debrief Reminders", description: "ALFRED Ai reminder to submit a debrief after a client or prospect meeting" },
   // ALFRED-authored alert when a new edition of the Motta Alliance comic
   // book series is issued through the in-app uploader. Defaults to ON so
   // every teammate sees new lore drops, but lives under the standard
@@ -44,6 +50,7 @@ export function mapNotificationTypeToCategory(notificationType?: string | null):
   const t = notificationType.toLowerCase()
   if (t.includes("action") || t === "task" || t === "todo") return "action_item"
   if (t.includes("mention") || t === "comment_mention") return "mention"
+  if (t.includes("debrief_request") || t.includes("debrief_reminder") || t.includes("debrief-reminder")) return "meeting_debrief"
   if (t.includes("debrief")) return "debrief"
   if (t.includes("work_item") || t.includes("workitem") || t === "assignment") return "work_item"
   if (t.includes("tommy_recap") || t.includes("tommy-recap")) return "tommy_recap"
@@ -1065,6 +1072,67 @@ export function buildNotificationEmailHtml(opts: {
     <div style="white-space:pre-wrap;color:#333;">${opts.message}</div>
     ${cta}`
   return baseEmailWrapper(opts.title, body)
+}
+
+/**
+ * Post-meeting debrief request, authored by ALFRED Ai and sent by the
+ * hourly debrief-reminder cron once a client/prospect meeting has ended.
+ * Mirrors the look of Calendly's own "meeting ended" automation but keeps
+ * the firm in control of the form. The CTA opens the prefilled
+ * `/debriefs/new` form so the host only has to fill in substance.
+ */
+export function buildDebriefRequestHtml(opts: {
+  recipientName?: string
+  meetingName: string
+  /** Pretty, timezone-aware meeting time, already formatted by the caller. */
+  meetingTime: string
+  /** "Zoom" | "Phone call" | "In person" — human label for the modality. */
+  meetingTypeLabel: string
+  /** Display name of the client/prospect this meeting was tagged to. */
+  clientName?: string | null
+  /** Absolute URL to the prefilled debrief form. */
+  debriefUrl: string
+}) {
+  const greet = opts.recipientName ? `<p style="margin:0 0 16px;">Hi ${opts.recipientName},</p>` : ""
+  const clientRow = opts.clientName
+    ? `<tr>
+         <td style="padding:6px 0;color:${BRAND.textMuted};font-size:13px;width:120px;">Client</td>
+         <td style="padding:6px 0;color:${BRAND.textPrimary};font-size:13px;font-weight:600;">${opts.clientName}</td>
+       </tr>`
+    : ""
+
+  const body = `${greet}
+    <h2 style="font-size:18px;margin:0 0 12px;color:${BRAND.textPrimary};">How did the meeting go?</h2>
+    <p style="margin:0 0 18px;color:${BRAND.textMuted};font-size:14px;line-height:1.6;">
+      Your meeting has wrapped up. Take a minute to log a debrief so the rest of the team stays in the loop and any follow-ups get captured.
+    </p>
+    <div style="background:#F9FAFB;border:1px solid ${BRAND.border};border-radius:8px;padding:14px 18px;margin:0 0 22px;">
+      <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="width:100%;">
+        <tr>
+          <td style="padding:6px 0;color:${BRAND.textMuted};font-size:13px;width:120px;">Meeting</td>
+          <td style="padding:6px 0;color:${BRAND.textPrimary};font-size:13px;font-weight:600;">${opts.meetingName}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;color:${BRAND.textMuted};font-size:13px;">When</td>
+          <td style="padding:6px 0;color:${BRAND.textPrimary};font-size:13px;">${opts.meetingTime}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;color:${BRAND.textMuted};font-size:13px;">Type</td>
+          <td style="padding:6px 0;color:${BRAND.textPrimary};font-size:13px;">${opts.meetingTypeLabel}</td>
+        </tr>
+        ${clientRow}
+      </table>
+    </div>
+    <div style="text-align:center;">
+      <a href="${opts.debriefUrl}"
+         style="display:inline-block;background:${BRAND.primary};color:#fff;padding:13px 34px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
+        Submit Debrief
+      </a>
+    </div>
+    <p style="margin:20px 0 0;color:${BRAND.textMuted};font-size:12px;text-align:center;">
+      The form is pre-filled with this meeting's details — you just add the substance.
+    </p>`
+  return baseEmailWrapper("Submit your meeting debrief", body)
 }
 
 /**

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
+import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -161,27 +162,77 @@ type FormData = {
 }
 
 export function DebriefForm() {
+  // Prefill from the meeting detail dialog / post-meeting ALFRED email.
+  // When launched from a specific meeting the URL carries the meeting row id
+  // plus best-guess defaults (date, host, primary contact) so the user only
+  // has to fill in substance. See lib/debriefs/meeting-link.ts.
+  const searchParams = useSearchParams()
+
+  // The meeting this debrief is being filed against (one or neither). Held in
+  // a ref because it never changes after mount and must be included in the
+  // POST body so the API can set the debriefs.calendly_event_id /
+  // zoom_meeting_id FK and stamp the meeting as handled.
+  const meetingLinkRef = useRef<{ calendly_event_id: string | null; zoom_meeting_id: string | null }>({
+    calendly_event_id: searchParams.get("calendly_event_id"),
+    zoom_meeting_id: searchParams.get("zoom_meeting_id"),
+  })
+
+  // Build the initial form state, applying any prefill params once on mount.
+  const buildInitialFormData = (): FormData => {
+    const base: FormData = {
+      meeting_date: new Date(),
+      team_member_id: "",
+      team_member_name: "",
+      work_item_ids: [],
+      related_work_items: [],
+      primary_contact: null,
+      client_ids: [],
+      related_clients: [],
+      notes: "",
+      action_items: [],
+      services: [],
+      fee_adjustment: "",
+      fee_adjustment_reason: "",
+      research_topics: "",
+      notify_team: true,
+      follow_up_date: null,
+      notification_recipients: [],
+    }
+
+    const meetingDate = searchParams.get("meeting_date")
+    if (meetingDate) {
+      // Parse YYYY-MM-DD as a local date (avoid UTC shift to the prior day).
+      const [y, m, d] = meetingDate.split("-").map((n) => Number.parseInt(n, 10))
+      if (y && m && d) base.meeting_date = new Date(y, m - 1, d)
+    }
+
+    const teamMemberId = searchParams.get("team_member_id")
+    const teamMemberName = searchParams.get("team_member_name")
+    if (teamMemberId) base.team_member_id = teamMemberId
+    if (teamMemberName) base.team_member_name = teamMemberName
+
+    const contactId = searchParams.get("contact_id")
+    const contactType = searchParams.get("contact_type")
+    const contactName = searchParams.get("contact_name")
+    if (contactId && (contactType === "contact" || contactType === "organization") && contactName) {
+      const primary: Client = {
+        id: contactId,
+        name: contactName,
+        full_name: contactName,
+        type: contactType,
+        karbon_key: searchParams.get("karbon_key") || "",
+      }
+      base.primary_contact = primary
+      base.client_ids = [primary.id]
+      base.related_clients = [primary]
+    }
+
+    return base
+  }
+
   // Form state
   // Updated to use FormData type
-  const [formData, setFormData] = useState<FormData>({
-    meeting_date: new Date(),
-    team_member_id: "",
-    team_member_name: "",
-    work_item_ids: [],
-    related_work_items: [],
-    primary_contact: null,
-    client_ids: [],
-    related_clients: [],
-    notes: "",
-    action_items: [],
-    services: [],
-    fee_adjustment: "",
-    fee_adjustment_reason: "",
-    research_topics: "",
-    notify_team: true,
-    follow_up_date: null, // Initialize follow_up_date
-    notification_recipients: [], // Initialize notification_recipients
-  })
+  const [formData, setFormData] = useState<FormData>(buildInitialFormData)
 
   // Search states
   const [clientSearch, setClientSearch] = useState("")
@@ -741,6 +792,10 @@ export function DebriefForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           debrief_date: formData.meeting_date.toISOString().split("T")[0],
+          // Link this debrief to the specific meeting it covers, when launched
+          // from a meeting's detail dialog or the post-meeting ALFRED email.
+          calendly_event_id: meetingLinkRef.current.calendly_event_id,
+          zoom_meeting_id: meetingLinkRef.current.zoom_meeting_id,
           notes: formData.notes,
           fee_adjustment: formData.fee_adjustment, // Changed from fee_adjustments
           fee_adjustment_reason: formData.fee_adjustment_reason, // Added new field
@@ -860,6 +915,10 @@ export function DebriefForm() {
   follow_up_date: null,
   notification_recipients: [],
   })
+      // The meeting link was consumed by the debrief we just created — clear
+      // it so a second debrief filed from this same form isn't re-attached to
+      // the same meeting.
+      meetingLinkRef.current = { calendly_event_id: null, zoom_meeting_id: null }
       // Clear queued attachments too — the previous batch is now
       // attached to the freshly-created debrief; the form is ready for
       // a new entry.
