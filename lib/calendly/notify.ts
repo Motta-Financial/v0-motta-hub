@@ -78,6 +78,8 @@ interface OpenWorkItem {
   status: string | null
   dueDate: string | null
   assigneeName: string | null
+  /** Direct Karbon URL for the work item, if synced */
+  karbonUrl: string | null
 }
 
 /** Active proposal shape we surface inline in the email. */
@@ -86,6 +88,8 @@ interface ActiveProposal {
   totalValue: number
   recurringTotal: number
   recurringFrequency: string | null
+  /** Signed/PDF URL of the Ignition proposal, if available */
+  signedUrl: string | null
 }
 
 /** Everything we gather about an existing client to enrich the email. */
@@ -178,11 +182,11 @@ async function gatherClientContext(contactId: string): Promise<ClientContext> {
   const [{ data: workItems }, { data: proposals }] = await Promise.all([
     supabase
       .from("work_items")
-      .select("id, title, work_type, primary_status, status, completed_date, due_date, assignee_name")
+      .select("id, title, work_type, primary_status, status, completed_date, due_date, assignee_name, karbon_url")
       .eq("contact_id", contactId),
     supabase
       .from("ignition_proposals")
-      .select("status, total_value, recurring_total, recurring_frequency")
+      .select("status, total_value, recurring_total, recurring_frequency, signed_url")
       .eq("contact_id", contactId),
   ])
 
@@ -203,6 +207,7 @@ async function gatherClientContext(contactId: string): Promise<ClientContext> {
       status: w.primary_status || w.status,
       dueDate: w.due_date,
       assigneeName: w.assignee_name,
+      karbonUrl: w.karbon_url,
     }))
 
   const activeProposals: ActiveProposal[] = (proposals || [])
@@ -213,6 +218,7 @@ async function gatherClientContext(contactId: string): Promise<ClientContext> {
       totalValue: Number(p.total_value) || 0,
       recurringTotal: Number(p.recurring_total) || 0,
       recurringFrequency: p.recurring_frequency,
+      signedUrl: p.signed_url,
     }))
 
   return { profile, openWorkItems, activeProposals }
@@ -388,37 +394,47 @@ function buildMeetingBookedEmailHtml(
     if (cp.invoicesOutstanding > 0) statRows.push(stat("Outstanding", money(cp.invoicesOutstanding)))
     if (cp.lastMeetingAt) statRows.push(stat("Last meeting", formatDate(cp.lastMeetingAt)))
 
-    // Open work items list
+    // Open work items list. Each title deep-links to the Hub work item page;
+    // when a Karbon URL is synced we add a secondary "Karbon" link.
     const workItemsList = context.openWorkItems.length
       ? `<div style="margin:16px 0 0;">
            <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#111827;">Open Karbon Work Items</p>
            ${context.openWorkItems
-             .map(
-               (w) =>
-                 `<div style="padding:8px 10px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:5px;margin-bottom:6px;">
-                    <p style="margin:0;font-size:13px;color:#111827;font-weight:600;">${escapeHtml(w.title || "Untitled work item")}</p>
-                    <p style="margin:2px 0 0;font-size:12px;color:#6B7280;">${[w.workType, w.status, w.dueDate ? `due ${formatDate(w.dueDate)}` : null, w.assigneeName]
-                      .filter(Boolean)
-                      .map((v) => escapeHtml(String(v)))
-                      .join(" · ")}</p>
-                  </div>`,
-             )
+             .map((w) => {
+               const title = escapeHtml(w.title || "Untitled work item")
+               const titleHtml = w.id
+                 ? `<a href="${APP_URL}/work-items/${encodeURIComponent(w.id)}" style="color:#2563EB;text-decoration:none;">${title}</a>`
+                 : title
+               const meta = [w.workType, w.status, w.dueDate ? `due ${formatDate(w.dueDate)}` : null, w.assigneeName]
+                 .filter(Boolean)
+                 .map((v) => escapeHtml(String(v)))
+                 .join(" · ")
+               const karbonLink = w.karbonUrl
+                 ? ` · <a href="${escapeHtml(w.karbonUrl)}" style="color:#6B7280;text-decoration:underline;">Karbon</a>`
+                 : ""
+               return `<div style="padding:8px 10px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:5px;margin-bottom:6px;">
+                    <p style="margin:0;font-size:13px;color:#111827;font-weight:600;">${titleHtml}</p>
+                    <p style="margin:2px 0 0;font-size:12px;color:#6B7280;">${meta}${karbonLink}</p>
+                  </div>`
+             })
              .join("")}
          </div>`
       : ""
 
-    // Active proposals list
+    // Active proposals list. Each links to the Ignition proposal itself
+    // (signed_url) when available, otherwise to the Hub proposals list.
     const proposalsList = context.activeProposals.length
       ? `<div style="margin:16px 0 0;">
            <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#111827;">Open Proposals</p>
            ${context.activeProposals
-             .map(
-               (pr) =>
-                 `<div style="padding:8px 10px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:5px;margin-bottom:6px;">
-                    <p style="margin:0;font-size:13px;color:#111827;font-weight:600;">${money(pr.totalValue)}${pr.recurringTotal > 0 ? ` · ${money(pr.recurringTotal)}/${escapeHtml(pr.recurringFrequency || "yr")}` : ""}</p>
+             .map((pr) => {
+               const valueLabel = `${money(pr.totalValue)}${pr.recurringTotal > 0 ? ` · ${money(pr.recurringTotal)}/${escapeHtml(pr.recurringFrequency || "yr")}` : ""}`
+               const href = pr.signedUrl || `${APP_URL}/sales/proposals`
+               return `<div style="padding:8px 10px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:5px;margin-bottom:6px;">
+                    <p style="margin:0;font-size:13px;color:#111827;font-weight:600;"><a href="${escapeHtml(href)}" style="color:#2563EB;text-decoration:none;">${valueLabel}</a></p>
                     <p style="margin:2px 0 0;font-size:12px;color:#6B7280;">${escapeHtml(pr.status || "—")}</p>
-                  </div>`,
-             )
+                  </div>`
+             })
              .join("")}
          </div>`
       : ""
