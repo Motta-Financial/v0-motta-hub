@@ -451,6 +451,7 @@ async function handleInviteeCreated(payload: any) {
       wasNewContact: firstInvitee.wasNewContact ?? false,
       contactId: firstInvitee.deterministicMatch?.contactId ?? null,
       karbonKey: null, // Karbon push is async; email goes out immediately
+      questionsAndAnswers: firstInvitee.invitee?.questions_and_answers ?? null,
     }).catch((err) => {
       console.error("[calendly] team email failed (non-blocking):", err)
     })
