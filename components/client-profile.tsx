@@ -414,6 +414,16 @@ export interface ClientBundle {
     karbon_work_item_title: string | null
     karbon_work_item_url: string | null
     raw_answers: Record<string, unknown> | null
+    // Discriminates the original Jotform intake from the internal
+    // teammate-filed prospect form. Defaults to "jotform" for legacy rows.
+    source?: "jotform" | "prospect"
+    prospect_type?: "individual" | "business" | "individual_business" | null
+    website?: string | null
+    linkedin_url?: string | null
+    twitter_url?: string | null
+    facebook_url?: string | null
+    instagram_url?: string | null
+    enrichment?: { summary?: string | null } | null
   }>
   clientGroups: Array<{
     id: string
@@ -1733,6 +1743,19 @@ function IntakesAndDebriefsCard({
                       <span className="font-medium text-sm">
                         {i.submitter_full_name || i.business_name || "Unknown submitter"}
                       </span>
+                      <Badge
+                        variant={i.source === "prospect" ? "default" : "secondary"}
+                        className="text-[10px] uppercase"
+                      >
+                        {i.source === "prospect" ? "Prospect form" : "Jotform"}
+                      </Badge>
+                      {i.prospect_type && (
+                        <Badge variant="outline" className="text-[10px] uppercase">
+                          {i.prospect_type === "individual_business"
+                            ? "Individual & Business"
+                            : i.prospect_type}
+                        </Badge>
+                      )}
                       {i.service_focus && (
                         <Badge variant="secondary" className="text-xs">
                           {i.service_focus}
@@ -1761,6 +1784,45 @@ function IntakesAndDebriefsCard({
                   {i.questions_or_concerns && (
                     <p className="text-xs italic text-muted-foreground line-clamp-2">
                       “{i.questions_or_concerns}”
+                    </p>
+                  )}
+                  {i.source === "prospect" && i.additional_notes && (
+                    <p className="text-xs text-muted-foreground line-clamp-3">
+                      {i.additional_notes}
+                    </p>
+                  )}
+                  {i.enrichment?.summary && (
+                    <p className="text-xs text-muted-foreground line-clamp-3 border-l-2 border-primary/40 pl-2">
+                      {i.enrichment.summary}
+                    </p>
+                  )}
+                  {(i.website || i.linkedin_url || i.twitter_url || i.facebook_url || i.instagram_url) && (
+                    <div className="flex items-center gap-3 flex-wrap">
+                      {[
+                        { href: i.website, label: "Website" },
+                        { href: i.linkedin_url, label: "LinkedIn" },
+                        { href: i.twitter_url, label: "X" },
+                        { href: i.facebook_url, label: "Facebook" },
+                        { href: i.instagram_url, label: "Instagram" },
+                      ]
+                        .filter((l) => l.href)
+                        .map((l) => (
+                          <a
+                            key={l.label}
+                            href={l.href!.startsWith("http") ? l.href! : `https://${l.href}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs inline-flex items-center gap-1 text-primary hover:underline"
+                          >
+                            {l.label}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        ))}
+                    </div>
+                  )}
+                  {i.referral_source && (
+                    <p className="text-xs text-muted-foreground">
+                      Referred by: {i.referral_source}
                     </p>
                   )}
                   {i.karbon_work_item_url && (
@@ -1854,7 +1916,7 @@ function IntakesAndDebriefsCard({
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Projects tab
-// ─────────────────────────────────────────────────────────────────────────────
+// ───────────────────────���─────────────────────────────────────────────────────
 
 function ProjectsTab({ data }: { data: ClientBundle }) {
   const active = data.workItems.filter(

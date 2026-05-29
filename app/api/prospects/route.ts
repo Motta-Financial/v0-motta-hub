@@ -26,10 +26,18 @@ import { createAdminClient } from "@/lib/supabase/server"
 import { findOrCreateClient } from "@/lib/karbon/client-sync"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 import { buildProspectEmailHtml, sendEmail } from "@/lib/email"
+import { linkReferral } from "@/lib/referrals/link-referral"
+import { createWorkItem } from "@/lib/karbon/create-work-item"
+import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
+import { enrichIntakeSubmission } from "@/lib/jotform/enrich"
 
 interface CreateProspectBody {
   // Always required — the teammate filing the form.
   created_by_id: string
+
+  // "individual" | "business" | "individual_business" — drives which
+  // Karbon entities are created and which fields are required.
+  prospect_type?: "individual" | "business" | "individual_business" | null
 
   meeting_context?: string | null
 
@@ -41,6 +49,13 @@ interface CreateProspectBody {
   submitter_state?: string | null
   submitter_zip?: string | null
 
+  // Individual web presence / socials.
+  website?: string | null
+  linkedin_url?: string | null
+  twitter_url?: string | null
+  facebook_url?: string | null
+  instagram_url?: string | null
+
   services_requested?: string[] | null
   service_focus?: string | null
   entity_types?: string[] | null
@@ -48,6 +63,8 @@ interface CreateProspectBody {
   business_name?: string | null
   business_email?: string | null
   business_phone?: string | null
+  business_email_same_as_owner?: boolean | null
+  business_phone_same_as_owner?: boolean | null
   business_state?: string | null
   business_tax_classification?: string | null
   business_revenue_range?: string | null
@@ -55,6 +72,31 @@ interface CreateProspectBody {
   business_uses_accounting_system?: string | null
   business_situation?: string | null
   business_summary?: string | null
+
+  // Business web presence / socials.
+  business_website?: string | null
+  business_linkedin_url?: string | null
+  business_twitter_url?: string | null
+  business_facebook_url?: string | null
+  business_instagram_url?: string | null
+
+  // Referral attribution. A matched Hub contact id, OR free text the
+  // teammate typed (recorded for human review — never auto-creates a
+  // referrer per the Motta Hub data model).
+  referred_by_contact_id?: string | null
+  referred_by_raw?: string | null
+
+  // Optional Karbon work item to create alongside the prospect.
+  work_item?: {
+    template_key: string
+    work_type?: string | null
+    title?: string | null
+    assignee_id?: string | null
+    start_date?: string | null
+    due_date?: string | null
+    budgeted_hours?: number | null
+    work_status_key?: string | null
+  } | null
 
   internal_notes?: string | null
 
@@ -156,6 +198,7 @@ export async function POST(req: NextRequest) {
       .from("prospect_submissions")
       .insert({
         created_by_id: body.created_by_id,
+        prospect_type: body.prospect_type ?? null,
         meeting_context: body.meeting_context?.trim() || null,
 
         submitter_first_name: first,
@@ -167,6 +210,12 @@ export async function POST(req: NextRequest) {
         submitter_state: body.submitter_state?.trim() || null,
         submitter_zip: body.submitter_zip?.trim() || null,
 
+        website: body.website?.trim() || null,
+        linkedin_url: body.linkedin_url?.trim() || null,
+        twitter_url: body.twitter_url?.trim() || null,
+        facebook_url: body.facebook_url?.trim() || null,
+        instagram_url: body.instagram_url?.trim() || null,
+
         services_requested: body.services_requested?.length ? body.services_requested : null,
         service_focus: body.service_focus?.trim() || null,
         entity_types: body.entity_types?.length ? body.entity_types : null,
@@ -174,6 +223,8 @@ export async function POST(req: NextRequest) {
         business_name: body.business_name?.trim() || null,
         business_email: body.business_email?.trim().toLowerCase() || null,
         business_phone: body.business_phone?.trim() || null,
+        business_email_same_as_owner: body.business_email_same_as_owner ?? false,
+        business_phone_same_as_owner: body.business_phone_same_as_owner ?? false,
         business_state: body.business_state?.trim() || null,
         business_tax_classification: body.business_tax_classification?.trim() || null,
         business_revenue_range: body.business_revenue_range?.trim() || null,
@@ -182,6 +233,30 @@ export async function POST(req: NextRequest) {
           body.business_uses_accounting_system?.trim() || null,
         business_situation: body.business_situation?.trim() || null,
         business_summary: body.business_summary?.trim() || null,
+
+        business_website: body.business_website?.trim() || null,
+        business_linkedin_url: body.business_linkedin_url?.trim() || null,
+        business_twitter_url: body.business_twitter_url?.trim() || null,
+        business_facebook_url: body.business_facebook_url?.trim() || null,
+        business_instagram_url: body.business_instagram_url?.trim() || null,
+
+        referred_by_contact_id: isUuid(body.referred_by_contact_id)
+          ? body.referred_by_contact_id
+          : null,
+        referred_by_raw: body.referred_by_raw?.trim() || null,
+
+        karbon_work_template_key: body.work_item?.template_key?.trim() || null,
+        karbon_work_item_fields: body.work_item
+          ? {
+              work_type: body.work_item.work_type ?? null,
+              title: body.work_item.title ?? null,
+              assignee_id: body.work_item.assignee_id ?? null,
+              start_date: body.work_item.start_date ?? null,
+              due_date: body.work_item.due_date ?? null,
+              budgeted_hours: body.work_item.budgeted_hours ?? null,
+              work_status_key: body.work_item.work_status_key ?? null,
+            }
+          : null,
 
         internal_notes: body.internal_notes?.trim() || null,
 
@@ -231,6 +306,9 @@ export async function POST(req: NextRequest) {
     let finalContactId: string | null = null
     let finalOrganizationId: string | null = null
     let finalLinkMethod: string | null = null
+    // Karbon entity key/type — captured during the push so we can post
+    // the timeline note and (optionally) create a work item afterward.
+    let karbonKey: string | null = null
 
     try {
       const hub = await findOrCreateHubContact(
@@ -264,6 +342,7 @@ export async function POST(req: NextRequest) {
         // already; prefer its IDs since they carry the Karbon keys.
         if (linkResult.contact_id) finalContactId = linkResult.contact_id
         if (linkResult.organization_id) finalOrganizationId = linkResult.organization_id
+        if (linkResult.karbon_key) karbonKey = linkResult.karbon_key
 
         finalLinkMethod =
           linkResult.method === "karbon_created"
@@ -300,6 +379,212 @@ export async function POST(req: NextRequest) {
           linked_at: new Date().toISOString(),
         })
         .eq("id", inserted.id)
+    }
+
+    // ── 3b. Mirror socials onto the master Hub record ──────────────
+    // The contacts/organizations tables carry website/linkedin_url/
+    // twitter_handle/facebook_url (there is no instagram column — that
+    // stays on the prospect row + Karbon note). We only write columns
+    // the teammate actually filled in so we never clobber existing
+    // values with nulls on a re-link to an existing contact.
+    try {
+      if (finalContactId) {
+        const patch: Record<string, string> = {}
+        if (body.website?.trim()) patch.website = body.website.trim()
+        if (body.linkedin_url?.trim()) patch.linkedin_url = body.linkedin_url.trim()
+        if (body.twitter_url?.trim()) patch.twitter_handle = body.twitter_url.trim()
+        if (body.facebook_url?.trim()) patch.facebook_url = body.facebook_url.trim()
+        if (Object.keys(patch).length > 0) {
+          await supabase.from("contacts").update(patch).eq("id", finalContactId)
+        }
+      }
+      if (finalOrganizationId) {
+        const patch: Record<string, string> = {}
+        if (body.business_website?.trim()) patch.website = body.business_website.trim()
+        if (body.business_linkedin_url?.trim()) patch.linkedin_url = body.business_linkedin_url.trim()
+        if (body.business_twitter_url?.trim()) patch.twitter_handle = body.business_twitter_url.trim()
+        if (body.business_facebook_url?.trim()) patch.facebook_url = body.business_facebook_url.trim()
+        if (Object.keys(patch).length > 0) {
+          await supabase.from("organizations").update(patch).eq("id", finalOrganizationId)
+        }
+      }
+    } catch (err) {
+      console.error("[v0] POST /api/prospects socials sync failed:", err)
+    }
+
+    // ── 3c. Referral linking ───────────────────────────────────────
+    // Requires the Hub contact to exist (the referrals table needs a
+    // referee_contact_id). Free-text referrers are recorded for review,
+    // never auto-created — per the Motta Hub referral state machine.
+    let referralInfo: { name: string | null; matched: boolean } | null = null
+    if (finalContactId && (body.referred_by_contact_id || body.referred_by_raw?.trim())) {
+      try {
+        const refResult = await linkReferral(supabase, {
+          refereeContactId: finalContactId,
+          refereeName: fullName,
+          referredByContactId: isUuid(body.referred_by_contact_id)
+            ? body.referred_by_contact_id
+            : null,
+          referredByRaw: body.referred_by_raw ?? null,
+        })
+        if (refResult.referralId) {
+          await supabase
+            .from("prospect_submissions")
+            .update({ referral_id: refResult.referralId })
+            .eq("id", inserted.id)
+        }
+        // Resolve a display name for the email/note.
+        let refName: string | null = body.referred_by_raw?.trim() || null
+        if (isUuid(body.referred_by_contact_id)) {
+          const { data: refRow } = await supabase
+            .from("contacts")
+            .select("full_name")
+            .eq("id", body.referred_by_contact_id)
+            .maybeSingle()
+          refName = refRow?.full_name ?? refName
+        }
+        referralInfo = { name: refName, matched: refResult.matchStatus === "matched" }
+      } catch (err) {
+        console.error("[v0] POST /api/prospects referral link failed:", err)
+      }
+    }
+
+    // ── 3d. ALFRED enrichment from website + socials ───────────────
+    // Reuses the intake enrichment engine. It scans the free-text we
+    // pass for URLs, so we feed it the socials + meeting context. Has
+    // its own internal timeouts; failures never block the response.
+    let enrichmentSummary: string | null = null
+    try {
+      const socialBlob = [
+        body.website,
+        body.linkedin_url,
+        body.twitter_url,
+        body.facebook_url,
+        body.instagram_url,
+        body.business_website,
+        body.business_linkedin_url,
+        body.business_twitter_url,
+        body.business_facebook_url,
+        body.business_instagram_url,
+      ]
+        .filter((s) => s && s.trim())
+        .join("\n")
+      const enrichmentNotes = [body.meeting_context, body.internal_notes, socialBlob]
+        .filter((s) => s && s.trim())
+        .join("\n\n")
+
+      const blob = await enrichIntakeSubmission(supabase, {
+        id: inserted.id,
+        submitter_full_name: fullName,
+        business_name: body.business_name?.trim() || null,
+        business_state: body.business_state?.trim() || null,
+        business_summary: body.business_summary?.trim() || null,
+        questions_or_concerns: null,
+        additional_notes: enrichmentNotes || null,
+        service_focus: body.service_focus?.trim() || null,
+        organization_id: finalOrganizationId,
+        contact_id: finalContactId,
+      })
+      if (blob) {
+        enrichmentSummary = blob.summary || null
+        await supabase
+          .from("prospect_submissions")
+          .update({ enrichment: blob, enriched_at: new Date().toISOString() })
+          .eq("id", inserted.id)
+      }
+    } catch (err) {
+      console.error("[v0] POST /api/prospects enrichment failed:", err)
+    }
+
+    // ── 3e. Karbon timeline note (pinned, best-effort) ─────────────
+    // Posts a rich "New prospect" note to the contact/org timeline so
+    // the prospect's Karbon profile carries full context immediately.
+    if (pushToKarbon && karbonKey) {
+      try {
+        const entityType: "Contact" | "Organization" = finalOrganizationId
+          ? "Organization"
+          : "Contact"
+        await postIntakeNoteToKarbon(
+          { entityType, entityKey: karbonKey },
+          {
+            id: inserted.id,
+            submitter_full_name: fullName,
+            submitter_email: body.submitter_email ?? null,
+            submitter_phone: body.submitter_phone ?? null,
+            submitter_city: body.submitter_city ?? null,
+            submitter_state: body.submitter_state ?? null,
+            submitter_zip: body.submitter_zip ?? null,
+            business_name: body.business_name ?? null,
+            business_state: body.business_state ?? null,
+            business_summary: body.business_summary ?? null,
+            business_revenue_range: body.business_revenue_range ?? null,
+            business_tax_classification: body.business_tax_classification ?? null,
+            business_situation: body.business_situation ?? null,
+            service_focus: body.service_focus ?? null,
+            services_requested: body.services_requested ?? null,
+            entity_types: body.entity_types ?? null,
+            questions_or_concerns: null,
+            additional_notes: body.internal_notes ?? null,
+            website: body.website ?? body.business_website ?? null,
+            linkedin_url: body.linkedin_url ?? body.business_linkedin_url ?? null,
+            twitter_handle: body.twitter_url ?? body.business_twitter_url ?? null,
+            facebook_url: body.facebook_url ?? body.business_facebook_url ?? null,
+            instagram_url: body.instagram_url ?? body.business_instagram_url ?? null,
+            referral: referralInfo,
+            enrichment: enrichmentSummary ? { summary: enrichmentSummary } : null,
+          },
+          { pinned: true },
+        )
+      } catch (err) {
+        console.error("[v0] POST /api/prospects Karbon note failed:", err)
+      }
+    }
+
+    // ── 3f. Optional Karbon work item ──────────────────────────────
+    let workItemInfo: { title: string; url: string | null } | null = null
+    if (pushToKarbon && karbonKey && body.work_item?.template_key) {
+      try {
+        // Resolve the assignee team member's email for Karbon.
+        let assigneeEmail: string | null = null
+        if (isUuid(body.work_item.assignee_id)) {
+          const { data: tm } = await supabase
+            .from("team_members")
+            .select("email")
+            .eq("id", body.work_item.assignee_id)
+            .maybeSingle()
+          assigneeEmail = tm?.email ?? null
+        }
+        const wi = await createWorkItem({
+          clientKey: karbonKey,
+          clientType: finalOrganizationId ? "Organization" : "Contact",
+          workTemplateKey: body.work_item.template_key,
+          title: body.work_item.title?.trim() || body.business_name?.trim() || fullName || "Prospect work",
+          workType: body.work_item.work_type ?? null,
+          assigneeEmail,
+          startDate: body.work_item.start_date ?? null,
+          dueDate: body.work_item.due_date ?? null,
+          budgetedHours:
+            typeof body.work_item.budgeted_hours === "number"
+              ? body.work_item.budgeted_hours
+              : null,
+          workStatusKey: body.work_item.work_status_key ?? null,
+        })
+        if (wi.ok && wi.workItemKey) {
+          workItemInfo = { title: wi.title || "Work item", url: wi.workItemUrl ?? null }
+          await supabase
+            .from("prospect_submissions")
+            .update({
+              karbon_work_item_key: wi.workItemKey,
+              karbon_work_item_title: wi.title ?? null,
+              karbon_work_item_url: wi.workItemUrl ?? null,
+            })
+            .eq("id", inserted.id)
+        } else {
+          console.warn("[v0] POST /api/prospects work item create failed:", wi.error)
+        }
+      } catch (err) {
+        console.error("[v0] POST /api/prospects work item create failed:", err)
+      }
     }
 
     // ── 4. Team-wide notification — UNCONDITIONAL ──────────────────
@@ -377,6 +662,14 @@ export async function POST(req: NextRequest) {
           const html = buildProspectEmailHtml({
             authorName,
             prospectName: prospectDisplayName,
+            prospectType:
+              body.prospect_type === "individual_business"
+                ? "both"
+                : body.prospect_type === "business"
+                  ? "business"
+                  : body.prospect_type === "individual"
+                    ? "individual"
+                    : null,
             serviceFocus: body.service_focus ?? null,
             servicesRequested: body.services_requested ?? [],
             entityTypes: body.entity_types ?? [],
@@ -385,6 +678,24 @@ export async function POST(req: NextRequest) {
               phone: body.submitter_phone ?? null,
               location,
             },
+            socials: {
+              website: body.website ?? body.business_website ?? null,
+              linkedin: body.linkedin_url ?? body.business_linkedin_url ?? null,
+              twitter: body.twitter_url ?? body.business_twitter_url ?? null,
+              facebook: body.facebook_url ?? body.business_facebook_url ?? null,
+              instagram: body.instagram_url ?? body.business_instagram_url ?? null,
+            },
+            referral: referralInfo
+              ? {
+                  name: referralInfo.name,
+                  contactUrl: isUuid(body.referred_by_contact_id)
+                    ? `${process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"}/contacts/${body.referred_by_contact_id}`
+                    : null,
+                  matched: referralInfo.matched,
+                }
+              : null,
+            enrichmentSummary,
+            workItem: workItemInfo,
             business: body.business_name?.trim()
               ? {
                   name: body.business_name ?? null,
