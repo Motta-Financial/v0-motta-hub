@@ -166,6 +166,24 @@ export const HERO_PROFILES: HeroProfile[] = [
     aliases: ["samprina zekio", "the code keeper"],
   },
   {
+    slug: "julian-jacobson",
+    name: "Julian Jacobson",
+    alias: "The Operations Playmaker",
+    role: "Client Operations. Workflow Command. The Seamless Handoff.",
+    quote: "Every client move matters. I keep the whole game moving.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Julian_Jacobson-6S4DRauuamkRpdIhgB5grfcCHNuZdD.png",
+    appearance:
+      "Adult man, Caucasian, dark wavy hair, confident smile. Black tactical suit, white lotus chest emblem, olive-green accents. Signature: glowing holographic client-pipeline and workflow dashboards orbiting him; gold baseball-bat motif.",
+    aliases: [
+      "julian jacobson",
+      "the operations playmaker",
+      "julian.jacobson@mottafinancial.com",
+      "julian",
+    ],
+  },
+  {
     slug: "alfred",
     name: "ALFRED",
     alias: "The AI Operative",
