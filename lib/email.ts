@@ -593,11 +593,16 @@ export function buildDebriefEmailHtml({
 export function buildProspectEmailHtml({
   authorName,
   prospectName,
+  prospectType,
   serviceFocus,
   servicesRequested,
   entityTypes,
   personal,
   business,
+  socials,
+  referral,
+  enrichmentSummary,
+  workItem,
   internalNotes,
   attachmentCount,
   prospectUrl,
@@ -605,6 +610,8 @@ export function buildProspectEmailHtml({
 }: {
   authorName: string
   prospectName: string
+  // "individual" | "business" | "both" — drives the summary banner copy.
+  prospectType?: "individual" | "business" | "both" | null
   serviceFocus?: string | null
   servicesRequested?: string[]
   entityTypes?: string[]
@@ -629,6 +636,29 @@ export function buildProspectEmailHtml({
     accountingSystem?: string | null
     summary?: string | null
   } | null
+  // Web presence + social links (rendered only when provided). Maps to
+  // the same fields pushed to the Hub contact + Karbon BusinessCard.
+  socials?: {
+    website?: string | null
+    linkedin?: string | null
+    twitter?: string | null
+    facebook?: string | null
+    instagram?: string | null
+  } | null
+  // Who referred the prospect, when present. `contactUrl` deep-links
+  // into the referrer's Hub profile when the referrer was matched.
+  referral?: {
+    name?: string | null
+    contactUrl?: string | null
+    matched?: boolean
+  } | null
+  // ALFRED's drafted prospect summary / enrichment from website + socials.
+  enrichmentSummary?: string | null
+  // Optional Karbon work item created alongside the prospect.
+  workItem?: {
+    title?: string | null
+    url?: string | null
+  } | null
   internalNotes?: string | null
   attachmentCount?: number
   prospectUrl: string
@@ -652,10 +682,20 @@ export function buildProspectEmailHtml({
       <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${valueHtml}</td>
     </tr>`
 
+  const typeLabel =
+    prospectType === "individual"
+      ? "Individual"
+      : prospectType === "business"
+        ? "Business"
+        : prospectType === "both"
+          ? "Individual & Business (Business Owner)"
+          : null
+
   // -- 1. Prospect details (always present) ---------------------------
   const detailRows: string[] = []
   detailRows.push(row("Submitted By", authorName))
   detailRows.push(row("Submitted On", today))
+  if (typeLabel) detailRows.push(row("Prospect Type", typeLabel))
   if (serviceFocus) detailRows.push(row("Service Focus", serviceFocus))
   if (servicesRequested && servicesRequested.length > 0) {
     detailRows.push(row("Services Requested", servicesRequested.join(", ")))
@@ -725,6 +765,62 @@ export function buildProspectEmailHtml({
       </div>`
   }
 
+  // -- 3b. Web presence / socials (conditional) -----------------------
+  let socialsSection = ""
+  if (
+    socials &&
+    (socials.website || socials.linkedin || socials.twitter || socials.facebook || socials.instagram)
+  ) {
+    const link = (href: string, text: string) =>
+      `<a href="${href.startsWith("http") ? href : `https://${href}`}" style="color: #2563eb; text-decoration: underline;">${text}</a>`
+    const rows: string[] = []
+    if (socials.website) rows.push(row("Website", link(socials.website, socials.website)))
+    if (socials.linkedin) rows.push(row("LinkedIn", link(socials.linkedin, socials.linkedin)))
+    if (socials.twitter) rows.push(row("X / Twitter", link(socials.twitter, socials.twitter)))
+    if (socials.facebook) rows.push(row("Facebook", link(socials.facebook, socials.facebook)))
+    if (socials.instagram) rows.push(row("Instagram", link(socials.instagram, socials.instagram)))
+    socialsSection = `
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Web Presence</h2>
+        <table style="width: 100%; border-collapse: collapse;"><tbody>${rows.join("")}</tbody></table>
+      </div>`
+  }
+
+  // -- 3c. Referral (conditional) -------------------------------------
+  let referralSection = ""
+  if (referral && referral.name && referral.name.trim()) {
+    const valueHtml = referral.contactUrl
+      ? `<a href="${referral.contactUrl}" style="color: #2563eb; text-decoration: underline;">${referral.name}</a>${referral.matched ? "" : " <span style=\"color:#92400e;\">(unmatched — review)</span>"}`
+      : `${referral.name}${referral.matched ? "" : " <span style=\"color:#92400e;\">(unmatched — review)</span>"}`
+    referralSection = `
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Referred By</h2>
+        <table style="width: 100%; border-collapse: collapse;"><tbody>${row("Referrer", valueHtml)}</tbody></table>
+      </div>`
+  }
+
+  // -- 3d. ALFRED enrichment summary (conditional) --------------------
+  let enrichmentSection = ""
+  if (enrichmentSummary && enrichmentSummary.trim()) {
+    enrichmentSection = `
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">ALFRED Prospect Summary</h2>
+        <div style="background: ${BRAND.background}; border-radius: 6px; padding: 14px 16px; font-size: 14px; color: #333; white-space: pre-wrap; line-height: 1.6; border-left: 3px solid ${BRAND.primary};">${enrichmentSummary}</div>
+      </div>`
+  }
+
+  // -- 3e. Karbon work item (conditional) -----------------------------
+  let workItemSection = ""
+  if (workItem && workItem.title) {
+    const titleHtml = workItem.url
+      ? `<a href="${workItem.url}" style="color: #2563eb; text-decoration: underline;">${workItem.title}</a>`
+      : workItem.title
+    workItemSection = `
+      <div style="margin-bottom: 24px; padding: 12px 16px; background: #ecfdf5; border-left: 4px solid #10b981; border-radius: 6px; font-size: 13px; color: #065f46;">
+        Karbon work item created: <strong>${titleHtml}</strong>
+      </div>`
+  }
+
   // -- 4. Internal notes (conditional) --------------------------------
   let notesSection = ""
   if (internalNotes && internalNotes.trim()) {
@@ -790,6 +886,10 @@ export function buildProspectEmailHtml({
         ${detailsSection}
         ${personalSection}
         ${businessSection}
+        ${socialsSection}
+        ${referralSection}
+        ${enrichmentSection}
+        ${workItemSection}
         ${notesSection}
         ${attachmentHint}
 

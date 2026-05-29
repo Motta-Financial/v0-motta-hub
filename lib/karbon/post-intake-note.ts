@@ -59,6 +59,14 @@ export type IntakeNoteSubmission = {
   preferred_team_member?: string | null
   enrichment?: { summary?: string | null } | null
   question_research?: { summary?: string | null } | null
+  // Web presence + social links (rendered when present).
+  website?: string | null
+  linkedin_url?: string | null
+  twitter_handle?: string | null
+  facebook_url?: string | null
+  instagram_url?: string | null
+  // Referral attribution surfaced on the timeline note.
+  referral?: { name?: string | null; matched?: boolean } | null
 }
 
 export type IntakeNoteContext = {
@@ -82,6 +90,14 @@ export type IntakeNoteContext = {
   authorEmail?: string | null
   /** URL into Motta Hub for the canonical intake row. */
   hubUrl?: string | null
+  /**
+   * Best-effort pin the note to the top of the entity timeline. Karbon's
+   * public API does not officially document a pin field, so we send
+   * `IsPinned: true` on the create payload and, if Karbon rejects it,
+   * automatically retry the create without the flag so the note is still
+   * posted. When the flag is silently accepted the note is pinned.
+   */
+  pinned?: boolean
 }
 
 export type PostIntakeNoteResult = {
@@ -217,6 +233,34 @@ function buildNoteBody(
     }
   }
 
+  // Web presence / social links
+  if (
+    submission.website ||
+    submission.linkedin_url ||
+    submission.twitter_handle ||
+    submission.facebook_url ||
+    submission.instagram_url
+  ) {
+    parts.push("<h3>Web presence</h3>")
+    parts.push(
+      renderKvList([
+        { label: "Website", value: submission.website },
+        { label: "LinkedIn", value: submission.linkedin_url },
+        { label: "X / Twitter", value: submission.twitter_handle },
+        { label: "Facebook", value: submission.facebook_url },
+        { label: "Instagram", value: submission.instagram_url },
+      ]),
+    )
+  }
+
+  // Referral attribution
+  if (submission.referral?.name) {
+    parts.push("<h3>Referred by</h3>")
+    parts.push(
+      `<p>${escape(submission.referral.name)}${submission.referral.matched ? "" : " (unmatched — pending review in Motta Hub)"}</p>`,
+    )
+  }
+
   // Questions / notes from the prospect themselves
   if (submission.questions_or_concerns) {
     parts.push("<h3>Questions from the prospect</h3>")
@@ -311,12 +355,28 @@ export async function postIntakeNoteToKarbon(
   if (submission.jotform_created_at) {
     payload.TodoDate = submission.jotform_created_at
   }
+  if (context.pinned) {
+    // Best-effort pin — see PostIntakeNoteResult/context.pinned doc above.
+    payload.IsPinned = true
+  }
 
-  const { data, error } = await karbonFetch<{ NoteKey?: string }>(
+  let { data, error } = await karbonFetch<{ NoteKey?: string }>(
     "/Notes",
     credentials,
     { method: "POST", body: payload },
   )
+
+  // If Karbon rejected the request and we sent the unofficial IsPinned
+  // flag, retry once without it so the note still lands on the timeline.
+  if (error && context.pinned) {
+    console.warn("[karbon-intake-note] POST /Notes with IsPinned failed — retrying without pin.")
+    delete payload.IsPinned
+    ;({ data, error } = await karbonFetch<{ NoteKey?: string }>(
+      "/Notes",
+      credentials,
+      { method: "POST", body: payload },
+    ))
+  }
 
   if (error) {
     console.error("[karbon-intake-note] POST /Notes failed:", error)
