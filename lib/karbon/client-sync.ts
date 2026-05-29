@@ -224,7 +224,7 @@ export async function createKarbonContact(data: {
         karbon_contact_key: contactKey,
         first_name: data.firstName,
         last_name: data.lastName,
-        full_name: `${data.firstName} ${data.lastName}`,
+        // full_name is a GENERATED column in Supabase — never write it.
         primary_email: data.email || null,
         phone_primary: data.phone || null,
         source: data.source || "Jotform Intake",
@@ -461,7 +461,7 @@ export async function findOrCreateClient(
           karbon_contact_key: match.contactKey,
           first_name: nameParts[0] || "",
           last_name: nameParts.slice(1).join(" ") || "",
-          full_name: match.name,
+          // full_name is a GENERATED column in Supabase — never write it.
           primary_email: match.email || null,
           status: "Active",
           karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/contacts/${match.contactKey}`,

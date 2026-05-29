@@ -20,6 +20,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { generatePodiumImage } from "@/lib/tommy-awards/generate-podium-image"
+import { triggerStage } from "@/lib/tommy-awards/pipeline"
 
 export const runtime = "nodejs"
 // Fluid Compute (Pro) supports up to 800s — give the image step a
@@ -68,7 +69,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (recap.podium_image_url) {
-    // Idempotent — if an image is already attached, don't re-render.
+    // Idempotent — if an image is already attached, don't re-render, but
+    // still advance the chain so the PDF (and ultimately the email)
+    // reflect the existing art on a re-run.
+    triggerStage("tommy-recap-pdf", weekId)
     return NextResponse.json({ ok: true, alreadyHasImage: true, url: recap.podium_image_url })
   }
 
@@ -132,10 +136,15 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // Chain → PDF stage, which builds the printable artifact with this
+  // image embedded. Fire-and-forget; the PDF route owns its own budget.
+  triggerStage("tommy-recap-pdf", weekId)
+
   return NextResponse.json({
     ok: true,
     weekId,
     imageUrl: result.imageUrl,
     elapsedMs,
+    chained: "tommy-recap-pdf",
   })
 }

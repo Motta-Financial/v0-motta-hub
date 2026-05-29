@@ -166,6 +166,42 @@ export const HERO_PROFILES: HeroProfile[] = [
     aliases: ["samprina zekio", "the code keeper"],
   },
   {
+    slug: "julian-jacobson",
+    name: "Julian Jacobson",
+    alias: "The Operations Playmaker",
+    role: "Client Operations. Workflow Command. The Seamless Handoff.",
+    quote: "Every client move matters. I keep the whole game moving.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Julian_Jacobson-6S4DRauuamkRpdIhgB5grfcCHNuZdD.png",
+    appearance:
+      "Adult man, Caucasian, dark wavy hair, confident smile. Black tactical suit, white lotus chest emblem, olive-green accents. Signature: glowing holographic client-pipeline and workflow dashboards orbiting him; gold baseball-bat motif.",
+    aliases: [
+      "julian jacobson",
+      "the operations playmaker",
+      "julian.jacobson@mottafinancial.com",
+      "julian",
+    ],
+  },
+  {
+    slug: "terry-song",
+    name: "Terry Song",
+    alias: "The Tax Strategist",
+    role: "Tax Advisory. Flow-Through Command. The Flow-Through Forecast.",
+    quote: "Complex structures don't scare me. That's where the strategy lives.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Terry_Song-DCPCjeFaV5eot8FPp13UHkP7WlmDb7.png",
+    appearance:
+      "Adult man, East Asian, short dark spiky hair, clean-shaven, composed expression. Black tactical suit with white lotus chest emblem, olive-green accents. Signature: glowing holographic tax-strategy, flow-through-analysis, and K-1 / entity-structure dashboards orbiting him.",
+    aliases: [
+      "terry song",
+      "the tax strategist",
+      "terry.song@mottafinancial.com",
+      "terry",
+    ],
+  },
+  {
     slug: "alfred",
     name: "ALFRED",
     alias: "The AI Operative",

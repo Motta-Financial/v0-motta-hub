@@ -34,10 +34,18 @@
     },
     {
       "path": "/api/cron/tommy-weekly-recap",
-      "schedule": "0 16 * * 5"
+      "schedule": "45 12 * * 5"
     },
     {
       "path": "/api/cron/tommy-weekly-recap",
+      "schedule": "45 13 * * 5"
+    },
+    {
+      "path": "/api/cron/tommy-recap-send",
+      "schedule": "0 16 * * 5"
+    },
+    {
+      "path": "/api/cron/tommy-recap-send",
       "schedule": "0 17 * * 5"
     },
     {

@@ -211,19 +211,54 @@ Winners this week (images follow below, in podium order):`,
     console.log("[v0] tommy podium image: prompt drafted, generating image…")
 
     // ── Step 3 — render the image at HIGH ("extended pro") quality ──
-    const { image } = await generateImage({
-      model: PODIUM_IMAGE_MODEL,
-      prompt: cleanedPrompt,
-      size: "1536x1024", // wide format suits the F1 podium composition
-      providerOptions: {
-        openai: {
-          // gpt-image-1's top tier — the "extended pro" output the user
-          // asked for. "low" / "medium" / "high" are the supported
-          // values; "high" is the slowest + most detailed.
-          quality: "high",
-        },
-      },
-    })
+    // gpt-image-2 intermittently returns transient 5xx ("Internal Server
+    // Error", isRetryable: true) under load. A single failure used to sink
+    // the entire weekly render, which is why the Tommy email kept shipping
+    // without art. Retry a few times with exponential backoff before giving
+    // up; only retry on transient/5xx errors so we fail fast on real
+    // problems (bad prompt, auth, content policy).
+    const MAX_IMAGE_ATTEMPTS = 4
+    let image: Awaited<ReturnType<typeof generateImage>>["image"] | null = null
+    for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
+      try {
+        const res = await generateImage({
+          model: PODIUM_IMAGE_MODEL,
+          prompt: cleanedPrompt,
+          size: "1536x1024", // wide format suits the F1 podium composition
+          providerOptions: {
+            openai: {
+              // gpt-image-1's top tier — the "extended pro" output the user
+              // asked for. "low" / "medium" / "high" are the supported
+              // values; "high" is the slowest + most detailed.
+              quality: "high",
+            },
+          },
+        })
+        image = res.image
+        if (attempt > 1) {
+          console.log(`[v0] tommy podium image: render succeeded on attempt ${attempt}`)
+        }
+        break
+      } catch (err) {
+        const status = (err as { statusCode?: number })?.statusCode
+        const retryable =
+          (err as { isRetryable?: boolean })?.isRetryable === true ||
+          (typeof status === "number" && status >= 500) ||
+          status === 429
+        if (!retryable || attempt === MAX_IMAGE_ATTEMPTS) {
+          throw err
+        }
+        const backoffMs = 2000 * 2 ** (attempt - 1) // 2s, 4s, 8s
+        console.warn(
+          `[v0] tommy podium image: render attempt ${attempt} failed (status ${status ?? "?"}), retrying in ${backoffMs}ms…`,
+        )
+        await new Promise((r) => setTimeout(r, backoffMs))
+      }
+    }
+
+    if (!image) {
+      throw new Error("image generation returned no image after retries")
+    }
 
     // ── Step 4 — upload to Vercel Blob for email embedding ───────
     // image.uint8Array is the raw PNG; we wrap it in a Buffer so the

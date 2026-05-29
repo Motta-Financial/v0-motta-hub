@@ -1,78 +1,48 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
-import { buildTommyRecapHtml, sendCategoryEmail } from "@/lib/email"
-import { assignDenseRanks } from "@/lib/tommy-awards-ranking"
-import { generateText } from "ai"
-import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
-import { getAIConfig, logAIUsage } from "@/lib/ai/config"
-import { generatePodiumPdf } from "@/lib/tommy-awards/generate-podium-pdf"
-import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
+import { composeWeeklyRecap } from "@/lib/tommy-awards/weekly-recap"
+import { triggerStage } from "@/lib/tommy-awards/pipeline"
 import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 
-// The recap pipeline runs the fast steps inline (AI prose, PDF render,
-// Resend send) and then fires the slow gpt-image-2 step asynchronously
-// against /api/tommy-awards/generate-podium-image — see that route for
-// rationale. The synchronous portion completes in ~10s end-to-end so we
-// keep the cron's own ceiling tight; the async image route owns its own
-// 800s budget. Setting `maxDuration = 60` here means a stuck cron fails
-// fast on Friday noon rather than silently chewing minutes.
+// ── STAGE 1 of 4: PREPARE ─────────────────────────────────────────────
+// This route used to do EVERYTHING (tally → story → PDF → email → async
+// image). That meant the image never made it into the Friday email,
+// because the email was sent BEFORE the slow gpt-image-2 render finished.
+//
+// The pipeline is now split into four individually time-budgeted stages
+// so the email always ships LAST with the image + PDF already baked in:
+//
+//   1. PREPARE  (this route)            — Friday 8:45 AM ET. Tally the
+//      ballots + draft ALFRED's story, persist the story columns, then
+//      chain to the image stage. NO email is sent here.
+//   2. IMAGE    (/api/cron/tommy-podium-image) — render the podium art,
+//      persist it, chain to the PDF stage.
+//   3. PDF      (/api/cron/tommy-recap-pdf)     — build the PDF with the
+//      image embedded, persist it. End of the prep chain.
+//   4. SEND     (/api/cron/tommy-recap-send)    — Friday 12:00 PM ET.
+//      Email the firm with the image embedded + PDF attached. Triggered
+//      independently by its own cron (not by the chain) so the firm
+//      always gets an email at noon even if a prep stage failed.
+//
+// PREPARE only does fast brain work (~10s), so we keep a tight ceiling.
 export const maxDuration = 60
 
 /**
- * Format a podium rank as "1st" / "2nd" / "3rd". Tied finishers share a
- * rank so we want the prompt to read "1st. Alex / 1st. Sam" rather than
- * "1. Alex / 2. Sam", which would mislead ALFRED into ordering them.
- */
-function ordinal(n: number): string {
-  if (n === 1) return "1st"
-  if (n === 2) return "2nd"
-  if (n === 3) return "3rd"
-  return `${n}th`
-}
-
-/**
- * True when any two podium finishers share the same rank — used to nudge
- * ALFRED's prompt with explicit guidance about co-winners so the recap
- * doesn't accidentally describe one tied colleague as "edging out" the
- * other.
- */
-function hasPodiumTies(podium: ReadonlyArray<{ rank: number }>): boolean {
-  const seen = new Set<number>()
-  for (const p of podium) {
-    if (seen.has(p.rank)) return true
-    seen.add(p.rank)
-  }
-  return false
-}
-
-/**
- * Vercel Cron endpoint that sends a weekly Tommy Awards recap email to
- * the entire firm every Friday at 12:00 PM Eastern.
+ * Vercel Cron endpoint — Friday ~8:45 AM Eastern. Tallies the week's
+ * ballots, drafts ALFRED's storyline recap, persists the story columns
+ * on `tommy_weekly_recaps`, and kicks off the image → PDF prep chain so
+ * everything is ready before the noon send.
  *
- * The email is composed in the Motta Alliance comic-book storyline:
- *   - ALFRED Ai narrates the week as if it were an issue of the
- *     "Motta Financial Alliance" series — A-Team missions, P24 shadow
- *     ops, "Operation Tommy", etc.
- *   - Each recap is persisted to `tommy_weekly_recaps` so future weeks
- *     have continuity context (e.g. "third podium in four weeks").
- *   - GPT-5 drafts an image prompt and gpt-image-1 (high quality)
- *     renders an F1-podium hero image themed to the comic universe —
- *     uploaded to Vercel Blob and embedded in the email.
+ * Vercel Cron is UTC-only, so this is scheduled at BOTH UTC hours that
+ * map to 8:45 AM Eastern:
+ *   - `45 12 * * 5` — 12:45 UTC = 8:45 AM EDT (Mar–Nov)
+ *   - `45 13 * * 5` — 13:45 UTC = 8:45 AM EST (Nov–Mar)
+ * The `isEasternHourAndWeekday(8, 5)` guard lets exactly one twin run.
  *
- * Auth: validates the standard Vercel cron Authorization: Bearer ${CRON_SECRET}.
- *
- * Target send time: Fridays at 12:00 PM Eastern, year-round.
- *
- * Vercel Cron is timezone-naive (UTC only), so this endpoint is scheduled
- * in vercel.json at BOTH possible UTC hours that map to noon Eastern:
- *   - `0 16 * * 5` — Friday 16:00 UTC = 12:00 PM EDT (March-November)
- *   - `0 17 * * 5` — Friday 17:00 UTC = 12:00 PM EST (November-March)
- * Exactly one of those invocations will satisfy the DST-aware
- * `isEasternHourAndWeekday(12, 5)` guard below on any given Friday and
- * actually send. The other invocation no-ops with `skipped: true`.
- *
- * Manual previews (`?dryRun=true`, `?previewTo=`, `?skipImage=true`) and
- * `?force=true` bypass the guard so QA isn't gated on the wall clock.
+ * Query flags:
+ *   - ?dryRun=true   — compose + return the data WITHOUT persisting or chaining.
+ *   - ?force=true    — bypass the Eastern-time guard.
+ *   - ?skipChain=true — persist but do NOT trigger the image stage.
  */
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization")
@@ -82,27 +52,19 @@ export async function GET(request: Request) {
     }
   }
 
-  // ?dryRun=true → render the email + summary + image WITHOUT sending or
-  // persisting the recap row. Useful for QA on the storyline prompt or
-  // image art direction without burning recipients.
   const url = new URL(request.url)
   const dryRun = url.searchParams.get("dryRun") === "true"
-  // ?previewTo=email → send to a single address only.
-  const previewTo = url.searchParams.get("previewTo")
-  // ?skipImage=true → skip image generation entirely (faster for prompt QA).
-  const skipImage = url.searchParams.get("skipImage") === "true"
-  // ?force=true → bypass the DST-aware Eastern-time guard.
   const force = url.searchParams.get("force") === "true"
+  const skipChain = url.searchParams.get("skipChain") === "true"
 
-  // DST guard: only proceed when we're actually at noon ET on a Friday.
-  // The other UTC-twin invocation will hit this branch and exit cleanly.
-  // Any QA flag (dryRun, previewTo, force) bypasses the guard.
-  if (!dryRun && !previewTo && !force && !isEasternHourAndWeekday(12, 5)) {
+  // DST guard: only proceed at 8 AM ET on a Friday. The other UTC-twin
+  // invocation exits cleanly here. QA flags bypass the guard.
+  if (!dryRun && !force && !isEasternHourAndWeekday(8, 5)) {
     const { hour, weekday } = nowInEastern()
     return NextResponse.json({
       success: true,
       skipped: true,
-      reason: "Not 12:00 PM Eastern on a Friday — skipping (DST twin invocation).",
+      reason: "Not 8:00 AM Eastern on a Friday — skipping (DST twin invocation).",
       eastern_hour: hour,
       eastern_weekday: weekday,
     })
@@ -111,483 +73,64 @@ export async function GET(request: Request) {
   try {
     const supabase = createAdminClient()
 
-    // Most recent week with ballots — under the Friday-noon-ET schedule
-    // this is normally TODAY's Friday.
-    const { data: latestWeek, error: weekErr } = await supabase
-      .from("tommy_award_ballots")
-      .select("week_id, week_date")
-      .order("week_date", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (weekErr) throw weekErr
-    if (!latestWeek) {
-      return NextResponse.json({
-        success: true,
-        skipped: true,
-        message: "No ballots submitted yet — nothing to recap.",
-      })
+    const composed = await composeWeeklyRecap(supabase)
+    if (composed.status === "skipped") {
+      return NextResponse.json({ success: true, skipped: true, message: composed.reason })
     }
 
-    const weekId = latestWeek.week_id
-    const weekDate = new Date(latestWeek.week_date)
-    const weekLabel = weekDate.toLocaleDateString("en-US", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    })
-
-    // Fetch all ballots for this week including all the notes.
-    const { data: ballots, error: ballotsErr } = await supabase
-      .from("tommy_award_ballots")
-      .select("*")
-      .eq("week_id", weekId)
-      .order("voter_name")
-
-    if (ballotsErr) throw ballotsErr
-    if (!ballots || ballots.length === 0) {
-      return NextResponse.json({
-        success: true,
-        skipped: true,
-        message: `No ballots for week ${weekLabel} — nothing to recap.`,
-      })
-    }
-
-    // Normalize "Ganesh Vasan", "Thameem JA", and the legacy "G&T" label → "P24"
-    const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA", "G&T"]
-    const normalizeName = (name: string) => (COMBINED_VOTERS.includes(name) ? "P24" : name)
-
-    // Aggregate vote tallies and collect all notes for AI summarization.
-    const voteMap: Record<
-      string,
-      {
-        first: number
-        second: number
-        third: number
-        totalPoints: number
-      }
-    > = {}
-    const allNotes: Array<{
-      voter: string
-      place: string
-      recipient: string
-      notes: string
-    }> = []
-
-    const ensureEntry = (name: string) => {
-      const normalized = normalizeName(name)
-      if (!voteMap[normalized]) {
-        voteMap[normalized] = { first: 0, second: 0, third: 0, totalPoints: 0 }
-      }
-      return voteMap[normalized]
-    }
-
-    for (const ballot of ballots) {
-      if (ballot.first_place_name) {
-        const entry = ensureEntry(ballot.first_place_name)
-        entry.first++
-        entry.totalPoints += 3
-        if (ballot.first_place_notes) {
-          allNotes.push({
-            voter: ballot.voter_name,
-            place: "1st",
-            recipient: ballot.first_place_name,
-            notes: ballot.first_place_notes,
-          })
-        }
-      }
-      if (ballot.second_place_name) {
-        const entry = ensureEntry(ballot.second_place_name)
-        entry.second++
-        entry.totalPoints += 2
-        if (ballot.second_place_notes) {
-          allNotes.push({
-            voter: ballot.voter_name,
-            place: "2nd",
-            recipient: ballot.second_place_name,
-            notes: ballot.second_place_notes,
-          })
-        }
-      }
-      if (ballot.third_place_name) {
-        const entry = ensureEntry(ballot.third_place_name)
-        entry.third++
-        entry.totalPoints += 1
-        if (ballot.third_place_notes) {
-          allNotes.push({
-            voter: ballot.voter_name,
-            place: "3rd",
-            recipient: ballot.third_place_name,
-            notes: ballot.third_place_notes,
-          })
-        }
-      }
-    }
-
-    // Hidden members are excluded from the leaderboard, then dense ranks
-    // (1, 1, 2, 3) handle ties so a 4-way tie at 3rd keeps all four on
-    // the podium instead of silently dropping one.
-    const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
-    const sortedLeaderboard = Object.entries(voteMap)
-      .filter(([name]) => !HIDDEN_MEMBERS.includes(name))
-      .map(([name, stats]) => ({ name, ...stats }))
-      .sort((a, b) => b.totalPoints - a.totalPoints)
-
-    const rankedLeaderboard = assignDenseRanks(
-      sortedLeaderboard,
-      (a, b) => a.totalPoints === b.totalPoints,
-    )
-
-    const topThree = rankedLeaderboard.filter((entry) => entry.rank <= 3)
-
-    // ── Storyline context — previous weekly recaps + YTD standings ──
-    // We feed up to the last 4 weekly summaries plus the current YTD
-    // leaderboard into ALFRED so the narrative actually references
-    // continuing arcs ("third podium in five weeks", "Caleb reclaiming
-    // his stripes after last week's silver finish") instead of treating
-    // every week as a blank slate.
-    const { data: priorRecaps } = await supabase
-      .from("tommy_weekly_recaps")
-      .select("week_label, week_date, ai_summary, top_three")
-      .neq("week_id", weekId)
-      .order("week_date", { ascending: false })
-      .limit(4)
-
-    const currentYear = new Date(latestWeek.week_date).getFullYear()
-    const { data: ytdStandings } = await supabase
-      .from("tommy_award_yearly_totals")
-      .select(
-        "team_member_name, total_points, total_first_place_votes, total_second_place_votes, total_third_place_votes, weeks_participated, current_rank",
-      )
-      .eq("year", currentYear)
-      .order("current_rank", { ascending: true })
-      .limit(8)
-
-    const priorContext =
-      priorRecaps && priorRecaps.length > 0
-        ? priorRecaps
-            .reverse() // oldest → newest reads chronologically
-            .map((r) => {
-              const topNames = Array.isArray(r.top_three)
-                ? (r.top_three as Array<{ name: string; rank: number }>)
-                    .map((t) => `${ordinal(t.rank)} ${t.name}`)
-                    .join(", ")
-                : ""
-              return `• ${r.week_label} — podium: ${topNames || "(unknown)"}.\n  Summary: ${r.ai_summary?.slice(0, 600) ?? ""}`
-            })
-            .join("\n")
-        : "(No prior weeks recorded — this is the opening issue of the season.)"
-
-    const ytdContext =
-      ytdStandings && ytdStandings.length > 0
-        ? ytdStandings
-            .map(
-              (s) =>
-                `• #${s.current_rank ?? "?"} ${s.team_member_name} — ${s.total_points} pts (${s.total_first_place_votes ?? 0}×1st / ${s.total_second_place_votes ?? 0}×2nd / ${s.total_third_place_votes ?? 0}×3rd across ${s.weeks_participated ?? 0} weeks)`,
-            )
-            .join("\n")
-        : "(YTD totals not yet computed.)"
-
-    // ── Compose ALFRED's recap in the Motta Alliance storyline voice ──
-    console.log("[v0] tommy-weekly-recap: generating AI summary with", allNotes.length, "notes")
-
-    let aiSummary = ""
-    let aiModelUsed: string = EMAIL_PROSE_MODEL
-    try {
-      const notesText = allNotes
-        .map((n) => `- ${n.voter} voted ${n.recipient} ${n.place} place: "${n.notes}"`)
-        .join("\n")
-
-      // Tag winners with their hero alias so ALFRED references the comic
-      // identity ("The Captain", "OCP", "P24") rather than just the real
-      // name when that's stylistically warranted.
-      const podiumWithHero = topThree.map((p) => {
-        const hero = findHeroProfile(p.name)
-        return {
-          ...p,
-          alias: hero?.alias ?? null,
-          role: hero?.role ?? null,
-        }
-      })
-
-      const prompt = `You are ALFRED Ai, the autonomous AI operative of the Motta Financial Alliance. The Alliance is a comic-book universe we built around the firm — Dat Le is "The Captain", Caleb Long is "The Financial Optimizer", Andrew Gianares is "OCP — The Work Crusher", Amy Sparaco is "The Ledger Oracle", Micaela Palacios is "The Emerging Force", Mark Dwyer is "The Stabilizer", Samprina Zekio is "The Code Keeper", and Ganesh + Thameem operate together as "P24 — Shadow Operators". The weekly "Tommy Awards" are framed inside this universe as Operation Tommy — the Alliance's recurring mission to recognise the heroes whose plays defined the week.
-
-You are writing the Friday recap dispatch for ${weekLabel}. Stay fully inside the Motta Alliance storyline — light comic-book bravado, mission-debrief cadence, occasional callouts to A-Team / P24 lore — but remain professional and uplifting (this email goes to the whole firm). Refer to winners by hero alias at least once when one is provided, then use their real name afterward for clarity.
-
-────────────────────────────────────────
-CURRENT WEEK INTEL
-────────────────────────────────────────
-Total Ballots Submitted: ${ballots.length}
-
-This Week's Podium:
-${podiumWithHero
-  .map(
-    (p) =>
-      `${ordinal(p.rank)}. ${p.name}${p.alias ? ` aka "${p.alias}"` : ""} — ${p.totalPoints} points (${p.first}×1st, ${p.second}×2nd, ${p.third}×3rd)${p.role ? ` [${p.role}]` : ""}`,
-  )
-  .join("\n")}
-${hasPodiumTies(topThree) ? "\nTies on the podium this week — celebrate tied heroes together as co-winners of that position, never as one outranking the other." : ""}
-
-Field Notes from the Team (the actual ballots):
-${notesText || "(No notes submitted this week.)"}
-
-────────────────────────────────────────
-PREVIOUS DISPATCHES (last 4 weeks, oldest first)
-────────────────────────────────────────
-${priorContext}
-
-────────────────────────────────────────
-${currentYear} YEAR-TO-DATE STANDINGS
-────────────────────────────────────────
-${ytdContext}
-
-────────────────────────────────────────
-WRITING INSTRUCTIONS
-────────────────────────────────────────
-- Length: 3 to 4 short paragraphs. Each paragraph is a discrete thought.
-- Separate paragraphs with a single blank line (one \\n\\n between them). Do NOT use markdown, headings, asterisks, or bullet lists — paragraphs only, in plain prose.
-- Paragraph 1: Cold open the dispatch — set the week's scene inside the Alliance storyline. Reference the total ballots and the energy of the field.
-- Paragraph 2: Walk the podium, hero by hero. Use at least one specific detail from the field notes per winner. Treat ties as co-winners.
-- Paragraph 3: Connect this week to the ongoing arc — call back to a previous dispatch or note a YTD shift if one is meaningful. If nothing yet exists, frame it as "Issue #1 of the season".
-- Paragraph 4 (optional): A short closing rally — sign off in ALFRED's voice ("Stay ready, Alliance.", "ALFRED, signing off until next Friday.", etc.).
-- Tone: confident, comic-book cinematic, lightly witty, never sarcastic about teammates. Always professional.
-- Do not invent accomplishments not present in the notes. If a note is thin, lean on the hero's known role/alias.
-
-Return ONLY the recap prose. No preamble, no closing, no markdown.`
-
-      const aiConfig = await getAIConfig("tommy_recap")
-      aiModelUsed = aiConfig.model
-      const startTime = Date.now()
-
-      const { text, usage } = await generateText({
-        model: aiConfig.model,
-        prompt: aiConfig.systemPrompt ? `${aiConfig.systemPrompt}\n\n${prompt}` : prompt,
-        maxOutputTokens: 900,
-      })
-      aiSummary = text.trim()
-
-      logAIUsage({
-        useCase: "tommy_recap",
-        model: aiConfig.model,
-        promptTokens: usage?.inputTokens,
-        completionTokens: usage?.outputTokens,
-        totalTokens: usage?.totalTokens,
-        latencyMs: Date.now() - startTime,
-        success: true,
-      })
-    } catch (aiErr) {
-      console.error("[v0] tommy-weekly-recap: AI generation failed:", aiErr)
-      logAIUsage({
-        useCase: "tommy_recap",
-        model: EMAIL_PROSE_MODEL,
-        success: false,
-        errorMessage: aiErr instanceof Error ? aiErr.message : String(aiErr),
-      })
-      aiSummary =
-        "Dispatch interrupted — ALFRED's transmitter took a hit composing this week's issue.\n\nThe podium below stands on its own, and the Alliance carries the win regardless."
-    }
-
-    // ── Defer the F1-podium hero image to an async job ────────────
-    // gpt-image-2 `quality:high` + the vision-grounded prompt-drafting
-    // pipeline routinely runs 3–5 minutes end to end — well past what
-    // we want a Friday-noon email cron to wait for. We persist the
-    // recap row WITHOUT the image, ship the email immediately, and
-    // then fire-and-forget a POST to /api/cron/tommy-podium-image
-    // which has its own 800s ceiling. That route updates
-    // `tommy_weekly_recaps.podium_image_url` once gpt-image-2 returns,
-    // so the Weekly Tommy's tab and any new email links pick it up.
-    //
-    // `?skipImage=true` (manual QA / re-send) skips the async trigger
-    // entirely. In that case, if a previous run already persisted an
-    // image on the recap row, we reuse it for THIS email so the resend
-    // still embeds the podium artwork rather than going out plain.
-    let podiumImageUrl: string | null = null
-    let podiumImagePrompt: string | null = null
-    let podiumImageModel: string | null = null
-    if (skipImage) {
-      const { data: existingRecap } = await supabase
-        .from("tommy_weekly_recaps")
-        .select("podium_image_url, podium_image_prompt, podium_image_model")
-        .eq("week_id", weekId)
-        .maybeSingle()
-      if (existingRecap?.podium_image_url) {
-        podiumImageUrl = existingRecap.podium_image_url
-        podiumImagePrompt = existingRecap.podium_image_prompt ?? null
-        podiumImageModel = existingRecap.podium_image_model ?? null
-      }
-    }
-
-    // ── Generate the printable / shareable PDF ─────────────────────
-    // The PDF mirrors what teammates see in the recap email — header,
-    // generated podium image, ALFRED's narrated summary, and the top
-    // three with point totals. It gets attached to the recap email
-    // AND persisted on `tommy_weekly_recaps.podium_pdf_url` so the
-    // new "Weekly Tommy's" tab on the Motta Alliance page can link to
-    // each week's artifact. Failures are non-fatal — the email still
-    // ships without the attachment.
-    let podiumPdfUrl: string | null = null
-    if (topThree.length > 0) {
-      const pdfResult = await generatePodiumPdf({
-        weekId,
-        weekLabel,
-        aiSummary,
-        topThree,
-        totalBallots: ballots.length,
-        podiumImageUrl,
-      })
-      if (pdfResult) {
-        podiumPdfUrl = pdfResult.pdfUrl
-      }
-    }
-
-    // Build the email HTML using the shared MOTTA HUB wrapper so the header,
-    // footer, and brand palette match the Thursday reminder email exactly.
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
-    const html = buildTommyRecapHtml({
-      weekLabel,
-      aiSummary,
-      topThree,
-      totalBallots: ballots.length,
-      leaderboardUrl: `${appUrl}/tommy-awards`,
-      podiumImageUrl,
-    })
-
-    // Send to all active team members (respecting their "tommy_recap" email preference).
-    const { data: allMembers, error: membersErr } = await supabase
-      .from("team_members")
-      .select("id, full_name, email")
-      .eq("is_active", true)
-
-    if (membersErr) throw membersErr
-
-    let eligibleMembers = (allMembers || []).filter((m) => m.email)
-
-    if (previewTo) {
-      eligibleMembers = eligibleMembers.filter(
-        (m) => m.email?.toLowerCase() === previewTo.toLowerCase(),
-      )
-    }
-
-    const eligibleIds = eligibleMembers.map((m) => m.id)
+    const recap = composed.data
 
     if (dryRun) {
       return NextResponse.json({
         success: true,
         dry_run: true,
-        week: weekLabel,
-        total_ballots: ballots.length,
-        would_email: eligibleIds.length,
-        ai_summary: aiSummary,
-        ai_model: aiModelUsed,
-        podium_image_url: podiumImageUrl,
-        podium_image_model: podiumImageModel,
-        podium_pdf_url: podiumPdfUrl,
-        top_three: topThree,
-        html,
+        stage: "prepare",
+        week: recap.weekLabel,
+        total_ballots: recap.totalBallots,
+        ai_model: recap.aiModel,
+        top_three: recap.topThree,
+        ai_summary: recap.aiSummary,
       })
     }
 
-    // Attach the recap PDF to the email if we generated one. Resend
-    // fetches it via the public Blob URL so we don't have to inline
-    // the bytes — keeps the send payload tiny.
-    const attachments = podiumPdfUrl
-      ? [
-          {
-            filename: `Tommy-Awards-Recap-${weekLabel.replace(/[^a-zA-Z0-9]+/g, "-")}.pdf`,
-            path: podiumPdfUrl,
-            contentType: "application/pdf",
-          },
-        ]
-      : undefined
-
-    const { sent, skipped } = await sendCategoryEmail({
-      category: "tommy_recap",
-      teamMemberIds: eligibleIds,
-      subject: `Tommy Awards Recap — Week of ${weekLabel}`,
-      html,
-      attachments,
-    })
-
-    // ── Persist the recap for future continuity context ─────────
-    // Upsert by week_id so a re-run (e.g. after fixing a bug) replaces
-    // the previous archive row instead of duplicating.
-    //
-    // IMPORTANT: when skipImage=true (or whenever this run did not
-    // produce its own image), we must NOT clobber an existing
-    // podium_image_url that the async /api/cron/tommy-podium-image
-    // route may have already populated. We therefore only write the
-    // image columns when we actually have a new value for them.
-    const persistRow: Record<string, unknown> = {
-      week_id: weekId,
-      week_date: latestWeek.week_date,
-      week_label: weekLabel,
-      total_ballots: ballots.length,
-      ai_summary: aiSummary,
-      ai_model: aiModelUsed,
-      podium_pdf_url: podiumPdfUrl,
-      top_three: topThree,
-      ytd_standings: ytdStandings ?? null,
-      email_sent_at: new Date().toISOString(),
-      email_sent_count: sent,
-      email_skipped_count: skipped,
-    }
-    if (podiumImageUrl) {
-      persistRow.podium_image_url = podiumImageUrl
-      persistRow.podium_image_prompt = podiumImagePrompt
-      persistRow.podium_image_model = podiumImageModel
-    }
-    const { error: persistErr } = await supabase
-      .from("tommy_weekly_recaps")
-      .upsert(persistRow, { onConflict: "week_id" })
+    // Persist ONLY the story columns. We intentionally leave
+    // podium_image_url / podium_pdf_url / email_sent_* untouched so:
+    //   - a fresh week starts them null (the chain fills them in), and
+    //   - a manual re-run of PREPARE never clobbers an image/PDF that a
+    //     later stage already produced.
+    const { error: persistErr } = await supabase.from("tommy_weekly_recaps").upsert(
+      {
+        week_id: recap.weekId,
+        week_date: recap.weekDate,
+        week_label: recap.weekLabel,
+        total_ballots: recap.totalBallots,
+        ai_summary: recap.aiSummary,
+        ai_model: recap.aiModel,
+        top_three: recap.topThree,
+        ytd_standings: recap.ytdStandings,
+      },
+      { onConflict: "week_id" },
+    )
 
     if (persistErr) {
-      console.error("[v0] tommy-weekly-recap: failed to persist recap row:", persistErr)
+      console.error("[v0] tommy-weekly-recap (prepare): failed to persist recap row:", persistErr)
+      throw persistErr
     }
 
-    // ── Fire-and-forget the async podium image render ───────────────
-    // gpt-image-2 quality:high + the vision-grounded prompt-drafting
-    // pipeline routinely runs 3–5 minutes — far past this cron's 60s
-    // ceiling. We POST to /api/tommy-awards/generate-podium-image
-    // (maxDuration=800) and DO NOT await the response. That route
-    // updates `tommy_weekly_recaps.podium_image_url` once gpt-image-2
-    // returns, so the Weekly Tommy's tab + future email reruns pick it
-    // up automatically. `?skipImage=true` suppresses the trigger.
-    if (!skipImage && topThree.length > 0) {
-      const appUrlForTrigger = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
-      const triggerUrl = `${appUrlForTrigger}/api/cron/tommy-podium-image`
-      // Detached fetch — we don't await, don't read the body, don't
-      // even keep the promise. A short connection timeout makes sure a
-      // dead route can't keep the cron alive past its 60s budget.
-      void fetch(triggerUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.CRON_SECRET}`,
-        },
-        body: JSON.stringify({ weekId }),
-        signal: AbortSignal.timeout(5_000),
-      }).catch((err) => {
-        // The async route is doing the work — the cron just kicks it
-        // off. A failure here only means the kick-off didn't reach
-        // the route; the row exists and we can re-trigger manually.
-        console.error("[v0] tommy-weekly-recap: failed to trigger async image", err)
-      })
-      console.log("[v0] tommy-weekly-recap: dispatched async image render for week", weekId)
+    // Chain → image stage (which then chains → PDF). Fire-and-forget; the
+    // image route owns its own 800s budget.
+    if (!skipChain && recap.topThree.length > 0) {
+      triggerStage("tommy-podium-image", recap.weekId)
     }
 
     return NextResponse.json({
       success: true,
-      week: weekLabel,
-      total_ballots: ballots.length,
-      recipients: eligibleIds.length,
-      preview_to: previewTo || null,
-      sent,
-      skipped,
-      podium_image_url: podiumImageUrl,
-      podium_pdf_url: podiumPdfUrl,
-      ai_model: aiModelUsed,
+      stage: "prepare",
+      week: recap.weekLabel,
+      total_ballots: recap.totalBallots,
+      top_three: recap.topThree,
+      ai_model: recap.aiModel,
+      chained: !skipChain && recap.topThree.length > 0,
     })
   } catch (error) {
     console.error("[cron/tommy-weekly-recap] Error:", error)
