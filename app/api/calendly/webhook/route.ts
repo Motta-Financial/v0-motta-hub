@@ -13,6 +13,7 @@ import {
 } from "@/lib/calendly-invitee-match"
 import { runAlfredCalendlyTriage } from "@/lib/alfred/calendly-triage"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
+import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
 
 /**
  * Calendly webhook receiver.
@@ -141,37 +142,30 @@ async function upsertEvent(
 ) {
   const uuid = extractUuid(event.uri)
   if (!uuid) return null
-  const location = event.location || {}
 
+  // Full field capture lives in the shared mapper so the webhook and the
+  // polling sync stay identical. We override `status` with the value the
+  // caller derived from the event type (created vs canceled) and add the
+  // webhook-only host resolution + connection linkage on top.
   const { data, error } = await supabase
     .from("calendly_events")
     .upsert(
       {
+        ...mapCalendlyEventFields(event),
         calendly_uuid: uuid,
         calendly_uri: event.uri,
         calendly_connection_id: connection?.id ?? null,
         team_member_id: connection?.team_member_id ?? null,
-        name: event.name,
         status,
-        start_time: event.start_time,
-        end_time: event.end_time,
-        event_type_uuid: extractUuid(event.event_type),
-        event_type_name: event.name,
-        location_type: location.type,
-        location: location.location,
-        join_url: location.join_url,
-        calendly_user_uri: event.event_memberships?.[0]?.user,
+        // Host resolution: the webhook payload carries event_memberships
+        // inline, so prefer that over the connection's owner identity.
+        calendly_user_uri:
+          event.event_memberships?.[0]?.user ?? connection?.calendly_user_uri ?? null,
         calendly_user_name:
           event.event_memberships?.[0]?.user_name ?? connection?.calendly_user_name ?? null,
         calendly_user_email:
           event.event_memberships?.[0]?.user_email ?? connection?.calendly_user_email ?? null,
-        canceled_at: event.cancellation?.canceled_at ?? null,
-        canceler_type: event.cancellation?.canceler_type ?? null,
-        canceler_name: event.cancellation?.canceled_by ?? null,
-        cancel_reason: event.cancellation?.reason ?? null,
         raw_data: event,
-        calendly_created_at: event.created_at,
-        calendly_updated_at: event.updated_at,
         synced_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
@@ -266,32 +260,15 @@ async function upsertInvitee(
     })
   }
 
-  const tracking = invitee.tracking || {}
   const { error } = await supabase.from("calendly_invitees").upsert(
     {
+      ...mapCalendlyInviteeFields(invitee),
       calendly_uuid: uuid,
       calendly_uri: invitee.uri,
       calendly_event_id: eventId,
       calendly_event_uuid: eventUuid,
-      name: invitee.name,
-      email: invitee.email,
-      timezone: invitee.timezone,
-      status: invitee.status || "active",
-      reschedule_url: invitee.reschedule_url,
-      cancel_url: invitee.cancel_url,
-      canceled_at: invitee.cancellation?.canceled_at ?? null,
-      canceler_type: invitee.cancellation?.canceler_type ?? null,
-      cancel_reason: invitee.cancellation?.reason ?? null,
-      questions_answers: invitee.questions_and_answers ?? null,
-      utm_source: tracking.utm_source,
-      utm_medium: tracking.utm_medium,
-      utm_campaign: tracking.utm_campaign,
-      utm_term: tracking.utm_term,
-      utm_content: tracking.utm_content,
       contact_id: contactId,
       raw_data: invitee,
-      calendly_created_at: invitee.created_at,
-      calendly_updated_at: invitee.updated_at,
       synced_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     },
@@ -462,10 +439,16 @@ async function handleNoShow(payload: any, isNoShow: boolean) {
   const inviteeUuid = extractUuid(inviteeUri)
   if (!inviteeUuid) return { success: false, error: "missing invitee uri" }
 
+  // The no_show resource uri is the top-level `uri` on the no_show
+  // payload; when un-marking we clear both the flag and the stored uri.
+  const noShowUri = isNoShow ? (payload?.uri ?? null) : null
+
   const { error } = await supabase
     .from("calendly_invitees")
     .update({
       status: isNoShow ? "no_show" : "active",
+      no_show: isNoShow,
+      no_show_uri: noShowUri,
       raw_data: payload,
       updated_at: new Date().toISOString(),
     })
