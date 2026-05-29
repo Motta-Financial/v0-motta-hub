@@ -292,7 +292,9 @@ export async function findOrCreateHubContact(
     const insertPayload: Record<string, unknown> = {
       first_name: firstName,
       last_name: lastName,
-      full_name: fullName,
+      // full_name is a GENERATED ALWAYS column in Supabase — writing it
+      // makes Postgres reject the row ("cannot insert a non-DEFAULT value
+      // into column full_name"). The DB derives it from first/last name.
       primary_email: email,
       phone_primary: phone,
       city: input.city?.trim() || null,

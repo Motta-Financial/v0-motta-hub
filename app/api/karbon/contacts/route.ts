@@ -78,8 +78,10 @@ function mapKarbonContactToSupabase(contact: any) {
   const suffix = contact.Suffix || null
   const prefix = contact.Prefix || null
 
-  // Use Karbon's FullName field directly, fallback to constructing from parts
-  const full_name = contact.FullName || [first_name, middle_name, last_name].filter(Boolean).join(" ") || null
+  // NOTE: contacts.full_name is a GENERATED ALWAYS column in Supabase
+  // (TRIM(first_name || ' ' || last_name)). It must NEVER be written —
+  // Postgres rejects the whole row with "cannot insert a non-DEFAULT
+  // value into column full_name". We intentionally do not map it.
 
   // Contact classification from Karbon
   const contact_type = contact.ContactType || "Individual"
@@ -174,7 +176,7 @@ function mapKarbonContactToSupabase(contact: any) {
     // Core identifiers - Karbon uses ContactKey for individuals
     karbon_contact_key: contact.ContactKey,
 
-    full_name,
+    // full_name intentionally omitted — it's a GENERATED column (see note above).
 
     // Name fields from Karbon Contact
     first_name,
