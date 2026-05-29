@@ -48,7 +48,7 @@ export async function GET(request: Request) {
     // every branch in the server log when the user reports "it didn't
     // work." Tagged with [v0] so it stands out in the debug stream.
     console.error(`[v0] [Zoom OAuth] FAIL: ${reason}`, log ?? "")
-    return NextResponse.redirect(`${baseUrl}/zoom?error=${encodeURIComponent(reason)}`)
+    return NextResponse.redirect(`${baseUrl}/meetings/zoom?error=${encodeURIComponent(reason)}`)
   }
 
   console.log(
@@ -205,7 +205,7 @@ export async function GET(request: Request) {
     console.log(
       `[v0] [Zoom OAuth] SUCCESS: connected ${zoomUser.email} (zoom_user_id=${zoomUser.id}) to team_member ${teamMemberId}`,
     )
-    return NextResponse.redirect(`${baseUrl}/zoom?success=true`)
+    return NextResponse.redirect(`${baseUrl}/meetings/zoom?success=true`)
   } catch (err) {
     return fail("callback_failed", err)
   }

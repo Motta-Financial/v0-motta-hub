@@ -128,31 +128,26 @@ const navigation = [
         children: [
           { name: "Intake", href: "/sales/intake", icon: Inbox },
           { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
-          // Meetings hub — Calendly, Zoom, and Debriefs were originally
-          // top-level routes, but operationally they're all "client
-          // touchpoints" so they belong under Clients. The legacy URLs
-          // (/zoom, /debriefs, /settings/calendly) still work to avoid
-          // breaking bookmarks; this is just the canonical nav location.
-          {
-            name: "Meetings",
-            href: "/clients/meetings",
-            icon: Calendar,
-            children: [
-              { name: "Calendly", href: "/clients/meetings/calendly", icon: Calendar },
-              { name: "Zoom", href: "/clients/meetings/zoom", icon: Video },
-              { name: "Debriefs", href: "/clients/meetings/debriefs", icon: MessageSquare },
-            ],
-          },
         ],
       },
+      // Meetings is now its OWN top-level Home section (it used to be
+      // nested under Clients). The Team Calendar and Zoom dashboards —
+      // previously their own top-level routes (/calendar, /zoom) — now
+      // live underneath it alongside Calendly and Debriefs. All four are
+      // "meeting surfaces," so grouping them here keeps every meeting
+      // touchpoint in one place. The legacy URLs (/clients/meetings/*,
+      // /calendar, /zoom, /debriefs) all redirect to /meetings/* so
+      // existing bookmarks keep working.
       {
-        // Calendar sub-tree no longer carries Zoom — Zoom moved to
-        // Clients → Meetings → Zoom. This entry now only renders the
-        // master team-calendar view (the page already has its own
-        // Calendly admin link in-page for ops).
-        name: "Calendar",
-        href: "/calendar",
+        name: "Meetings",
+        href: "/meetings",
         icon: Calendar,
+        children: [
+          { name: "Calendar", href: "/meetings/calendar", icon: Calendar },
+          { name: "Calendly", href: "/meetings/calendly", icon: Calendar },
+          { name: "Zoom", href: "/meetings/zoom", icon: Video },
+          { name: "Debriefs", href: "/meetings/debriefs", icon: MessageSquare },
+        ],
       },
     ],
   },

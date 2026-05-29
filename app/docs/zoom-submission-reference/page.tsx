@@ -18,10 +18,10 @@ export default function ZoomSubmissionReferencePage() {
       <header className="border-b border-border">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-6">
           <Link
-            href="/calendar/zoom"
+            href="/meetings/zoom"
             className="text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
-            ← Back to Zoom Calendar
+            ← Back to Zoom
           </Link>
           <span className="text-xs uppercase tracking-wider text-muted-foreground">
             Internal reference

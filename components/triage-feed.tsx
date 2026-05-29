@@ -1096,7 +1096,7 @@ function ItemLinkFooter({ item }: { item: TriageItem }) {
           icon: Briefcase,
         })
       }
-      links.push({ label: "All debriefs", href: "/debriefs", icon: FileText })
+      links.push({ label: "All debriefs", href: "/meetings/debriefs", icon: FileText })
       break
     }
     case "calendly_meeting": {
@@ -1123,7 +1123,7 @@ function ItemLinkFooter({ item }: { item: TriageItem }) {
           icon: Briefcase,
         })
       }
-      links.push({ label: "Open calendar", href: "/calendar", icon: Calendar })
+      links.push({ label: "Open calendar", href: "/meetings/calendar", icon: Calendar })
       break
     }
     case "accepted_proposal": {
@@ -1154,7 +1154,7 @@ function ItemLinkFooter({ item }: { item: TriageItem }) {
     }
     case "daily_briefing": {
       links.push({ label: "Open intake queue", href: "/sales/intake", icon: Users })
-      links.push({ label: "View today on calendar", href: "/calendar", icon: Calendar })
+      links.push({ label: "View today on calendar", href: "/meetings/calendar", icon: Calendar })
       break
     }
   }

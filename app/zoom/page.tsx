@@ -1,31 +1,25 @@
-import { DashboardLayout } from "@/components/dashboard-layout"
-import { ZoomDashboard } from "@/components/zoom-dashboard"
-import { ZoomConnectStatusBanner } from "@/components/zoom-connect-status-banner"
+import { redirect } from "next/navigation"
 
 /**
- * The Zoom OAuth callback redirects the user back to /zoom?success=true
- * or /zoom?error=<reason>. The dashboard component itself doesn't read
- * URL params, so we render a dismissable banner here that surfaces the
- * outcome of the install and points the user at the next step.
+ * Legacy /zoom — the Zoom dashboard moved under the new top-level
+ * Meetings section at /meetings/zoom. This route forwards there,
+ * preserving the ?success / ?error query the Zoom OAuth callback may
+ * append, so the connect status banner still renders post-install.
+ *
+ * NOTE: /zoom/embed is a SEPARATE route (app/zoom/embed/page.tsx) and
+ * is unaffected by this redirect.
  *
  * `searchParams` is a Promise in Next.js 15+ App Router server pages.
  */
-export default async function ZoomPage({
+export default async function LegacyZoomPage({
   searchParams,
 }: {
   searchParams: Promise<{ success?: string; error?: string }>
 }) {
   const params = await searchParams
-  const status: "success" | "error" | null = params.success
-    ? "success"
-    : params.error
-      ? "error"
-      : null
-
-  return (
-    <DashboardLayout>
-      {status && <ZoomConnectStatusBanner status={status} reason={params.error} />}
-      <ZoomDashboard />
-    </DashboardLayout>
-  )
+  const qs = new URLSearchParams()
+  if (params.success) qs.set("success", params.success)
+  if (params.error) qs.set("error", params.error)
+  const query = qs.toString()
+  redirect(`/meetings/zoom${query ? `?${query}` : ""}`)
 }
