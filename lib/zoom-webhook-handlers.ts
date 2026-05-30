@@ -27,6 +27,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/server"
+import { ingestRecordingFiles, type ZoomRecordingFile } from "@/lib/zoom/ingest-recording-files"
 import type { ZoomWebhookPayload } from "@/lib/zoom-webhook"
 
 export type HandlerResult =
@@ -150,36 +151,34 @@ async function handleTranscriptCompleted(payload: ZoomWebhookPayload): Promise<H
     }
   }
 
-  const rows = transcriptFiles.map((file) => ({
-    zoom_recording_id: recording?.id ?? null,
-    zoom_connection_id: connection?.id ?? null,
-    team_member_id: connection?.team_member_id ?? null,
-    zoom_meeting_id: meetingIdNumeric,
-    zoom_meeting_uuid: obj.uuid,
-    recording_file_id: file.id ?? null,
-    file_type: file.file_type ?? null,
-    recording_type: file.recording_type ?? null,
-    download_url: file.download_url ?? null,
-    download_token: downloadToken,
-    duration_seconds: file.duration ?? null,
-    file_size: file.file_size ?? null,
-    status: "pending" as const,
-    synced_at: new Date().toISOString(),
-  }))
-
-  const { error } = await admin
-    .from("zoom_transcripts")
-    .upsert(rows, { onConflict: "zoom_meeting_uuid,recording_file_id" })
-
-  if (error) {
-    console.error("[v0] [Zoom Webhook] zoom_transcripts upsert failed:", error)
-    return { ok: false, action: "recording.transcript_completed", error: error.message }
-  }
+  // Download + parse the VTT inline. Transcript files are small (text), so
+  // this stays well within the webhook's time budget, and it's what finally
+  // produces real transcript text + speaker segments instead of a bare
+  // pointer. The signed download_url is authorized by the event's
+  // download_token. Larger media files are NOT copied here (that would risk a
+  // webhook timeout) — they're handled by the recordings backfill path.
+  const result = await ingestRecordingFiles(
+    {
+      admin,
+      meetingUuid: obj.uuid,
+      meetingIdNumeric,
+      recordingRowId: recording?.id ?? null,
+      zoomConnectionId: connection?.id ?? null,
+      teamMemberId: connection?.team_member_id ?? null,
+      bearerToken: downloadToken,
+    },
+    transcriptFiles as ZoomRecordingFile[],
+  )
 
   return {
     ok: true,
     action: "recording.transcript_completed",
-    details: { uuid: obj.uuid, transcripts: rows.length },
+    details: {
+      uuid: obj.uuid,
+      transcripts: transcriptFiles.length,
+      parsed: result.transcriptsParsed,
+      failed: result.transcriptsFailed,
+    },
   }
 }
 
@@ -367,7 +366,7 @@ async function handleAppDeauthorized(payload: ZoomWebhookPayload): Promise<Handl
   }
 }
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ─────────────────────────��───────────────────────────────────────────
  * Helpers
  * ───────────────────────────────────────────────────────────────────── */
 
