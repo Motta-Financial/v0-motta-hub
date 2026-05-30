@@ -10,6 +10,7 @@ import {
   Megaphone,
   RefreshCw,
   Sparkles,
+  Video,
   Webhook,
   type LucideIcon,
 } from "lucide-react"
@@ -72,6 +73,13 @@ const categories: AdminCategory[] = [
           "Jotform, Karbon, Calendly, Zoom, and Ignition webhook health in one console.",
         href: "/admin/webhooks",
         icon: Webhook,
+      },
+      {
+        name: "Zoom Recordings",
+        description:
+          "Pull account-wide cloud recordings + transcripts for a date range, archive video to Blob, and monitor coverage.",
+        href: "/admin/zoom-recordings",
+        icon: Video,
       },
       {
         name: "Migration",

@@ -95,17 +95,23 @@ export async function POST(req: NextRequest) {
   let includeMedia = false
   let tagParticipants = true
   let onlyUser: string | undefined
+  let from: string | undefined
+  let to: string | undefined
   try {
     const body = (await req.json()) as {
       months?: number
       includeMedia?: boolean
       tagParticipants?: boolean
       onlyUser?: string
+      from?: string
+      to?: string
     }
     if (typeof body.months === "number") months = body.months
     if (typeof body.includeMedia === "boolean") includeMedia = body.includeMedia
     if (typeof body.tagParticipants === "boolean") tagParticipants = body.tagParticipants
     if (typeof body.onlyUser === "string") onlyUser = body.onlyUser
+    if (typeof body.from === "string") from = body.from
+    if (typeof body.to === "string") to = body.to
   } catch {
     // empty body is fine — use defaults
   }
@@ -116,6 +122,8 @@ export async function POST(req: NextRequest) {
     const result = await syncAccountWideRecordings({
       supabase,
       months,
+      from,
+      to,
       includeMedia,
       tagParticipants,
       onlyUser,

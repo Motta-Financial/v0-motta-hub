@@ -10,6 +10,10 @@ import {
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/server"
 import { browsePageTool, webSearchTool } from "@/lib/alfred/tools"
+import { requireAdmin } from "@/lib/auth/require-admin"
+import { getZoomRecordingStats } from "@/lib/zoom/recording-stats"
+import { syncAccountWideRecordings } from "@/lib/zoom/sync-account-recordings"
+import { isS2SConfigured } from "@/lib/zoom/s2s-auth"
 import {
   ALLOWED_TABLES,
   buildTableCatalog,
@@ -762,6 +766,114 @@ Use this to answer questions about clients, work items, team members, finances, 
     },
   }),
 
+  // ── Zoom cloud recordings ────────────────────────────────────────────────
+  // Account-wide Zoom recording + transcript pipeline (Server-to-Server
+  // OAuth). `getZoomRecordingStatus` is read-only health/coverage; it never
+  // reads transcript bodies. `pullZoomRecordings` triggers an on-demand,
+  // admin-gated pull for a bounded date range. Heavy/long historical pulls
+  // and media archiving should run from the /admin/zoom-recordings page,
+  // which has no chat-budget timeout. See lib/zoom/sync-account-recordings.ts.
+  getZoomRecordingStatus: tool({
+    description:
+      "Read-only health + coverage of the firm's Zoom cloud-recording pipeline: how many recordings and transcripts the Hub holds, how many transcripts are parsed vs. failed, how many recordings have their MP4/M4A media archived to Blob, when the last sync ran, and the 10 most recent recordings. " +
+      "Use this to answer 'are we capturing Zoom recordings?', 'how many transcripts do we have?', 'did the recording sync run?', or 'is the video archived?'. Does NOT expose meeting content.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const supabase = createAdminClient()
+        const stats = await getZoomRecordingStats(supabase)
+        return { success: true, s2sConfigured: isS2SConfigured(), ...stats }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
+    },
+  }),
+
+  pullZoomRecordings: tool({
+    description:
+      "Trigger an on-demand account-wide pull of Zoom cloud recordings + transcripts for a bounded date range. Admin-only. " +
+      "Use when a user asks to 'pull/sync/fetch the latest Zoom recordings' or 'grab last week's recordings'. " +
+      "Defaults to the last 7 days, transcripts-only (fast). The date range must be <= 31 days — for longer historical backfills or to also archive the MP4 video to Blob, tell the user to use the Zoom Recordings admin page (/admin/zoom-recordings) since those runs can exceed the chat time limit.",
+    inputSchema: z.object({
+      from: z
+        .string()
+        .optional()
+        .describe("Start date YYYY-MM-DD. Defaults to 7 days ago. Range must be <= 31 days."),
+      to: z
+        .string()
+        .optional()
+        .describe("End date YYYY-MM-DD. Defaults to today."),
+      includeMedia: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also copy MP4/M4A video to Blob. Slow — only set true for a small range; otherwise recommend the admin page.",
+        ),
+    }),
+    execute: async ({ from, to, includeMedia = false }) => {
+      // Admin gate: triggering a service-role account-wide sync is privileged.
+      const admin = await requireAdmin()
+      if (!admin.ok) {
+        return {
+          success: false,
+          error: "This action requires an admin role. Ask a firm admin, or run it from /admin/zoom-recordings.",
+        }
+      }
+      if (!isS2SConfigured()) {
+        return { success: false, error: "Zoom Server-to-Server OAuth is not configured." }
+      }
+
+      // Default to the last 7 days when no range is given.
+      const today = new Date()
+      const toDate = to ?? today.toISOString().slice(0, 10)
+      const fromDate =
+        from ?? new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+
+      // Guard the chat budget: refuse spans > 31 days here.
+      const spanDays =
+        (new Date(`${toDate}T00:00:00Z`).getTime() - new Date(`${fromDate}T00:00:00Z`).getTime()) /
+        (24 * 60 * 60 * 1000)
+      if (!Number.isFinite(spanDays) || spanDays < 0) {
+        return { success: false, error: "Invalid date range." }
+      }
+      if (spanDays > 31) {
+        return {
+          success: false,
+          error:
+            "That range is longer than 31 days. Run multi-month backfills from the Zoom Recordings admin page (/admin/zoom-recordings) so they don't time out.",
+        }
+      }
+
+      try {
+        const supabase = createAdminClient()
+        const result = await syncAccountWideRecordings({
+          supabase,
+          from: fromDate,
+          to: toDate,
+          includeMedia,
+          // Keep the chat-triggered pull fast: skip the heavy participant
+          // resolution + Calendly bridge + triage. The hourly link-sweep cron
+          // tags clients separately.
+          tagParticipants: false,
+        })
+        return {
+          success: true,
+          from: fromDate,
+          to: toDate,
+          includeMedia,
+          usersScanned: result.usersScanned,
+          recordingsUpserted: result.recordingsUpserted,
+          transcriptsParsed: result.transcriptsParsed,
+          transcriptsFailed: result.transcriptsFailed,
+          mediaCopied: result.mediaCopied,
+          errors: result.errors.slice(0, 5),
+        }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
+    },
+  }),
+
   // ── Web research ────────────────────────────────────────────────────────
   // Two complementary tools for questions that go beyond Motta's internal
   // database. See lib/alfred/tools/{web-search,browse-page}.ts for details.
@@ -852,6 +964,7 @@ The chat surface renders Markdown. Use that fact to deliver tidy, scannable repl
 - \`webSearch\` (Parallel Web) → broad questions: tax regulations, IRS guidance, industry news, software documentation. Returns ranked excerpts with URLs.
 - \`browsePage\` (Browserbase) → fetch the body of a specific URL. Each call costs roughly 5–10 seconds; reach for it only when you genuinely need the page content.
 - Web answers on tax / compliance topics should lean on .gov sources (irs.gov, state DORs) over third-party commentary.
+- Zoom recordings → \`getZoomRecordingStatus\` for pipeline health/coverage questions (counts, parsed vs. failed transcripts, media archived, last sync). \`pullZoomRecordings\` to fetch recent recordings on demand (admin-only, defaults to the last 7 days, transcripts-only). For ranges over 31 days or to archive the MP4 video to Blob, point the user to the Zoom Recordings admin page (/admin/zoom-recordings) instead of running it here.
 
 Motta Financial is a San Francisco–based CPA firm specialising in tax, accounting, and advisory services. You are in their service.`
 

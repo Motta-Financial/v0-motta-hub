@@ -28,6 +28,16 @@ export interface AccountSyncOptions {
   supabase: SupabaseClient
   /** How many 1-month windows back to scan. Zoom caps each query at 1 month. */
   months?: number
+  /**
+   * Explicit date range to pull (YYYY-MM-DD). When BOTH `from` and `to`
+   * are provided they take precedence over `months`, and the range is
+   * automatically split into <=30-day windows (Zoom caps each recordings
+   * query at ~1 month). Use this for the on-demand "pull a specific
+   * period" workflow (admin UI button / ALFRED). When omitted, the sync
+   * walks `months` 1-month windows backward from today.
+   */
+  from?: string
+  to?: string
   /** Also copy MP4/M4A media to Blob (slower/heavier). Default false for sweeps. */
   includeMedia?: boolean
   /**
@@ -52,10 +62,51 @@ export interface AccountSyncResult {
   meetingsTagged: number
   clientLinksWritten: number
   errors: string[]
+  /** The date windows that were scanned (echoed back for observability). */
+  windows: Array<{ from: string; to: string }>
 }
 
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10)
+}
+
+/**
+ * Build the list of {from,to} date windows to scan. Zoom caps each
+ * `/users/{id}/recordings` query at ~1 month, so any longer span is split.
+ *
+ * - Explicit `from`/`to` (YYYY-MM-DD): chunk that range into <=30-day windows.
+ * - Otherwise: `months` 1-month windows walking backward from today.
+ */
+function buildWindows(months: number, from?: string, to?: string): Array<{ from: string; to: string }> {
+  if (from && to) {
+    const start = new Date(`${from}T00:00:00Z`)
+    const end = new Date(`${to}T00:00:00Z`)
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      return []
+    }
+    const windows: Array<{ from: string; to: string }> = []
+    let cursor = new Date(start)
+    // Hard cap at 36 windows (~3 years) so a bad input can't loop forever.
+    for (let i = 0; i < 36 && cursor <= end; i++) {
+      const windowEnd = new Date(cursor)
+      windowEnd.setDate(windowEnd.getDate() + 29)
+      const clamped = windowEnd > end ? end : windowEnd
+      windows.push({ from: ymd(cursor), to: ymd(clamped) })
+      cursor = new Date(clamped)
+      cursor.setDate(cursor.getDate() + 1)
+    }
+    return windows
+  }
+
+  const windows: Array<{ from: string; to: string }> = []
+  for (let m = 0; m < months; m++) {
+    const windowTo = new Date()
+    windowTo.setMonth(windowTo.getMonth() - m)
+    const windowFrom = new Date(windowTo)
+    windowFrom.setMonth(windowFrom.getMonth() - 1)
+    windows.push({ from: ymd(windowFrom), to: ymd(windowTo) })
+  }
+  return windows
 }
 
 /** Resolve every Zoom-user → team_member attribution up front. */
@@ -88,6 +139,7 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
   const months = Math.max(1, Math.min(opts.months ?? 6, 24))
   const includeMedia = opts.includeMedia === true
   const tagParticipants = opts.tagParticipants !== false
+  const windows = buildWindows(months, opts.from, opts.to)
 
   const result: AccountSyncResult = {
     usersScanned: 0,
@@ -99,10 +151,16 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
     meetingsTagged: 0,
     clientLinksWritten: 0,
     errors: [],
+    windows,
   }
 
   if (!isS2SConfigured()) {
     result.errors.push("zoom_s2s_not_configured")
+    return result
+  }
+
+  if (windows.length === 0) {
+    result.errors.push("invalid_date_range")
     return result
   }
 
@@ -131,19 +189,14 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
     let userHadRecordings = false
 
     try {
-      // Walk month windows backward; Zoom caps each query at ~1 month.
-      for (let m = 0; m < months; m++) {
-        const to = new Date()
-        to.setMonth(to.getMonth() - m)
-        const from = new Date(to)
-        from.setMonth(from.getMonth() - 1)
-
+      // Walk the computed date windows; Zoom caps each query at ~1 month.
+      for (const window of windows) {
         let nextToken: string | null = null
         for (let page = 0; page < 20; page++) {
           const params = new URLSearchParams({
             page_size: "300",
-            from: ymd(from),
-            to: ymd(to),
+            from: window.from,
+            to: window.to,
           })
           if (nextToken) params.set("next_page_token", nextToken)
           const url = `https://api.zoom.us/v2/users/${encodeURIComponent(user.id)}/recordings?${params.toString()}`
