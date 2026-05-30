@@ -159,6 +159,10 @@ export async function middleware(request: NextRequest) {
   // route's own auth logic can run.
   const isZoomRecordingsBackfill = pathname === "/api/zoom/recordings/backfill"
 
+  // Zoom account-wide S2S sync - CRON_SECRET Bearer auth or logged-in admin,
+  // checked in the handler. Pulls recordings for ALL account users.
+  const isZoomAccountSync = pathname === "/api/zoom/recordings/sync-account"
+
   // Hub Meetings sync - CRON_SECRET Bearer auth or logged-in admin, checked
   // in the handler. (GET /api/meetings stays behind normal session auth.)
   const isHubMeetingsSync = pathname === "/api/meetings/sync"
@@ -241,6 +245,7 @@ export async function middleware(request: NextRequest) {
     isProConnectWebhook ||
     isProConnectSync ||
     isZoomRecordingsBackfill ||
+    isZoomAccountSync ||
     isHubMeetingsSync ||
     isCron ||
     isCalendlyOAuthCallback ||
