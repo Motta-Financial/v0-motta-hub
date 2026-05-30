@@ -49,10 +49,12 @@ import {
   FileText,
   Files,
   Globe,
+  History,
   Linkedin,
   Mail,
   MapPin,
   MessageSquare,
+  Pencil,
   Phone,
   PiggyBank,
   Plus,
@@ -91,6 +93,9 @@ import {
 } from "@/components/clients/link-organization-dialog"
 import { AlfredErrorCard } from "@/components/alfred-error"
 import { clientTypeBadgeClass, type ClientType } from "@/lib/client-type"
+import { ContactEditSheet } from "@/components/clients/contact-edit-sheet"
+import { OrganizationEditSheet } from "@/components/clients/organization-edit-sheet"
+import { ChangeHistoryDialog } from "@/components/shared/change-history-dialog"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types matching /api/clients/[id] response
@@ -627,6 +632,11 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("overview")
   const [communicationsTab, setCommunicationsTab] = useState("emails")
+  const [editSheetOpen, setEditSheetOpen] = useState(false)
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false)
+  const [rawRecord, setRawRecord] = useState<Record<string, any> | null>(null)
+  const [rawKind, setRawKind] = useState<"contact" | "organization" | null>(null)
+  const [editLoading, setEditLoading] = useState(false)
 
   const fetchClient = useCallback(async () => {
     if (!clientId) return
@@ -680,6 +690,26 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
     }
   }
 
+  const handleEditOpen = async () => {
+    if (!clientId || editLoading) return
+    try {
+      setEditLoading(true)
+      const res = await fetch(
+        `/api/clients/${encodeURIComponent(clientId)}?raw=1`,
+        { cache: "no-store" },
+      )
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`)
+      setRawRecord(json.record)
+      setRawKind(json.kind)
+      setEditSheetOpen(true)
+    } catch (err) {
+      console.error("[v0] Edit open error:", err)
+    } finally {
+      setEditLoading(false)
+    }
+  }
+
   if (loading && !data) return <ClientProfileSkeleton />
   if (error)
     return (
@@ -701,6 +731,9 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         syncing={syncing}
         syncMessage={syncMessage}
         onSync={handleSync}
+        onEdit={handleEditOpen}
+        editLoading={editLoading}
+        onHistory={() => setHistoryDialogOpen(true)}
       />
 
       {/* ═════ Sticky KPI strip ═════ */}
@@ -781,6 +814,39 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
                 />
               </TabsContent>
       </Tabs>
+
+      {/* Edit sheet — contact or organization based on resolved kind */}
+      {rawKind === "contact" && (
+        <ContactEditSheet
+          contact={rawRecord as any}
+          open={editSheetOpen}
+          onOpenChange={setEditSheetOpen}
+          onSaved={() => {
+            setEditSheetOpen(false)
+            void fetchClient()
+          }}
+        />
+      )}
+      {rawKind === "organization" && (
+        <OrganizationEditSheet
+          organization={rawRecord as any}
+          open={editSheetOpen}
+          onOpenChange={setEditSheetOpen}
+          onSaved={() => {
+            setEditSheetOpen(false)
+            void fetchClient()
+          }}
+        />
+      )}
+
+      {/* Change history dialog */}
+      <ChangeHistoryDialog
+        open={historyDialogOpen}
+        onOpenChange={setHistoryDialogOpen}
+        entityType={client.isOrganization ? "organization" : "contact"}
+        entityId={client.id}
+        entityLabel={client.clientName}
+      />
     </div>
   )
 }
@@ -794,11 +860,17 @@ function ClientHeader({
   syncing,
   syncMessage,
   onSync,
+  onEdit,
+  editLoading,
+  onHistory,
 }: {
   client: ClientBundle["client"]
   syncing: boolean
   syncMessage: string | null
   onSync: () => void
+  onEdit: () => void
+  editLoading: boolean
+  onHistory: () => void
 }) {
   const isOrg = client.isOrganization
   const subtitleParts = [
@@ -908,6 +980,14 @@ function ClientHeader({
 
           {/* Action rail */}
           <div className="flex flex-wrap gap-2 lg:flex-col lg:items-stretch lg:w-48">
+            <Button variant="default" size="sm" onClick={onEdit} disabled={editLoading}>
+              <Pencil className={cn("h-3.5 w-3.5 mr-1.5", editLoading && "animate-pulse")} />
+              {editLoading ? "Loading…" : "Edit"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={onHistory}>
+              <History className="h-3.5 w-3.5 mr-1.5" />
+              Change history
+            </Button>
             {client.contactInfo.primaryEmail && (
               <Button variant="outline" size="sm" asChild>
                 <a href={`mailto:${client.contactInfo.primaryEmail}`}>
@@ -2524,7 +2604,7 @@ function TaxStat({
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Documents tab
-// ─────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────���─────────
 
 function DocumentsTab({ data }: { data: ClientBundle }) {
   if (data.documents.length === 0)
@@ -2588,7 +2668,7 @@ function DocumentsTab({ data }: { data: ClientBundle }) {
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────��──────────────────────────────────────
 // People tab
 // ─────────────────────────────────────────────────────────────────────────────
 

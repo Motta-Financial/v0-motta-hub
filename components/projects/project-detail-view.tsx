@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { ChangeHistoryDialog } from "@/components/shared/change-history-dialog"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -47,6 +48,7 @@ import {
   Copy,
   ExternalLink,
   FolderKanban,
+  History,
   Inbox,
   Layers,
   Loader2,
@@ -511,6 +513,7 @@ function ProjectHeader({
   workItems: ProjectResponse["work_items"]
   onReload: () => void
 }) {
+  const [historyOpen, setHistoryOpen] = useState(false)
   return (
     <header className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -561,8 +564,22 @@ function ProjectHeader({
           </div>
         </div>
 
-        <EditProjectDialog project={project} onSaved={onReload} />
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setHistoryOpen(true)}>
+            <History className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+            History
+          </Button>
+          <EditProjectDialog project={project} onSaved={onReload} />
+        </div>
       </div>
+
+      <ChangeHistoryDialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        entityType="project"
+        entityId={project.id}
+        entityLabel={project.name}
+      />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Open work items" value={String(workItems.open_count)} icon={CircleDot} />
@@ -1336,7 +1353,7 @@ function ServicesCard({ services }: { services: RelatedService[] }) {
   )
 }
 
-// ── Tabs ────────────────────────────────────────────────────────────────────
+// ── Tabs ──────────────────────────��─────────────────────────────────────────
 function OverviewTab({
   project,
   workItems,

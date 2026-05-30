@@ -16,6 +16,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   Building2,
   Calendar,
@@ -107,6 +108,7 @@ interface Props {
 }
 
 export function EventDetailDialog({ event, open, onOpenChange, timeZone, currentUser, onMutated }: Props) {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState<"overview" | "tags" | "comments">("overview")
   const [clients, setClients] = useState<ClientTag[]>([])
   const [workItems, setWorkItems] = useState<WorkItemTag[]>([])
@@ -414,18 +416,39 @@ export function EventDetailDialog({ event, open, onOpenChange, timeZone, current
                   {event.location_type ? event.location_type.replace(/_/g, " ") : "Meeting"}
                 </p>
                 {event.location && <p className="text-muted-foreground">{event.location}</p>}
-                {event.join_url && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="mt-2 gap-2"
-                    onClick={() => window.open(event.join_url || "", "_blank")}
-                  >
-                    <Video className="h-4 w-4" />
-                    Join meeting
-                    <ExternalLink className="h-3 w-3 opacity-70" />
-                  </Button>
-                )}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {/* In-Hub join (Zoom meetings only) — opens the full Zoom
+                      Client View on a dedicated Hub route instead of leaving
+                      the app. Requires a numeric Zoom meeting id. */}
+                  {isZoom && event.zoom_meeting_id != null && (
+                    <Button
+                      size="sm"
+                      className="gap-2"
+                      onClick={() =>
+                        router.push(
+                          `/zoom/join/${event.zoom_meeting_id}?return=${encodeURIComponent(
+                            typeof window !== "undefined" ? window.location.pathname : "/deals",
+                          )}`,
+                        )
+                      }
+                    >
+                      <Video className="h-4 w-4" />
+                      Join in Hub
+                    </Button>
+                  )}
+                  {event.join_url && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-2"
+                      onClick={() => window.open(event.join_url || "", "_blank")}
+                    >
+                      <Video className="h-4 w-4" />
+                      {isZoom && event.zoom_meeting_id != null ? "Open in Zoom" : "Join meeting"}
+                      <ExternalLink className="h-3 w-3 opacity-70" />
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
 

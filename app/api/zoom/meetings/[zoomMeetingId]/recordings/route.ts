@@ -60,7 +60,9 @@ export async function GET(
     transcripts.find((t) => t.status === "parsed" && t.text_content) ?? transcripts[0] ?? null
 
   // Strip raw download URLs from recording_files before returning — the client
-  // should use share_url (Zoom) or the Blob proxy, never the short-lived token.
+  // should use the in-Hub stream proxy or the Blob proxy, never the
+  // short-lived Zoom token. We surface a `playable` flag so the UI knows it can
+  // stream the file in-Hub (either from a Blob copy or via the Zoom proxy).
   const recordings = (recordingsRes.data ?? []).map((r) => ({
     ...r,
     recording_files: Array.isArray(r.recording_files)
@@ -71,6 +73,7 @@ export async function GET(
           recording_type: f.recording_type,
           file_size: f.file_size,
           blob_pathname: f.blob_pathname ?? null,
+          playable: Boolean(f.blob_pathname || f.download_url),
         }))
       : [],
   }))

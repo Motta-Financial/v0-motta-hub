@@ -26,6 +26,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
 
 export interface SyncHubMeetingsResult {
   calendlyProcessed: number
@@ -69,6 +70,40 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
   const errors: string[] = []
   let upserts = 0
 
+  // Deal resolution cache for this run. Every meeting that has a resolved
+  // client should hang off that contact's single open Deal (the sales
+  // opportunity). Contacts repeat across many meetings, so we memoize the
+  // find-or-create per contact/org key to avoid N duplicate lookups. The
+  // partial unique index on deals guarantees we never create two open
+  // deals for the same contact even across concurrent syncs.
+  const dealCache = new Map<string, string | null>()
+  async function resolveDealId(
+    contactId: string | null,
+    organizationId: string | null,
+    title: string | null,
+  ): Promise<string | null> {
+    const key = contactId ? `c:${contactId}` : organizationId ? `o:${organizationId}` : null
+    if (!key) return null
+    if (dealCache.has(key)) return dealCache.get(key) ?? null
+    let dealId: string | null = null
+    try {
+      const res = await findOrCreateDeal(
+        {
+          contactId,
+          organizationId: contactId ? null : organizationId,
+          title,
+          source: "unknown",
+        },
+        { supabase: admin },
+      )
+      dealId = res.deal_id
+    } catch (err) {
+      errors.push(`deal resolve (${key}): ${(err as Error).message}`)
+    }
+    dealCache.set(key, dealId)
+    return dealId
+  }
+
   // ── 1. Load Calendly events + their client links + host ──────────────
   const { data: calEvents, error: calErr } = await admin
     .from("calendly_events")
@@ -103,6 +138,11 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
   for (const ev of calEvents ?? []) {
     const { contactId, organizationId } = bestLink(calLinksByEvent.get(ev.id))
     const bridgedZoomId = zoomByCalendly.get(ev.id) ?? null
+    const dealId = await resolveDealId(
+      contactId,
+      organizationId,
+      ev.name ?? ev.event_type_name ?? null,
+    )
 
     const row: Record<string, unknown> = {
       calendly_event_id: ev.id, // internal uuid as text
@@ -116,6 +156,7 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
       meeting_type: meetingTypeFromCalendly(ev.name),
       contact_id: contactId,
       organization_id: organizationId,
+      deal_id: dealId,
       host_id: ev.team_member_id ?? null,
       updated_at: new Date().toISOString(),
     }
@@ -153,6 +194,7 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
     if (zm.calendly_event_id) continue // already represented by the Calendly meeting
 
     const { contactId, organizationId } = bestLink(zoomLinksByMeeting.get(zm.id))
+    const dealId = await resolveDealId(contactId, organizationId, zm.topic ?? null)
     const end =
       zm.start_time && zm.duration
         ? new Date(new Date(zm.start_time).getTime() + zm.duration * 60_000).toISOString()
@@ -169,6 +211,7 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
       meeting_type: "client_meeting",
       contact_id: contactId,
       organization_id: organizationId,
+      deal_id: dealId,
       host_id: zm.team_member_id ?? null,
       updated_at: new Date().toISOString(),
     }

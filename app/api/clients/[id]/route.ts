@@ -12,9 +12,11 @@
  * ever hitting Karbon's live API.
  */
 import { NextResponse } from "next/server"
-import { createAdminClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { getClientType } from "@/lib/client-type"
 import { summarizePayments } from "@/lib/ignition/payments"
+import { recordAudit } from "@/lib/audit"
+import { getTeamMemberByAuthId } from "@/lib/team-members"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -87,6 +89,13 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 
     const { kind, row } = resolved
     const isOrg = kind === "organization"
+
+    // Raw mode: return just the raw entity row (used by edit sheets to
+    // pre-fill exact DB column values without the heavy bundle transform).
+    const url = new URL(_request.url)
+    if (url.searchParams.get("raw") === "1") {
+      return NextResponse.json({ kind, record: row })
+    }
     const entityId: string = row.id
     const karbonKey: string | null = isOrg ? row.karbon_organization_key : row.karbon_contact_key
 
@@ -1264,6 +1273,148 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         error: "Failed to fetch client",
         details: error instanceof Error ? error.message : "Unknown error",
       },
+      { status: 500 },
+    )
+  }
+}
+
+// ── Editable field whitelists ─────────────────────────────────────────────
+// Only these columns may be set via PATCH. Everything else (Karbon keys,
+// sync timestamps, encrypted identifiers, etc.) is read-only here.
+const CONTACT_EDITABLE = new Set<string>([
+  "first_name",
+  "last_name",
+  "preferred_name",
+  "salutation",
+  "suffix",
+  "primary_email",
+  "secondary_email",
+  "phone_primary",
+  "phone_mobile",
+  "phone_work",
+  "address_line1",
+  "address_line2",
+  "city",
+  "state",
+  "zip_code",
+  "country",
+  "status",
+  "notes",
+  "tags",
+  "occupation",
+  "employer",
+  "contact_preference",
+  "linkedin_url",
+  "twitter_handle",
+  "website",
+])
+
+const ORGANIZATION_EDITABLE = new Set<string>([
+  "name",
+  "trading_name",
+  "entity_type",
+  "industry",
+  "line_of_business",
+  "primary_email",
+  "phone",
+  "website",
+  "address_line1",
+  "address_line2",
+  "city",
+  "state",
+  "zip_code",
+  "country",
+  "status",
+  "notes",
+  "ein",
+  "incorporation_state",
+  "fiscal_year_end_month",
+  "description",
+  "linkedin_url",
+  "twitter_handle",
+  "facebook_url",
+])
+
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params
+    const supabase = createAdminClient()
+
+    const resolved = await resolveEntity(supabase, id)
+    if (!resolved) {
+      return NextResponse.json({ error: "Client not found" }, { status: 404 })
+    }
+
+    const { kind, row: oldRecord } = resolved
+    const table = kind === "organization" ? "organizations" : "contacts"
+    const editable = kind === "organization" ? ORGANIZATION_EDITABLE : CONTACT_EDITABLE
+    const entityId: string = oldRecord.id
+
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+
+    // Build a whitelisted patch.
+    const patch: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(body)) {
+      if (editable.has(key)) patch[key] = value
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return NextResponse.json({ error: "No editable fields provided" }, { status: 400 })
+    }
+
+    // Keep the denormalized full_name in sync for contacts.
+    if (kind === "contact" && ("first_name" in patch || "last_name" in patch)) {
+      const first = (patch.first_name ?? oldRecord.first_name ?? "") as string
+      const last = (patch.last_name ?? oldRecord.last_name ?? "") as string
+      const full = `${first} ${last}`.trim()
+      if (full) patch.full_name = full
+    }
+
+    patch.updated_at = new Date().toISOString()
+
+    const { data: newRecord, error } = await supabase
+      .from(table)
+      .update(patch)
+      .eq("id", entityId)
+      .select("*")
+      .maybeSingle()
+
+    if (error) {
+      console.error("[v0] PATCH /api/clients/[id] error:", error)
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+    if (!newRecord) return NextResponse.json({ error: "Client not found" }, { status: 404 })
+
+    // Resolve the acting team member for the audit trail.
+    let teamMemberId: string | null = null
+    try {
+      const userSupabase = await createClient()
+      const {
+        data: { user },
+      } = await userSupabase.auth.getUser()
+      if (user) {
+        const teamMember = await getTeamMemberByAuthId(user.id, user.email)
+        teamMemberId = teamMember?.id || null
+      }
+    } catch (e) {
+      console.error("[v0] PATCH /api/clients/[id] user resolve error:", e)
+    }
+
+    await recordAudit({
+      entityType: kind,
+      entityId,
+      teamMemberId,
+      action: "update",
+      oldRecord,
+      newRecord,
+    })
+
+    // `record` is canonical; `data` is an alias the edit sheets read.
+    return NextResponse.json({ ok: true, kind, record: newRecord, data: newRecord })
+  } catch (error) {
+    console.error("[v0] PATCH /api/clients/[id] unexpected error:", error)
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
       { status: 500 },
     )
   }

@@ -1,13 +1,12 @@
-import HubMeetingsView from "@/components/meetings/hub-meetings-view"
+import { redirect } from "next/navigation"
 
 /**
- * /meetings/hub — the unified Hub Meetings dashboard. Each row is one
- * Hub Meeting ID that ties together its Prospect/Intake, Calendly
- * booking, Zoom recording + transcript, ALFRED summary, and Debrief.
- *
- * DashboardLayout chrome + the sticky meetings sub-nav are provided by
- * the parent app/meetings/layout.tsx.
+ * Legacy /meetings/hub — the unified "Hub Meetings" dashboard has been
+ * superseded by Deals. A deal is the opportunity-level record that groups
+ * a prospect's meetings (Zoom / phone / in person) plus the debrief, so
+ * the per-meeting hub view now lives under /deals. This route permanently
+ * forwards there so existing bookmarks and in-app links keep working.
  */
-export default function HubMeetingsPage() {
-  return <HubMeetingsView />
+export default function LegacyHubMeetingsPage() {
+  redirect("/deals")
 }

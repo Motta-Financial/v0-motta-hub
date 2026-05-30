@@ -71,7 +71,7 @@ async function handleRecordingCompleted(payload: ZoomWebhookPayload): Promise<Ha
   if (!obj?.uuid) return { ok: false, action: "recording.completed", error: "missing_uuid" }
 
   const admin = createAdminClient()
-  const connection = await findConnectionByHost(admin, obj.host_email, obj.host_id)
+  const attribution = await resolveHostAttribution(admin, obj.host_email, obj.host_id)
 
   const meetingIdNumeric = toBigInt(obj.id)
   const startTime = obj.start_time ? new Date(obj.start_time).toISOString() : null
@@ -88,8 +88,8 @@ async function handleRecordingCompleted(payload: ZoomWebhookPayload): Promise<Ha
       recording_count: obj.recording_count ?? recordingFiles.length,
       recording_files: recordingFiles,
       share_url: obj.share_url ?? null,
-      team_member_id: connection?.team_member_id ?? null,
-      zoom_connection_id: connection?.id ?? null,
+      team_member_id: attribution.teamMemberId,
+      zoom_connection_id: attribution.connectionId,
       raw_data: payload as unknown as Record<string, unknown>,
       synced_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -127,7 +127,7 @@ async function handleTranscriptCompleted(payload: ZoomWebhookPayload): Promise<H
   if (!obj?.uuid) return { ok: false, action: "recording.transcript_completed", error: "missing_uuid" }
 
   const admin = createAdminClient()
-  const connection = await findConnectionByHost(admin, obj.host_email, obj.host_id)
+  const attribution = await resolveHostAttribution(admin, obj.host_email, obj.host_id)
   const meetingIdNumeric = toBigInt(obj.id)
   const downloadToken = (payload as { download_token?: string }).download_token ?? null
 
@@ -163,8 +163,8 @@ async function handleTranscriptCompleted(payload: ZoomWebhookPayload): Promise<H
       meetingUuid: obj.uuid,
       meetingIdNumeric,
       recordingRowId: recording?.id ?? null,
-      zoomConnectionId: connection?.id ?? null,
-      teamMemberId: connection?.team_member_id ?? null,
+      zoomConnectionId: attribution.connectionId,
+      teamMemberId: attribution.teamMemberId,
       bearerToken: downloadToken,
     },
     transcriptFiles as ZoomRecordingFile[],
@@ -366,7 +366,7 @@ async function handleAppDeauthorized(payload: ZoomWebhookPayload): Promise<Handl
   }
 }
 
-/* ─────────────────────────��───────────────────────────────────────────
+/* ───────────────���─────────��───────────────────────────────────────────
  * Helpers
  * ───────────────────────────────────────────────────────────────────── */
 
@@ -427,4 +427,35 @@ async function findConnectionByHost(
     if (data) return data
   }
   return null
+}
+
+/**
+ * Resolve host attribution for an inbound recording/transcript event.
+ *
+ * Account-wide Server-to-Server deliveries frequently come from hosts who
+ * never installed the user-OAuth app, so `zoom_connections` has no row for
+ * them. In that case we still want the recording attributed to the right
+ * teammate, so we fall back to matching the host email against
+ * `team_members.email` (case-insensitive) — exactly what the daily account
+ * sync does. Returns the connection id (if any) and the resolved team
+ * member id (from connection OR email fallback).
+ */
+async function resolveHostAttribution(
+  admin: ReturnType<typeof createAdminClient>,
+  hostEmail?: string,
+  hostId?: string,
+): Promise<{ connectionId: string | null; teamMemberId: string | null }> {
+  const connection = await findConnectionByHost(admin, hostEmail, hostId)
+  if (connection) {
+    return { connectionId: connection.id, teamMemberId: connection.team_member_id }
+  }
+  if (hostEmail) {
+    const { data: tm } = await admin
+      .from("team_members")
+      .select("id")
+      .ilike("email", hostEmail)
+      .maybeSingle()
+    if (tm) return { connectionId: null, teamMemberId: (tm as { id: string }).id }
+  }
+  return { connectionId: null, teamMemberId: null }
 }

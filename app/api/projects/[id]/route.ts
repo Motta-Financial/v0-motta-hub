@@ -12,8 +12,10 @@
  * `work_template_pattern` / `work_type_pattern`. New monthly Karbon items will
  * appear automatically on the next sync — no backfill required.
  */
-import { NextResponse } from "next/server"
-import { createAdminClient } from "@/lib/supabase/server"
+import { NextRequest, NextResponse } from "next/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
+import { recordAudit } from "@/lib/audit"
+import { getTeamMemberByAuthId } from "@/lib/team-members"
 
 export const dynamic = "force-dynamic"
 
@@ -311,11 +313,34 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   }
 }
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
     if (!UUID_RE.test(id)) return NextResponse.json({ error: "Invalid project id" }, { status: 400 })
     const body = await request.json()
+
+    const supabase = createAdminClient()
+
+    // Fetch old record for audit
+    const { data: oldRecord, error: fetchError } = await supabase
+      .from("projects")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle()
+
+    if (fetchError) throw fetchError
+    if (!oldRecord) return NextResponse.json({ error: "Project not found" }, { status: 404 })
+
+    // Get current user for audit
+    const userSupabase = await createClient()
+    const {
+      data: { user },
+    } = await userSupabase.auth.getUser()
+    let teamMemberId: string | null = null
+    if (user) {
+      const teamMember = await getTeamMemberByAuthId(user.id, user.email)
+      teamMemberId = teamMember?.id || null
+    }
 
     const allowed = [
       "name",
@@ -337,10 +362,23 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       return NextResponse.json({ error: "No updatable fields supplied" }, { status: 400 })
     }
 
-    const supabase = createAdminClient()
-    const { data, error } = await supabase.from("projects").update(patch).eq("id", id).select().single()
+    // Add updated_at timestamp
+    patch.updated_at = new Date().toISOString()
+
+    const { data: newRecord, error } = await supabase.from("projects").update(patch).eq("id", id).select("*").single()
     if (error) throw error
-    return NextResponse.json({ project: data })
+
+    // Record audit trail
+    await recordAudit({
+      entityType: "project",
+      entityId: id,
+      teamMemberId,
+      action: "update",
+      oldRecord,
+      newRecord,
+    })
+
+    return NextResponse.json({ project: newRecord })
   } catch (err: any) {
     console.error("[v0] /api/projects/[id] PATCH failed:", err?.message || err)
     return NextResponse.json({ error: err?.message || "Failed to update project" }, { status: 500 })
