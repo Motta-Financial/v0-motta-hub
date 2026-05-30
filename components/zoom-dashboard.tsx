@@ -1,9 +1,10 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
+import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
-import { ListChecks, Loader2 } from "lucide-react"
+import { ListChecks, Loader2, Briefcase } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -84,7 +85,7 @@ export function ZoomDashboard() {
   // Tag state — keyed on Zoom's bigint meeting id (as string). The
   // dashboard fetches counts in bulk so 50 cards = 1 round trip.
   const [tagCounts, setTagCounts] = useState<
-    Record<string, { clients: number; workItems: number }>
+    Record<string, { clients: number; workItems: number; dealId?: string | null }>
   >({})
   const [tagDialogMeeting, setTagDialogMeeting] = useState<ZoomMeetingForTagging | null>(null)
   // Pending state for the "Send untagged to my To-Do list" action so we
@@ -770,6 +771,15 @@ export function ZoomDashboard() {
                                     {tc!.workItems === 1 ? "" : "s"}
                                   </Badge>
                                 )}
+                                {tc!.dealId && (
+                                  <Link
+                                    href={`/deals/${tc!.dealId}`}
+                                    className="inline-flex items-center gap-1 rounded-full border border-stone-300 px-2 py-0.5 text-xs font-medium text-stone-700 transition-colors hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+                                  >
+                                    <Briefcase className="h-3 w-3" />
+                                    View Deal
+                                  </Link>
+                                )}
                               </>
                             ) : past ? (
                               <Badge
@@ -874,6 +884,13 @@ export function ZoomDashboard() {
                               </p>
                             </div>
                             <div className="flex items-center gap-1 shrink-0">
+                              {tc?.dealId && (
+                                <Button size="sm" variant="ghost" asChild title="View Deal">
+                                  <Link href={`/deals/${tc.dealId}`}>
+                                    <Briefcase className="h-4 w-4" />
+                                  </Link>
+                                </Button>
+                              )}
                               <Button
                                 size="sm"
                                 variant={!tagged && past ? "default" : "ghost"}
