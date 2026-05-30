@@ -25,6 +25,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { findOrCreateClient } from "@/lib/karbon/client-sync"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
+import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
 import { buildProspectEmailHtml, sendEmail } from "@/lib/email"
 import { linkReferral } from "@/lib/referrals/link-referral"
 import { createWorkItem } from "@/lib/karbon/create-work-item"
@@ -379,6 +380,29 @@ export async function POST(req: NextRequest) {
           linked_at: new Date().toISOString(),
         })
         .eq("id", inserted.id)
+    }
+
+    // ── 3a-2. Open the Deal ────────────────────────────────────────
+    // A prospect submitted through the in-person form is a brand-new
+    // sales opportunity. Open (or reuse) the single open Deal for this
+    // contact so the teammate can book meetings against it and run the
+    // debrief on the deal later. Best-effort: a deal failure must never
+    // break prospect intake.
+    if (finalContactId || finalOrganizationId) {
+      try {
+        await findOrCreateDeal(
+          {
+            contactId: finalContactId,
+            organizationId: finalContactId ? null : finalOrganizationId,
+            title: fullName || body.business_name?.trim() || "New Prospect",
+            source: "prospect_form",
+            ownerTeamMemberId: assigneeId,
+          },
+          { supabase },
+        )
+      } catch (err) {
+        console.error("[v0] POST /api/prospects deal create failed:", err)
+      }
     }
 
     // ── 3b. Mirror socials onto the master Hub record ──────────────

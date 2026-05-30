@@ -13,6 +13,7 @@ import {
 } from "@/lib/calendly-invitee-match"
 import { runAlfredCalendlyTriage } from "@/lib/alfred/calendly-triage"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
+import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
 import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
 import { notifyTeamOfNewBooking } from "@/lib/calendly/notify"
 import { pushHubContactToKarbon } from "@/lib/karbon/client-sync"
@@ -273,6 +274,24 @@ async function upsertInvitee(
           ? "email"
           : (contactMatchMethod ?? "email"),
     })
+
+    // Open (or reuse) the contact's single open Deal. A Calendly booking
+    // is one of the three canonical ways a prospect enters the Hub, so
+    // the meeting we just linked should hang off an opportunity. The
+    // Calendly→Zoom bridge + hub-meetings sync attach the actual meeting
+    // row to this deal. Best-effort: never block webhook processing.
+    try {
+      await findOrCreateDeal(
+        {
+          contactId,
+          title: invitee.name ?? invitee.email ?? "Calendly Prospect",
+          source: "calendly",
+        },
+        { supabase },
+      )
+    } catch (err) {
+      console.error("[calendly] deal create failed (non-blocking):", err)
+    }
   }
 
   const { error } = await supabase.from("calendly_invitees").upsert(
