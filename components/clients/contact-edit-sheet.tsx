@@ -75,6 +75,9 @@ const CONTACT_STATUSES = ["active", "inactive", "prospect", "archived"]
 const CONTACT_PREFERENCES = ["email", "phone", "text", "mail", "any"]
 const SALUTATIONS = ["Mr.", "Mrs.", "Ms.", "Dr.", "Prof."]
 
+// Radix Select forbids empty-string item values; use a sentinel for "no selection"
+const NONE_VALUE = "__none__"
+
 export function ContactEditSheet({
   contact,
   open,
@@ -215,12 +218,17 @@ export function ContactEditSheet({
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
                   <Label htmlFor="salutation">Salutation</Label>
-                  <Select value={salutation} onValueChange={setSalutation}>
+                  <Select
+                    value={salutation || NONE_VALUE}
+                    onValueChange={(v) =>
+                      setSalutation(v === NONE_VALUE ? "" : v)
+                    }
+                  >
                     <SelectTrigger id="salutation">
                       <SelectValue placeholder="Select..." />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">None</SelectItem>
+                      <SelectItem value={NONE_VALUE}>None</SelectItem>
                       {SALUTATIONS.map((s) => (
                         <SelectItem key={s} value={s}>
                           {s}

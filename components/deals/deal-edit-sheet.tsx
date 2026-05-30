@@ -60,6 +60,9 @@ interface Props {
   onSaved: (updated: Deal) => void
 }
 
+// Radix Select forbids empty-string item values; use a sentinel for "no selection"
+const NONE_VALUE = "__none__"
+
 const DEAL_STAGES = [
   { value: "new", label: "New" },
   { value: "meeting_scheduled", label: "Meeting Scheduled" },
@@ -231,14 +234,16 @@ export function DealEditSheet({ deal, open, onOpenChange, onSaved }: Props) {
               <div className="space-y-2">
                 <Label htmlFor="owner">Owner</Label>
                 <Select
-                  value={ownerTeamMemberId}
-                  onValueChange={setOwnerTeamMemberId}
+                  value={ownerTeamMemberId || NONE_VALUE}
+                  onValueChange={(v) =>
+                    setOwnerTeamMemberId(v === NONE_VALUE ? "" : v)
+                  }
                 >
                   <SelectTrigger id="owner">
                     <SelectValue placeholder="Select owner..." />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">No owner</SelectItem>
+                    <SelectItem value={NONE_VALUE}>No owner</SelectItem>
                     {teamMembers.map((tm) => (
                       <SelectItem key={tm.id} value={tm.id}>
                         {tm.full_name || tm.id}
@@ -267,12 +272,17 @@ export function DealEditSheet({ deal, open, onOpenChange, onSaved }: Props) {
 
               <div className="space-y-2">
                 <Label htmlFor="source">Source</Label>
-                <Select value={source} onValueChange={setSource}>
+                <Select
+                  value={source || NONE_VALUE}
+                  onValueChange={(v) =>
+                    setSource(v === NONE_VALUE ? "" : v)
+                  }
+                >
                   <SelectTrigger id="source">
                     <SelectValue placeholder="Select source..." />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Unknown</SelectItem>
+                    <SelectItem value={NONE_VALUE}>Unknown</SelectItem>
                     {DEAL_SOURCES.map((s) => (
                       <SelectItem key={s} value={s}>
                         {s
