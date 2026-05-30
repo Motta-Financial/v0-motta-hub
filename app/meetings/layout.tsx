@@ -2,7 +2,7 @@
 
 import { usePathname } from "next/navigation"
 import Link from "next/link"
-import { Calendar, Video, MessageSquare, Network, CalendarClock } from "lucide-react"
+import { Calendar, Video, MessageSquare, Briefcase, CalendarClock } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DashboardLayout } from "@/components/dashboard-layout"
 
@@ -37,9 +37,9 @@ export default function MeetingsLayout({
   // while you're inside a child.
   const tabs = [
     {
-      label: "Overview",
+      label: "Deals",
       href: "/meetings",
-      icon: Network,
+      icon: Briefcase,
       activeFor: (p: string) => p === "/meetings",
     },
     {

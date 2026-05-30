@@ -21,6 +21,9 @@ import {
   ShieldAlert,
   Webhook,
   LogOut,
+  FileText,
+  Activity,
+  Loader2,
 } from "lucide-react"
 import type { CalendlyUser, CalendlyEventType, CalendlyScheduledEvent } from "@/lib/calendly-types"
 
@@ -78,6 +81,16 @@ export function CalendlyDashboard() {
   const [needsReauth, setNeedsReauth] = useState(false)
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Lazy-loaded org-level surfaces. These need extra scopes
+  // (routing_forms:read / activity_log:read) and admin role, so we only
+  // fetch them when the tab is opened and degrade gracefully on 403/404.
+  const [routingForms, setRoutingForms] = useState<any[] | null>(null)
+  const [routingLoading, setRoutingLoading] = useState(false)
+  const [routingError, setRoutingError] = useState<string | null>(null)
+  const [activity, setActivity] = useState<any[] | null>(null)
+  const [activityLoading, setActivityLoading] = useState(false)
+  const [activityError, setActivityError] = useState<string | null>(null)
 
   useEffect(() => {
     void loadAll()
@@ -175,6 +188,64 @@ export function CalendlyDashboard() {
       await loadAll()
     } finally {
       setSyncing(false)
+    }
+  }
+
+  const loadRoutingForms = async () => {
+    if (routingForms !== null || routingLoading) return
+    setRoutingLoading(true)
+    setRoutingError(null)
+    try {
+      const tm = diagnostics?.teamMember?.id
+      const res = await fetch(
+        `/api/calendly/routing-forms${tm ? `?teamMemberId=${tm}` : ""}`,
+      )
+      if (res.ok) {
+        const body = await res.json()
+        setRoutingForms(Array.isArray(body.forms) ? body.forms : [])
+      } else {
+        const body = await res.json().catch(() => ({}))
+        setRoutingError(
+          body.error?.includes("scope") || res.status === 403
+            ? "Your Calendly token is missing the routing_forms:read scope. Reauthorize to enable this view."
+            : body.error || "Routing forms are unavailable for this account.",
+        )
+        setRoutingForms([])
+      }
+    } catch {
+      setRoutingError("Failed to load routing forms.")
+      setRoutingForms([])
+    } finally {
+      setRoutingLoading(false)
+    }
+  }
+
+  const loadActivity = async () => {
+    if (activity !== null || activityLoading) return
+    setActivityLoading(true)
+    setActivityError(null)
+    try {
+      const tm = diagnostics?.teamMember?.id
+      const res = await fetch(
+        `/api/calendly/activity-log${tm ? `?teamMemberId=${tm}` : ""}`,
+      )
+      if (res.ok) {
+        const body = await res.json()
+        setActivity(Array.isArray(body.entries) ? body.entries : [])
+      } else {
+        const body = await res.json().catch(() => ({}))
+        setActivityError(
+          res.status === 403
+            ? "The activity log requires admin access and the activity_log:read scope on your Calendly account."
+            : body.error || "The activity log is unavailable for this account.",
+        )
+        setActivity([])
+      }
+    } catch {
+      setActivityError("Failed to load activity log.")
+      setActivity([])
+    } finally {
+      setActivityLoading(false)
     }
   }
 
@@ -440,10 +511,19 @@ export function CalendlyDashboard() {
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="scheduled" className="space-y-4">
+      <Tabs
+        defaultValue="scheduled"
+        className="space-y-4"
+        onValueChange={(v) => {
+          if (v === "routing") void loadRoutingForms()
+          if (v === "activity") void loadActivity()
+        }}
+      >
         <TabsList>
           <TabsTrigger value="scheduled">Upcoming Events</TabsTrigger>
           <TabsTrigger value="event-types">Event Types</TabsTrigger>
+          <TabsTrigger value="routing">Routing Forms</TabsTrigger>
+          <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
 
         <TabsContent value="scheduled" className="space-y-4">
@@ -580,6 +660,122 @@ export function CalendlyDashboard() {
                 </Card>
               ))}
             </div>
+          )}
+        </TabsContent>
+
+        {/* Routing Forms — org-level, scope-gated */}
+        <TabsContent value="routing" className="space-y-4">
+          {routingLoading ? (
+            <Card className="p-12">
+              <div className="flex items-center justify-center gap-2 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                Loading routing forms...
+              </div>
+            </Card>
+          ) : routingError ? (
+            <Card className="p-6 border-amber-200 bg-amber-50">
+              <div className="flex items-start gap-3">
+                <ShieldAlert className="h-5 w-5 text-amber-600 mt-0.5" />
+                <p className="text-sm text-amber-800">{routingError}</p>
+              </div>
+            </Card>
+          ) : routingForms && routingForms.length > 0 ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              {routingForms.map((form) => (
+                <Card key={form.uri} className="p-6">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="p-2 rounded-md bg-primary/10 shrink-0">
+                        <FileText className="h-5 w-5 text-primary" />
+                      </div>
+                      <div className="min-w-0">
+                        <h3 className="font-semibold truncate">{form.name || "Untitled form"}</h3>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {Array.isArray(form.questions)
+                            ? `${form.questions.length} question(s)`
+                            : "Routing form"}
+                          {Array.isArray(form.submissions)
+                            ? ` · ${form.submissions.length} submission(s)`
+                            : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <Badge variant={form.status === "published" ? "default" : "secondary"}>
+                      {form.status || "draft"}
+                    </Badge>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <Card className="p-12">
+              <div className="text-center">
+                <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-lg font-semibold mb-2">No Routing Forms</h3>
+                <p className="text-muted-foreground">
+                  This Calendly organization has no routing forms configured.
+                </p>
+              </div>
+            </Card>
+          )}
+        </TabsContent>
+
+        {/* Activity log — org-level, admin + scope-gated */}
+        <TabsContent value="activity" className="space-y-4">
+          {activityLoading ? (
+            <Card className="p-12">
+              <div className="flex items-center justify-center gap-2 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                Loading activity log...
+              </div>
+            </Card>
+          ) : activityError ? (
+            <Card className="p-6 border-amber-200 bg-amber-50">
+              <div className="flex items-start gap-3">
+                <ShieldAlert className="h-5 w-5 text-amber-600 mt-0.5" />
+                <p className="text-sm text-amber-800">{activityError}</p>
+              </div>
+            </Card>
+          ) : activity && activity.length > 0 ? (
+            <Card className="divide-y">
+              {activity.map((entry, i) => (
+                <div key={entry.uri || i} className="flex items-start gap-3 p-4">
+                  <div className="p-2 rounded-md bg-muted shrink-0">
+                    <Activity className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm">
+                      <span className="font-medium">
+                        {entry.actor?.display_name || entry.actor?.email || "Someone"}
+                      </span>{" "}
+                      <span className="text-muted-foreground">
+                        {(entry.action || entry.namespace || "performed an action").replace(/_/g, " ")}
+                      </span>
+                    </p>
+                    {entry.occurred_at && (
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {new Date(entry.occurred_at).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                  {entry.namespace && (
+                    <Badge variant="outline" className="shrink-0 text-xs">
+                      {entry.namespace}
+                    </Badge>
+                  )}
+                </div>
+              ))}
+            </Card>
+          ) : (
+            <Card className="p-12">
+              <div className="text-center">
+                <Activity className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-lg font-semibold mb-2">No Recent Activity</h3>
+                <p className="text-muted-foreground">
+                  No organization activity has been recorded recently.
+                </p>
+              </div>
+            </Card>
           )}
         </TabsContent>
       </Tabs>

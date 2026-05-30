@@ -141,16 +141,17 @@ const navigation = [
       // groups all of their meetings (Zoom / phone / in person) and the
       // debrief. It supersedes the old "Hub Meetings" framing: meetings
       // now roll UP into a deal rather than standing alone.
-      {
-        name: "Deals",
-        href: "/deals",
-        icon: Briefcase,
-      },
+      // Deals + Meetings are now ONE section. A deal is the opportunity
+      // pipeline (one per prospect) that groups every meeting + debrief, so
+      // the pipeline is the section's default landing (/meetings renders the
+      // Deals pipeline) and the meeting surfaces hang off it as tabs. The
+      // standalone /deals route still works — it redirects to /meetings.
       {
         name: "Meetings",
         href: "/meetings",
         icon: Calendar,
         children: [
+          { name: "Deals", href: "/meetings", icon: Briefcase },
           { name: "Calendar", href: "/meetings/calendar", icon: Calendar },
           { name: "Calendly", href: "/meetings/calendly", icon: Calendar },
           { name: "Zoom", href: "/meetings/zoom", icon: Video },

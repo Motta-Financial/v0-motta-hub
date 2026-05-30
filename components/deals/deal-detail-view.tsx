@@ -168,7 +168,7 @@ export default function DealDetailView({ dealId }: { dealId: string }) {
       <Card>
         <CardContent className="p-10 text-center text-sm text-stone-600">
           Deal not found.{" "}
-          <Link href="/deals" className="font-medium text-stone-900 underline">
+          <Link href="/meetings" className="font-medium text-stone-900 underline">
             Back to deals
           </Link>
         </CardContent>
@@ -215,7 +215,7 @@ export default function DealDetailView({ dealId }: { dealId: string }) {
     <div className="flex flex-col gap-6">
       {/* Back */}
       <Link
-        href="/deals"
+        href="/meetings"
         className="inline-flex w-fit items-center gap-1 text-sm font-medium text-stone-600 hover:text-stone-900"
       >
         <ArrowLeft className="h-4 w-4" />

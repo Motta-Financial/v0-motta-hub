@@ -8,5 +8,5 @@ import { redirect } from "next/navigation"
  * forwards there so existing bookmarks and in-app links keep working.
  */
 export default function LegacyHubMeetingsPage() {
-  redirect("/deals")
+  redirect("/meetings")
 }
