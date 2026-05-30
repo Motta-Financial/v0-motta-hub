@@ -55,20 +55,34 @@ export async function GET(req: NextRequest) {
   // Two parallel IN-list counts. We project just the FK column so the
   // rows are tiny — the count is done in JS to avoid running two
   // GROUP BY queries (Supabase JS client doesn't expose `.group()`).
-  const [clientRows, workItemRows, dealRows] = await Promise.all([
+  const [clientRows, workItemRows, dealTagRows, projectTagRows, dealRows] = await Promise.all([
     supabase.from("zoom_meeting_clients").select("zoom_meeting_id").in("zoom_meeting_id", internalIds),
     supabase
       .from("zoom_meeting_work_items")
       .select("zoom_meeting_id")
       .in("zoom_meeting_id", internalIds),
-    // Hub meeting rows carry the deal_id. `meetings.zoom_meeting_id` is a
-    // text column holding the zoom_meetings internal uuid, so we match on
-    // the same internalIds set.
+    // Explicit deal/project tags (migration 339).
+    supabase
+      .from("zoom_meeting_deals")
+      .select("zoom_meeting_id, deal_id")
+      .in("zoom_meeting_id", internalIds),
+    supabase
+      .from("zoom_meeting_projects")
+      .select("zoom_meeting_id")
+      .in("zoom_meeting_id", internalIds),
+    // Hub meeting rows also carry a deal_id (from the Calendly/intake
+    // bridge). `meetings.zoom_meeting_id` is a text column holding the
+    // zoom_meetings internal uuid, so we match on the same internalIds set.
+    // We keep this as a fallback so the deep-link icon still works even when
+    // no explicit zoom_meeting_deals tag exists yet.
     supabase.from("meetings").select("zoom_meeting_id, deal_id").in("zoom_meeting_id", internalIds),
   ])
 
-  const counts: Record<string, { clients: number; workItems: number; dealId: string | null }> = {}
-  for (const id of ids) counts[id] = { clients: 0, workItems: 0, dealId: null }
+  const counts: Record<
+    string,
+    { clients: number; workItems: number; deals: number; projects: number; dealId: string | null }
+  > = {}
+  for (const id of ids) counts[id] = { clients: 0, workItems: 0, deals: 0, projects: 0, dealId: null }
 
   for (const row of clientRows.data || []) {
     const zoomId = internalIdToZoomId.get(row.zoom_meeting_id as string)
@@ -78,9 +92,22 @@ export async function GET(req: NextRequest) {
     const zoomId = internalIdToZoomId.get(row.zoom_meeting_id as string)
     if (zoomId) counts[zoomId].workItems += 1
   }
+  for (const row of dealTagRows.data || []) {
+    const zoomId = internalIdToZoomId.get(row.zoom_meeting_id as string)
+    if (zoomId) {
+      counts[zoomId].deals += 1
+      // Prefer an explicitly-tagged deal for the deep-link icon.
+      if (row.deal_id) counts[zoomId].dealId = row.deal_id as string
+    }
+  }
+  for (const row of projectTagRows.data || []) {
+    const zoomId = internalIdToZoomId.get(row.zoom_meeting_id as string)
+    if (zoomId) counts[zoomId].projects += 1
+  }
   for (const row of dealRows.data || []) {
     const zoomId = internalIdToZoomId.get(row.zoom_meeting_id as string)
-    if (zoomId && row.deal_id) counts[zoomId].dealId = row.deal_id as string
+    // Only use the Hub-meeting deal as a fallback when no explicit tag set it.
+    if (zoomId && row.deal_id && !counts[zoomId].dealId) counts[zoomId].dealId = row.deal_id as string
   }
 
   return NextResponse.json({ counts })

@@ -123,9 +123,9 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ zoomMeetin
   // Empty tag set is the right answer when the parent meeting hasn't
   // been synced yet. The dialog will show "no tags yet" and POSTing
   // a tag will create the parent row lazily.
-  if (!internalId) return NextResponse.json({ clients: [], workItems: [] })
+  if (!internalId) return NextResponse.json({ clients: [], workItems: [], deals: [], projects: [] })
 
-  const [clients, workItems] = await Promise.all([
+  const [clients, workItems, deals, projects] = await Promise.all([
     supabase
       .from("zoom_meeting_clients")
       .select(
@@ -140,11 +140,27 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ zoomMeetin
       )
       .eq("zoom_meeting_id", internalId)
       .order("created_at", { ascending: true }),
+    supabase
+      .from("zoom_meeting_deals")
+      .select(
+        `id, link_source, match_method, confidence, alfred_reason, needs_review, deal:deals ( id, title, stage, status )`,
+      )
+      .eq("zoom_meeting_id", internalId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("zoom_meeting_projects")
+      .select(
+        `id, link_source, match_method, confidence, alfred_reason, needs_review, project:projects ( id, name, kind, status )`,
+      )
+      .eq("zoom_meeting_id", internalId)
+      .order("created_at", { ascending: true }),
   ])
 
   return NextResponse.json({
     clients: clients.data || [],
     workItems: workItems.data || [],
+    deals: deals.data || [],
+    projects: projects.data || [],
   })
 }
 
@@ -228,7 +244,58 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ zoomMeetin
     return NextResponse.json({ tag: data })
   }
 
-  return NextResponse.json({ error: "kind must be client | work_item" }, { status: 400 })
+  if (kind === "deal") {
+    const dealId: string | null = body.dealId ?? null
+    if (!dealId) {
+      return NextResponse.json({ error: "dealId required" }, { status: 400 })
+    }
+    const { data, error } = await supabase
+      .from("zoom_meeting_deals")
+      .insert({
+        zoom_meeting_id: internalId,
+        deal_id: dealId,
+        link_source: "manual",
+        created_by_team_member_id: createdBy,
+      })
+      .select(
+        `id, link_source, match_method, confidence, alfred_reason, needs_review, deal:deals ( id, title, stage, status )`,
+      )
+      .single()
+    if (error) {
+      const status = (error as { code?: string }).code === "23505" ? 409 : 500
+      return NextResponse.json({ error: error.message }, { status })
+    }
+    return NextResponse.json({ tag: data })
+  }
+
+  if (kind === "project") {
+    const projectId: string | null = body.projectId ?? null
+    if (!projectId) {
+      return NextResponse.json({ error: "projectId required" }, { status: 400 })
+    }
+    const { data, error } = await supabase
+      .from("zoom_meeting_projects")
+      .insert({
+        zoom_meeting_id: internalId,
+        project_id: projectId,
+        link_source: "manual",
+        created_by_team_member_id: createdBy,
+      })
+      .select(
+        `id, link_source, match_method, confidence, alfred_reason, needs_review, project:projects ( id, name, kind, status )`,
+      )
+      .single()
+    if (error) {
+      const status = (error as { code?: string }).code === "23505" ? 409 : 500
+      return NextResponse.json({ error: error.message }, { status })
+    }
+    return NextResponse.json({ tag: data })
+  }
+
+  return NextResponse.json(
+    { error: "kind must be client | work_item | deal | project" },
+    { status: 400 },
+  )
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -250,9 +317,16 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ zoomMeet
       ? "zoom_meeting_clients"
       : kind === "work_item"
         ? "zoom_meeting_work_items"
-        : null
+        : kind === "deal"
+          ? "zoom_meeting_deals"
+          : kind === "project"
+            ? "zoom_meeting_projects"
+            : null
   if (!table) {
-    return NextResponse.json({ error: "kind must be client | work_item" }, { status: 400 })
+    return NextResponse.json(
+      { error: "kind must be client | work_item | deal | project" },
+      { status: 400 },
+    )
   }
 
   // Scope the delete to this meeting so a stray junction id from a
