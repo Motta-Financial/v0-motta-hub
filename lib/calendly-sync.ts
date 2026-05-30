@@ -10,6 +10,7 @@ import {
   upsertAutoClientLink,
 } from "@/lib/calendly-invitee-match"
 import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
+import { syncHubMeetings } from "@/lib/meetings/sync-hub-meetings"
 
 /**
  * Reusable Calendly sync engine.
@@ -160,6 +161,15 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
       errors: errors.length > 0 ? errors : null,
     },
   )
+
+  // Refresh the unified Hub Meetings table off the freshly-synced Calendly
+  // (and already-synced Zoom) records. Non-fatal: a failure here must not
+  // fail the Calendly sync, so we swallow and log.
+  try {
+    await syncHubMeetings(supabase)
+  } catch (err) {
+    console.error("[calendly-sync] hub meetings refresh failed:", err)
+  }
 
   return {
     success: true,

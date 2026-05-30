@@ -159,6 +159,10 @@ export async function middleware(request: NextRequest) {
   // route's own auth logic can run.
   const isZoomRecordingsBackfill = pathname === "/api/zoom/recordings/backfill"
 
+  // Hub Meetings sync - CRON_SECRET Bearer auth or logged-in admin, checked
+  // in the handler. (GET /api/meetings stays behind normal session auth.)
+  const isHubMeetingsSync = pathname === "/api/meetings/sync"
+
   // The Zoom App "Surface" (Marketplace > Features > Surface) iframes
   // /zoom/embed inside the Zoom desktop / web client. The Hub user is
   // not necessarily logged in to motta.cpa at that moment — the page
@@ -237,6 +241,7 @@ export async function middleware(request: NextRequest) {
     isProConnectWebhook ||
     isProConnectSync ||
     isZoomRecordingsBackfill ||
+    isHubMeetingsSync ||
     isCron ||
     isCalendlyOAuthCallback ||
     isInternalCall ||

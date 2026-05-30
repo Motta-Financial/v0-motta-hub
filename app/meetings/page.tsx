@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Calendar, Video, MessageSquare, ArrowRight, CalendarClock } from "lucide-react"
+import { Calendar, Video, MessageSquare, ArrowRight, CalendarClock, Link2 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 /**
@@ -14,6 +14,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
  */
 export default function MeetingsOverviewPage() {
   const tiles = [
+    {
+      title: "Hub Meetings",
+      href: "/meetings/hub",
+      icon: Link2,
+      blurb:
+        "One unified record per meeting — each Hub Meeting ID ties together its Prospect/Intake, Calendly booking, Zoom recording, ALFRED transcript summary, and Debrief.",
+    },
     {
       title: "Calendar",
       href: "/meetings/calendar",
