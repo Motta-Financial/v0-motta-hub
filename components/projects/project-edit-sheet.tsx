@@ -62,6 +62,9 @@ interface Props {
   onSaved: (updated: Project) => void
 }
 
+// Radix Select forbids empty-string item values; use a sentinel for "no selection"
+const NONE_VALUE = "__none__"
+
 const PROJECT_KINDS = [
   { value: "tax", label: "Tax" },
   { value: "accounting", label: "Accounting" },
@@ -246,14 +249,16 @@ export function ProjectEditSheet({
               <div className="space-y-2">
                 <Label htmlFor="owner">Owner</Label>
                 <Select
-                  value={ownerTeamMemberId}
-                  onValueChange={setOwnerTeamMemberId}
+                  value={ownerTeamMemberId || NONE_VALUE}
+                  onValueChange={(v) =>
+                    setOwnerTeamMemberId(v === NONE_VALUE ? "" : v)
+                  }
                 >
                   <SelectTrigger id="owner">
                     <SelectValue placeholder="Select owner..." />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">No owner</SelectItem>
+                    <SelectItem value={NONE_VALUE}>No owner</SelectItem>
                     {teamMembers.map((tm) => (
                       <SelectItem key={tm.id} value={tm.id}>
                         {tm.full_name || tm.id}
