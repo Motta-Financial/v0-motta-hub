@@ -35,6 +35,8 @@ import {
   Briefcase,
   Building2,
   Check,
+  FolderKanban,
+  Handshake,
   Loader2,
   Search,
   Tag,
@@ -101,12 +103,49 @@ interface WorkItemTag {
   } | null
 }
 
+interface DealTag {
+  id: string
+  link_source?: string | null
+  match_method?: string | null
+  confidence?: number | null
+  alfred_reason?: string | null
+  needs_review?: boolean | null
+  deal?: { id: string; title: string | null; stage?: string | null; status?: string | null } | null
+}
+
+interface ProjectTag {
+  id: string
+  link_source?: string | null
+  match_method?: string | null
+  confidence?: number | null
+  alfred_reason?: string | null
+  needs_review?: boolean | null
+  project?: { id: string; name: string | null; kind?: string | null; status?: string | null } | null
+}
+
 interface RawClientResult {
   id: string
   name: string
   email?: string | null
   type: "Organization" | "Contact"
   karbon_key?: string | null
+}
+
+interface RawDealResult {
+  id: string
+  title: string | null
+  contact_name?: string | null
+  organization_name?: string | null
+  stage?: string | null
+  status?: string | null
+}
+
+interface RawProjectResult {
+  id: string
+  name: string | null
+  client_name?: string | null
+  status?: string | null
+  kind?: string | null
 }
 
 interface RawWorkItemResult {
@@ -124,7 +163,12 @@ interface Props {
    * Called after every successful tag/untag so the dashboard can update
    * its in-memory tag count badge without a full refetch.
    */
-  onTagsChanged?: (next: { clients: ClientTag[]; workItems: WorkItemTag[] }) => void
+  onTagsChanged?: (next: {
+    clients: ClientTag[]
+    workItems: WorkItemTag[]
+    deals: DealTag[]
+    projects: ProjectTag[]
+  }) => void
 }
 
 /**
@@ -222,6 +266,8 @@ export function ZoomMeetingTagDialog({
   const [saving, setSaving] = useState(false)
   const [clients, setClients] = useState<ClientTag[]>([])
   const [workItems, setWorkItems] = useState<WorkItemTag[]>([])
+  const [deals, setDeals] = useState<DealTag[]>([])
+  const [projects, setProjects] = useState<ProjectTag[]>([])
 
   // Inline-search state for clients and work items. We keep two
   // independent debounced queries plus their result lists so the user
@@ -237,6 +283,18 @@ export function ZoomMeetingTagDialog({
   const [workItemResults, setWorkItemResults] = useState<RawWorkItemResult[]>([])
   const [workItemSearching, setWorkItemSearching] = useState(false)
   const workItemReqRef = useRef(0)
+
+  const [dealQuery, setDealQuery] = useState("")
+  const [dealQueryDebounced, setDealQueryDebounced] = useState("")
+  const [dealResults, setDealResults] = useState<RawDealResult[]>([])
+  const [dealSearching, setDealSearching] = useState(false)
+  const dealReqRef = useRef(0)
+
+  const [projectQuery, setProjectQuery] = useState("")
+  const [projectQueryDebounced, setProjectQueryDebounced] = useState("")
+  const [projectResults, setProjectResults] = useState<RawProjectResult[]>([])
+  const [projectSearching, setProjectSearching] = useState(false)
+  const projectReqRef = useRef(0)
 
   // The Zoom id is a bigint server-side; the URL just takes its string form.
   const meetingIdParam = String(meeting.id)
@@ -263,7 +321,14 @@ export function ZoomMeetingTagDialog({
       const json = await res.json()
       setClients(json.clients || [])
       setWorkItems(json.workItems || [])
-      onTagsChanged?.({ clients: json.clients || [], workItems: json.workItems || [] })
+      setDeals(json.deals || [])
+      setProjects(json.projects || [])
+      onTagsChanged?.({
+        clients: json.clients || [],
+        workItems: json.workItems || [],
+        deals: json.deals || [],
+        projects: json.projects || [],
+      })
     } catch (err) {
       toast({
         title: "Could not load tags",
@@ -288,6 +353,12 @@ export function ZoomMeetingTagDialog({
       setWorkItemQuery("")
       setWorkItemQueryDebounced("")
       setWorkItemResults([])
+      setDealQuery("")
+      setDealQueryDebounced("")
+      setDealResults([])
+      setProjectQuery("")
+      setProjectQueryDebounced("")
+      setProjectResults([])
     }
     // intentionally not adding refresh to deps -- it's already memoized on
     // meetingIdParam which is the only thing that should re-trigger.
@@ -307,6 +378,16 @@ export function ZoomMeetingTagDialog({
     const t = setTimeout(() => setWorkItemQueryDebounced(workItemQuery.trim()), 200)
     return () => clearTimeout(t)
   }, [workItemQuery])
+
+  useEffect(() => {
+    const t = setTimeout(() => setDealQueryDebounced(dealQuery.trim()), 200)
+    return () => clearTimeout(t)
+  }, [dealQuery])
+
+  useEffect(() => {
+    const t = setTimeout(() => setProjectQueryDebounced(projectQuery.trim()), 200)
+    return () => clearTimeout(t)
+  }, [projectQuery])
 
   // ────────────────────────────────────────────────────────────
   // Client search — hits /api/clients?type=all so the picker covers
@@ -378,6 +459,68 @@ export function ZoomMeetingTagDialog({
       })
   }, [open, workItemQueryDebounced])
 
+  // ────────────────────────────────────────────────────────────
+  // Deal search — hits /api/deals?q= (matches title, contact, org).
+  // ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!open) return
+    if (!dealQueryDebounced) {
+      setDealResults([])
+      setDealSearching(false)
+      return
+    }
+    const reqId = ++dealReqRef.current
+    setDealSearching(true)
+    const params = new URLSearchParams()
+    params.set("q", dealQueryDebounced)
+    params.set("status", "all")
+    params.set("limit", "20")
+    fetch(`/api/deals?${params.toString()}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (dealReqRef.current !== reqId) return
+        setDealResults(Array.isArray(j?.deals) ? j.deals : [])
+      })
+      .catch(() => {
+        if (dealReqRef.current !== reqId) return
+        setDealResults([])
+      })
+      .finally(() => {
+        if (dealReqRef.current === reqId) setDealSearching(false)
+      })
+  }, [open, dealQueryDebounced])
+
+  // ────────────────────────────────────────────────────────────
+  // Project search — hits /api/projects?search=.
+  // ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!open) return
+    if (!projectQueryDebounced) {
+      setProjectResults([])
+      setProjectSearching(false)
+      return
+    }
+    const reqId = ++projectReqRef.current
+    setProjectSearching(true)
+    const params = new URLSearchParams()
+    params.set("search", projectQueryDebounced)
+    params.set("status", "all")
+    params.set("limit", "20")
+    fetch(`/api/projects?${params.toString()}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (projectReqRef.current !== reqId) return
+        setProjectResults(Array.isArray(j?.projects) ? j.projects : [])
+      })
+      .catch(() => {
+        if (projectReqRef.current !== reqId) return
+        setProjectResults([])
+      })
+      .finally(() => {
+        if (projectReqRef.current === reqId) setProjectSearching(false)
+      })
+  }, [open, projectQueryDebounced])
+
   // Dedupe results against already-tagged rows so we don't show a
   // "Add" affordance for a client/work item the meeting already has.
   const taggedClientKeys = useMemo(() => {
@@ -392,6 +535,16 @@ export function ZoomMeetingTagDialog({
   const taggedWorkItemIds = useMemo(
     () => new Set(workItems.map((w) => w.work_item?.id).filter(Boolean) as string[]),
     [workItems],
+  )
+
+  const taggedDealIds = useMemo(
+    () => new Set(deals.map((d) => d.deal?.id).filter(Boolean) as string[]),
+    [deals],
+  )
+
+  const taggedProjectIds = useMemo(
+    () => new Set(projects.map((p) => p.project?.id).filter(Boolean) as string[]),
+    [projects],
   )
 
   // ────────────────────────────────────────────────────────────
@@ -478,9 +631,92 @@ export function ZoomMeetingTagDialog({
   }
 
   // ────────────────────────────────────────────────────────────
-  // Remove tag (works for both kinds via ?kind= query param)
+  // Add deal tag
   // ────────────────────────────────────────────────────────────
-  async function removeTag(kind: "client" | "work_item", junctionId: string) {
+  async function addDeal(result: RawDealResult) {
+    setSaving(true)
+    try {
+      const res = await fetch(`/api/zoom/meetings/${meetingIdParam}/tags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "deal",
+          dealId: result.id,
+          teamMemberId: teamMember?.id ?? null,
+          meeting: meetingMeta,
+        }),
+      })
+      if (res.status === 409) {
+        toast({
+          title: "Already tagged",
+          description: `${result.title || "This deal"} is already linked to this meeting.`,
+        })
+      } else if (!res.ok) {
+        const json = await res.json().catch(() => ({}))
+        throw new Error(json.error || `${res.status}`)
+      }
+      setDealQuery("")
+      setDealQueryDebounced("")
+      setDealResults([])
+      await refresh()
+    } catch (err) {
+      toast({
+        title: "Could not add deal",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Add project tag
+  // ────────────────────────────────────────────────────────────
+  async function addProject(result: RawProjectResult) {
+    setSaving(true)
+    try {
+      const res = await fetch(`/api/zoom/meetings/${meetingIdParam}/tags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "project",
+          projectId: result.id,
+          teamMemberId: teamMember?.id ?? null,
+          meeting: meetingMeta,
+        }),
+      })
+      if (res.status === 409) {
+        toast({
+          title: "Already tagged",
+          description: `${result.name || "This project"} is already linked to this meeting.`,
+        })
+      } else if (!res.ok) {
+        const json = await res.json().catch(() => ({}))
+        throw new Error(json.error || `${res.status}`)
+      }
+      setProjectQuery("")
+      setProjectQueryDebounced("")
+      setProjectResults([])
+      await refresh()
+    } catch (err) {
+      toast({
+        title: "Could not add project",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Remove tag (works for all kinds via ?kind= query param)
+  // ────────────────────────────────────────────────────────────
+  async function removeTag(
+    kind: "client" | "work_item" | "deal" | "project",
+    junctionId: string,
+  ) {
     setSaving(true)
     try {
       const res = await fetch(
@@ -847,6 +1083,238 @@ export function ZoomMeetingTagDialog({
                                     <div className="truncate text-xs text-muted-foreground">
                                       {[w.client_name, w.status].filter(Boolean).join(" • ")}
                                     </div>
+                                  )}
+                                </div>
+                                {alreadyTagged && <Check className="h-4 w-4 shrink-0 opacity-60" />}
+                              </button>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <div className="h-px w-full bg-border" role="separator" />
+
+            {/* ──── Deals (optional) ─────────────────────────────── */}
+            <section className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Handshake className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Deals</h3>
+                <span className="text-xs text-muted-foreground">(optional)</span>
+                <Badge variant={deals.length > 0 ? "secondary" : "outline"} className="ml-auto">
+                  {deals.length}
+                </Badge>
+              </div>
+
+              {deals.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic">No deals tagged yet.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {deals.map((d) => (
+                    <Badge
+                      key={d.id}
+                      variant="outline"
+                      className={cn(
+                        "flex items-center gap-1.5 pr-1 py-1 font-normal",
+                        d.needs_review && "border-amber-300 dark:border-amber-700/60",
+                      )}
+                    >
+                      <Handshake className="h-3 w-3 shrink-0 opacity-60" />
+                      <span className="truncate max-w-[220px]">
+                        {d.deal?.title || "Untitled deal"}
+                        {d.deal?.stage && (
+                          <span className="text-muted-foreground"> · {d.deal.stage}</span>
+                        )}
+                      </span>
+                      <SourcePill
+                        source={d.link_source}
+                        matchMethod={d.match_method}
+                        reason={d.alfred_reason}
+                        confidence={d.confidence}
+                        needsReview={d.needs_review}
+                      />
+                      <button
+                        type="button"
+                        aria-label={`Remove ${d.deal?.title || "deal"}`}
+                        onClick={() => removeTag("deal", d.id)}
+                        disabled={saving}
+                        className="ml-0.5 rounded-sm p-0.5 hover:bg-muted disabled:opacity-50"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 opacity-50" />
+                  <Input
+                    type="text"
+                    autoComplete="off"
+                    placeholder="Search deals by title, client, or org…"
+                    value={dealQuery}
+                    onChange={(e) => setDealQuery(e.target.value)}
+                    className="pl-9"
+                    aria-label="Search deals"
+                  />
+                </div>
+
+                {dealQueryDebounced && (
+                  <div className="rounded-md border bg-background">
+                    {dealSearching ? (
+                      <div className="space-y-2 p-2">
+                        <Skeleton className="h-7 w-full" />
+                        <Skeleton className="h-7 w-3/4" />
+                      </div>
+                    ) : dealResults.length === 0 ? (
+                      <p className="px-3 py-4 text-center text-sm text-muted-foreground">
+                        No matches for &quot;{dealQueryDebounced}&quot;.
+                      </p>
+                    ) : (
+                      <ul role="listbox" aria-label="Deal results" className="max-h-64 overflow-y-auto py-1">
+                        {dealResults.map((d) => {
+                          const alreadyTagged = taggedDealIds.has(d.id)
+                          const sub = [d.contact_name || d.organization_name, d.stage]
+                            .filter(Boolean)
+                            .join(" • ")
+                          return (
+                            <li key={d.id}>
+                              <button
+                                type="button"
+                                disabled={alreadyTagged || saving}
+                                onClick={() => addDeal(d)}
+                                className={cn(
+                                  "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
+                                  "hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
+                                  alreadyTagged && "cursor-not-allowed opacity-60 hover:bg-transparent",
+                                )}
+                              >
+                                <Handshake className="h-4 w-4 shrink-0 opacity-60" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate">{d.title || "Untitled deal"}</div>
+                                  {sub && (
+                                    <div className="truncate text-xs text-muted-foreground">{sub}</div>
+                                  )}
+                                </div>
+                                {alreadyTagged && <Check className="h-4 w-4 shrink-0 opacity-60" />}
+                              </button>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <div className="h-px w-full bg-border" role="separator" />
+
+            {/* ──── Projects (optional) ──────────────────────────── */}
+            <section className="space-y-3">
+              <div className="flex items-center gap-2">
+                <FolderKanban className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Projects</h3>
+                <span className="text-xs text-muted-foreground">(optional)</span>
+                <Badge variant={projects.length > 0 ? "secondary" : "outline"} className="ml-auto">
+                  {projects.length}
+                </Badge>
+              </div>
+
+              {projects.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic">No projects tagged yet.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {projects.map((p) => (
+                    <Badge
+                      key={p.id}
+                      variant="outline"
+                      className={cn(
+                        "flex items-center gap-1.5 pr-1 py-1 font-normal",
+                        p.needs_review && "border-amber-300 dark:border-amber-700/60",
+                      )}
+                    >
+                      <FolderKanban className="h-3 w-3 shrink-0 opacity-60" />
+                      <span className="truncate max-w-[220px]">
+                        {p.project?.name || "Untitled project"}
+                        {p.project?.status && (
+                          <span className="text-muted-foreground"> · {p.project.status}</span>
+                        )}
+                      </span>
+                      <SourcePill
+                        source={p.link_source}
+                        matchMethod={p.match_method}
+                        reason={p.alfred_reason}
+                        confidence={p.confidence}
+                        needsReview={p.needs_review}
+                      />
+                      <button
+                        type="button"
+                        aria-label={`Remove ${p.project?.name || "project"}`}
+                        onClick={() => removeTag("project", p.id)}
+                        disabled={saving}
+                        className="ml-0.5 rounded-sm p-0.5 hover:bg-muted disabled:opacity-50"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 opacity-50" />
+                  <Input
+                    type="text"
+                    autoComplete="off"
+                    placeholder="Search projects by name…"
+                    value={projectQuery}
+                    onChange={(e) => setProjectQuery(e.target.value)}
+                    className="pl-9"
+                    aria-label="Search projects"
+                  />
+                </div>
+
+                {projectQueryDebounced && (
+                  <div className="rounded-md border bg-background">
+                    {projectSearching ? (
+                      <div className="space-y-2 p-2">
+                        <Skeleton className="h-7 w-full" />
+                        <Skeleton className="h-7 w-3/4" />
+                      </div>
+                    ) : projectResults.length === 0 ? (
+                      <p className="px-3 py-4 text-center text-sm text-muted-foreground">
+                        No matches for &quot;{projectQueryDebounced}&quot;.
+                      </p>
+                    ) : (
+                      <ul role="listbox" aria-label="Project results" className="max-h-64 overflow-y-auto py-1">
+                        {projectResults.map((p) => {
+                          const alreadyTagged = taggedProjectIds.has(p.id)
+                          const sub = [p.client_name, p.status].filter(Boolean).join(" • ")
+                          return (
+                            <li key={p.id}>
+                              <button
+                                type="button"
+                                disabled={alreadyTagged || saving}
+                                onClick={() => addProject(p)}
+                                className={cn(
+                                  "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
+                                  "hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
+                                  alreadyTagged && "cursor-not-allowed opacity-60 hover:bg-transparent",
+                                )}
+                              >
+                                <FolderKanban className="h-4 w-4 shrink-0 opacity-60" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate">{p.name || "Untitled project"}</div>
+                                  {sub && (
+                                    <div className="truncate text-xs text-muted-foreground">{sub}</div>
                                   )}
                                 </div>
                                 {alreadyTagged && <Check className="h-4 w-4 shrink-0 opacity-60" />}

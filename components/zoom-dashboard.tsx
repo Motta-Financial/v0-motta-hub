@@ -76,6 +76,11 @@ export function ZoomDashboard() {
   const [myConnection, setMyConnection] = useState<ZoomConnection | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  // Account-wide (Server-to-Server) recording sweep. Pulls cloud
+  // recordings for EVERY teammate in the Zoom account — even those who
+  // never personally connected the Hub — and links them. Previously only
+  // reachable via cron / curl; this exposes it to admins from the UI.
+  const [syncingAccount, setSyncingAccount] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTab, setActiveTab] = useState("meetings")
   const [viewMode, setViewMode] = useState<"schedule" | "byHost">("schedule")
@@ -85,7 +90,10 @@ export function ZoomDashboard() {
   // Tag state — keyed on Zoom's bigint meeting id (as string). The
   // dashboard fetches counts in bulk so 50 cards = 1 round trip.
   const [tagCounts, setTagCounts] = useState<
-    Record<string, { clients: number; workItems: number; dealId?: string | null }>
+    Record<
+      string,
+      { clients: number; workItems: number; deals: number; projects: number; dealId?: string | null }
+    >
   >({})
   const [tagDialogMeeting, setTagDialogMeeting] = useState<ZoomMeetingForTagging | null>(null)
   // Pending state for the "Send untagged to my To-Do list" action so we
@@ -117,24 +125,36 @@ export function ZoomDashboard() {
         setError(errorData.error || "Failed to fetch meetings")
       }
 
-      // Bulk-load tag counts for all visible meetings in one round trip.
-      // Cards render an "Untagged" warning until this resolves so users
-      // know which meetings still need clients/work items linked.
-      if (meetingList.length > 0) {
-        const ids = meetingList.map((m) => String(m.id)).filter(Boolean)
-        if (ids.length > 0) {
-          fetch(`/api/zoom/meetings/tag-counts?ids=${ids.join(",")}`)
-            .then((r) => (r.ok ? r.json() : { counts: {} }))
-            .then((j) => setTagCounts(j.counts || {}))
-            .catch(() => setTagCounts({}))
-        }
-      }
-
       // Fetch recordings
+      let recordingList: any[] = []
       const recordingsRes = await fetch("/api/zoom/recordings")
       if (recordingsRes.ok) {
         const recordingsData = await recordingsRes.json()
-        setRecordings(Array.isArray(recordingsData) ? recordingsData : [])
+        recordingList = Array.isArray(recordingsData) ? recordingsData : []
+        setRecordings(recordingList)
+      }
+
+      // Bulk-load tag counts for everything visible in ONE round trip —
+      // both upcoming meetings AND recordings. Previously only meetings
+      // were loaded, so a tagged recording rendered as "Untagged" again
+      // after a navigation away/back even though the link was saved.
+      // Recordings share Zoom's bigint id with their parent meeting, so a
+      // single id set covers both lists.
+      const idSet = new Set<string>()
+      for (const m of meetingList) {
+        const id = String(m.id ?? "")
+        if (id) idSet.add(id)
+      }
+      for (const r of recordingList) {
+        const id = String(r.id ?? r.zoom_meeting_id ?? r.uuid ?? "")
+        if (id) idSet.add(id)
+      }
+      if (idSet.size > 0) {
+        const ids = Array.from(idSet)
+        fetch(`/api/zoom/meetings/tag-counts?ids=${ids.join(",")}`)
+          .then((r) => (r.ok ? r.json() : { counts: {} }))
+          .then((j) => setTagCounts(j.counts || {}))
+          .catch(() => setTagCounts({}))
       }
 
       // Fetch call history
@@ -177,6 +197,49 @@ export function ZoomDashboard() {
       console.error("Sync error:", error)
     } finally {
       setSyncing(false)
+    }
+  }
+
+  const handleSyncAccountRecordings = async () => {
+    setSyncingAccount(true)
+    try {
+      const response = await fetch("/api/zoom/recordings/sync-account", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ months: 6, includeMedia: false, tagParticipants: true }),
+      })
+      const data = await response.json().catch(() => ({}))
+
+      if (response.ok && data.ok) {
+        toast({
+          title: "Account recordings synced",
+          description: `Scanned ${data.usersScanned ?? 0} users · ${data.recordingsUpserted ?? 0} recordings · ${data.transcriptsParsed ?? 0} transcripts · ${data.clientLinksWritten ?? 0} client links.`,
+        })
+        await fetchData()
+      } else if (response.status === 403) {
+        toast({
+          title: "Admin access required",
+          description: "Only firm admins can run the account-wide recording sync.",
+          variant: "destructive",
+        })
+      } else {
+        toast({
+          title: "Account sync unavailable",
+          description:
+            data.error ||
+            "Zoom Server-to-Server credentials are not configured for this account.",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      console.error("[v0] Account recording sync error:", error)
+      toast({
+        title: "Account sync failed",
+        description: "Something went wrong while syncing account-wide recordings.",
+        variant: "destructive",
+      })
+    } finally {
+      setSyncingAccount(false)
     }
   }
 
@@ -272,7 +335,7 @@ export function ZoomDashboard() {
   const isMeetingTagged = (meetingId: number | string) => {
     const c = tagCounts[String(meetingId)]
     if (!c) return false
-    return c.clients > 0 || c.workItems > 0
+    return c.clients > 0 || c.workItems > 0 || c.deals > 0 || c.projects > 0
   }
   const isMeetingPast = (m: MasterMeeting) => {
     if (!m.start_time) return false
@@ -710,10 +773,11 @@ export function ZoomDashboard() {
                 // Per-meeting derived state for the tagging UX. We intentionally
                 // compute these inline (cheap O(1) lookups) so the parent
                 // doesn't need a separate memoized map.
-                const tc = tagCounts[String(meeting.id)]
-                const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0)
-                const past = isMeetingPast(meeting)
-                return (
+                  const tc = tagCounts[String(meeting.id)]
+                  const tagged =
+                    !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
+                  const past = isMeetingPast(meeting)
+                  return (
                   <Card key={meeting.id} className="p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex items-start gap-4 min-w-0 flex-1">
@@ -854,9 +918,10 @@ export function ZoomDashboard() {
                   </div>
                   <div className="grid gap-2 pl-11">
                     {hostData.meetings.map((meeting) => {
-                      const tc = tagCounts[String(meeting.id)]
-                      const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0)
-                      const past = isMeetingPast(meeting)
+                    const tc = tagCounts[String(meeting.id)]
+                    const tagged =
+                      !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
+                    const past = isMeetingPast(meeting)
                       return (
                         <Card key={meeting.id} className="p-3">
                           <div className="flex items-center justify-between gap-2">
@@ -923,6 +988,39 @@ export function ZoomDashboard() {
 
         {/* Recordings Tab */}
         <TabsContent value="recordings" className="space-y-4">
+          {/* Account-wide recording sweep. The list below shows the
+              connected user's cloud recordings; this action pulls
+              recordings for EVERY teammate in the Zoom account (via
+              Server-to-Server OAuth), parses transcripts, and links them
+              to clients/work items. Admin-only — enforced server-side. */}
+          <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
+            <div className="flex items-start gap-3">
+              <div className="rounded-md bg-muted p-2 shrink-0">
+                <Users className="h-5 w-5 text-muted-foreground" />
+              </div>
+              <div>
+                <p className="text-sm font-medium">Account-wide recordings</p>
+                <p className="text-xs text-muted-foreground">
+                  Pull cloud recordings + transcripts for every teammate, not just connected
+                  accounts. Auto-links to clients and work items.
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSyncAccountRecordings}
+              disabled={syncingAccount}
+            >
+              {syncingAccount ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              {syncingAccount ? "Syncing account..." : "Sync account recordings"}
+            </Button>
+          </Card>
+
           {filteredRecordings.length === 0 ? (
             <Card className="p-8 text-center">
               <FileVideo className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
@@ -1074,13 +1172,21 @@ export function ZoomDashboard() {
             if (!open) setTagDialogMeeting(null)
           }}
           onTagsChanged={(next) => {
-            setTagCounts((prev) => ({
-              ...prev,
-              [String(tagDialogMeeting.id)]: {
-                clients: next.clients.length,
-                workItems: next.workItems.length,
-              },
-            }))
+            setTagCounts((prev) => {
+              const key = String(tagDialogMeeting.id)
+              const dealId =
+                next.deals.find((d) => d.deal?.id)?.deal?.id ?? prev[key]?.dealId ?? null
+              return {
+                ...prev,
+                [key]: {
+                  clients: next.clients.length,
+                  workItems: next.workItems.length,
+                  deals: next.deals.length,
+                  projects: next.projects.length,
+                  dealId,
+                },
+              }
+            })
           }}
         />
       )}

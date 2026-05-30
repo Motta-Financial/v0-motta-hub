@@ -122,7 +122,7 @@ export async function GET(request: Request) {
       const { data: wi, error: wiErr } = await supabase
         .from("work_items")
         .select(
-          "id, karbon_work_item_key, title, work_type, work_template_name, status, primary_status, secondary_status, due_date, organization_id, contact_id, completed_date, deleted_in_karbon_at",
+          "id, karbon_work_item_key, title, work_type, work_template_name, status, primary_status, secondary_status, due_date, organization_id, contact_id, completed_date, deleted_in_karbon_at, assignee_id, assignee_name",
         )
         .or(`organization_id.in.(${inList}),contact_id.in.(${inList})`)
         .is("deleted_in_karbon_at", null)
@@ -168,6 +168,20 @@ export async function GET(request: Request) {
         .filter(Boolean)
         .sort()[0] || null
 
+      // Aggregate the distinct people actually assigned to this project's
+      // work items. `owner_team_member_id` is usually null in practice, so
+      // the work-item assignees are the real "who's working this" signal.
+      const teamMap = new Map<string, { id: string; name: string; open_count: number }>()
+      for (const w of matched) {
+        const name = (w.assignee_name || "").trim()
+        if (!name) continue
+        const key = w.assignee_id || name
+        const cur = teamMap.get(key) || { id: w.assignee_id || key, name, open_count: 0 }
+        if (!isCompleted(w)) cur.open_count += 1
+        teamMap.set(key, cur)
+      }
+      const team = Array.from(teamMap.values()).sort((a, b) => b.open_count - a.open_count)
+
       const primary = (p.clients || []).find((c) => c.is_primary) || (p.clients || [])[0] || null
       const clientName: string = primary?.name || "Unlinked client"
 
@@ -181,8 +195,33 @@ export async function GET(request: Request) {
         work_item_count: matched.length,
         open_work_item_count: open.length,
         next_due_date: nextDue,
+        team,
       }
     })
+
+    // ── Attach owner display name + avatar ──
+    // Batch-fetch team_members for every distinct owner so the UI can show a
+    // name/avatar without an N+1 lookup.
+    const ownerIds = Array.from(
+      new Set(enriched.map((p) => p.owner_team_member_id).filter(Boolean) as string[]),
+    )
+    if (ownerIds.length) {
+      const { data: members } = await supabase
+        .from("team_members")
+        .select("id, full_name, avatar_url")
+        .in("id", ownerIds)
+      const memberMap = new Map((members || []).map((m) => [m.id, m]))
+      for (const p of enriched as any[]) {
+        const m = p.owner_team_member_id ? memberMap.get(p.owner_team_member_id) : null
+        p.owner_name = m?.full_name || null
+        p.owner_avatar_url = m?.avatar_url || null
+      }
+    } else {
+      for (const p of enriched as any[]) {
+        p.owner_name = null
+        p.owner_avatar_url = null
+      }
+    }
 
     return NextResponse.json({ projects: enriched, total: enriched.length })
   } catch (err: any) {

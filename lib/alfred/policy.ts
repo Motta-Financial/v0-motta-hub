@@ -84,6 +84,8 @@ const STAFF_TOOL_NAMES: readonly string[] = [
   "getTommyAwardsLeaderboard",
   "getServices",
   "getFinancialSummary",
+  "getDealPipeline",
+  "getProjects",
   "findPerson",
   "webSearch",
   "browsePage",

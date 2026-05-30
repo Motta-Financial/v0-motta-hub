@@ -13,7 +13,7 @@
  * truth so any new work_type the firm publishes shows up here automatically.
  */
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
@@ -22,15 +22,20 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
   ArrowUpRight,
+  CalendarClock,
   CalendarDays,
+  CircleDot,
   ClipboardList,
   FolderKanban,
+  Layers,
   Library,
   Loader2,
   Search,
   Sparkles,
+  UserRound,
   Users,
 } from "lucide-react"
 import {
@@ -76,6 +81,10 @@ type ProjectRow = {
   work_item_count: number
   open_work_item_count: number
   next_due_date: string | null
+  owner_team_member_id: string | null
+  owner_name: string | null
+  owner_avatar_url: string | null
+  team: Array<{ id: string; name: string; open_count: number }>
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -113,6 +122,31 @@ function statusBadgeClasses(status: string): string {
   }
 }
 
+function statusDotClasses(status: string): string {
+  switch (status) {
+    case "active":
+      return "bg-emerald-500"
+    case "paused":
+      return "bg-amber-500"
+    case "completed":
+      return "bg-blue-500"
+    case "archived":
+    default:
+      return "bg-muted-foreground/50"
+  }
+}
+
+function statusLabel(status: string): string {
+  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return "?"
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
+
 export function ProjectsListView() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -120,7 +154,8 @@ export function ProjectsListView() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [typeKey, setTypeKey] = useState<string>("all")
-  const [status, setStatus] = useState<string>("active")
+  const [status, setStatus] = useState<string>("all")
+  const [assigneeId, setAssigneeId] = useState<string>("all")
   const [search, setSearch] = useState<string>("")
   const [createOpen, setCreateOpen] = useState(false)
   const [prefill, setPrefill] = useState<{ typeKey?: string | null; templateKey?: string | null }>({})
@@ -165,6 +200,9 @@ export function ProjectsListView() {
     if (typeKey !== "all") {
       arr = arr.filter((p) => p.project_type_key === typeKey)
     }
+    if (assigneeId !== "all") {
+      arr = arr.filter((p) => (p.team || []).some((t) => t.id === assigneeId))
+    }
     const q = search.trim().toLowerCase()
     if (q) {
       arr = arr.filter(
@@ -173,11 +211,60 @@ export function ProjectsListView() {
           (p.client_name || "").toLowerCase().includes(q) ||
           (p.description || "").toLowerCase().includes(q) ||
           (p.project_type_name || "").toLowerCase().includes(q) ||
-          (p.project_template_title || "").toLowerCase().includes(q),
+          (p.project_template_title || "").toLowerCase().includes(q) ||
+          (p.team || []).some((t) => t.name.toLowerCase().includes(q)),
       )
     }
     return arr
-  }, [projects, typeKey, search])
+  }, [projects, typeKey, assigneeId, search])
+
+  // ── Dashboard aggregates (computed over the full loaded set) ──
+  const stats = useMemo(() => {
+    let openWorkItems = 0
+    let dueSoon = 0
+    const now = new Date()
+    const in7 = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+    for (const p of projects) {
+      openWorkItems += p.open_work_item_count || 0
+      if (p.next_due_date) {
+        const d = new Date(p.next_due_date)
+        if (!Number.isNaN(d.getTime()) && d <= in7) dueSoon += 1
+      }
+    }
+    return {
+      total: projects.length,
+      active: projects.filter((p) => p.status === "active").length,
+      openWorkItems,
+      dueSoon,
+    }
+  }, [projects])
+
+  const statusCounts = useMemo(() => {
+    const order = ["active", "paused", "completed", "archived"]
+    const m = new Map<string, number>()
+    for (const p of projects) m.set(p.status, (m.get(p.status) || 0) + 1)
+    return order
+      .filter((s) => m.has(s))
+      .map((s) => ({ status: s, count: m.get(s) || 0 }))
+      .concat(
+        Array.from(m.entries())
+          .filter(([s]) => !order.includes(s))
+          .map(([status, count]) => ({ status, count })),
+      )
+  }, [projects])
+
+  const assigneeCounts = useMemo(() => {
+    const m = new Map<string, { id: string; name: string; count: number; openCount: number }>()
+    for (const p of projects) {
+      for (const t of p.team || []) {
+        const cur = m.get(t.id) || { id: t.id, name: t.name, count: 0, openCount: 0 }
+        cur.count += 1
+        cur.openCount += t.open_count || 0
+        m.set(t.id, cur)
+      }
+    }
+    return Array.from(m.values()).sort((a, b) => b.count - a.count)
+  }, [projects])
 
   const groups = useMemo(() => {
     const m = new Map<string, ProjectRow[]>()
@@ -242,6 +329,123 @@ export function ProjectsListView() {
         </div>
       </header>
 
+      {/* ── Dashboard ────────────────────────────────────────────── */}
+      {!loading && projects.length > 0 && (
+        <div className="flex flex-col gap-4">
+          {/* Headline stat tiles */}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatTile
+              icon={<FolderKanban className="h-4 w-4" aria-hidden />}
+              label="Total projects"
+              value={stats.total}
+            />
+            <StatTile
+              icon={<CircleDot className="h-4 w-4 text-emerald-600" aria-hidden />}
+              label="Active"
+              value={stats.active}
+            />
+            <StatTile
+              icon={<ClipboardList className="h-4 w-4" aria-hidden />}
+              label="Open work items"
+              value={stats.openWorkItems}
+            />
+            <StatTile
+              icon={<CalendarClock className="h-4 w-4 text-amber-600" aria-hidden />}
+              label="Due within 7 days"
+              value={stats.dueSoon}
+            />
+          </div>
+
+          {/* Breakdown cards */}
+          <div className="grid gap-3 lg:grid-cols-3">
+            {/* By Status */}
+            <BreakdownCard
+              title="By Status"
+              icon={<Layers className="h-4 w-4" aria-hidden />}
+              onClear={status !== "all" ? () => setStatus("all") : undefined}
+            >
+              {statusCounts.map((s) => (
+                <button
+                  key={s.status}
+                  type="button"
+                  onClick={() => setStatus(status === s.status ? "all" : s.status)}
+                  aria-pressed={status === s.status}
+                  className={`flex items-center justify-between rounded-md border px-2.5 py-1.5 text-left text-sm transition hover:bg-muted/60 ${
+                    status === s.status ? "border-primary/50 bg-primary/5" : "border-transparent"
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${statusDotClasses(s.status)}`} aria-hidden />
+                    {statusLabel(s.status)}
+                  </span>
+                  <span className="font-semibold tabular-nums">{s.count}</span>
+                </button>
+              ))}
+            </BreakdownCard>
+
+            {/* By Type */}
+            <BreakdownCard
+              title="By Type"
+              icon={<FolderKanban className="h-4 w-4" aria-hidden />}
+              onClear={typeKey !== "all" ? () => setTypeKey("all") : undefined}
+            >
+              {Array.from(typeCounts.entries())
+                .sort(([, a], [, b]) => b.count - a.count)
+                .slice(0, 6)
+                .map(([key, info]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setTypeKey(typeKey === key ? "all" : key)}
+                    aria-pressed={typeKey === key}
+                    className={`flex items-center justify-between rounded-md border px-2.5 py-1.5 text-left text-sm transition hover:bg-muted/60 ${
+                      typeKey === key ? "border-primary/50 bg-primary/5" : "border-transparent"
+                    }`}
+                  >
+                    <span className="truncate pr-2">{info.name}</span>
+                    <span className="font-semibold tabular-nums">{info.count}</span>
+                  </button>
+                ))}
+              {typeCounts.size === 0 && (
+                <p className="px-2.5 py-1.5 text-sm text-muted-foreground">No typed projects.</p>
+              )}
+            </BreakdownCard>
+
+            {/* By Assignee */}
+            <BreakdownCard
+              title="By Assignee"
+              icon={<Users className="h-4 w-4" aria-hidden />}
+              onClear={assigneeId !== "all" ? () => setAssigneeId("all") : undefined}
+            >
+              {assigneeCounts.slice(0, 6).map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => setAssigneeId(assigneeId === a.id ? "all" : a.id)}
+                  aria-pressed={assigneeId === a.id}
+                  className={`flex items-center justify-between rounded-md border px-2.5 py-1.5 text-left text-sm transition hover:bg-muted/60 ${
+                    assigneeId === a.id ? "border-primary/50 bg-primary/5" : "border-transparent"
+                  }`}
+                >
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    <Avatar className="h-5 w-5 shrink-0">
+                      <AvatarFallback className="text-[10px]">{initials(a.name)}</AvatarFallback>
+                    </Avatar>
+                    <span className="truncate">{a.name}</span>
+                  </span>
+                  <span className="shrink-0 font-semibold tabular-nums">{a.count}</span>
+                </button>
+              ))}
+              {assigneeCounts.length === 0 && (
+                <p className="px-2.5 py-1.5 text-sm text-muted-foreground">
+                  No assignees on matched work items.
+                </p>
+              )}
+            </BreakdownCard>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative w-full max-w-sm">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" aria-hidden />
@@ -273,11 +477,24 @@ export function ProjectsListView() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
             <SelectItem value="active">Active</SelectItem>
             <SelectItem value="paused">Paused</SelectItem>
             <SelectItem value="completed">Completed</SelectItem>
             <SelectItem value="archived">Archived</SelectItem>
-            <SelectItem value="all">All statuses</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={assigneeId} onValueChange={setAssigneeId}>
+          <SelectTrigger className="w-[200px]" aria-label="Filter by assignee">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All assignees ({assigneeCounts.length})</SelectItem>
+            {assigneeCounts.map((a) => (
+              <SelectItem key={a.id} value={a.id}>
+                {a.name} ({a.count})
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
         <Button variant="ghost" size="sm" onClick={load} disabled={loading}>
@@ -389,9 +606,99 @@ function ProjectCard({ project }: { project: ProjectRow }) {
               Next: {formatDate(project.next_due_date)}
             </span>
           </div>
+
+          {/* Owner + assignee row */}
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <UserRound className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {project.owner_name ? (
+                <span className="truncate">{project.owner_name}</span>
+              ) : (
+                <span className="italic">No owner</span>
+              )}
+            </span>
+            {project.team && project.team.length > 0 ? (
+              <span className="flex items-center -space-x-1.5" aria-label="Assignees">
+                {project.team.slice(0, 4).map((t) => (
+                  <Avatar key={t.id} className="h-5 w-5 border border-background" title={t.name}>
+                    {project.owner_team_member_id === t.id && project.owner_avatar_url ? (
+                      <AvatarImage src={project.owner_avatar_url || "/placeholder.svg"} alt={t.name} />
+                    ) : null}
+                    <AvatarFallback className="text-[9px]">{initials(t.name)}</AvatarFallback>
+                  </Avatar>
+                ))}
+                {project.team.length > 4 && (
+                  <span className="ml-2.5 text-[10px] text-muted-foreground">
+                    +{project.team.length - 4}
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span className="italic">Unassigned</span>
+            )}
+          </div>
         </CardContent>
       </Card>
     </Link>
+  )
+}
+
+function StatTile({
+  icon,
+  label,
+  value,
+}: {
+  icon: ReactNode
+  label: string
+  value: number
+}) {
+  return (
+    <Card>
+      <CardContent className="flex items-center gap-3 p-4">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          {icon}
+        </div>
+        <div className="flex min-w-0 flex-col">
+          <span className="text-2xl font-semibold leading-none tabular-nums">{value}</span>
+          <span className="truncate text-xs text-muted-foreground">{label}</span>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function BreakdownCard({
+  title,
+  icon,
+  onClear,
+  children,
+}: {
+  title: string
+  icon: ReactNode
+  onClear?: () => void
+  children: ReactNode
+}) {
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-1 p-4">
+        <div className="mb-1 flex items-center justify-between">
+          <h3 className="inline-flex items-center gap-2 text-sm font-semibold">
+            <span className="text-muted-foreground">{icon}</span>
+            {title}
+          </h3>
+          {onClear && (
+            <button
+              type="button"
+              onClick={onClear}
+              className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        {children}
+      </CardContent>
+    </Card>
   )
 }
 

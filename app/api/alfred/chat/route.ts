@@ -541,6 +541,137 @@ Use this to answer questions about clients, work items, team members, finances, 
     },
   }),
 
+  // ── Deal pipeline ─────────────────────────────────────────────────────
+  // A deal is one sales opportunity per prospect and sits ABOVE meetings
+  // (it groups many meetings, debriefs, and tagged work items). This tool
+  // gives the model a ready-made pipeline rollup so it doesn't have to
+  // hand-roll a queryDatabase + group-by against deals_enriched every time
+  // someone asks "what's in the pipeline?".
+  getDealPipeline: tool({
+    description:
+      "Get the sales deal pipeline (opportunities). A deal = one opportunity per prospect, grouping its meetings, debriefs, and work items. " +
+      "Use this for 'what's in the pipeline', 'how many open deals', 'deals by stage', 'what deals does <owner> have', or 'recent/biggest deals'. " +
+      "Returns counts grouped by stage plus the matching deals (newest first) with contact/org/owner names and rollups.",
+    inputSchema: z.object({
+      status: z
+        .enum(["open", "won", "lost"])
+        .optional()
+        .describe("Filter by deal status. Omit to include all statuses."),
+      stage: z.string().optional().describe("Filter by a specific pipeline stage."),
+      ownerName: z
+        .string()
+        .optional()
+        .describe("Filter by deal owner (team member) display name, partial match."),
+      limit: z.number().optional().describe("Max deals to return, default 50."),
+    }),
+    execute: async ({ status, stage, ownerName, limit = 50 }) => {
+      try {
+        const supabase = createAdminClient()
+        let query = supabase.from("deals_enriched").select("*")
+
+        if (status) query = query.eq("status", status)
+        if (stage) query = query.eq("stage", stage)
+        if (ownerName) query = query.ilike("owner_name", `%${sanitizeIlikeTerm(ownerName)}%`)
+
+        const { data, error } = await query
+          .order("created_at", { ascending: false })
+          .limit(limit)
+
+        if (error) {
+          return { success: false, error: error.message }
+        }
+
+        const byStage: Record<string, number> = {}
+        const byStatus: Record<string, number> = {}
+        let totalEstimatedValue = 0
+        for (const d of data || []) {
+          const s = (d as { stage?: string }).stage || "Unknown"
+          byStage[s] = (byStage[s] || 0) + 1
+          const st = (d as { status?: string }).status || "Unknown"
+          byStatus[st] = (byStatus[st] || 0) + 1
+          totalEstimatedValue += (d as { estimated_value?: number }).estimated_value || 0
+        }
+
+        return {
+          success: true,
+          total: data?.length || 0,
+          byStage,
+          byStatus,
+          totalEstimatedValue,
+          deals: data || [],
+        }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
+    },
+  }),
+
+  // ── Projects ──────────────────────────────────────────────────────────
+  // Hub-native projects group Karbon work items by type/template. This tool
+  // wraps projects_enriched with the linked-clients array so the model can
+  // answer "what projects are active / for client X / of type Y" without
+  // composing a join itself.
+  getProjects: tool({
+    description:
+      "Get Hub-native projects (groupings of Karbon work items by type/template). " +
+      "Use this for 'what projects are active', 'projects for <client>', 'projects of type <X>', or 'project status breakdown'. " +
+      "Returns counts grouped by status and type plus the matching projects with their linked clients.",
+    inputSchema: z.object({
+      status: z
+        .enum(["active", "paused", "completed", "archived"])
+        .optional()
+        .describe("Filter by project status. Omit to include all."),
+      kind: z.string().optional().describe("Filter by project kind."),
+      searchTerm: z
+        .string()
+        .optional()
+        .describe("Match against project name / type / template title."),
+      limit: z.number().optional().describe("Max projects to return, default 50."),
+    }),
+    execute: async ({ status, kind, searchTerm, limit = 50 }) => {
+      try {
+        const supabase = createAdminClient()
+        let query = supabase.from("projects_enriched").select("*")
+
+        if (status) query = query.eq("status", status)
+        if (kind) query = query.eq("kind", kind)
+        if (searchTerm) {
+          const safe = sanitizeIlikeTerm(searchTerm)
+          query = query.or(
+            `name.ilike.%${safe}%,project_type_name.ilike.%${safe}%,project_template_title.ilike.%${safe}%`,
+          )
+        }
+
+        const { data, error } = await query
+          .order("created_at", { ascending: false })
+          .limit(limit)
+
+        if (error) {
+          return { success: false, error: error.message }
+        }
+
+        const byStatus: Record<string, number> = {}
+        const byType: Record<string, number> = {}
+        for (const p of data || []) {
+          const st = (p as { status?: string }).status || "Unknown"
+          byStatus[st] = (byStatus[st] || 0) + 1
+          const t = (p as { project_type_name?: string }).project_type_name || "Unknown"
+          byType[t] = (byType[t] || 0) + 1
+        }
+
+        return {
+          success: true,
+          total: data?.length || 0,
+          byStatus,
+          byType,
+          projects: data || [],
+        }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
+    },
+  }),
+
   // ── Person lookup ───────────────────────────────────────────────────────
   // Dedicated, zero-friction tool for "Who is X?" / "Do we have a contact
   // named Y?" / "Find me Z's email" questions. The model previously failed
@@ -678,8 +809,11 @@ If a user asks about a person, a client, a work item, a deadline, an invoice, a 
 
 - For ANY question of the form "Who is X?", "Do we have a contact named X?", "What's X's email/role/department?", "Find X for me" — your FIRST action is \`findPerson({ query: "X" })\`. Do not skip this step. Do not guess from memory. Do not tell the user you have no information without searching first.
 - For "what is X's workload / what work is assigned to X" — call \`findPerson\` first to resolve who X actually is, then \`getTeamWorkload\` or \`queryDatabase\` against \`work_items\` filtered by their team_members.id or assignee_name.
-- For "what's going on with client/company X" — call \`getClientInfo\` first.
-- For "what's due / what's overdue / show me deadlines" — call \`getUpcomingDeadlines\` or \`getMyUpcomingDeadlines\`.
+  - For "what's going on with client/company X" — call \`getClientInfo\` first.
+  - For "what's due / what's overdue / show me deadlines" — call \`getUpcomingDeadlines\` or \`getMyUpcomingDeadlines\`.
+  - For the sales pipeline — "what's in the pipeline", "open/won/lost deals", "deals by stage", "<owner>'s deals" — call \`getDealPipeline\`. A deal is one opportunity per prospect that groups its meetings, debriefs, and work items.
+  - For Hub projects — "active projects", "projects for client X", "projects of type Y", "project status breakdown" — call \`getProjects\`.
+  - For "what was said / discussed in a meeting", recapping a call, or grounding an answer in a Zoom conversation — query \`alfred_meeting_transcripts\` (filter by \`zoom_meeting_id\` first; resolve the meeting via \`zoom_meetings\`). It holds parsed transcript text only — never expect download links there.
 
 Only after a tool call has actually returned no matches may you say "I'm afraid I haven't that information to hand." A blank apology before tool use is a failure of duty.
 

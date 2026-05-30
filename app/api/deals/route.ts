@@ -31,7 +31,15 @@ export async function GET(request: NextRequest) {
   if (status && status !== "all") query = query.eq("status", status)
   if (stage) query = query.eq("stage", stage)
   if (contactId) query = query.eq("contact_id", contactId)
-  if (search) query = query.ilike("contact_name", `%${search}%`)
+  if (search) {
+    // Match the deal title, the contact name, or the organization name so
+    // the deal picker (e.g. the Zoom tag dialog) finds opportunities by any
+    // of the labels a user is likely to type.
+    const term = `%${search}%`
+    query = query.or(
+      `title.ilike.${term},contact_name.ilike.${term},organization_name.ilike.${term}`,
+    )
+  }
 
   const { data, error } = await query
   if (error) {
