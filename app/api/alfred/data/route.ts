@@ -206,6 +206,20 @@ function getSearchColumns(table: AllowedTable): string[] {
     ],
     tommy_award_points: ["team_member_name"],
     tommy_award_yearly_totals: ["team_member_name"],
+    deals: ["title", "notes", "source"],
+    deals_enriched: ["title", "contact_name", "contact_email", "organization_name", "owner_name", "source"],
+    projects: ["name", "description"],
+    projects_enriched: ["name", "project_type_name", "project_template_title"],
+    prospect_submissions: [
+      "submitter_full_name",
+      "submitter_email",
+      "business_name",
+      "services_requested",
+      "internal_notes",
+    ],
+    referrals: ["referee_name", "referred_by_raw", "referred_by_name", "notes"],
+    calendly_events: ["name", "event_type_name", "calendly_user_name", "calendly_user_email"],
+    zoom_meetings: ["topic", "host_email"],
   }
 
   return searchColumnsMap[table] || []
