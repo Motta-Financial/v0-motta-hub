@@ -22,6 +22,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { getS2SAccessToken, listAllZoomUsers, s2sFetch, isS2SConfigured } from "./s2s-auth"
 import { ingestRecordingFiles, type ZoomRecordingFile } from "./ingest-recording-files"
+import { processOneMeeting, type ProcessResult } from "./process-meeting-participants"
 
 export interface AccountSyncOptions {
   supabase: SupabaseClient
@@ -29,6 +30,14 @@ export interface AccountSyncOptions {
   months?: number
   /** Also copy MP4/M4A media to Blob (slower/heavier). Default false for sweeps. */
   includeMedia?: boolean
+  /**
+   * Run participant resolution + Calendly bridge + ALFRED triage on each
+   * account-wide meeting so it gets client-tagged (and its transcript then
+   * becomes summarizable). Default true — this is the whole point of the
+   * account-wide sweep for non-connected users. Set false to only ingest
+   * recordings/transcripts without tagging.
+   */
+  tagParticipants?: boolean
   /** Limit to a single Zoom user id / email (debugging). */
   onlyUser?: string
 }
@@ -40,6 +49,8 @@ export interface AccountSyncResult {
   transcriptsParsed: number
   transcriptsFailed: number
   mediaCopied: number
+  meetingsTagged: number
+  clientLinksWritten: number
   errors: string[]
 }
 
@@ -76,6 +87,7 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
   const { supabase } = opts
   const months = Math.max(1, Math.min(opts.months ?? 6, 24))
   const includeMedia = opts.includeMedia === true
+  const tagParticipants = opts.tagParticipants !== false
 
   const result: AccountSyncResult = {
     usersScanned: 0,
@@ -84,6 +96,8 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
     transcriptsParsed: 0,
     transcriptsFailed: 0,
     mediaCopied: 0,
+    meetingsTagged: 0,
+    clientLinksWritten: 0,
     errors: [],
   }
 
@@ -188,25 +202,82 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
             // account-wide meeting. Mirrors the recording→meeting upsert in
             // sync-recent-meetings.ts. onConflict zoom_meeting_id; we only set
             // the columns we know so a richer prior row isn't clobbered.
-            const { error: zmErr } = await supabase.from("zoom_meetings").upsert(
-              {
-                zoom_meeting_id: rec.id,
-                zoom_uuid: rec.uuid,
-                topic: rec.topic ?? "(untitled meeting)",
-                start_time: rec.start_time ?? null,
-                duration: rec.duration ?? null,
-                host_email: user.email ?? null,
-                zoom_host_id: user.id ?? null,
-                team_member_id: attribution.teamMemberId,
-                zoom_connection_id: attribution.connectionId,
-                status: "ended",
-                raw_data: rec,
-                synced_at: new Date().toISOString(),
-              },
-              { onConflict: "zoom_meeting_id" },
-            )
+            const { data: zmRow, error: zmErr } = await supabase
+              .from("zoom_meetings")
+              .upsert(
+                {
+                  zoom_meeting_id: rec.id,
+                  zoom_uuid: rec.uuid,
+                  topic: rec.topic ?? "(untitled meeting)",
+                  start_time: rec.start_time ?? null,
+                  duration: rec.duration ?? null,
+                  host_email: user.email ?? null,
+                  zoom_host_id: user.id ?? null,
+                  team_member_id: attribution.teamMemberId,
+                  zoom_connection_id: attribution.connectionId,
+                  status: "ended",
+                  raw_data: rec,
+                  synced_at: new Date().toISOString(),
+                },
+                { onConflict: "zoom_meeting_id" },
+              )
+              .select("id, participants_processed_at")
+              .maybeSingle()
             if (zmErr) {
               result.errors.push(`meeting upsert ${rec.id}: ${zmErr.message}`)
+            }
+
+            // ── Client tagging (account-wide) ──────────────────────────
+            // Resolve participants + Calendly bridge + ALFRED triage using
+            // the S2S token, so meetings hosted by NON-connected users still
+            // get client-linked. Reuses the exact connection-sweep code path
+            // (processOneMeeting), just with an S2S-bound fetcher. Skip if
+            // already processed so re-runs stay cheap and idempotent.
+            if (
+              tagParticipants &&
+              zmRow?.id &&
+              rec.uuid &&
+              !zmRow.participants_processed_at
+            ) {
+              const tagResult: ProcessResult = {
+                meetingsScanned: 0,
+                participantsSeen: 0,
+                contactsCreated: 0,
+                contactsMatched: 0,
+                linksWritten: 0,
+                bridgedFromCalendly: 0,
+                alfredTagged: 0,
+                errors: [],
+              }
+              try {
+                await processOneMeeting(
+                  supabase,
+                  (url) => s2sFetch(url),
+                  {
+                    id: zmRow.id,
+                    zoom_uuid: rec.uuid,
+                    zoom_meeting_id: String(rec.id),
+                    topic: rec.topic ?? null,
+                    start_time: rec.start_time ?? null,
+                    host_email: user.email ?? null,
+                    team_member_id: attribution.teamMemberId,
+                  },
+                  tagResult,
+                )
+                result.clientLinksWritten += tagResult.linksWritten
+                if (tagResult.linksWritten > 0 || tagResult.alfredTagged > 0 || tagResult.bridgedFromCalendly > 0) {
+                  result.meetingsTagged++
+                }
+                if (tagResult.errors.length > 0) {
+                  result.errors.push(
+                    ...tagResult.errors.map((e) => `tag ${rec.id}: ${e.error}`),
+                  )
+                }
+              } catch (err) {
+                result.errors.push(
+                  `tag ${rec.id}: ${err instanceof Error ? err.message : "unknown"}`,
+                )
+              }
             }
 
             const filesToIngest = includeMedia

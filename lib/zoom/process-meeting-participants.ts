@@ -42,7 +42,7 @@ interface ZoomParticipant {
   duration?: number | null
 }
 
-interface ProcessResult {
+export interface ProcessResult {
   meetingsScanned: number
   participantsSeen: number
   contactsCreated: number
@@ -69,14 +69,23 @@ function encodeMeetingUuid(uuid: string): string {
  * never recorded, or a meeting older than Zoom's reporting window) so
  * the caller can mark it as processed and move on.
  */
+/**
+ * A bound fetcher that performs an authenticated Zoom API GET. The
+ * connection sweep passes `(url) => zoomFetch(conn, url)`; the account-wide
+ * S2S sweep passes `(url) => s2sFetch(url)`. Keeping participant tagging
+ * agnostic to the auth source means one code path (bridge + ALFRED +
+ * hub-contact resolution) serves both.
+ */
+export type ZoomApiFetcher = (url: string) => Promise<Response>
+
 async function fetchParticipants(
-  conn: ZoomConnection,
+  zoomGet: ZoomApiFetcher,
   meetingUuid: string,
 ): Promise<ZoomParticipant[] | null> {
   const url = `https://api.zoom.us/v2/past_meetings/${encodeMeetingUuid(
     meetingUuid,
   )}/participants?page_size=300`
-  const res = await zoomFetch(conn, url)
+  const res = await zoomGet(url)
   if (res.status === 404) return null
   if (!res.ok) {
     const body = await res.text().catch(() => "")
@@ -93,9 +102,9 @@ async function fetchParticipants(
  * is safe because `findOrCreateHubContact` is dedupe-aware and the
  * `zoom_meeting_clients` upsert keys on (zoom_meeting_id, contact_id).
  */
-async function processOneMeeting(
+export async function processOneMeeting(
   supabase: SupabaseClient,
-  conn: ZoomConnection,
+  zoomGet: ZoomApiFetcher,
   meeting: {
     id: string
     zoom_uuid: string | null
@@ -110,7 +119,7 @@ async function processOneMeeting(
 ): Promise<void> {
   if (!meeting.zoom_uuid) return
 
-  const participants = await fetchParticipants(conn, meeting.zoom_uuid)
+  const participants = await fetchParticipants(zoomGet, meeting.zoom_uuid)
   if (participants === null) {
     // 404 — Zoom doesn't have participants for this meeting. Still
     // give the bridge a chance (some Calendly-booked meetings 404 at
@@ -314,7 +323,7 @@ export async function processRecentZoomParticipants(
   for (const m of meetings ?? []) {
     result.meetingsScanned += 1
     try {
-      await processOneMeeting(supabase, conn, m as any, result)
+      await processOneMeeting(supabase, (url) => zoomFetch(conn, url), m as any, result)
     } catch (err) {
       result.errors.push({
         meeting_uuid: (m as any).zoom_uuid ?? (m as any).zoom_meeting_id,

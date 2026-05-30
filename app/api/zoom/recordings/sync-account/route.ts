@@ -49,9 +49,14 @@ export async function GET(req: NextRequest) {
   const startedAt = Date.now()
   try {
     const supabase = createAdminClient()
-    const result = await syncAccountWideRecordings({ supabase, months: 1, includeMedia: false })
+    const result = await syncAccountWideRecordings({
+      supabase,
+      months: 1,
+      includeMedia: false,
+      tagParticipants: true,
+    })
     console.log(
-      `[v0] [Zoom Account Sync:cron] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,
+      `[v0] [Zoom Account Sync:cron] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} tagged=${result.meetingsTagged} links=${result.clientLinksWritten} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,
     )
     return NextResponse.json({ ok: true, ...result, ms: Date.now() - startedAt })
   } catch (err) {
@@ -83,15 +88,18 @@ export async function POST(req: NextRequest) {
 
   let months = 6
   let includeMedia = false
+  let tagParticipants = true
   let onlyUser: string | undefined
   try {
     const body = (await req.json()) as {
       months?: number
       includeMedia?: boolean
+      tagParticipants?: boolean
       onlyUser?: string
     }
     if (typeof body.months === "number") months = body.months
     if (typeof body.includeMedia === "boolean") includeMedia = body.includeMedia
+    if (typeof body.tagParticipants === "boolean") tagParticipants = body.tagParticipants
     if (typeof body.onlyUser === "string") onlyUser = body.onlyUser
   } catch {
     // empty body is fine — use defaults
@@ -100,9 +108,15 @@ export async function POST(req: NextRequest) {
   const startedAt = Date.now()
   try {
     const supabase = createAdminClient()
-    const result = await syncAccountWideRecordings({ supabase, months, includeMedia, onlyUser })
+    const result = await syncAccountWideRecordings({
+      supabase,
+      months,
+      includeMedia,
+      tagParticipants,
+      onlyUser,
+    })
     console.log(
-      `[v0] [Zoom Account Sync] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} media=${result.mediaCopied} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,
+      `[v0] [Zoom Account Sync] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} media=${result.mediaCopied} tagged=${result.meetingsTagged} links=${result.clientLinksWritten} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,
     )
     return NextResponse.json({ ok: true, ...result, ms: Date.now() - startedAt })
   } catch (err) {
