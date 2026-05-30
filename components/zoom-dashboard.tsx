@@ -85,7 +85,10 @@ export function ZoomDashboard() {
   // Tag state — keyed on Zoom's bigint meeting id (as string). The
   // dashboard fetches counts in bulk so 50 cards = 1 round trip.
   const [tagCounts, setTagCounts] = useState<
-    Record<string, { clients: number; workItems: number; dealId?: string | null }>
+    Record<
+      string,
+      { clients: number; workItems: number; deals: number; projects: number; dealId?: string | null }
+    >
   >({})
   const [tagDialogMeeting, setTagDialogMeeting] = useState<ZoomMeetingForTagging | null>(null)
   // Pending state for the "Send untagged to my To-Do list" action so we
@@ -117,24 +120,36 @@ export function ZoomDashboard() {
         setError(errorData.error || "Failed to fetch meetings")
       }
 
-      // Bulk-load tag counts for all visible meetings in one round trip.
-      // Cards render an "Untagged" warning until this resolves so users
-      // know which meetings still need clients/work items linked.
-      if (meetingList.length > 0) {
-        const ids = meetingList.map((m) => String(m.id)).filter(Boolean)
-        if (ids.length > 0) {
-          fetch(`/api/zoom/meetings/tag-counts?ids=${ids.join(",")}`)
-            .then((r) => (r.ok ? r.json() : { counts: {} }))
-            .then((j) => setTagCounts(j.counts || {}))
-            .catch(() => setTagCounts({}))
-        }
-      }
-
       // Fetch recordings
+      let recordingList: any[] = []
       const recordingsRes = await fetch("/api/zoom/recordings")
       if (recordingsRes.ok) {
         const recordingsData = await recordingsRes.json()
-        setRecordings(Array.isArray(recordingsData) ? recordingsData : [])
+        recordingList = Array.isArray(recordingsData) ? recordingsData : []
+        setRecordings(recordingList)
+      }
+
+      // Bulk-load tag counts for everything visible in ONE round trip —
+      // both upcoming meetings AND recordings. Previously only meetings
+      // were loaded, so a tagged recording rendered as "Untagged" again
+      // after a navigation away/back even though the link was saved.
+      // Recordings share Zoom's bigint id with their parent meeting, so a
+      // single id set covers both lists.
+      const idSet = new Set<string>()
+      for (const m of meetingList) {
+        const id = String(m.id ?? "")
+        if (id) idSet.add(id)
+      }
+      for (const r of recordingList) {
+        const id = String(r.id ?? r.zoom_meeting_id ?? r.uuid ?? "")
+        if (id) idSet.add(id)
+      }
+      if (idSet.size > 0) {
+        const ids = Array.from(idSet)
+        fetch(`/api/zoom/meetings/tag-counts?ids=${ids.join(",")}`)
+          .then((r) => (r.ok ? r.json() : { counts: {} }))
+          .then((j) => setTagCounts(j.counts || {}))
+          .catch(() => setTagCounts({}))
       }
 
       // Fetch call history
@@ -272,7 +287,7 @@ export function ZoomDashboard() {
   const isMeetingTagged = (meetingId: number | string) => {
     const c = tagCounts[String(meetingId)]
     if (!c) return false
-    return c.clients > 0 || c.workItems > 0
+    return c.clients > 0 || c.workItems > 0 || c.deals > 0 || c.projects > 0
   }
   const isMeetingPast = (m: MasterMeeting) => {
     if (!m.start_time) return false
@@ -710,10 +725,11 @@ export function ZoomDashboard() {
                 // Per-meeting derived state for the tagging UX. We intentionally
                 // compute these inline (cheap O(1) lookups) so the parent
                 // doesn't need a separate memoized map.
-                const tc = tagCounts[String(meeting.id)]
-                const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0)
-                const past = isMeetingPast(meeting)
-                return (
+                  const tc = tagCounts[String(meeting.id)]
+                  const tagged =
+                    !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
+                  const past = isMeetingPast(meeting)
+                  return (
                   <Card key={meeting.id} className="p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex items-start gap-4 min-w-0 flex-1">
@@ -854,9 +870,10 @@ export function ZoomDashboard() {
                   </div>
                   <div className="grid gap-2 pl-11">
                     {hostData.meetings.map((meeting) => {
-                      const tc = tagCounts[String(meeting.id)]
-                      const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0)
-                      const past = isMeetingPast(meeting)
+                    const tc = tagCounts[String(meeting.id)]
+                    const tagged =
+                      !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
+                    const past = isMeetingPast(meeting)
                       return (
                         <Card key={meeting.id} className="p-3">
                           <div className="flex items-center justify-between gap-2">
@@ -1074,13 +1091,21 @@ export function ZoomDashboard() {
             if (!open) setTagDialogMeeting(null)
           }}
           onTagsChanged={(next) => {
-            setTagCounts((prev) => ({
-              ...prev,
-              [String(tagDialogMeeting.id)]: {
-                clients: next.clients.length,
-                workItems: next.workItems.length,
-              },
-            }))
+            setTagCounts((prev) => {
+              const key = String(tagDialogMeeting.id)
+              const dealId =
+                next.deals.find((d) => d.deal?.id)?.deal?.id ?? prev[key]?.dealId ?? null
+              return {
+                ...prev,
+                [key]: {
+                  clients: next.clients.length,
+                  workItems: next.workItems.length,
+                  deals: next.deals.length,
+                  projects: next.projects.length,
+                  dealId,
+                },
+              }
+            })
           }}
         />
       )}
