@@ -12,6 +12,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
+import { UploadedResources } from "@/components/resources/uploaded-resources"
 import {
   RESOURCE_TABS,
   ALFRED_OVERVIEW,
