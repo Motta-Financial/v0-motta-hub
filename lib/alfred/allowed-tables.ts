@@ -30,6 +30,7 @@
 // `as const` so AllowedTable is a string-literal union, not just `string`.
 export const ALLOWED_TABLES = [
   "activity_log",
+  "alfred_meeting_transcripts",
   "calendly_event_clients",
   "calendly_events",
   "client_group_members",
@@ -596,6 +597,26 @@ export const TABLE_SCHEMAS: Record<
       "referral_date",
       "source",
       "reviewed_by_id",
+      "created_at",
+    ],
+  },
+
+  // -- Meeting transcripts (column-restricted view) -----------------------
+  alfred_meeting_transcripts: {
+    description:
+      "Zoom meeting transcripts (parsed plain text) for grounding answers in what was actually said. This is a column-restricted VIEW of zoom_transcripts -- it deliberately omits download URLs/tokens, blob locations, and raw VTT. Join to zoom_meetings on zoom_meeting_id, then to clients/deals/projects via the zoom_meeting_* junction tables. Only rows with parsed text appear. text_content can be long -- prefer filtering to a specific zoom_meeting_id before selecting text_content.",
+    key_columns: [
+      "id",
+      "zoom_meeting_id",
+      "zoom_meeting_uuid",
+      "team_member_id",
+      "language",
+      "text_content",
+      "duration_seconds",
+      "status",
+      "summary_status",
+      "summarized_at",
+      "parsed_at",
       "created_at",
     ],
   },

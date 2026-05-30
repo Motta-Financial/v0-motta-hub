@@ -220,6 +220,7 @@ function getSearchColumns(table: AllowedTable): string[] {
     referrals: ["referee_name", "referred_by_raw", "referred_by_name", "notes"],
     calendly_events: ["name", "event_type_name", "calendly_user_name", "calendly_user_email"],
     zoom_meetings: ["topic", "host_email"],
+    alfred_meeting_transcripts: ["text_content"],
   }
 
   return searchColumnsMap[table] || []
