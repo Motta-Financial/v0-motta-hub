@@ -1329,6 +1329,10 @@ const ORGANIZATION_EDITABLE = new Set<string>([
   "ein",
   "incorporation_state",
   "fiscal_year_end_month",
+  "description",
+  "linkedin_url",
+  "twitter_handle",
+  "facebook_url",
 ])
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
