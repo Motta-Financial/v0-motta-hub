@@ -466,6 +466,18 @@ function ClientResources() {
         title="Client Resources"
         subtitle="Vetted, on-brand materials to share with clients."
       />
+      <UploadedResources
+        category="client-resources"
+        defaultAudience="client"
+        title="Uploaded resources"
+        subtitle="Upload a client-facing PDF, image, or doc. ALFRED reads it on upload and tags it to the right service lines."
+      />
+      <SectionTitle
+        icon={<FolderKanban className="h-4 w-4" />}
+        title="Curated library"
+        subtitle="Built-in starter materials."
+        small
+      />
       {categories.map(([category, items]) => (
         <div key={category} className="space-y-2">
           <h3 className="px-1 text-xs font-semibold uppercase tracking-wider text-stone-500">
@@ -523,6 +535,18 @@ function Templates() {
         title="Templates"
         subtitle="Copy, personalize the {{fields}}, and send."
       />
+      <UploadedResources
+        category="templates"
+        defaultAudience="team"
+        title="Uploaded templates"
+        subtitle="Upload a reusable template file (engagement letter, checklist, worksheet). ALFRED reads it and tags it to the right service lines so it's easy to find later."
+      />
+      <SectionTitle
+        icon={<FileText className="h-4 w-4" />}
+        title="Quick-copy snippets"
+        subtitle="Copy, personalize the {{fields}}, and send."
+        small
+      />
       <div className="grid gap-4 sm:grid-cols-2">
         {TEMPLATES.map((t) => (
           <Card key={t.title} className="flex flex-col border-stone-200 p-5">
@@ -573,17 +597,21 @@ function SectionTitle({
   icon,
   title,
   subtitle,
+  small = false,
 }: {
   icon: React.ReactNode
   title: string
   subtitle: string
+  small?: boolean
 }) {
   return (
     <div className="flex items-start gap-2">
-      <span className="mt-0.5 text-amber-600">{icon}</span>
+      <span className={small ? "mt-1 text-stone-400" : "mt-0.5 text-amber-600"}>{icon}</span>
       <div>
-        <h2 className="text-lg font-bold text-stone-900">{title}</h2>
-        <p className="text-sm text-stone-500">{subtitle}</p>
+        <h2 className={small ? "text-sm font-semibold text-stone-700" : "text-lg font-bold text-stone-900"}>
+          {title}
+        </h2>
+        <p className={small ? "text-xs text-stone-500" : "text-sm text-stone-500"}>{subtitle}</p>
       </div>
     </div>
   )
