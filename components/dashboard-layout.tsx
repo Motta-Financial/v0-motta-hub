@@ -63,6 +63,9 @@ import {
   Webhook,
   FolderKanban,
   Crown,
+  LibraryBig,
+  Compass,
+  HelpCircle,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -327,6 +330,25 @@ const navigation = [
         icon: Crown,
         requiresLeadership: true,
       },
+    ],
+  },
+  // "Resources" is the firm's knowledge base — sits between Talent and
+  // Settings. It holds team SOPs, the Hub user guide (functionality +
+  // underlying integrations), an FAQ, a curated bank of client-facing
+  // resources, and reusable templates. Content is curated in
+  // `lib/resources/content.ts` for now; the resource + template banks are
+  // structured so they can be wired to Supabase + Blob uploads later.
+  // Visible to all signed-in teammates.
+  {
+    name: "Resources",
+    href: "/resources",
+    icon: LibraryBig,
+    children: [
+      { name: "Hub Guide", href: "/resources?tab=hub-guide", icon: Compass },
+      { name: "SOPs", href: "/resources?tab=sops", icon: ClipboardList },
+      { name: "FAQ", href: "/resources?tab=faq", icon: HelpCircle },
+      { name: "Client Resources", href: "/resources?tab=client-resources", icon: FolderKanban },
+      { name: "Templates", href: "/resources?tab=templates", icon: FileText },
     ],
   },
   // Settings is the personal hub for the signed-in user. The

@@ -221,6 +221,14 @@ function getSearchColumns(table: AllowedTable): string[] {
     calendly_events: ["name", "event_type_name", "calendly_user_name", "calendly_user_email"],
     zoom_meetings: ["topic", "host_email"],
     alfred_meeting_transcripts: ["text_content"],
+    alfred_resource_documents: [
+      "title",
+      "description",
+      "category",
+      "ai_summary",
+      "extracted_text",
+      "file_name",
+    ],
   }
 
   return searchColumnsMap[table] || []

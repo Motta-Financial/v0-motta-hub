@@ -31,6 +31,7 @@
 export const ALLOWED_TABLES = [
   "activity_log",
   "alfred_meeting_transcripts",
+  "alfred_resource_documents",
   "calendly_event_clients",
   "calendly_events",
   "client_group_members",
@@ -618,6 +619,27 @@ export const TABLE_SCHEMAS: Record<
       "summarized_at",
       "parsed_at",
       "created_at",
+    ],
+  },
+
+  // -- Resources knowledge base (column-restricted view) ------------------
+  alfred_resource_documents: {
+    description:
+      "Firm 'Resources' knowledge base — teammate-uploaded reference docs (client resources, templates, team instructions, SOPs). This is a column-restricted VIEW of resource_documents exposing only ready, non-archived docs; it omits blob url/pathname. Each doc was read by ALFRED on upload: ai_summary is a short summary, extracted_text is the faithful plain-text rendering to cite, and service_line_codes auto-tags it to public.service_lines (TAX, TAX-PLAN, ACCT, PAYROLL, ADVISORY, CFO, AUDIT, ESTATE). Use this to answer 'do we have a resource/template for X' or to ground answers in firm documentation. Filter by service_line_codes (text[]) or category.",
+    key_columns: [
+      "id",
+      "title",
+      "description",
+      "category",
+      "audience",
+      "ai_summary",
+      "ai_keywords",
+      "service_line_codes",
+      "extracted_text",
+      "file_name",
+      "version",
+      "uploaded_by_name",
+      "updated_at",
     ],
   },
 
