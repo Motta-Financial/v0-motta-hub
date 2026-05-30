@@ -119,7 +119,57 @@ export async function processOneMeeting(
 ): Promise<void> {
   if (!meeting.zoom_uuid) return
 
-  const participants = await fetchParticipants(zoomGet, meeting.zoom_uuid)
+  // The participant fetch can fail for reasons that should NOT block the
+  // rest of tagging: e.g. the S2S token is missing the
+  // `meeting:read:list_past_participants:admin` scope. In that case we still
+  // run the Calendly bridge + ALFRED triage (neither needs the participant
+  // list) and deliberately DO NOT set participants_processed_at, so the
+  // meeting is retried once the scope is granted.
+  let participants: ZoomParticipant[] | null
+  try {
+    participants = await fetchParticipants(zoomGet, meeting.zoom_uuid)
+  } catch (err) {
+    console.warn(
+      "[v0] [zoom participants] fetch failed; running bridge+ALFRED without participant list:",
+      err,
+    )
+    try {
+      const bridge = await bridgeZoomToCalendly(supabase, { zoomMeetingId: meeting.id })
+      let bridgedFromCalendlyEventId: string | null = null
+      if (bridge.bridged > 0 || bridge.alreadyBridged > 0) {
+        result.bridgedFromCalendly += 1
+        const { data: mm } = await supabase
+          .from("zoom_meetings")
+          .select("calendly_event_id")
+          .eq("id", meeting.id)
+          .maybeSingle()
+        bridgedFromCalendlyEventId = mm?.calendly_event_id ?? null
+      }
+      const triage = await runAlfredZoomTriage(supabase, {
+        zoomMeetingId: meeting.id,
+        zoomMeetingNumericId: meeting.zoom_meeting_id ?? null,
+        topic: meeting.topic ?? null,
+        agenda: meeting.agenda ?? null,
+        startTime: meeting.start_time ?? null,
+        hostEmail: meeting.host_email ?? null,
+        hostTeamMemberId: meeting.team_member_id ?? null,
+        participants: [],
+        bridgedFromCalendlyEventId,
+      })
+      if (triage.outcome === "tagged" || triage.outcome === "tagged_review") {
+        result.alfredTagged += 1
+      }
+    } catch (inner) {
+      console.warn("[v0] [zoom participants] bridge/ALFRED fallback failed:", inner)
+    }
+    // Surface the original fetch error but leave the watermark unset for retry.
+    result.errors.push({
+      meeting_uuid: meeting.zoom_uuid,
+      error: err instanceof Error ? err.message : "participant fetch failed",
+    })
+    return
+  }
+
   if (participants === null) {
     // 404 — Zoom doesn't have participants for this meeting. Still
     // give the bridge a chance (some Calendly-booked meetings 404 at
