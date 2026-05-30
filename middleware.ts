@@ -136,6 +136,11 @@ export async function middleware(request: NextRequest) {
     // without a Hub session. The route handler verifies the
     // x-zm-signature HMAC against ZOOM_WEBHOOK_SECRET_TOKEN.
     pathname === "/api/zoom/webhook" ||
+    // Account-wide Server-to-Server app delivers events here, verified
+    // against ZOOM_S2S_WEBHOOK_SECRET_TOKEN. Same handshake + signature
+    // requirements as the user-OAuth webhook above, so it likewise must
+    // be reachable without a Hub session.
+    pathname === "/api/zoom/s2s-webhook" ||
     // Zoom OAuth callback (and authorize). When a user installs the
     // Hub from Zoom's Marketplace "Add to Zoom" button, the redirect
     // back to /api/zoom/oauth/callback may not carry a Hub session
