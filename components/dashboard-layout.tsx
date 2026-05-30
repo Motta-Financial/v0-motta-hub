@@ -137,6 +137,15 @@ const navigation = [
       // touchpoint in one place. The legacy URLs (/clients/meetings/*,
       // /calendar, /zoom, /debriefs) all redirect to /meetings/* so
       // existing bookmarks keep working.
+      // Deals is the opportunity pipeline — one deal per prospect that
+      // groups all of their meetings (Zoom / phone / in person) and the
+      // debrief. It supersedes the old "Hub Meetings" framing: meetings
+      // now roll UP into a deal rather than standing alone.
+      {
+        name: "Deals",
+        href: "/deals",
+        icon: Briefcase,
+      },
       {
         name: "Meetings",
         href: "/meetings",

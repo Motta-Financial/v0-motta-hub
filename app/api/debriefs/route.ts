@@ -111,6 +111,11 @@ export async function POST(request: NextRequest) {
     // debriefs.calendly_event_id / zoom_meeting_id FKs added in migration 332.
     const calendlyEventId: string | null = body.calendly_event_id || null
     const zoomMeetingId: string | null = body.zoom_meeting_id || null
+    // Deal-level linkage (migration 337). When the debrief is launched from
+    // a Deal we attach it to the opportunity, and optionally to the specific
+    // hub meeting row (meetings.id) the partner debriefed.
+    const dealId: string | null = body.deal_id || null
+    const meetingId: string | null = body.meeting_id || null
 
     // Determine contact_id and organization_id, preferring the explicit
     // primary contact and falling back to the first related client for
@@ -185,6 +190,8 @@ export async function POST(request: NextRequest) {
       // Link to the specific meeting this debrief covers (one or neither).
       calendly_event_id: toUuidOrNull(calendlyEventId),
       zoom_meeting_id: toUuidOrNull(zoomMeetingId),
+      deal_id: toUuidOrNull(dealId),
+      meeting_id: toUuidOrNull(meetingId),
     }
 
     // Store all extra data in the action_items JSONB column

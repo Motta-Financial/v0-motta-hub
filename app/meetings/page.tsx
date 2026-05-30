@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Calendar, Video, MessageSquare, ArrowRight, CalendarClock, Link2 } from "lucide-react"
+import { Calendar, Video, MessageSquare, ArrowRight, CalendarClock, Briefcase } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 /**
@@ -15,11 +15,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 export default function MeetingsOverviewPage() {
   const tiles = [
     {
-      title: "Hub Meetings",
-      href: "/meetings/hub",
-      icon: Link2,
+      title: "Deals",
+      href: "/deals",
+      icon: Briefcase,
       blurb:
-        "One unified record per meeting — each Hub Meeting ID ties together its Prospect/Intake, Calendly booking, Zoom recording, ALFRED transcript summary, and Debrief.",
+        "The opportunity pipeline — one deal per prospect that groups every meeting (Zoom, phone, or in person), the tagged Karbon work items, and the debrief into a single record.",
     },
     {
       title: "Calendar",

@@ -172,9 +172,18 @@ export function DebriefForm() {
   // a ref because it never changes after mount and must be included in the
   // POST body so the API can set the debriefs.calendly_event_id /
   // zoom_meeting_id FK and stamp the meeting as handled.
-  const meetingLinkRef = useRef<{ calendly_event_id: string | null; zoom_meeting_id: string | null }>({
+  const meetingLinkRef = useRef<{
+    calendly_event_id: string | null
+    zoom_meeting_id: string | null
+    meeting_id: string | null
+    deal_id: string | null
+  }>({
     calendly_event_id: searchParams.get("calendly_event_id"),
     zoom_meeting_id: searchParams.get("zoom_meeting_id"),
+    // When launched from a Deal, we carry the deal_id (and optionally the
+    // specific hub meeting row) so the debrief attaches to the opportunity.
+    meeting_id: searchParams.get("meeting_id"),
+    deal_id: searchParams.get("deal_id"),
   })
 
   // Build the initial form state, applying any prefill params once on mount.
@@ -796,6 +805,11 @@ export function DebriefForm() {
           // from a meeting's detail dialog or the post-meeting ALFRED email.
           calendly_event_id: meetingLinkRef.current.calendly_event_id,
           zoom_meeting_id: meetingLinkRef.current.zoom_meeting_id,
+          // Deal-level debrief linkage. When launched from a Deal these
+          // attach the debrief to the opportunity (and optionally the
+          // specific meeting row within it).
+          meeting_id: meetingLinkRef.current.meeting_id,
+          deal_id: meetingLinkRef.current.deal_id,
           notes: formData.notes,
           fee_adjustment: formData.fee_adjustment, // Changed from fee_adjustments
           fee_adjustment_reason: formData.fee_adjustment_reason, // Added new field
@@ -918,7 +932,12 @@ export function DebriefForm() {
       // The meeting link was consumed by the debrief we just created — clear
       // it so a second debrief filed from this same form isn't re-attached to
       // the same meeting.
-      meetingLinkRef.current = { calendly_event_id: null, zoom_meeting_id: null }
+      meetingLinkRef.current = {
+        calendly_event_id: null,
+        zoom_meeting_id: null,
+        meeting_id: null,
+        deal_id: null,
+      }
       // Clear queued attachments too — the previous batch is now
       // attached to the freshly-created debrief; the form is ready for
       // a new entry.
