@@ -18,6 +18,8 @@ import {
   X,
   ExternalLink,
   CheckCircle2,
+  Pencil,
+  History,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -32,6 +34,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { DealEditSheet } from "@/components/deals/deal-edit-sheet"
+import { ChangeHistoryDialog } from "@/components/shared/change-history-dialog"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -143,6 +147,8 @@ function meetingIcon(m: Meeting) {
 
 export default function DealDetailView({ dealId }: { dealId: string }) {
   const router = useRouter()
+  const [editOpen, setEditOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const { data, error, isLoading, mutate } = useSWR<DealDetail>(`/api/deals/${dealId}`, fetcher, {
     revalidateOnFocus: false,
   })
@@ -238,6 +244,14 @@ export default function DealDetailView({ dealId }: { dealId: string }) {
           </div>
 
           <div className="flex items-center gap-2">
+            <Button variant="default" size="sm" onClick={() => setEditOpen(true)}>
+              <Pencil className="h-3.5 w-3.5" />
+              Edit
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setHistoryOpen(true)}>
+              <History className="h-3.5 w-3.5" />
+              History
+            </Button>
             <Select value={deal.stage ?? "new"} onValueChange={updateStage}>
               <SelectTrigger className="w-[180px]">
                 <SelectValue />
@@ -364,6 +378,26 @@ export default function DealDetailView({ dealId }: { dealId: string }) {
           />
         </div>
       </div>
+
+      {/* Edit sheet */}
+      <DealEditSheet
+        deal={deal as any}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        onSaved={() => {
+          setEditOpen(false)
+          void mutate()
+        }}
+      />
+
+      {/* Change history */}
+      <ChangeHistoryDialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        entityType="deal"
+        entityId={deal.id}
+        entityLabel={deal.title || clientName}
+      />
     </div>
   )
 }
