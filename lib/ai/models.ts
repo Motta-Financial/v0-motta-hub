@@ -110,6 +110,13 @@ export const LEAD_ENRICHMENT_MODEL = CLAUDE_HAIKU
  *  accurate technical reasoning, so we use Sonnet over Haiku. */
 export const QUESTION_RESEARCH_MODEL = CLAUDE_SONNET
 
+/** Meeting-transcript summarization — turns a raw Zoom transcript into
+ *  a structured client-note summary (overview, key points, action
+ *  items, follow-ups). Goes onto the client profile and is read by the
+ *  team, so accuracy matters more than cost; transcripts are long so we
+ *  want strong long-context comprehension. Sonnet is the fit. */
+export const MEETING_SUMMARY_MODEL = CLAUDE_SONNET
+
 // Legacy alias — kept for backward compatibility during migration.
 // New code should use LEAD_ENRICHMENT_MODEL or QUESTION_RESEARCH_MODEL.
 export const RESEARCH_SUMMARY_MODEL = LEAD_ENRICHMENT_MODEL
