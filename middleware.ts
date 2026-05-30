@@ -154,6 +154,11 @@ export async function middleware(request: NextRequest) {
   // ProConnect sync endpoint - uses CRON_SECRET Bearer auth in the handler
   const isProConnectSync = pathname === "/api/proconnect/sync"
 
+  // Zoom recordings backfill - uses CRON_SECRET Bearer auth in the handler
+  // (or a logged-in admin). Middleware must let the request through so the
+  // route's own auth logic can run.
+  const isZoomRecordingsBackfill = pathname === "/api/zoom/recordings/backfill"
+
   // The Zoom App "Surface" (Marketplace > Features > Surface) iframes
   // /zoom/embed inside the Zoom desktop / web client. The Hub user is
   // not necessarily logged in to motta.cpa at that moment — the page
@@ -231,6 +236,7 @@ export async function middleware(request: NextRequest) {
     isWebhook ||
     isProConnectWebhook ||
     isProConnectSync ||
+    isZoomRecordingsBackfill ||
     isCron ||
     isCalendlyOAuthCallback ||
     isInternalCall ||
