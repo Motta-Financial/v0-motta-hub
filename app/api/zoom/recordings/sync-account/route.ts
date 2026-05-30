@@ -49,11 +49,16 @@ export async function GET(req: NextRequest) {
   const startedAt = Date.now()
   try {
     const supabase = createAdminClient()
+    // Recordings + transcripts ONLY on the daily sweep. Client linking
+    // (participant resolution → Calendly bridge → ALFRED triage) is the
+    // slow, token-heavy part and would time out this 300s job before it
+    // finished the account — it now runs in its own bounded hourly cron
+    // (`/api/cron/zoom-link-sweep`). See lib/zoom/sweep-account-linking.ts.
     const result = await syncAccountWideRecordings({
       supabase,
       months: 1,
       includeMedia: false,
-      tagParticipants: true,
+      tagParticipants: false,
     })
     console.log(
       `[v0] [Zoom Account Sync:cron] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} tagged=${result.meetingsTagged} links=${result.clientLinksWritten} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,

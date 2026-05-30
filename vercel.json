@@ -61,6 +61,10 @@
       "schedule": "15 * * * *"
     },
     {
+      "path": "/api/cron/zoom-link-sweep",
+      "schedule": "20 * * * *"
+    },
+    {
       "path": "/api/zoom/recordings/sync-account",
       "schedule": "30 5 * * *"
     },
