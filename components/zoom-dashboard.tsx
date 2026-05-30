@@ -42,6 +42,7 @@ import {
   ZoomMeetingTagDialog,
   type ZoomMeetingForTagging,
 } from "@/components/zoom/zoom-meeting-tag-dialog"
+import { RecordingsLibrary } from "@/components/zoom/recordings-library"
 import { Tag, TagIcon, AlertTriangle } from "lucide-react"
 
 interface ZoomConnection {
@@ -100,6 +101,9 @@ export function ZoomDashboard() {
   // can disable the button + render an inline spinner while the API
   // call is in flight. The toast carries the success/failure summary.
   const [generatingTodos, setGeneratingTodos] = useState(false)
+  // Bumped after an account-wide sync so the in-Hub Recordings library
+  // refetches the freshly pulled rows.
+  const [recordingsRefreshKey, setRecordingsRefreshKey] = useState(0)
   const { toast } = useToast()
   const searchParams = useSearchParams()
 
@@ -215,6 +219,7 @@ export function ZoomDashboard() {
           title: "Account recordings synced",
           description: `Scanned ${data.usersScanned ?? 0} users · ${data.recordingsUpserted ?? 0} recordings · ${data.transcriptsParsed ?? 0} transcripts · ${data.clientLinksWritten ?? 0} client links.`,
         })
+        setRecordingsRefreshKey((k) => k + 1)
         await fetchData()
       } else if (response.status === 403) {
         toast({
@@ -752,7 +757,7 @@ export function ZoomDashboard() {
           </TabsTrigger>
           <TabsTrigger value="recordings">
             <FileVideo className="h-4 w-4 mr-2" />
-            Recordings ({filteredRecordings.length})
+            Recordings
           </TabsTrigger>
           <TabsTrigger value="calls">
             <Phone className="h-4 w-4 mr-2" />
@@ -1021,96 +1026,28 @@ export function ZoomDashboard() {
             </Button>
           </Card>
 
-          {filteredRecordings.length === 0 ? (
-            <Card className="p-8 text-center">
-              <FileVideo className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground">No recordings found</p>
-            </Card>
-          ) : (
-            <div className="grid gap-4">
-              {filteredRecordings.map((recording) => {
-                // Recordings share their bigint id with the meeting,
-                // so the same tag counts apply. Treat a recording as
-                // "tagged" when its parent meeting has at least one
-                // client OR work item link.
-                const recordingId =
-                  recording.id ?? recording.zoom_meeting_id ?? recording.uuid
-                const tagged = isMeetingTagged(recordingId)
-                return (
-                  <Card key={recording.uuid} className="p-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-2 flex-wrap">
-                          <h3 className="font-semibold">{recording.topic}</h3>
-                          {/* Tag status indicator — matches the
-                              Meetings tab so the two tabs feel
-                              consistent. */}
-                          {tagged ? (
-                            <Badge variant="secondary" className="gap-1">
-                              <Tag className="h-3 w-3" />
-                              Tagged
-                            </Badge>
-                          ) : (
-                            <Badge
-                              variant="outline"
-                              className="gap-1 border-amber-500/40 text-amber-700 dark:text-amber-300"
-                            >
-                              <AlertTriangle className="h-3 w-3" />
-                              Untagged
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="space-y-1 text-sm text-muted-foreground">
-                          <div className="flex items-center gap-2">
-                            <Calendar className="h-4 w-4" />
-                            {formatDateTime(recording.start_time)}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Clock className="h-4 w-4" />
-                            {recording.duration} minutes
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex gap-2 flex-wrap justify-end shrink-0">
-                        {/* Tag action — opens the same client + work
-                            item picker the Meetings tab uses. Promoting
-                            this to the recordings tab is the whole
-                            point of this change: recordings should
-                            never sit unlinked. */}
-                        <Button
-                          size="sm"
-                          variant={tagged ? "outline" : "default"}
-                          onClick={() => openTagFromRecording(recording)}
-                        >
-                          <Tag className="h-4 w-4 mr-2" />
-                          {tagged ? "Edit tags" : "Tag"}
-                        </Button>
-                        {recording.recording_files?.map(
-                          (file: any, index: number) => (
-                            <Button
-                              key={index}
-                              size="sm"
-                              variant="outline"
-                              asChild
-                            >
-                              <a
-                                href={file.download_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                              >
-                                <Download className="h-4 w-4 mr-2" />
-                                {file.file_type}
-                              </a>
-                            </Button>
-                          ),
-                        )}
-                      </div>
-                    </div>
-                  </Card>
-                )
-              })}
-            </div>
-          )}
+          {/* DB-backed, in-Hub recordings library — playable by ANY
+              signed-in teammate. Replaces the old list of raw external
+              Zoom download links: each card now streams the recording
+              inside the Hub (via the authenticated stream proxy) and
+              lazy-loads its transcript. Tagging is delegated back to the
+              shared dialog via onTag. */}
+          <RecordingsLibrary
+            searchQuery={searchQuery}
+            tagCounts={tagCounts}
+            // The library row's `id` is the recording uuid, but the tag
+            // dialog + counts key on the bigint Zoom meeting id — map to it.
+            onTag={(rec) =>
+              openTagFromRecording({
+                id: rec.zoom_meeting_id,
+                topic: rec.topic,
+                start_time: rec.start_time,
+                duration: rec.duration,
+                share_url: null,
+              })
+            }
+            refreshKey={recordingsRefreshKey}
+          />
         </TabsContent>
 
         {/* Call History Tab */}

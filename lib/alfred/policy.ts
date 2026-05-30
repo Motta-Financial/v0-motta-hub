@@ -87,6 +87,8 @@ const STAFF_TOOL_NAMES: readonly string[] = [
   "getDealPipeline",
   "getProjects",
   "findPerson",
+  "getZoomRecordingStatus",
+  "pullZoomRecordings",
   "webSearch",
   "browsePage",
   // Per-request user-scoped tools (constructed inside POST)
