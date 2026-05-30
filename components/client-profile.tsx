@@ -49,10 +49,12 @@ import {
   FileText,
   Files,
   Globe,
+  History,
   Linkedin,
   Mail,
   MapPin,
   MessageSquare,
+  Pencil,
   Phone,
   PiggyBank,
   Plus,
@@ -91,6 +93,9 @@ import {
 } from "@/components/clients/link-organization-dialog"
 import { AlfredErrorCard } from "@/components/alfred-error"
 import { clientTypeBadgeClass, type ClientType } from "@/lib/client-type"
+import { ContactEditSheet } from "@/components/clients/contact-edit-sheet"
+import { OrganizationEditSheet } from "@/components/clients/organization-edit-sheet"
+import { ChangeHistoryDialog } from "@/components/shared/change-history-dialog"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types matching /api/clients/[id] response
@@ -627,6 +632,8 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("overview")
   const [communicationsTab, setCommunicationsTab] = useState("emails")
+  const [editSheetOpen, setEditSheetOpen] = useState(false)
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false)
 
   const fetchClient = useCallback(async () => {
     if (!clientId) return

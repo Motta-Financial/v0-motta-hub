@@ -7,7 +7,9 @@
  */
 
 import { type NextRequest, NextResponse } from "next/server"
-import { createAdminClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
+import { recordAudit } from "@/lib/audit"
+import { getTeamMemberByAuthId } from "@/lib/team-members"
 
 export async function GET(
   _request: NextRequest,
@@ -108,6 +110,8 @@ interface PatchDealBody {
   owner_team_member_id?: string | null
   notes?: string | null
   estimated_value?: number | null
+  title?: string
+  source?: string | null
 }
 
 const VALID_STAGES = new Set([
@@ -126,6 +130,32 @@ export async function PATCH(
   const { id } = await params
   const supabase = createAdminClient()
   const body = (await request.json().catch(() => ({}))) as PatchDealBody
+
+  // Fetch old record for audit
+  const { data: oldRecord, error: fetchError } = await supabase
+    .from("deals")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle()
+
+  if (fetchError) {
+    console.error("[v0] PATCH /api/deals/[id] fetch error:", fetchError)
+    return NextResponse.json({ error: fetchError.message }, { status: 500 })
+  }
+  if (!oldRecord) {
+    return NextResponse.json({ error: "Deal not found" }, { status: 404 })
+  }
+
+  // Get current user for audit
+  const userSupabase = await createClient()
+  const {
+    data: { user },
+  } = await userSupabase.auth.getUser()
+  let teamMemberId: string | null = null
+  if (user) {
+    const teamMember = await getTeamMemberByAuthId(user.id, user.email)
+    teamMemberId = teamMember?.id || null
+  }
 
   const patch: Record<string, unknown> = {}
 
@@ -150,23 +180,38 @@ export async function PATCH(
   }
   if (body.notes !== undefined) patch.notes = body.notes
   if (body.estimated_value !== undefined) patch.estimated_value = body.estimated_value
+  if (body.title !== undefined) patch.title = body.title
+  if (body.source !== undefined) patch.source = body.source
 
   if (Object.keys(patch).length === 0) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 })
   }
 
-  const { data, error } = await supabase
+  // Add updated_at timestamp
+  patch.updated_at = new Date().toISOString()
+
+  const { data: newRecord, error } = await supabase
     .from("deals")
     .update(patch)
     .eq("id", id)
-    .select("id")
+    .select("*")
     .maybeSingle()
 
   if (error) {
     console.error("[v0] PATCH /api/deals/[id] error:", error)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
-  if (!data) return NextResponse.json({ error: "Deal not found" }, { status: 404 })
+  if (!newRecord) return NextResponse.json({ error: "Deal not found" }, { status: 404 })
 
-  return NextResponse.json({ ok: true })
+  // Record audit trail
+  await recordAudit({
+    entityType: "deal",
+    entityId: id,
+    teamMemberId,
+    action: "update",
+    oldRecord,
+    newRecord,
+  })
+
+  return NextResponse.json({ ok: true, deal: newRecord })
 }
