@@ -64,7 +64,7 @@ const summarySchema = z.object({
 export type MeetingSummary = z.infer<typeof summarySchema>
 
 export interface SummarizeResult {
-  status: "done" | "skipped" | "failed"
+  status: "done" | "skipped" | "skipped_no_client" | "failed"
   reason?: string
   noteId?: string
   contactId?: string
@@ -182,11 +182,14 @@ export async function summarizeTranscript(
     )
 
     if (!contactId) {
-      // No client linked yet. Leave as skipped — the linkage layers
-      // (participant sweep / bridge / ALFRED triage) may attach one later,
-      // at which point a manual regenerate or a future run can revisit.
-      await markTerminal(admin, transcript.id, "skipped")
-      return { status: "skipped", reason: "no client linked to meeting" }
+      // No client linked yet — use a RECOVERABLE status. The linkage layers
+      // (participant sweep / Calendly bridge / ALFRED triage) may attach a
+      // client later; a DB trigger on zoom_meeting_clients then flips this
+      // row back to 'pending' so the next cron run summarizes it. We do NOT
+      // use plain 'skipped' (that's reserved for permanently un-summarizable
+      // transcripts: empty text or no zoom meeting at all).
+      await markTerminal(admin, transcript.id, "skipped_no_client")
+      return { status: "skipped_no_client", reason: "no client linked to meeting" }
     }
 
     const config = await getAIConfig("meeting_summary")
@@ -294,7 +297,11 @@ export async function summarizeTranscript(
   }
 }
 
-async function markTerminal(admin: SupabaseClient, id: string, status: "skipped" | "done") {
+async function markTerminal(
+  admin: SupabaseClient,
+  id: string,
+  status: "skipped" | "skipped_no_client" | "done",
+) {
   await admin.from("zoom_transcripts").update({ summary_status: status }).eq("id", id)
 }
 
@@ -305,7 +312,13 @@ async function markTerminal(admin: SupabaseClient, id: string, status: "skipped"
 export async function summarizePendingTranscripts(
   admin: SupabaseClient,
   limit = 10,
-): Promise<{ processed: number; done: number; skipped: number; failed: number }> {
+): Promise<{
+  processed: number
+  done: number
+  skipped: number
+  skippedNoClient: number
+  failed: number
+}> {
   const { data: rows, error } = await admin
     .from("zoom_transcripts")
     .select("id, zoom_meeting_id, text_content, summary_status, summary_note_id, summary_attempts")
@@ -319,13 +332,15 @@ export async function summarizePendingTranscripts(
 
   let done = 0
   let skipped = 0
+  let skippedNoClient = 0
   let failed = 0
   for (const row of rows ?? []) {
     const result = await summarizeTranscript(admin, row as TranscriptRow)
     if (result.status === "done") done++
     else if (result.status === "skipped") skipped++
+    else if (result.status === "skipped_no_client") skippedNoClient++
     else failed++
   }
 
-  return { processed: rows?.length ?? 0, done, skipped, failed }
+  return { processed: rows?.length ?? 0, done, skipped, skippedNoClient, failed }
 }

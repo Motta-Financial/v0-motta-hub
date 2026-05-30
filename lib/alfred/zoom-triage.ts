@@ -354,6 +354,25 @@ async function buildCandidateShortlist(
     for (const r of byName ?? []) pushContact(r, "name")
   }
 
+  // Topic-derived contact names. When the participant list is empty —
+  // e.g. the account-wide S2S app lacks the
+  // `meeting:read:list_past_participants:admin` scope — the meeting
+  // TOPIC is frequently the only client signal we have:
+  //   "Tax Planning | Robert & Motta", "Synergy & Motta | Scottsbluff".
+  // Match topic tokens against contact first/last names so ALFRED can
+  // still propose a client. The confidence gate (see the system prompt
+  // rule about weak `topic`-only matches) keeps lone single-name hits
+  // in needs_review rather than auto-linking the wrong person.
+  const nameTokens = topicTokens.filter((t) => t.length >= 3 && !FIRM_TOKENS.has(t))
+  for (const tok of nameTokens.slice(0, 4)) {
+    const { data: byTopicName } = await supabase
+      .from("contacts")
+      .select("id, full_name, primary_email, organization_id")
+      .or(`first_name.ilike.${tok},last_name.ilike.${tok}`)
+      .limit(4)
+    for (const r of byTopicName ?? []) pushContact(r, `topic:${tok}`)
+  }
+
   // 2. Organizations: by external email domain + topic tokens +
   //    parent orgs of contact candidates.
   const orgMap = new Map<string, OrganizationCandidate>()
@@ -486,6 +505,7 @@ Rules:
 - Only return an organization_id when the participant email domain or the topic/agenda clearly references that organization. Personal-domain participants (gmail/yahoo/outlook) almost never warrant an org tag unless the topic explicitly names one.
 - Only return a work_item_id when the topic/agenda references a specific project, return year, or filing — not just because a client has open work items. If the topic is generic ("intro call", "monthly check-in") return no work item.
 - It is normal for a Zoom meeting to have multiple contacts (group call). It is uncommon for a meeting to have multiple organizations or multiple work items at once — only pick more than one if the topic explicitly references both.
+- WEAK SIGNAL — topic-only name matches: a contact in the shortlist whose match_signal contains "topic" (and NOT "email"/"participant") was proposed solely because their name appears in the meeting topic, with no attendee/email confirmation. Treat this as a hint, not proof. Cap overall confidence at ~0.6 for such a pick so it routes to human review — UNLESS the topic also clearly names that contact's organization, in which case ~0.75 is acceptable. If two different shortlist contacts match the same topic name token (e.g. two "Roberts"), prefer the one whose organization is also referenced; if you can't disambiguate, pick none.
 - Confidence is your overall confidence across ALL picks. Use ~0.95+ when you have email + topic agreement, ~0.7 for strong name match plus org match, ~0.5 when you're guessing from one signal. If your confidence is below 0.5, return empty arrays.`
 
   const userPayload = {
@@ -824,6 +844,28 @@ const PERSONAL_DOMAINS = new Set([
   "verizon.net",
   "ymail.com",
   "protonmail.com",
+])
+
+// Tokens that name the firm itself (or generic business suffixes) and
+// must NEVER be treated as a client name when mining the meeting topic.
+// "Robert & Motta" → the client is Robert; "Motta" is us.
+const FIRM_TOKENS = new Set([
+  "motta",
+  "financial",
+  "cpa",
+  "cpas",
+  "llc",
+  "inc",
+  "corp",
+  "group",
+  "advisors",
+  "advisory",
+  "team",
+  "internal",
+  "sync",
+  "weekly",
+  "monthly",
+  "planning",
 ])
 
 const STOP_WORDS = new Set([
