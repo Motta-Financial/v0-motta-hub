@@ -53,6 +53,14 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/cron/debrief-reminder",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/meeting-summary-ingest",
+      "schedule": "15 * * * *"
+    },
+    {
       "path": "/api/cron/proconnect-sync",
       "schedule": "0 6 * * *"
     }

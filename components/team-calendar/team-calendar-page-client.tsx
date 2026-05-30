@@ -53,7 +53,17 @@ interface CalendlyConnection {
   }
 }
 
-export function TeamCalendarPageClient() {
+export function TeamCalendarPageClient({
+  embedded = false,
+}: {
+  // When `true`, the surrounding DashboardLayout chrome is provided by a
+  // parent layout (e.g. the Meetings sub-nav layout at
+  // app/meetings/layout.tsx) so we render the bare content to avoid a
+  // double sidebar/header. The standalone /calendar route is gone (it now
+  // redirects to /meetings/calendar), but the prop keeps this component
+  // reusable in either context.
+  embedded?: boolean
+}) {
   const { teamMember } = useUser()
   const [connections, setConnections] = useState<CalendlyConnection[]>([])
   const [myConnection, setMyConnection] = useState<CalendlyConnection | null>(null)
@@ -122,9 +132,8 @@ export function TeamCalendarPageClient() {
   // teammates" is a truthful signal rather than a count of stale rows.
   const activeConnections = connections.filter((c) => c.is_active && c.sync_enabled)
 
-  return (
-    <DashboardLayout>
-      <div className="space-y-6">
+  const content = (
+    <div className="space-y-6">
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -228,6 +237,8 @@ export function TeamCalendarPageClient() {
         {/* The calendar itself */}
         <TeamCalendarView initialTz={myConnection?.calendly_user_timezone ?? null} />
       </div>
-    </DashboardLayout>
   )
+
+  if (embedded) return content
+  return <DashboardLayout>{content}</DashboardLayout>
 }

@@ -313,6 +313,95 @@ export async function createKarbonOrganization(data: {
 }
 
 /**
+ * Push an existing Hub contact to Karbon
+ *
+ * Used when the Hub has auto-created a contact (e.g. from Calendly) that
+ * doesn't yet exist in Karbon. This:
+ *   1. Reads the contact from Supabase
+ *   2. Creates the contact in Karbon
+ *   3. Updates the Supabase row with the new karbon_contact_key
+ *
+ * Idempotent: skips if the contact already has a Karbon key.
+ *
+ * @returns The Karbon contact key (existing or newly created), or null on failure
+ */
+export async function pushHubContactToKarbon(
+  contactId: string,
+  options: { source?: string } = {},
+): Promise<{ karbonKey: string | null; alreadyLinked: boolean; error?: string }> {
+  const { source = "Calendly Booking" } = options
+  const supabase = getServiceClient()
+
+  // 1. Fetch the Hub contact
+  const { data: contact, error: fetchErr } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, primary_email, phone_primary, karbon_contact_key")
+    .eq("id", contactId)
+    .single()
+
+  if (fetchErr || !contact) {
+    console.error("[pushHubContactToKarbon] Contact not found:", contactId, fetchErr)
+    return { karbonKey: null, alreadyLinked: false, error: fetchErr?.message || "Contact not found" }
+  }
+
+  // 2. Already linked? Return early
+  if (contact.karbon_contact_key) {
+    console.log(`[pushHubContactToKarbon] Contact ${contactId} already has Karbon key ${contact.karbon_contact_key}`)
+    return { karbonKey: contact.karbon_contact_key, alreadyLinked: true }
+  }
+
+  // 3. Create in Karbon
+  const credentials = getKarbonCredentials()
+  if (!credentials) {
+    console.warn("[pushHubContactToKarbon] Karbon credentials not configured")
+    return { karbonKey: null, alreadyLinked: false, error: "Karbon credentials not configured" }
+  }
+
+  const firstName = contact.first_name || "Unknown"
+  const lastName = contact.last_name || ""
+  const body = {
+    FirstName: firstName,
+    LastName: lastName,
+    EmailAddress: contact.primary_email || null,
+    PhoneNumber: contact.phone_primary || null,
+    ContactType: "Client",
+    Source: source,
+  }
+
+  const { data: karbonResult, error: karbonErr } = await karbonFetch<any>(
+    "/Contacts",
+    credentials,
+    { method: "POST", body },
+  )
+
+  if (karbonErr || !karbonResult?.ContactKey) {
+    console.error("[pushHubContactToKarbon] Karbon create failed:", karbonErr)
+    return { karbonKey: null, alreadyLinked: false, error: karbonErr || "No ContactKey returned" }
+  }
+
+  const karbonKey = karbonResult.ContactKey
+  console.log(`[pushHubContactToKarbon] Created Karbon contact ${karbonKey} for Hub contact ${contactId}`)
+
+  // 4. Update Hub row with Karbon key
+  const { error: updateErr } = await supabase
+    .from("contacts")
+    .update({
+      karbon_contact_key: karbonKey,
+      karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/contacts/${karbonKey}`,
+      last_synced_at: new Date().toISOString(),
+    })
+    .eq("id", contactId)
+
+  if (updateErr) {
+    console.error("[pushHubContactToKarbon] Failed to update Hub contact with Karbon key:", updateErr)
+    // Karbon contact exists but Hub update failed — return the key anyway
+    return { karbonKey, alreadyLinked: false, error: `Karbon created but Hub update failed: ${updateErr.message}` }
+  }
+
+  return { karbonKey, alreadyLinked: false }
+}
+
+/**
  * Unified search + create flow for intake submissions.
  * 
  * 1. First searches Supabase (already imported from Karbon)

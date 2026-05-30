@@ -9,6 +9,8 @@ import {
   matchInviteeToContact,
   upsertAutoClientLink,
 } from "@/lib/calendly-invitee-match"
+import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
+import { syncHubMeetings } from "@/lib/meetings/sync-hub-meetings"
 
 /**
  * Reusable Calendly sync engine.
@@ -160,6 +162,15 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
     },
   )
 
+  // Refresh the unified Hub Meetings table off the freshly-synced Calendly
+  // (and already-synced Zoom) records. Non-fatal: a failure here must not
+  // fail the Calendly sync, so we swallow and log.
+  try {
+    await syncHubMeetings(supabase)
+  } catch (err) {
+    console.error("[calendly-sync] hub meetings refresh failed:", err)
+  }
+
   return {
     success: true,
     synced: { events: totalEvents, invitees: totalInvitees, eventTypes: totalEventTypes },
@@ -277,30 +288,19 @@ async function syncEventsForConnection(
         .from("calendly_events")
         .upsert(
           {
+            // Shared full-capture mapper (identical to the webhook). The
+            // sync provides `status` directly from the list query and the
+            // host identity from the connection that owns this fetch.
+            ...mapCalendlyEventFields(event),
             calendly_uuid: uuid,
             calendly_uri: event.uri,
             calendly_connection_id: connection.id,
             team_member_id: connection.team_member_id,
-            name: event.name,
             status: event.status,
-            start_time: event.start_time,
-            end_time: event.end_time,
-            event_type_uuid: extractUuid(event.event_type),
-            event_type_name: event.event_type_name || event.name,
-            location_type: location.type,
-            location: location.location,
-            join_url: location.join_url,
             calendly_user_uri: connection.calendly_user_uri,
             calendly_user_name: connection.calendly_user_name,
             calendly_user_email: connection.calendly_user_email,
-            canceled_at: event.cancellation?.canceled_at,
-            canceler_type: event.cancellation?.canceler_type,
-            canceler_name: event.cancellation?.canceler?.name,
-            cancel_reason: event.cancellation?.reason,
-            rescheduled: event.rescheduled || false,
             raw_data: event,
-            calendly_created_at: event.created_at,
-            calendly_updated_at: event.updated_at,
             synced_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           },
@@ -349,29 +349,13 @@ async function syncEventsForConnection(
 
           const { error: invErr } = await supabase.from("calendly_invitees").upsert(
             {
+              ...mapCalendlyInviteeFields(invitee),
               calendly_uuid: inviteeUuid,
               calendly_uri: invitee.uri,
               calendly_event_id: savedEvent?.id,
               calendly_event_uuid: uuid,
-              email: invitee.email,
-              name: invitee.name,
-              status: invitee.status,
-              timezone: invitee.timezone,
-              reschedule_url: invitee.reschedule_url,
-              cancel_url: invitee.cancel_url,
-              canceled_at: invitee.cancellation?.canceled_at,
-              canceler_type: invitee.cancellation?.canceler_type,
-              cancel_reason: invitee.cancellation?.reason,
-              questions_answers: invitee.questions_and_answers,
-              utm_source: invitee.tracking?.utm_source,
-              utm_medium: invitee.tracking?.utm_medium,
-              utm_campaign: invitee.tracking?.utm_campaign,
-              utm_term: invitee.tracking?.utm_term,
-              utm_content: invitee.tracking?.utm_content,
               contact_id: contactId,
               raw_data: invitee,
-              calendly_created_at: invitee.created_at,
-              calendly_updated_at: invitee.updated_at,
               synced_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             },

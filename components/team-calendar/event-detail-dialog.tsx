@@ -56,6 +56,8 @@ import { ClientPicker, type ClientPickerValue } from "@/components/clients/clien
 import { WorkItemPicker, type WorkItemPickerValue } from "@/components/work-items/work-item-picker"
 import { ServicePicker, type ServicePickerValue } from "@/components/services/service-picker"
 import type { TeamCalendarEvent } from "./types"
+import { MeetingDebriefSection } from "./meeting-debrief-section"
+import { MeetingRecordingSection } from "./meeting-recording-section"
 
 interface ClientTag {
   id: string
@@ -471,6 +473,19 @@ export function EventDetailDialog({ event, open, onOpenChange, timeZone, current
                 </div>
               </div>
             )}
+
+            {/* Recording & transcript — Zoom meetings only. Fetches cloud
+                recordings + the parsed transcript for this meeting and renders
+                play/download links plus a collapsible speaker-attributed
+                transcript. */}
+            {isZoom && event.zoom_meeting_id != null && (
+              <MeetingRecordingSection zoomMeetingId={event.zoom_meeting_id} />
+            )}
+
+            {/* Debrief — start a prefilled debrief for this meeting, or link
+                one that's already been submitted. Shown for both Calendly
+                and Zoom meetings. */}
+            <MeetingDebriefSection event={event} currentUser={currentUser} />
           </TabsContent>
 
           {/* TAGS */}

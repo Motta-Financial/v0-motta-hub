@@ -147,6 +147,12 @@ export async function matchInviteeToContact(
  * "phone" (case-insensitive) and return the first non-empty answer.
  */
 export function extractPhoneFromInvitee(invitee: any): string | null {
+  // Prefer Calendly's structured SMS-reminder number when present — it's a
+  // first-class field and far more reliable than scraping the free-form
+  // booking-form Q&A. Fall back to the Q&A scan below otherwise.
+  const textReminder = String(invitee?.text_reminder_number ?? "").trim()
+  if (textReminder) return textReminder
+
   const qa = invitee?.questions_and_answers
   if (!Array.isArray(qa)) return null
   for (const item of qa) {

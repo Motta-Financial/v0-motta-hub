@@ -238,9 +238,13 @@ export async function syncRecentZoomData(
               raw_data: rec,
               synced_at: new Date().toISOString(),
             }))
+            // Conflict on zoom_uuid (the per-instance UUID) to match the
+            // unique index added in migration 333. Keying on zoom_meeting_id
+            // would collapse recurring-meeting instances and previously failed
+            // outright because no unique constraint existed.
             const { error } = await supabase
               .from("zoom_recordings")
-              .upsert(rows, { onConflict: "zoom_meeting_id" })
+              .upsert(rows, { onConflict: "zoom_uuid" })
             if (error) throw new Error(`zoom_recordings upsert: ${error.message}`)
             recordingsUpserted += rows.length
 

@@ -179,7 +179,7 @@ export async function generateZoomMeetingTodos(
       // pre-selected so clicking the task takes the user straight to
       // the tag dialog. The dashboard reads `?meetingId=` and opens
       // the dialog (see zoom-dashboard.tsx changes in this commit).
-      source_url: `/zoom?meetingId=${r.zoom_meeting_id}`,
+      source_url: `/meetings/zoom?meetingId=${r.zoom_meeting_id}`,
     }
   })
 
