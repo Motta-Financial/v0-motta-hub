@@ -179,6 +179,66 @@ export async function searchKarbonOrganizations(name: string): Promise<KarbonSea
 }
 
 /**
+ * Build a Karbon `POST /v3/Contacts` (person) request body.
+ *
+ * IMPORTANT: Karbon's Contact model has NO flat `EmailAddress` /
+ * `PhoneNumber` / `Source` fields. Contact details must be nested in a
+ * `BusinessCards[]` array — `EmailAddresses` is a string[] and
+ * `PhoneNumbers` is an object[]. Sending the flat shape returns
+ * 400 "Invalid Model — The contact field is required" and silently
+ * fails contact creation (the original prospect-form bug).
+ */
+function buildKarbonContactBody(data: {
+  firstName: string
+  lastName: string
+  email?: string | null
+  phone?: string | null
+}) {
+  return {
+    FirstName: data.firstName,
+    LastName: data.lastName,
+    ContactType: "Client",
+    RestrictionLevel: "Public",
+    BusinessCards: [
+      {
+        IsPrimaryCard: true,
+        EmailAddresses: data.email ? [data.email] : [],
+        PhoneNumbers: data.phone
+          ? [{ Number: data.phone, CountryCode: "US", Label: "Work" }]
+          : [],
+      },
+    ],
+  }
+}
+
+/**
+ * Build a Karbon `POST /v3/Organizations` request body.
+ *
+ * Same nesting rule as contacts: organizations use `FullName` (not
+ * `Name`) and nest email/phone inside `BusinessCards[]`.
+ */
+function buildKarbonOrganizationBody(data: {
+  name: string
+  email?: string | null
+  phone?: string | null
+}) {
+  return {
+    FullName: data.name,
+    ContactType: "Client",
+    RestrictionLevel: "Public",
+    BusinessCards: [
+      {
+        IsPrimaryCard: true,
+        EmailAddresses: data.email ? [data.email] : [],
+        PhoneNumbers: data.phone
+          ? [{ Number: data.phone, CountryCode: "US", Label: "Work" }]
+          : [],
+      },
+    ],
+  }
+}
+
+/**
  * Create a new contact in Karbon and sync to Supabase
  */
 export async function createKarbonContact(data: {
@@ -193,14 +253,12 @@ export async function createKarbonContact(data: {
     return { success: false, error: "Karbon credentials not configured" }
   }
 
-  const body = {
-    FirstName: data.firstName,
-    LastName: data.lastName,
-    EmailAddress: data.email || null,
-    PhoneNumber: data.phone || null,
-    ContactType: "Client",
-    Source: data.source || "Jotform Intake",
-  }
+  const body = buildKarbonContactBody({
+    firstName: data.firstName,
+    lastName: data.lastName,
+    email: data.email,
+    phone: data.phone,
+  })
 
   const { data: result, error } = await karbonFetch<any>(
     "/Contacts",
@@ -262,11 +320,11 @@ export async function createKarbonOrganization(data: {
     return { success: false, error: "Karbon credentials not configured" }
   }
 
-  const body = {
-    Name: data.name,
-    EmailAddress: data.email || null,
-    PhoneNumber: data.phone || null,
-  }
+  const body = buildKarbonOrganizationBody({
+    name: data.name,
+    email: data.email,
+    phone: data.phone,
+  })
 
   const { data: result, error } = await karbonFetch<any>(
     "/Organizations",
@@ -359,14 +417,12 @@ export async function pushHubContactToKarbon(
 
   const firstName = contact.first_name || "Unknown"
   const lastName = contact.last_name || ""
-  const body = {
-    FirstName: firstName,
-    LastName: lastName,
-    EmailAddress: contact.primary_email || null,
-    PhoneNumber: contact.phone_primary || null,
-    ContactType: "Client",
-    Source: source,
-  }
+  const body = buildKarbonContactBody({
+    firstName,
+    lastName,
+    email: contact.primary_email,
+    phone: contact.phone_primary,
+  })
 
   const { data: karbonResult, error: karbonErr } = await karbonFetch<any>(
     "/Contacts",
@@ -447,11 +503,11 @@ export async function pushHubOrganizationToKarbon(
     return { karbonKey: null, alreadyLinked: false, error: "Karbon credentials not configured" }
   }
 
-  const body = {
-    Name: org.name,
-    EmailAddress: org.primary_email || null,
-    PhoneNumber: org.phone_primary || null,
-  }
+  const body = buildKarbonOrganizationBody({
+    name: org.name,
+    email: org.primary_email,
+    phone: org.phone_primary,
+  })
 
   const { data: karbonResult, error: karbonErr } = await karbonFetch<any>(
     "/Organizations",
