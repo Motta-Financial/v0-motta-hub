@@ -402,6 +402,90 @@ export async function pushHubContactToKarbon(
 }
 
 /**
+ * Push an existing Hub organization to Karbon.
+ *
+ * Organization counterpart to `pushHubContactToKarbon`. Used when the
+ * Hub has auto-created an organization (e.g. a business prospect) that
+ * doesn't yet exist in Karbon. This:
+ *   1. Reads the organization from Supabase
+ *   2. Creates the organization in Karbon
+ *   3. Updates the Supabase row with the new karbon_organization_key
+ *
+ * Idempotent: skips if the organization already has a Karbon key.
+ *
+ * @returns The Karbon organization key (existing or new), or null on failure
+ */
+export async function pushHubOrganizationToKarbon(
+  organizationId: string,
+  options: { source?: string } = {},
+): Promise<{ karbonKey: string | null; alreadyLinked: boolean; error?: string }> {
+  const { source = "Motta Hub Prospect Form" } = options
+  const supabase = getServiceClient()
+
+  // 1. Fetch the Hub organization
+  const { data: org, error: fetchErr } = await supabase
+    .from("organizations")
+    .select("id, name, primary_email, phone_primary, karbon_organization_key")
+    .eq("id", organizationId)
+    .single()
+
+  if (fetchErr || !org) {
+    console.error("[pushHubOrganizationToKarbon] Organization not found:", organizationId, fetchErr)
+    return { karbonKey: null, alreadyLinked: false, error: fetchErr?.message || "Organization not found" }
+  }
+
+  // 2. Already linked? Return early
+  if (org.karbon_organization_key) {
+    console.log(`[pushHubOrganizationToKarbon] Org ${organizationId} already has Karbon key ${org.karbon_organization_key}`)
+    return { karbonKey: org.karbon_organization_key, alreadyLinked: true }
+  }
+
+  // 3. Create in Karbon
+  const credentials = getKarbonCredentials()
+  if (!credentials) {
+    console.warn("[pushHubOrganizationToKarbon] Karbon credentials not configured")
+    return { karbonKey: null, alreadyLinked: false, error: "Karbon credentials not configured" }
+  }
+
+  const body = {
+    Name: org.name,
+    EmailAddress: org.primary_email || null,
+    PhoneNumber: org.phone_primary || null,
+  }
+
+  const { data: karbonResult, error: karbonErr } = await karbonFetch<any>(
+    "/Organizations",
+    credentials,
+    { method: "POST", body },
+  )
+
+  if (karbonErr || !karbonResult?.OrganizationKey) {
+    console.error("[pushHubOrganizationToKarbon] Karbon create failed:", karbonErr)
+    return { karbonKey: null, alreadyLinked: false, error: karbonErr || "No OrganizationKey returned" }
+  }
+
+  const karbonKey = karbonResult.OrganizationKey
+  console.log(`[pushHubOrganizationToKarbon] Created Karbon org ${karbonKey} for Hub org ${organizationId}`)
+
+  // 4. Update Hub row with Karbon key
+  const { error: updateErr } = await supabase
+    .from("organizations")
+    .update({
+      karbon_organization_key: karbonKey,
+      karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/organizations/${karbonKey}`,
+      last_synced_at: new Date().toISOString(),
+    })
+    .eq("id", organizationId)
+
+  if (updateErr) {
+    console.error("[pushHubOrganizationToKarbon] Failed to update Hub org with Karbon key:", updateErr)
+    return { karbonKey, alreadyLinked: false, error: `Karbon created but Hub update failed: ${updateErr.message}` }
+  }
+
+  return { karbonKey, alreadyLinked: false }
+}
+
+/**
  * Unified search + create flow for intake submissions.
  * 
  * 1. First searches Supabase (already imported from Karbon)
