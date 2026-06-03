@@ -30,6 +30,7 @@ import {
   Database,
   History,
   Plus,
+  Trash2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useUser } from "@/contexts/user-context"
@@ -146,6 +147,10 @@ export function AlfredChat({
   const [recentConversations, setRecentConversations] = useState<ConversationSummary[]>([])
   const [recentLoading, setRecentLoading] = useState(false)
   const [hydrating, setHydrating] = useState(false)
+  // Id of the conversation currently being deleted (for per-row spinner),
+  // and a flag for the "clear all" action.
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [clearingAll, setClearingAll] = useState(false)
 
   const { messages, sendMessage, status, error, setMessages } = useChat({
     transport: new DefaultChatTransport({
@@ -246,6 +251,47 @@ export function AlfredChat({
     conversationIdRef.current = null
     setInputValue("")
     inputRef.current?.focus()
+  }, [setMessages])
+
+  // Delete a single conversation from the recent rail. Optimistically drops
+  // it from the list; if the user is currently viewing that thread we also
+  // reset to a fresh chat so they aren't left looking at a deleted thread.
+  const deleteConversation = useCallback(
+    async (id: string) => {
+      setDeletingId(id)
+      try {
+        const res = await fetch(`/api/alfred/conversations/${id}`, { method: "DELETE" })
+        if (!res.ok) return
+        setRecentConversations((prev) => prev.filter((c) => c.id !== id))
+        if (conversationIdRef.current === id) {
+          setMessages([])
+          setConversationId(null)
+          conversationIdRef.current = null
+        }
+      } catch {
+        // Non-fatal: leave the row in place so the user can retry.
+      } finally {
+        setDeletingId(null)
+      }
+    },
+    [setMessages],
+  )
+
+  // Clear the entire recent-conversations history for this user.
+  const clearAllConversations = useCallback(async () => {
+    setClearingAll(true)
+    try {
+      const res = await fetch("/api/alfred/conversations", { method: "DELETE" })
+      if (!res.ok) return
+      setRecentConversations([])
+      setMessages([])
+      setConversationId(null)
+      conversationIdRef.current = null
+    } catch {
+      // Non-fatal.
+    } finally {
+      setClearingAll(false)
+    }
   }, [setMessages])
 
   const isLoading = status === "streaming" || status === "submitted"
@@ -463,17 +509,25 @@ export function AlfredChat({
                       <History className="h-3 w-3" />
                       Recent conversations
                     </p>
-                    {recentLoading && (
-                      <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                    )}
+                    <div className="flex items-center gap-2">
+                      {(recentLoading || clearingAll) && (
+                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                      )}
+                      <button
+                        onClick={clearAllConversations}
+                        disabled={clearingAll || hydrating || !!deletingId}
+                        className="text-xs font-medium text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                        title="Clear all conversations"
+                      >
+                        Clear all
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-1">
                     {recentConversations.slice(0, 10).map((c) => (
-                      <button
+                      <div
                         key={c.id}
-                        onClick={() => loadConversation(c.id)}
-                        disabled={hydrating}
-                        className="w-full flex items-center justify-between gap-2 p-2 text-left text-sm rounded-lg border border-border hover:bg-[var(--alfred-wash)] hover:border-[var(--alfred-ring)] transition-colors disabled:opacity-50"
+                        className="group w-full flex items-center gap-1 rounded-lg border border-border hover:bg-[var(--alfred-wash)] hover:border-[var(--alfred-ring)] transition-colors"
                         style={
                           {
                             "--alfred-wash": OLIVE.wash,
@@ -481,13 +535,32 @@ export function AlfredChat({
                           } as React.CSSProperties
                         }
                       >
-                        <span className="truncate text-foreground">
-                          {c.title?.trim() || "Untitled conversation"}
-                        </span>
-                        <span className="text-xs text-muted-foreground shrink-0">
-                          {formatRelative(c.updated_at)}
-                        </span>
-                      </button>
+                        <button
+                          onClick={() => loadConversation(c.id)}
+                          disabled={hydrating || deletingId === c.id}
+                          className="flex-1 min-w-0 flex items-center justify-between gap-2 p-2 text-left text-sm disabled:opacity-50"
+                        >
+                          <span className="truncate text-foreground">
+                            {c.title?.trim() || "Untitled conversation"}
+                          </span>
+                          <span className="text-xs text-muted-foreground shrink-0">
+                            {formatRelative(c.updated_at)}
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => deleteConversation(c.id)}
+                          disabled={deletingId === c.id || clearingAll}
+                          className="shrink-0 p-2 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
+                          title="Delete conversation"
+                          aria-label="Delete conversation"
+                        >
+                          {deletingId === c.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </div>
                     ))}
                   </div>
                 </div>
