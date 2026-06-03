@@ -42,6 +42,7 @@ import {
   Building2,
   CalendarIcon,
   Check,
+  ChevronsUpDown,
   ClipboardList,
   ListTodo,
   Loader2,
@@ -59,6 +60,14 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
 import {
   Card,
   CardContent,
@@ -304,6 +313,7 @@ export function ProspectForm() {
   const [workTemplates, setWorkTemplates] = useState<WorkTemplate[]>([])
   const [workStatuses, setWorkStatuses] = useState<WorkStatus[]>([])
   const [wiTemplateKey, setWiTemplateKey] = useState("")
+  const [wiTemplatePickerOpen, setWiTemplatePickerOpen] = useState(false)
   const [wiTitle, setWiTitle] = useState("")
   const [wiTitleTouched, setWiTitleTouched] = useState(false)
   const [wiAssigneeId, setWiAssigneeId] = useState("")
@@ -1204,20 +1214,67 @@ export function ProspectForm() {
                 <Label htmlFor="wi-template">
                   Work template <span className="text-destructive">*</span>
                 </Label>
-                <Select value={wiTemplateKey} onValueChange={setWiTemplateKey}>
-                  <SelectTrigger id="wi-template">
-                    <SelectValue
-                      placeholder={workTemplates.length ? "Select a Karbon template…" : "Loading templates…"}
-                    />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-72">
-                    {workTemplates.map((t) => (
-                      <SelectItem key={t.key} value={t.key}>
-                        {t.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={wiTemplatePickerOpen} onOpenChange={setWiTemplatePickerOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      id="wi-template"
+                      type="button"
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={wiTemplatePickerOpen}
+                      disabled={!workTemplates.length}
+                      className={cn(
+                        "w-full justify-between font-normal",
+                        !selectedTemplate && "text-muted-foreground",
+                      )}
+                    >
+                      <span className="truncate">
+                        {selectedTemplate
+                          ? selectedTemplate.title
+                          : workTemplates.length
+                            ? "Select a Karbon template…"
+                            : "Loading templates…"}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" aria-hidden />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    className="w-[--radix-popover-trigger-width] p-0"
+                    align="start"
+                  >
+                    <Command
+                      filter={(value, search) =>
+                        value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0
+                      }
+                    >
+                      <CommandInput placeholder="Search templates by name…" />
+                      <CommandList>
+                        <CommandEmpty>No templates match.</CommandEmpty>
+                        <CommandGroup>
+                          {workTemplates.map((t) => (
+                            <CommandItem
+                              key={t.key}
+                              value={t.title}
+                              onSelect={() => {
+                                setWiTemplateKey(t.key)
+                                setWiTemplatePickerOpen(false)
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  wiTemplateKey === t.key ? "opacity-100" : "opacity-0",
+                                )}
+                                aria-hidden
+                              />
+                              <span className="truncate">{t.title}</span>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
 
               <div className="space-y-1.5">
