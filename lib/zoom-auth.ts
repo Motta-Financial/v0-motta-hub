@@ -117,6 +117,13 @@ async function refreshConnectionToken(connection: ZoomConnection): Promise<strin
     token_type: string
   }
 
+  // Persist the new expiry alongside the token. Zoom access tokens are
+  // short-lived (expires_in ~3600s); previously this update omitted
+  // expires_at, so the stored expiry drifted stale even though the token
+  // was being rotated nightly. Keeping it in sync lets callers trust
+  // expires_at for proactive (pre-401) refresh.
+  const expiresAt = new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000).toISOString()
+
   const admin = createAdminClient()
   await admin
     .from("zoom_connections")
@@ -127,6 +134,7 @@ async function refreshConnectionToken(connection: ZoomConnection): Promise<strin
       // value so we don't write null.
       refresh_token: tokens.refresh_token ?? connection.refresh_token,
       scope: tokens.scope ?? connection.scope,
+      expires_at: expiresAt,
       updated_at: new Date().toISOString(),
     })
     .eq("id", connection.id)
