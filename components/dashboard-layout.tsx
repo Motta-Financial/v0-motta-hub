@@ -756,6 +756,15 @@ const HEADER_FORMS: ReadonlyArray<HeaderMenuItem> = [
     description: "Nominate a teammate for this week's award",
     icon: Trophy,
   },
+  {
+    // Firm-wide announcement composer. Posts a "Breaking News"
+    // broadcast that lands in everyone's Triage feed and is emailed
+    // from ALFRED. Lives at /admin/broadcast but any teammate can post.
+    name: "Broadcast Announcement",
+    href: "/admin/broadcast",
+    description: "Send a firm-wide announcement to everyone's Triage + email",
+    icon: Radio,
+  },
 ]
 
 // AI assistants Motta uses daily. The top-line `name` is the
