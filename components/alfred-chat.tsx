@@ -17,6 +17,9 @@ import {
   Send,
   X,
   Minimize2,
+  Maximize2,
+  Shrink,
+  ExternalLink,
   Loader2,
   User,
   Search,
@@ -71,6 +74,18 @@ interface AlfredChatProps {
   onMinimize?: () => void
   isMinimized?: boolean
   className?: string
+  // When true the chat fills its container (used by the standalone
+  // /alfred window route) rather than floating as a fixed bottom-right
+  // card. In this mode the minimize / expand / pop-out controls are
+  // hidden since they make no sense in a dedicated window.
+  fullPage?: boolean
+  // Widget-only: toggles the floating card between its default compact
+  // footprint and a larger expanded size.
+  isExpanded?: boolean
+  onToggleExpand?: () => void
+  // Widget-only: pops the conversation out into a standalone browser
+  // window (the /alfred route).
+  onOpenInNewWindow?: () => void
 }
 
 const suggestedQueries = [
@@ -94,7 +109,17 @@ const OLIVE = {
   wash: "#F5F6E8",       // pale wash   — hover/tint backgrounds
 }
 
-export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className }: AlfredChatProps) {
+export function AlfredChat({
+  isOpen,
+  onClose,
+  onMinimize,
+  isMinimized,
+  className,
+  fullPage = false,
+  isExpanded = false,
+  onToggleExpand,
+  onOpenInNewWindow,
+}: AlfredChatProps) {
   const [inputValue, setInputValue] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -318,10 +343,21 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
     )
   }
 
+  // Sizing is mode-driven:
+  //  • fullPage  → fill the standalone /alfred window
+  //  • expanded  → roomy floating card (capped to the viewport)
+  //  • default   → compact bottom-right launcher card
+  const sizingClasses = fullPage
+    ? "relative w-full h-full rounded-none border-0 shadow-none"
+    : isExpanded
+      ? "fixed bottom-4 right-4 z-50 w-[min(880px,calc(100vw-2rem))] h-[min(820px,calc(100vh-2rem))] shadow-2xl border-border/60"
+      : "fixed bottom-4 right-4 z-50 w-[420px] h-[600px] shadow-2xl border-border/60"
+
   return (
     <Card
       className={cn(
-        "fixed bottom-4 right-4 z-50 w-[420px] h-[600px] flex flex-col shadow-2xl border-border/60",
+        "flex flex-col transition-[width,height] duration-200 ease-out",
+        sizingClasses,
         className,
       )}
     >
@@ -348,19 +384,51 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
           >
             <Plus className="h-4 w-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
-            onClick={onMinimize}
-          >
-            <Minimize2 className="h-4 w-4" />
-          </Button>
+          {/* Pop-out + expand controls only make sense for the floating
+              widget, not the dedicated /alfred window. */}
+          {!fullPage && onOpenInNewWindow && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
+              onClick={onOpenInNewWindow}
+              title="Open in new window"
+              aria-label="Open ALFRED in a new window"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </Button>
+          )}
+          {!fullPage && onToggleExpand && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
+              onClick={onToggleExpand}
+              title={isExpanded ? "Collapse" : "Expand"}
+              aria-label={isExpanded ? "Collapse chat" : "Expand chat"}
+            >
+              {isExpanded ? <Shrink className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </Button>
+          )}
+          {!fullPage && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
+              onClick={onMinimize}
+              title="Minimize"
+              aria-label="Minimize chat"
+            >
+              <Minimize2 className="h-4 w-4" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
             className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
             onClick={onClose}
+            title={fullPage ? "Close window" : "Close"}
+            aria-label="Close chat"
           >
             <X className="h-4 w-4" />
           </Button>
