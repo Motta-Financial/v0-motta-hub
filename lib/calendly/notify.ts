@@ -490,20 +490,37 @@ function buildMeetingBookedEmailHtml(
 
               ${summaryBlock}
 
+              <!-- Calendar owner: make it unmistakable whose calendar this landed on -->
+              <div style="background:#EEF1EA;border:1px solid #D5DBC9;border-radius:8px;padding:12px 16px;margin:0 0 20px;">
+                <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#6B745D;letter-spacing:0.5px;">BOOKED ON</p>
+                <p style="margin:0;font-size:15px;font-weight:700;color:#111827;">${p.hostName ? `${escapeHtml(p.hostName)}&apos;s calendar` : "An unassigned calendar"}</p>
+              </div>
+
               <!-- Meeting details -->
               <h2 style="margin:0 0 8px;font-size:18px;color:#111827;">${escapeHtml(p.eventName)}</h2>
               <p style="margin:0 0 4px;font-size:14px;color:#6B7280;">
                 <strong>When:</strong> ${startFormatted} – ${endFormatted}
               </p>
-              ${p.hostName ? `<p style="margin:0 0 4px;font-size:14px;color:#6B7280;"><strong>Host:</strong> ${escapeHtml(p.hostName)}</p>` : ""}
+              ${p.hostName ? `<p style="margin:0 0 4px;font-size:14px;color:#6B7280;"><strong>Calendar owner:</strong> ${escapeHtml(p.hostName)}</p>` : ""}
 
               <hr style="border:none;border-top:1px solid #E5E7EB;margin:24px 0;">
 
-              <!-- Invitee details -->
-              <h3 style="margin:0 0 12px;font-size:16px;color:#111827;">Invitee</h3>
-              <p style="margin:0 0 4px;font-size:14px;color:#374151;"><strong>${escapeHtml(p.inviteeName)}</strong></p>
+              <!-- Related client -->
+              <h3 style="margin:0 0 12px;font-size:16px;color:#111827;">Related Client</h3>
+              <p style="margin:0 0 4px;font-size:14px;color:#374151;">
+                ${
+                  p.contactId
+                    ? `<a href="${hubLink}" style="color:#2563EB;text-decoration:none;font-weight:700;">${escapeHtml(p.inviteeName)}</a>`
+                    : `<strong>${escapeHtml(p.inviteeName)}</strong>`
+                }
+              </p>
               <p style="margin:0 0 4px;font-size:14px;color:#6B7280;">${escapeHtml(p.inviteeEmail)}</p>
               ${p.inviteePhone ? `<p style="margin:0 0 4px;font-size:14px;color:#6B7280;">${escapeHtml(p.inviteePhone)}</p>` : ""}
+              ${
+                p.contactId
+                  ? `<p style="margin:8px 0 0;font-size:13px;"><a href="${hubLink}" style="color:#2563EB;text-decoration:none;">View client in Motta Hub &rarr;</a></p>`
+                  : ""
+              }
 
               <div style="margin:24px 0 0;"></div>
               ${noteBlock}
@@ -514,7 +531,7 @@ function buildMeetingBookedEmailHtml(
 
               <!-- CTA -->
               <p style="margin:24px 0 0;">
-                <a href="${hubLink}" style="display:inline-block;background:#6B745D;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">View in Hub</a>
+                <a href="${hubLink}" style="display:inline-block;background:#6B745D;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">${p.contactId ? "View Client in Hub" : "View in Hub"}</a>
               </p>
             </td>
           </tr>

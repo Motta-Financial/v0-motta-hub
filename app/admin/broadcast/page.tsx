@@ -1,132 +1,169 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
-import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
 import { useUser, useDisplayName } from "@/hooks/use-user"
-import { Megaphone, Send, Loader2, AlertTriangle, Users, Eye } from "lucide-react"
-import { buildBroadcastHtml } from "@/lib/email-preview"
+import { Megaphone, Send, Loader2, Eye, Inbox, Mail, Paperclip, X } from "lucide-react"
+import { buildAnnouncementHtml } from "@/lib/email-preview"
+import { cn } from "@/lib/utils"
 
-type Member = {
-  id: string
-  full_name: string
-  email?: string | null
-  role?: string | null
-  is_active?: boolean
+// 25 MB ceiling — matches debriefs/prospects
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+interface QueuedAttachment {
+  tempId: string
+  file: File
+  status: "queued" | "uploading" | "uploaded" | "error"
+  error?: string
+  url?: string
+  pathname?: string
+  name?: string
+  content_type?: string
+  size_bytes?: number
+  uploaded_at?: string
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 export default function BroadcastPage() {
   const { teamMember } = useUser()
   const senderName = useDisplayName()
   const { toast } = useToast()
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const [members, setMembers] = useState<Member[]>([])
-  const [loadingMembers, setLoadingMembers] = useState(true)
-  const [search, setSearch] = useState("")
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [allSelected, setAllSelected] = useState(true)
-
-  const [subject, setSubject] = useState("")
-  const [bodyText, setBodyText] = useState("")
+  const [topic, setTopic] = useState("")
+  const [announcement, setAnnouncement] = useState("")
+  const [actionItems, setActionItems] = useState("")
+  const [attachments, setAttachments] = useState<QueuedAttachment[]>([])
   const [force, setForce] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
-
   const [sending, setSending] = useState(false)
-  const isPartner = teamMember?.role === "Partner" || teamMember?.role === "Admin"
 
-  useEffect(() => {
-    let cancelled = false
-    setLoadingMembers(true)
-    fetch("/api/team-members")
-      .then((r) => r.json())
-      .then((json) => {
-        if (cancelled) return
-        const list: Member[] = (json.team_members || []).filter(
-          (m: Member) => m.is_active !== false && m.email,
-        )
-        setMembers(list)
+  // Attachment handlers — same pattern as debrief-form.tsx
+  const uploadAttachment = useCallback(async (tempId: string, file: File) => {
+    try {
+      const form = new FormData()
+      form.append("file", file)
+      const res = await fetch("/api/email/broadcast/attachments", {
+        method: "POST",
+        body: form,
       })
-      .catch((err) => {
-        toast({
-          title: "Failed to load team",
-          description: err.message,
-          variant: "destructive",
-        })
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingMembers(false)
-      })
-    return () => {
-      cancelled = true
+      const json = await res.json()
+      if (!res.ok) {
+        throw new Error(json?.error || `Upload failed (${res.status})`)
+      }
+      const a = json.attachment as {
+        url: string
+        pathname: string
+        name: string
+        content_type: string
+        size_bytes: number
+        uploaded_at: string
+      }
+      setAttachments((prev) =>
+        prev.map((row) =>
+          row.tempId === tempId
+            ? {
+                ...row,
+                status: "uploaded",
+                url: a.url,
+                pathname: a.pathname,
+                name: a.name,
+                content_type: a.content_type,
+                size_bytes: a.size_bytes,
+                uploaded_at: a.uploaded_at,
+              }
+            : row,
+        ),
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed"
+      setAttachments((prev) =>
+        prev.map((row) =>
+          row.tempId === tempId ? { ...row, status: "error", error: message } : row,
+        ),
+      )
     }
-  }, [toast])
+  }, [])
 
-  const filteredMembers = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return members
-    return members.filter(
-      (m) =>
-        m.full_name?.toLowerCase().includes(q) ||
-        m.email?.toLowerCase().includes(q) ||
-        m.role?.toLowerCase().includes(q),
-    )
-  }, [members, search])
+  const onPickFiles = useCallback(
+    (files: FileList | null) => {
+      if (!files || files.length === 0) return
+      const incoming: QueuedAttachment[] = []
+      for (const f of Array.from(files)) {
+        if (f.size > MAX_ATTACHMENT_BYTES) {
+          incoming.push({
+            tempId: crypto.randomUUID(),
+            file: f,
+            status: "error",
+            error: `Larger than ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB limit`,
+          })
+          continue
+        }
+        incoming.push({
+          tempId: crypto.randomUUID(),
+          file: f,
+          status: "uploading",
+        })
+      }
+      setAttachments((prev) => [...prev, ...incoming])
+      for (const row of incoming) {
+        if (row.status === "uploading") {
+          void uploadAttachment(row.tempId, row.file)
+        }
+      }
+    },
+    [uploadAttachment],
+  )
 
-  const recipientCount = allSelected ? members.length : selectedIds.size
-
-  const toggleMember = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
+  const removeAttachment = useCallback((tempId: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.tempId === tempId)
+      if (target?.status === "uploaded" && target.url) {
+        const qs = new URLSearchParams({ url: target.url })
+        void fetch(`/api/email/broadcast/attachments?${qs.toString()}`, {
+          method: "DELETE",
+        }).catch(() => {})
+      }
+      return prev.filter((a) => a.tempId !== tempId)
     })
-    setAllSelected(false)
-  }
+  }, [])
 
-  // Convert plain text to safe HTML by escaping and converting newlines.
-  const renderedHtml = useMemo(() => {
-    const escaped = bodyText
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/\n/g, "<br/>")
-    return escaped
-  }, [bodyText])
+  // Build attachments array for preview and submit
+  const uploadedAttachments = attachments
+    .filter((a) => a.status === "uploaded" && a.url && a.name)
+    .map((a) => ({ url: a.url!, name: a.name!, size_bytes: a.size_bytes }))
 
   const previewHtml = useMemo(
     () =>
-      buildBroadcastHtml({
-        subject: subject || "(subject)",
-        bodyHtml: renderedHtml || "<em style='color:#999'>Your message will appear here</em>",
-        fromName: senderName || "Motta Hub",
+      buildAnnouncementHtml({
+        topic: topic || "(your topic)",
+        announcement,
+        actionItems,
+        attachments: uploadedAttachments,
+        fromName: senderName || "ALFRED Ai",
       }),
-    [subject, renderedHtml, senderName],
+    [topic, announcement, actionItems, uploadedAttachments, senderName],
   )
 
+  const uploadInProgress = attachments.some((a) => a.status === "uploading")
+
   const handleSend = async () => {
-    if (!subject.trim() || !bodyText.trim()) {
+    if (!topic.trim() || !announcement.trim()) {
       toast({
         title: "Missing fields",
-        description: "Subject and body are required",
-        variant: "destructive",
-      })
-      return
-    }
-
-    const recipientIds = allSelected ? undefined : Array.from(selectedIds)
-    if (!allSelected && (recipientIds?.length ?? 0) === 0) {
-      toast({
-        title: "No recipients",
-        description: "Select at least one team member or choose 'All active members'",
+        description: "Topic and Announcement are required.",
         variant: "destructive",
       })
       return
@@ -138,10 +175,12 @@ export default function BroadcastPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          subject,
-          bodyHtml: renderedHtml,
-          fromName: senderName || "Motta Hub",
-          recipientIds,
+          topic: topic.trim(),
+          announcement: announcement.trim(),
+          actionItems: actionItems.trim() || undefined,
+          attachments: uploadedAttachments,
+          createdById: teamMember?.id,
+          createdByName: senderName || undefined,
           force,
         }),
       })
@@ -149,11 +188,15 @@ export default function BroadcastPage() {
       if (!res.ok) throw new Error(json.error || "Send failed")
 
       toast({
-        title: "Broadcast sent",
-        description: `Sent to ${json.sent} of ${json.attempted} recipients${json.skipped ? ` (${json.skipped} opted out)` : ""}.`,
+        title: "Announcement published",
+        description: `Posted to everyone's triage and emailed ${json.sent} of ${json.attempted} teammates${
+          json.skipped ? ` (${json.skipped} opted out)` : ""
+        }.`,
       })
-      setSubject("")
-      setBodyText("")
+      setTopic("")
+      setAnnouncement("")
+      setActionItems("")
+      setAttachments([])
     } catch (err) {
       toast({
         title: "Send failed",
@@ -171,20 +214,16 @@ export default function BroadcastPage() {
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-              <Megaphone className="h-6 w-6 text-[#6B745D]" />
-              Broadcast Email
+              <Megaphone className="h-6 w-6 text-[#C97B3F]" />
+              Firm Announcement
             </h1>
-            <p className="mt-1 text-sm text-gray-500">
-              Send a custom email announcement to the team. Recipients who&apos;ve opted out of broadcasts will be
-              skipped automatically unless you override.
+            <p className="mt-1 text-sm text-gray-500 max-w-2xl">
+              Post a firm-wide announcement. It lands in everyone&apos;s Triage feed and is emailed
+              to the team from ALFRED with the subject{" "}
+              <span className="font-medium text-gray-700">&ldquo;BREAKING NEWS: &lt;Topic&gt;&rdquo;</span>.
+              Anyone on the team can post.
             </p>
           </div>
-          {isPartner === false && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-sm">
-              <AlertTriangle className="h-4 w-4" />
-              Partner / Admin role required to send broadcasts
-            </div>
-          )}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -193,102 +232,142 @@ export default function BroadcastPage() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Compose</CardTitle>
-                <CardDescription>Plain text — line breaks will be preserved.</CardDescription>
+                <CardDescription>Line breaks are preserved in both the email and triage.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="subject">Subject</Label>
+                  <Label htmlFor="topic">Topic</Label>
                   <Input
-                    id="subject"
-                    value={subject}
-                    onChange={(e) => setSubject(e.target.value)}
-                    placeholder="Important update from Motta Financial"
+                    id="topic"
+                    value={topic}
+                    onChange={(e) => setTopic(e.target.value)}
+                    placeholder="e.g. Office closed Friday for the holiday"
+                  />
+                  <p className="text-xs text-gray-500">
+                    Becomes the email subject: <span className="font-medium">BREAKING NEWS: {topic || "…"}</span>
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="announcement">Announcement</Label>
+                  <Textarea
+                    id="announcement"
+                    value={announcement}
+                    onChange={(e) => setAnnouncement(e.target.value)}
+                    rows={8}
+                    placeholder="Write the announcement here…"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="body">Message</Label>
+                  <Label htmlFor="actionItems">Action Items (if any)</Label>
                   <Textarea
-                    id="body"
-                    value={bodyText}
-                    onChange={(e) => setBodyText(e.target.value)}
-                    rows={12}
-                    placeholder="Write your announcement here..."
+                    id="actionItems"
+                    value={actionItems}
+                    onChange={(e) => setActionItems(e.target.value)}
+                    rows={4}
+                    placeholder="Optional — anything the team needs to do."
                   />
                 </div>
+
+                {/* Attachments */}
+                <div className="space-y-2">
+                  <Label>Attachments</Label>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => fileInputRef.current?.click()}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault()
+                        fileInputRef.current?.click()
+                      }
+                    }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      onPickFiles(e.dataTransfer.files)
+                    }}
+                    className="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-md border border-dashed bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground transition-colors hover:bg-muted/50"
+                  >
+                    <Paperclip className="h-5 w-5" />
+                    <p>
+                      <span className="font-medium text-foreground">Click to upload</span> or drag &amp; drop
+                    </p>
+                    <p className="text-xs">PNG, JPG, PDF, etc. — up to 25 MB each</p>
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      onPickFiles(e.target.files)
+                      e.target.value = ""
+                    }}
+                  />
+                  {attachments.length > 0 && (
+                    <ul className="space-y-2 mt-2">
+                      {attachments.map((a) => (
+                        <li
+                          key={a.tempId}
+                          className={cn(
+                            "flex items-center justify-between gap-3 rounded-md border bg-card px-3 py-2 text-sm",
+                            a.status === "error" && "border-destructive/40 bg-destructive/5",
+                          )}
+                        >
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
+                            {a.status === "uploading" ? (
+                              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                            ) : a.status === "error" ? (
+                              <X className="h-4 w-4 shrink-0 text-destructive" />
+                            ) : (
+                              <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium text-foreground">{a.file.name}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {formatBytes(a.file.size)}
+                                {a.status === "uploading" ? " · Uploading…" : null}
+                                {a.status === "uploaded" ? " · Ready" : null}
+                                {a.status === "error" && a.error ? ` · ${a.error}` : null}
+                              </div>
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removeAttachment(a.tempId)}
+                            aria-label="Remove attachment"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-3 pt-2">
                   <Switch id="force" checked={force} onCheckedChange={setForce} />
                   <Label htmlFor="force" className="cursor-pointer">
-                    Override opt-outs (use sparingly)
+                    Override email opt-outs (use sparingly)
                   </Label>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Recipients */}
             <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Users className="h-4 w-4 text-[#6B745D]" />
-                  Recipients
-                  <Badge variant="secondary" className="ml-2 bg-[#EAE6E1] text-[#6B745D]">
-                    {recipientCount}
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex items-center gap-3 pb-2 border-b">
-                  <Checkbox
-                    id="all"
-                    checked={allSelected}
-                    onCheckedChange={(v) => {
-                      setAllSelected(!!v)
-                      if (v) setSelectedIds(new Set())
-                    }}
-                  />
-                  <Label htmlFor="all" className="cursor-pointer font-medium">
-                    All active team members ({members.length})
-                  </Label>
+              <CardContent className="py-4">
+                <div className="flex items-center gap-4 text-sm text-gray-600">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Inbox className="h-4 w-4 text-[#6B745D]" />
+                    Everyone&apos;s Triage
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Mail className="h-4 w-4 text-[#6B745D]" />
+                    All active team members
+                  </span>
                 </div>
-
-                {!allSelected && (
-                  <>
-                    <Input
-                      placeholder="Search team..."
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                    />
-                    <div className="max-h-72 overflow-y-auto border rounded-md divide-y">
-                      {loadingMembers ? (
-                        <div className="flex items-center justify-center py-8">
-                          <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
-                        </div>
-                      ) : filteredMembers.length === 0 ? (
-                        <p className="text-sm text-gray-500 py-8 text-center">No matches</p>
-                      ) : (
-                        filteredMembers.map((m) => (
-                          <label
-                            key={m.id}
-                            className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
-                          >
-                            <Checkbox
-                              checked={selectedIds.has(m.id)}
-                              onCheckedChange={() => toggleMember(m.id)}
-                            />
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm font-medium truncate">{m.full_name}</p>
-                              <p className="text-xs text-gray-500 truncate">{m.email}</p>
-                            </div>
-                            {m.role && (
-                              <Badge variant="outline" className="text-xs">
-                                {m.role}
-                              </Badge>
-                            )}
-                          </label>
-                        ))
-                      )}
-                    </div>
-                  </>
-                )}
               </CardContent>
             </Card>
 
@@ -304,18 +383,23 @@ export default function BroadcastPage() {
               </Button>
               <Button
                 onClick={handleSend}
-                disabled={sending || !isPartner}
-                className="bg-[#6B745D] hover:bg-[#5a6350] text-white ml-auto"
+                disabled={sending || uploadInProgress}
+                className="bg-[#C97B3F] hover:bg-[#b06a33] text-white ml-auto"
               >
                 {sending ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Sending...
+                    Publishing…
+                  </>
+                ) : uploadInProgress ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Uploading…
                   </>
                 ) : (
                   <>
                     <Send className="mr-2 h-4 w-4" />
-                    Send to {recipientCount} {recipientCount === 1 ? "recipient" : "recipients"}
+                    Publish announcement
                   </>
                 )}
               </Button>
@@ -328,7 +412,7 @@ export default function BroadcastPage() {
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">
                   <Eye className="h-4 w-4 text-[#6B745D]" />
-                  Live Preview
+                  Email Preview
                 </CardTitle>
                 <CardDescription>Approximation of what recipients will see.</CardDescription>
               </CardHeader>
