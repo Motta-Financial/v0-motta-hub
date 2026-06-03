@@ -34,6 +34,7 @@ import {
   Settings,
   AlertCircle,
   UserPlus,
+  type LucideIcon,
 } from "lucide-react"
 import { useUser } from "@/hooks/use-user"
 import type { ZoomMeeting, ZoomCallHistory } from "@/lib/zoom-types"
@@ -67,6 +68,70 @@ interface MasterMeeting extends ZoomMeeting {
   host_pic_url?: string
 }
 
+// Which stat tile's detail drawer is open. `null` = none.
+type StatKey = "today" | "week" | "team" | "recordings" | "untagged"
+
+/**
+ * A single stat tile. When `onClick` is provided (and not disabled) the
+ * tile becomes an accessible button that opens its detail dialog —
+ * keyboard-operable (Enter/Space) with a visible focus ring and a hover
+ * affordance. Tiles with no underlying rows render inert (greyed out).
+ */
+function StatCard({
+  icon: Icon,
+  iconWrapClass,
+  iconClass,
+  value,
+  label,
+  onClick,
+  disabled,
+}: {
+  icon: LucideIcon
+  iconWrapClass: string
+  iconClass: string
+  value: number
+  label: string
+  onClick?: () => void
+  disabled?: boolean
+}) {
+  const interactive = !!onClick && !disabled
+  return (
+    <Card
+      onClick={interactive ? onClick : undefined}
+      onKeyDown={
+        interactive
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                onClick?.()
+              }
+            }
+          : undefined
+      }
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={interactive ? `${label}: ${value}. View details` : undefined}
+      className={`p-4 ${
+        interactive
+          ? "cursor-pointer transition-colors hover:bg-muted/50 hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          : disabled
+            ? "opacity-60"
+            : ""
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <div className={`p-2 rounded-lg ${iconWrapClass}`}>
+          <Icon className={`h-5 w-5 ${iconClass}`} />
+        </div>
+        <div>
+          <p className="text-2xl font-bold">{value}</p>
+          <p className="text-sm text-muted-foreground">{label}</p>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 export function ZoomDashboard() {
   const { teamMember } = useUser()
   const [meetings, setMeetings] = useState<MasterMeeting[]>([])
@@ -87,6 +152,9 @@ export function ZoomDashboard() {
   const [viewMode, setViewMode] = useState<"schedule" | "byHost">("schedule")
   const [showSettings, setShowSettings] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Which stat tile's detail dialog is open (Today's Meetings, This Week,
+  // Team Members, Recordings, Untagged). Null = closed.
+  const [statDetail, setStatDetail] = useState<StatKey | null>(null)
 
   // Tag state — keyed on Zoom's bigint meeting id (as string). The
   // dashboard fetches counts in bulk so 50 cards = 1 round trip.
@@ -351,7 +419,8 @@ export function ZoomDashboard() {
   const untaggedPastMeetings = filteredMeetings.filter(
     (m) => isMeetingPast(m) && !isMeetingTagged(m.id),
   )
-  const untaggedTotal = filteredMeetings.filter((m) => !isMeetingTagged(m.id)).length
+  const untaggedMeetings = filteredMeetings.filter((m) => !isMeetingTagged(m.id))
+  const untaggedTotal = untaggedMeetings.length
 
   // Open the tag dialog for a given meeting. We only feed in the fields
   // the dialog (and the lazy-upsert in the API route) need, NOT the
@@ -481,6 +550,149 @@ export function ZoomDashboard() {
       minute: "2-digit",
       hour12: true,
     })
+  }
+
+  // Titles + helper copy for each stat detail dialog.
+  const statDetailConfig: Record<StatKey, { title: string; description: string }> = {
+    today: {
+      title: "Today's Meetings",
+      description: "Meetings scheduled across the team for the rest of today.",
+    },
+    week: {
+      title: "This Week",
+      description: "Every meeting on the team calendar over the next seven days.",
+    },
+    team: {
+      title: "Connected Team Members",
+      description: "Teammates whose Zoom accounts feed the master calendar.",
+    },
+    recordings: {
+      title: "Recordings",
+      description: "Cloud recordings available in the Hub.",
+    },
+    untagged: {
+      title: "Untagged Meetings",
+      description: "Meetings not yet linked to a client or work item.",
+    },
+  }
+
+  // Shared row renderer for the meeting-based detail dialogs (Today, This
+  // Week, Untagged). Sorted by start time. Each row deep-links to Join and
+  // opens the existing tag dialog — closing the stat dialog first so the
+  // two never stack.
+  const renderMeetingList = (list: MasterMeeting[]) => {
+    if (list.length === 0) {
+      return <p className="py-8 text-center text-sm text-muted-foreground">No meetings to show.</p>
+    }
+    return [...list]
+      .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())
+      .map((m) => {
+        const tc = tagCounts[String(m.id)]
+        const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
+        return (
+          <div key={m.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+            <div className="min-w-0 flex-1">
+              <p className="font-medium truncate">{m.topic || "Untitled meeting"}</p>
+              <p className="text-sm text-muted-foreground">
+                {formatDateTime(m.start_time)} · {formatDuration(m.duration)}
+              </p>
+              <p className="text-xs text-muted-foreground truncate">
+                Host: {m.host_name || m.host_email}
+              </p>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {m.join_url && (
+                <Button size="sm" variant="outline" asChild title="Join meeting">
+                  <a href={m.join_url} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant={tagged ? "outline" : "default"}
+                title={tagged ? "Edit tags" : "Tag meeting"}
+                onClick={() => {
+                  setStatDetail(null)
+                  openTagDialog(m)
+                }}
+              >
+                <Tag className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )
+      })
+  }
+
+  const renderTeamList = () => {
+    if (zoomUsers.length === 0) {
+      return (
+        <p className="py-8 text-center text-sm text-muted-foreground">No team members connected.</p>
+      )
+    }
+    return zoomUsers.map((u: any) => {
+      const upcoming = meetingsByHost[u.email]?.meetings.length ?? 0
+      const name = u.display_name || u.email || "Unknown"
+      return (
+        <div key={u.id ?? u.email} className="flex items-center gap-3 rounded-lg border p-3">
+          <Avatar className="h-9 w-9">
+            <AvatarImage src={u.pic_url || "/placeholder.svg"} />
+            <AvatarFallback>
+              {name
+                .split(" ")
+                .map((n: string) => n[0])
+                .join("")
+                .slice(0, 2)
+                .toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0 flex-1">
+            <p className="font-medium truncate">{name}</p>
+            <p className="text-sm text-muted-foreground truncate">{u.email}</p>
+          </div>
+          <Badge variant="secondary" className="shrink-0 font-normal">
+            {upcoming} upcoming
+          </Badge>
+        </div>
+      )
+    })
+  }
+
+  const renderRecordingsList = () => {
+    if (recordings.length === 0) {
+      return <p className="py-8 text-center text-sm text-muted-foreground">No recordings to show.</p>
+    }
+    return (
+      <>
+        {recordings.slice(0, 50).map((r: any) => (
+          <div
+            key={r.id ?? r.uuid ?? r.zoom_meeting_id}
+            className="flex items-center justify-between gap-3 rounded-lg border p-3"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="font-medium truncate">{r.topic || "Untitled recording"}</p>
+              {r.start_time && (
+                <p className="text-sm text-muted-foreground">{formatDateTime(r.start_time)}</p>
+              )}
+            </div>
+            <FileVideo className="h-4 w-4 text-muted-foreground shrink-0" />
+          </div>
+        ))}
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={() => {
+            setStatDetail(null)
+            setActiveTab("recordings")
+          }}
+        >
+          <FileVideo className="h-4 w-4 mr-2" />
+          Open Recordings library
+        </Button>
+      </>
+    )
   }
 
   if (loading) {
@@ -644,77 +856,63 @@ export function ZoomDashboard() {
         </Alert>
       )}
 
-      {/* Stats Cards */}
+      {/* Stats Cards — each tile opens a detail dialog listing the rows
+          behind the number (click or keyboard). Tiles with a count of 0
+          render inert. */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
-              <Video className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{todayMeetings.length}</p>
-              <p className="text-sm text-muted-foreground">Today&apos;s Meetings</p>
-            </div>
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-green-100 dark:bg-green-900 rounded-lg">
-              <Calendar className="h-5 w-5 text-green-600 dark:text-green-400" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{thisWeekMeetings.length}</p>
-              <p className="text-sm text-muted-foreground">This Week</p>
-            </div>
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-lg">
-              <Users className="h-5 w-5 text-purple-600 dark:text-purple-400" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{zoomUsers.length}</p>
-              <p className="text-sm text-muted-foreground">Team Members</p>
-            </div>
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-orange-100 dark:bg-orange-900 rounded-lg">
-              <FileVideo className="h-5 w-5 text-orange-600 dark:text-orange-400" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{recordings.length}</p>
-              <p className="text-sm text-muted-foreground">Recordings</p>
-            </div>
-          </div>
-        </Card>
+        <StatCard
+          icon={Video}
+          iconWrapClass="bg-blue-100 dark:bg-blue-900"
+          iconClass="text-blue-600 dark:text-blue-400"
+          value={todayMeetings.length}
+          label="Today's Meetings"
+          onClick={() => setStatDetail("today")}
+          disabled={todayMeetings.length === 0}
+        />
+        <StatCard
+          icon={Calendar}
+          iconWrapClass="bg-green-100 dark:bg-green-900"
+          iconClass="text-green-600 dark:text-green-400"
+          value={thisWeekMeetings.length}
+          label="This Week"
+          onClick={() => setStatDetail("week")}
+          disabled={thisWeekMeetings.length === 0}
+        />
+        <StatCard
+          icon={Users}
+          iconWrapClass="bg-purple-100 dark:bg-purple-900"
+          iconClass="text-purple-600 dark:text-purple-400"
+          value={zoomUsers.length}
+          label="Team Members"
+          onClick={() => setStatDetail("team")}
+          disabled={zoomUsers.length === 0}
+        />
+        <StatCard
+          icon={FileVideo}
+          iconWrapClass="bg-orange-100 dark:bg-orange-900"
+          iconClass="text-orange-600 dark:text-orange-400"
+          value={recordings.length}
+          label="Recordings"
+          onClick={() => setStatDetail("recordings")}
+          disabled={recordings.length === 0}
+        />
         {/* Tagging coverage tile -- the headline number is "Untagged" so
             users can see at-a-glance how much work is left to tag. */}
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div
-              className={`p-2 rounded-lg ${
-                untaggedTotal > 0
-                  ? "bg-amber-100 dark:bg-amber-900"
-                  : "bg-emerald-100 dark:bg-emerald-900"
-              }`}
-            >
-              <Tag
-                className={`h-5 w-5 ${
-                  untaggedTotal > 0
-                    ? "text-amber-700 dark:text-amber-400"
-                    : "text-emerald-700 dark:text-emerald-400"
-                }`}
-              />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{untaggedTotal}</p>
-              <p className="text-sm text-muted-foreground">Untagged</p>
-            </div>
-          </div>
-        </Card>
+        <StatCard
+          icon={Tag}
+          iconWrapClass={
+            untaggedTotal > 0 ? "bg-amber-100 dark:bg-amber-900" : "bg-emerald-100 dark:bg-emerald-900"
+          }
+          iconClass={
+            untaggedTotal > 0
+              ? "text-amber-700 dark:text-amber-400"
+              : "text-emerald-700 dark:text-emerald-400"
+          }
+          value={untaggedTotal}
+          label="Untagged"
+          onClick={() => setStatDetail("untagged")}
+          disabled={untaggedTotal === 0}
+        />
       </div>
 
       {/* Search and View Toggle */}
@@ -1096,6 +1294,27 @@ export function ZoomDashboard() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Stat detail dialog — lists the rows behind whichever stat tile
+          was clicked. A single dialog is reused for all five stats; the
+          content switches on `statDetail`. */}
+      <Dialog open={statDetail !== null} onOpenChange={(open) => !open && setStatDetail(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{statDetail ? statDetailConfig[statDetail].title : ""}</DialogTitle>
+            <DialogDescription>
+              {statDetail ? statDetailConfig[statDetail].description : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="-mx-1 max-h-[60vh] space-y-2 overflow-y-auto px-1">
+            {statDetail === "today" && renderMeetingList(todayMeetings)}
+            {statDetail === "week" && renderMeetingList(thisWeekMeetings)}
+            {statDetail === "untagged" && renderMeetingList(untaggedMeetings)}
+            {statDetail === "team" && renderTeamList()}
+            {statDetail === "recordings" && renderRecordingsList()}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Tag dialog -- mounted once at the page level so opening/closing
           doesn't unmount the meeting list underneath. We pass tagCounts

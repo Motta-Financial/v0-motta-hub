@@ -70,3 +70,77 @@ export async function GET(
     req,
   )
 }
+
+// DELETE /api/alfred/conversations/[id]
+//
+// Permanently deletes one conversation and its messages. Identity is
+// verified the same way as GET, and ownership is enforced by an explicit
+// `end_user_team_member_id` filter — a user can never delete another
+// member's thread. Messages are removed first (we don't rely on a DB
+// cascade), then the conversation row.
+export async function DELETE(
+  req: NextRequest,
+  ctx: { params: Promise<{ id: string }> },
+) {
+  const { id } = await ctx.params
+
+  const currentUser = await resolveAlfredUser(req)
+  if (!currentUser) {
+    return applyAlfredCors(
+      NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
+      req,
+    )
+  }
+
+  const supabase = createAdminClient()
+
+  // Verify ownership before deleting anything. A wrong owner / missing row
+  // surfaces as 404 rather than silently succeeding.
+  const { data: convo, error: convoErr } = await supabase
+    .from("alfred_conversations")
+    .select("id")
+    .eq("id", id)
+    .eq("end_user_team_member_id", currentUser.teamMemberId)
+    .maybeSingle()
+
+  if (convoErr) {
+    return applyAlfredCors(
+      NextResponse.json({ error: convoErr.message }, { status: 500 }),
+      req,
+    )
+  }
+  if (!convo) {
+    return applyAlfredCors(
+      NextResponse.json({ error: "Not found" }, { status: 404 }),
+      req,
+    )
+  }
+
+  // Delete messages first, then the conversation row.
+  const { error: msgErr } = await supabase
+    .from("alfred_messages")
+    .delete()
+    .eq("conversation_id", id)
+
+  if (msgErr) {
+    return applyAlfredCors(
+      NextResponse.json({ error: msgErr.message }, { status: 500 }),
+      req,
+    )
+  }
+
+  const { error: delErr } = await supabase
+    .from("alfred_conversations")
+    .delete()
+    .eq("id", id)
+    .eq("end_user_team_member_id", currentUser.teamMemberId)
+
+  if (delErr) {
+    return applyAlfredCors(
+      NextResponse.json({ error: delErr.message }, { status: 500 }),
+      req,
+    )
+  }
+
+  return applyAlfredCors(NextResponse.json({ ok: true }), req)
+}
