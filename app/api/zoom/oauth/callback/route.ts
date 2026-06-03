@@ -32,14 +32,19 @@ export async function GET(request: Request) {
   const state = searchParams.get("state")
   const oauthError = searchParams.get("error")
 
-  // Resolve the redirect base URL with two safeguards:
-  //   1. NEXT_PUBLIC_APP_URL in this project is set to "motta.cpa"
-  //      WITHOUT a scheme, which makes NextResponse.redirect() throw
-  //      `ERR_INVALID_URL` because it requires absolute URLs. Prepend
-  //      https:// when the env var is missing one.
-  //   2. Strip any trailing slash so the `${baseUrl}/zoom` template
-  //      can't produce `https://motta.cpa//zoom`.
-  const rawBase = process.env.NEXT_PUBLIC_APP_URL?.trim() || origin
+  // Resolve the redirect base URL for the post-OAuth landing page.
+  //   1. Prefer APP_BASE_URL (hub.motta.cpa). NEXT_PUBLIC_APP_URL in this
+  //      project points at the MARKETING site (motta.cpa), which is a
+  //      separate Vercel project with no /meetings/zoom page — landing a
+  //      freshly-connected user there is the bug this route kept hitting.
+  //      Mirror the ProConnect callback, which already prefers APP_BASE_URL.
+  //   2. Prepend https:// when a value is missing its scheme, otherwise
+  //      NextResponse.redirect() throws ERR_INVALID_URL (it requires
+  //      absolute URLs).
+  //   3. Strip any trailing slash so the `${baseUrl}/meetings/zoom`
+  //      template can't produce a double slash.
+  const rawBase =
+    process.env.APP_BASE_URL?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim() || origin
   const withScheme = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`
   const baseUrl = withScheme.replace(/\/+$/, "")
 

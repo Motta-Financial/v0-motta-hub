@@ -23,7 +23,7 @@
 
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
-import { findOrCreateClient } from "@/lib/karbon/client-sync"
+import { pushHubContactToKarbon, pushHubOrganizationToKarbon } from "@/lib/karbon/client-sync"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
 import { buildProspectEmailHtml, sendEmail } from "@/lib/email"
@@ -137,6 +137,29 @@ interface CreateProspectBody {
 
 function isUuid(s: string | undefined | null): s is string {
   return !!s && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+}
+
+/**
+ * Map a `findOrCreateHubContact` resolution method to a value the
+ * `prospect_submissions.link_method` CHECK constraint accepts. The
+ * constraint only allows: auto_email | auto_business_name | auto_name |
+ * auto_karbon_match | auto_karbon_created | manual (or NULL). Writing
+ * the raw hub method (e.g. "auto_hub_created") silently fails the
+ * link-back UPDATE and leaves contact_id / organization_id null.
+ */
+function mapHubMethodToLinkMethod(method: string | null | undefined): string | null {
+  switch (method) {
+    case "supabase_email":
+      return "auto_email"
+    case "supabase_business_name":
+    case "created_organization":
+      return "auto_business_name"
+    case "supabase_name_phone":
+    case "created_contact":
+      return "auto_name"
+    default:
+      return null
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -299,11 +322,12 @@ export async function POST(req: NextRequest) {
     // could leave a prospect un-linked. Hub-first guarantees we
     // always have a Hub contact id to redirect the teammate to.
     //
-    // Karbon push is now governed by `pushToKarbon`. When true we
-    // still call findOrCreateClient (which mirrors back into the
-    // Hub) so the Karbon-mirrored fields like karbon_contact_key
-    // get populated. When false we skip the push entirely — the
-    // teammate can trigger it later from the detail page.
+    // Karbon push is governed by `pushToKarbon`. When true we push the
+    // freshly-resolved Hub contact/org INTO Karbon via
+    // pushHubContact/OrganizationToKarbon, which backfills
+    // karbon_contact_key / karbon_organization_key on the Hub record.
+    // When false we skip the push entirely — the teammate can trigger
+    // it later from the detail page.
     let finalContactId: string | null = null
     let finalOrganizationId: string | null = null
     let finalLinkMethod: string | null = null
@@ -323,55 +347,76 @@ export async function POST(req: NextRequest) {
       )
       finalContactId = hub.contact_id
       finalOrganizationId = hub.organization_id
-      finalLinkMethod = hub.created ? "auto_hub_created" : `auto_hub_${hub.method}`
+      // Map to a CHECK-constraint-valid link_method. Writing the raw
+      // hub method (e.g. "auto_hub_created") silently fails the
+      // link-back UPDATE below and leaves contact_id null.
+      finalLinkMethod = mapHubMethodToLinkMethod(hub.method)
     } catch (err) {
       console.error("[v0] POST /api/prospects hub create failed:", err)
     }
 
-    if (pushToKarbon) {
+    // Karbon push — Hub-FIRST. The Hub contact/org is the source of
+    // truth; we push it INTO Karbon and backfill the Karbon key.
+    //
+    // This deliberately does NOT route through `findOrCreateClient`.
+    // Because `findOrCreateHubContact` (above) just created the Hub
+    // contact stamped with the prospect's email, `findOrCreateClient`'s
+    // Step-1 Supabase-email search would re-match that brand-new
+    // keyless Hub row and return `supabase_match` with `karbon_key:
+    // null` — never actually creating anything in Karbon, yet the route
+    // would mark the push "success". `pushHubContact/OrganizationToKarbon`
+    // operate on the Hub record directly and create in Karbon when no
+    // key exists (the same proven pattern the Calendly webhook uses).
+    if (pushToKarbon && (finalContactId || finalOrganizationId)) {
       try {
-        const linkResult = await findOrCreateClient(
-          {
-            email: body.submitter_email ?? undefined,
-            fullName: fullName ?? undefined,
-            businessName: body.business_name ?? undefined,
-            phone: body.submitter_phone ?? undefined,
-          },
-          { autoCreate: true, source: "Motta Hub Prospect Form" },
-        )
-        // Karbon's findOrCreateClient writes back to contacts/orgs
-        // already; prefer its IDs since they carry the Karbon keys.
-        if (linkResult.contact_id) finalContactId = linkResult.contact_id
-        if (linkResult.organization_id) finalOrganizationId = linkResult.organization_id
-        if (linkResult.karbon_key) karbonKey = linkResult.karbon_key
+        if (finalContactId) {
+          const res = await pushHubContactToKarbon(finalContactId, {
+            source: "Motta Hub Prospect Form",
+          })
+          karbonKey = res.karbonKey
+        } else if (finalOrganizationId) {
+          const res = await pushHubOrganizationToKarbon(finalOrganizationId, {
+            source: "Motta Hub Prospect Form",
+          })
+          karbonKey = res.karbonKey
+        }
 
-        finalLinkMethod =
-          linkResult.method === "karbon_created"
-            ? "auto_karbon_created"
-            : linkResult.method === "karbon_match"
-              ? "auto_karbon_match"
-              : finalLinkMethod ?? "auto_email"
-
+        // Success is gated on an ACTUAL Karbon key — not merely the
+        // presence of a Hub contact id (the old false-positive bug).
         await supabase
           .from("prospect_submissions")
           .update({
-            karbon_push_status: linkResult.contact_id || linkResult.organization_id
-              ? "success"
-              : "failed",
+            karbon_push_status: karbonKey ? "success" : "failed",
+            karbon_push_error: karbonKey
+              ? null
+              : "Karbon create/link returned no key",
             karbon_pushed_at: new Date().toISOString(),
           })
           .eq("id", inserted.id)
-      } catch (err) {
+      } catch (err: any) {
         console.error("[v0] POST /api/prospects Karbon push failed:", err)
         await supabase
           .from("prospect_submissions")
-          .update({ karbon_push_status: "failed" })
+          .update({
+            karbon_push_status: "failed",
+            karbon_push_error: String(err?.message ?? err),
+          })
           .eq("id", inserted.id)
       }
+    } else if (pushToKarbon) {
+      // Intended to push but the Hub record never resolved — record the
+      // failure instead of leaving the row stuck on "pending".
+      await supabase
+        .from("prospect_submissions")
+        .update({
+          karbon_push_status: "failed",
+          karbon_push_error: "No Hub contact/organization to push to Karbon",
+        })
+        .eq("id", inserted.id)
     }
 
     if (finalContactId || finalOrganizationId) {
-      await supabase
+      const { error: linkErr } = await supabase
         .from("prospect_submissions")
         .update({
           contact_id: finalContactId,
@@ -380,6 +425,9 @@ export async function POST(req: NextRequest) {
           linked_at: new Date().toISOString(),
         })
         .eq("id", inserted.id)
+      if (linkErr) {
+        console.error("[v0] POST /api/prospects link-back update failed:", linkErr)
+      }
     }
 
     // ── 3a-2. Open the Deal ────────────────────────────────────────

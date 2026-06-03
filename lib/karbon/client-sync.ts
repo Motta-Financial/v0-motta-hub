@@ -179,6 +179,66 @@ export async function searchKarbonOrganizations(name: string): Promise<KarbonSea
 }
 
 /**
+ * Build a Karbon `POST /v3/Contacts` (person) request body.
+ *
+ * IMPORTANT: Karbon's Contact model has NO flat `EmailAddress` /
+ * `PhoneNumber` / `Source` fields. Contact details must be nested in a
+ * `BusinessCards[]` array — `EmailAddresses` is a string[] and
+ * `PhoneNumbers` is an object[]. Sending the flat shape returns
+ * 400 "Invalid Model — The contact field is required" and silently
+ * fails contact creation (the original prospect-form bug).
+ */
+function buildKarbonContactBody(data: {
+  firstName: string
+  lastName: string
+  email?: string | null
+  phone?: string | null
+}) {
+  return {
+    FirstName: data.firstName,
+    LastName: data.lastName,
+    ContactType: "Client",
+    RestrictionLevel: "Public",
+    BusinessCards: [
+      {
+        IsPrimaryCard: true,
+        EmailAddresses: data.email ? [data.email] : [],
+        PhoneNumbers: data.phone
+          ? [{ Number: data.phone, CountryCode: "US", Label: "Work" }]
+          : [],
+      },
+    ],
+  }
+}
+
+/**
+ * Build a Karbon `POST /v3/Organizations` request body.
+ *
+ * Same nesting rule as contacts: organizations use `FullName` (not
+ * `Name`) and nest email/phone inside `BusinessCards[]`.
+ */
+function buildKarbonOrganizationBody(data: {
+  name: string
+  email?: string | null
+  phone?: string | null
+}) {
+  return {
+    FullName: data.name,
+    ContactType: "Client",
+    RestrictionLevel: "Public",
+    BusinessCards: [
+      {
+        IsPrimaryCard: true,
+        EmailAddresses: data.email ? [data.email] : [],
+        PhoneNumbers: data.phone
+          ? [{ Number: data.phone, CountryCode: "US", Label: "Work" }]
+          : [],
+      },
+    ],
+  }
+}
+
+/**
  * Create a new contact in Karbon and sync to Supabase
  */
 export async function createKarbonContact(data: {
@@ -193,14 +253,12 @@ export async function createKarbonContact(data: {
     return { success: false, error: "Karbon credentials not configured" }
   }
 
-  const body = {
-    FirstName: data.firstName,
-    LastName: data.lastName,
-    EmailAddress: data.email || null,
-    PhoneNumber: data.phone || null,
-    ContactType: "Client",
-    Source: data.source || "Jotform Intake",
-  }
+  const body = buildKarbonContactBody({
+    firstName: data.firstName,
+    lastName: data.lastName,
+    email: data.email,
+    phone: data.phone,
+  })
 
   const { data: result, error } = await karbonFetch<any>(
     "/Contacts",
@@ -262,11 +320,11 @@ export async function createKarbonOrganization(data: {
     return { success: false, error: "Karbon credentials not configured" }
   }
 
-  const body = {
-    Name: data.name,
-    EmailAddress: data.email || null,
-    PhoneNumber: data.phone || null,
-  }
+  const body = buildKarbonOrganizationBody({
+    name: data.name,
+    email: data.email,
+    phone: data.phone,
+  })
 
   const { data: result, error } = await karbonFetch<any>(
     "/Organizations",
@@ -359,14 +417,12 @@ export async function pushHubContactToKarbon(
 
   const firstName = contact.first_name || "Unknown"
   const lastName = contact.last_name || ""
-  const body = {
-    FirstName: firstName,
-    LastName: lastName,
-    EmailAddress: contact.primary_email || null,
-    PhoneNumber: contact.phone_primary || null,
-    ContactType: "Client",
-    Source: source,
-  }
+  const body = buildKarbonContactBody({
+    firstName,
+    lastName,
+    email: contact.primary_email,
+    phone: contact.phone_primary,
+  })
 
   const { data: karbonResult, error: karbonErr } = await karbonFetch<any>(
     "/Contacts",
@@ -395,6 +451,90 @@ export async function pushHubContactToKarbon(
   if (updateErr) {
     console.error("[pushHubContactToKarbon] Failed to update Hub contact with Karbon key:", updateErr)
     // Karbon contact exists but Hub update failed — return the key anyway
+    return { karbonKey, alreadyLinked: false, error: `Karbon created but Hub update failed: ${updateErr.message}` }
+  }
+
+  return { karbonKey, alreadyLinked: false }
+}
+
+/**
+ * Push an existing Hub organization to Karbon.
+ *
+ * Organization counterpart to `pushHubContactToKarbon`. Used when the
+ * Hub has auto-created an organization (e.g. a business prospect) that
+ * doesn't yet exist in Karbon. This:
+ *   1. Reads the organization from Supabase
+ *   2. Creates the organization in Karbon
+ *   3. Updates the Supabase row with the new karbon_organization_key
+ *
+ * Idempotent: skips if the organization already has a Karbon key.
+ *
+ * @returns The Karbon organization key (existing or new), or null on failure
+ */
+export async function pushHubOrganizationToKarbon(
+  organizationId: string,
+  options: { source?: string } = {},
+): Promise<{ karbonKey: string | null; alreadyLinked: boolean; error?: string }> {
+  const { source = "Motta Hub Prospect Form" } = options
+  const supabase = getServiceClient()
+
+  // 1. Fetch the Hub organization
+  const { data: org, error: fetchErr } = await supabase
+    .from("organizations")
+    .select("id, name, primary_email, phone_primary, karbon_organization_key")
+    .eq("id", organizationId)
+    .single()
+
+  if (fetchErr || !org) {
+    console.error("[pushHubOrganizationToKarbon] Organization not found:", organizationId, fetchErr)
+    return { karbonKey: null, alreadyLinked: false, error: fetchErr?.message || "Organization not found" }
+  }
+
+  // 2. Already linked? Return early
+  if (org.karbon_organization_key) {
+    console.log(`[pushHubOrganizationToKarbon] Org ${organizationId} already has Karbon key ${org.karbon_organization_key}`)
+    return { karbonKey: org.karbon_organization_key, alreadyLinked: true }
+  }
+
+  // 3. Create in Karbon
+  const credentials = getKarbonCredentials()
+  if (!credentials) {
+    console.warn("[pushHubOrganizationToKarbon] Karbon credentials not configured")
+    return { karbonKey: null, alreadyLinked: false, error: "Karbon credentials not configured" }
+  }
+
+  const body = buildKarbonOrganizationBody({
+    name: org.name,
+    email: org.primary_email,
+    phone: org.phone_primary,
+  })
+
+  const { data: karbonResult, error: karbonErr } = await karbonFetch<any>(
+    "/Organizations",
+    credentials,
+    { method: "POST", body },
+  )
+
+  if (karbonErr || !karbonResult?.OrganizationKey) {
+    console.error("[pushHubOrganizationToKarbon] Karbon create failed:", karbonErr)
+    return { karbonKey: null, alreadyLinked: false, error: karbonErr || "No OrganizationKey returned" }
+  }
+
+  const karbonKey = karbonResult.OrganizationKey
+  console.log(`[pushHubOrganizationToKarbon] Created Karbon org ${karbonKey} for Hub org ${organizationId}`)
+
+  // 4. Update Hub row with Karbon key
+  const { error: updateErr } = await supabase
+    .from("organizations")
+    .update({
+      karbon_organization_key: karbonKey,
+      karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/organizations/${karbonKey}`,
+      last_synced_at: new Date().toISOString(),
+    })
+    .eq("id", organizationId)
+
+  if (updateErr) {
+    console.error("[pushHubOrganizationToKarbon] Failed to update Hub org with Karbon key:", updateErr)
     return { karbonKey, alreadyLinked: false, error: `Karbon created but Hub update failed: ${updateErr.message}` }
   }
 
