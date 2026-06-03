@@ -2,12 +2,15 @@
 
 import { useState } from "react"
 import Image from "next/image"
+import { usePathname } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { AlfredChat } from "./alfred-chat"
 
 export function AlfredChatTrigger() {
   const [isOpen, setIsOpen] = useState(false)
   const [isMinimized, setIsMinimized] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
+  const pathname = usePathname()
 
   const handleOpen = () => {
     setIsOpen(true)
@@ -17,14 +20,42 @@ export function AlfredChatTrigger() {
   const handleClose = () => {
     setIsOpen(false)
     setIsMinimized(false)
+    setIsExpanded(false)
   }
 
   const handleMinimize = () => {
     setIsMinimized(!isMinimized)
   }
 
+  // Pop the conversation out into a dedicated, resizable browser window
+  // pointed at the standalone /alfred route. We close the inline widget
+  // so the user isn't talking to two ALFRED surfaces at once.
+  const handleOpenInNewWindow = () => {
+    window.open(
+      "/alfred",
+      "alfred-chat",
+      "width=480,height=720,menubar=no,toolbar=no,location=no,status=no",
+    )
+    handleClose()
+  }
+
+  // The standalone /alfred page already renders a full-page chat, so the
+  // global floating launcher would be redundant (and would overlap the
+  // pop-out window's own UI). Hide it there.
+  if (pathname === "/alfred") return null
+
   if (isOpen) {
-    return <AlfredChat isOpen={isOpen} onClose={handleClose} onMinimize={handleMinimize} isMinimized={isMinimized} />
+    return (
+      <AlfredChat
+        isOpen={isOpen}
+        onClose={handleClose}
+        onMinimize={handleMinimize}
+        isMinimized={isMinimized}
+        isExpanded={isExpanded}
+        onToggleExpand={() => setIsExpanded((v) => !v)}
+        onOpenInNewWindow={handleOpenInNewWindow}
+      />
+    )
   }
 
   return (
