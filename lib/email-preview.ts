@@ -72,12 +72,14 @@ export function buildAnnouncementHtml(opts: {
   topic: string
   announcement: string
   actionItems?: string | null
+  attachments?: Array<{ url: string; name: string; size_bytes?: number }> | null
   fromName?: string | null
 }) {
   const topicHtml = formatNotesForEmailPreview(opts.topic) || "Firm Announcement"
   const announcementHtml = formatNotesForEmailPreview(opts.announcement)
   const actionItemsHtml = formatNotesForEmailPreview(opts.actionItems)
   const authoredBy = opts.fromName ? opts.fromName : "ALFRED Ai"
+  const attachments = opts.attachments || []
 
   const sections: string[] = []
 
@@ -103,9 +105,31 @@ export function buildAnnouncementHtml(opts: {
 
   if (actionItemsHtml) {
     sections.push(`
-      <div style="margin-bottom:8px;">
+      <div style="margin-bottom:24px;">
         <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${PREVIEW_BRAND.textMuted};margin-bottom:8px;">Action Items</div>
         <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:16px 18px;font-size:15px;color:#92400e;line-height:1.6;">${actionItemsHtml}</div>
+      </div>
+    `)
+  }
+
+  // ATTACHMENTS (optional)
+  if (attachments.length > 0) {
+    const formatBytes = (b?: number) => {
+      if (!b) return ""
+      if (b < 1024) return ` (${b} B)`
+      if (b < 1024 * 1024) return ` (${(b / 1024).toFixed(1)} KB)`
+      return ` (${(b / (1024 * 1024)).toFixed(1)} MB)`
+    }
+    const attachmentLinks = attachments
+      .map(
+        (a) =>
+          `<a href="${a.url}" style="color:#2563EB;text-decoration:none;display:block;margin-bottom:6px;">📎 ${a.name}${formatBytes(a.size_bytes)}</a>`,
+      )
+      .join("")
+    sections.push(`
+      <div style="margin-bottom:8px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${PREVIEW_BRAND.textMuted};margin-bottom:8px;">Attachments</div>
+        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:14px 16px;font-size:14px;line-height:1.7;">${attachmentLinks}</div>
       </div>
     `)
   }

@@ -31,6 +31,7 @@ export async function POST(request: Request) {
       topic,
       announcement,
       actionItems,
+      attachments,
       createdById,
       createdByName,
       force = false,
@@ -60,6 +61,7 @@ export async function POST(request: Request) {
         topic: topic.trim(),
         announcement: announcement.trim(),
         action_items: actionItems?.trim() || null,
+        attachments: attachments || [],
         created_by_id: createdById || null,
         created_by_name: createdByName || null,
         email_attempted_count: eligible.length,
@@ -74,6 +76,7 @@ export async function POST(request: Request) {
       topic: topic.trim(),
       announcement: announcement.trim(),
       actionItems: actionItems?.trim() || null,
+      attachments: attachments || [],
       fromName: createdByName || null,
     })
 

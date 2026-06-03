@@ -84,7 +84,7 @@ export async function GET(request: Request) {
         .limit(40),
       supabase
         .from("firm_announcements")
-        .select("id, topic, announcement, action_items, created_by_name, created_at, email_sent_count")
+        .select("id, topic, announcement, action_items, attachments, created_by_name, created_at, email_sent_count")
         .gte("created_at", lookback14d.toISOString())
         .order("created_at", { ascending: false })
         .limit(40),
@@ -169,6 +169,7 @@ export async function GET(request: Request) {
         topic: string
         announcement: string
         action_items: string | null
+        attachments: Array<{ url: string; name: string; size_bytes?: number }> | null
         created_by_name: string | null
         created_at: string
       }>) {
@@ -185,6 +186,7 @@ export async function GET(request: Request) {
           metadata: {
             announcement: a.announcement,
             action_items: a.action_items,
+            attachments: a.attachments || [],
             posted_by: a.created_by_name,
           },
         })
