@@ -1907,6 +1907,71 @@ export function buildBroadcastHtml(opts: {
 }
 
 /**
+ * Firm-wide announcement ("BREAKING NEWS") email, authored by ALFRED Ai.
+ *
+ * Three clearly-separated sections with real visual breaks:
+ *   TOPIC        — the headline / subject of the announcement
+ *   ANNOUNCEMENT — the body (multi-paragraph aware via formatNotesForEmail)
+ *   ACTION ITEMS — optional follow-ups (also multi-paragraph aware)
+ *
+ * The email "from" identity is controlled by FROM_EMAIL ("ALFRED Ai <…>"),
+ * so the message always appears to come from ALFRED. The subject line is
+ * built by the caller as "BREAKING NEWS: <Topic>".
+ */
+export function buildAnnouncementHtml(opts: {
+  topic: string
+  announcement: string
+  actionItems?: string | null
+  fromName?: string | null
+}) {
+  const topicHtml = formatNotesForEmail(opts.topic) || "Firm Announcement"
+  const announcementHtml = formatNotesForEmail(opts.announcement)
+  const actionItemsHtml = formatNotesForEmail(opts.actionItems)
+  const authoredBy = opts.fromName ? opts.fromName : "ALFRED Ai"
+
+  const sections: string[] = []
+
+  // BREAKING NEWS banner
+  sections.push(`
+    <div style="display:inline-block;background:${BRAND.accent};color:#fff;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;padding:6px 14px;border-radius:6px;margin-bottom:20px;">
+      Breaking News
+    </div>
+  `)
+
+  // TOPIC
+  sections.push(`
+    <div style="margin-bottom:24px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${BRAND.textMuted};margin-bottom:6px;">Topic</div>
+      <div style="font-size:20px;font-weight:700;color:${BRAND.textPrimary};line-height:1.35;">${topicHtml}</div>
+    </div>
+  `)
+
+  // ANNOUNCEMENT
+  sections.push(`
+    <div style="margin-bottom:24px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${BRAND.textMuted};margin-bottom:8px;">Announcement</div>
+      <div style="background:#f9fafb;border:1px solid ${BRAND.border};border-radius:8px;padding:16px 18px;font-size:15px;color:${BRAND.textPrimary};line-height:1.6;">${announcementHtml || "<em style='color:#999;'>No details provided.</em>"}</div>
+    </div>
+  `)
+
+  // ACTION ITEMS (optional)
+  if (actionItemsHtml) {
+    sections.push(`
+      <div style="margin-bottom:8px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${BRAND.textMuted};margin-bottom:8px;">Action Items</div>
+        <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:16px 18px;font-size:15px;color:#92400e;line-height:1.6;">${actionItemsHtml}</div>
+      </div>
+    `)
+  }
+
+  return baseEmailWrapper(
+    `BREAKING NEWS`,
+    sections.join(""),
+    `Firm announcement delivered by ${authoredBy} via MOTTA HUB.`,
+  )
+}
+
+/**
  * Password-reset / invite email. Used by both the self-service "Forgot
  * password?" flow on the login screen and the admin "Send Password Reset"
  * action in User Auth Manager.

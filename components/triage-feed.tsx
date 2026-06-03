@@ -16,6 +16,7 @@ import {
   Inbox,
   Loader2,
   Mail,
+  Megaphone,
   MessageSquare,
   Receipt,
   Send,
@@ -52,6 +53,7 @@ const COMMON_EMOJIS = ["👍", "❤️", "😊", "🎉", "🔥", "👏", "💯",
 
 type TriageSourceType =
   | "team_message"
+  | "broadcast"
   | "debrief"
   | "calendly_meeting"
   | "daily_briefing"
@@ -87,6 +89,7 @@ const SOURCE_META: Record<
   { label: string; icon: React.ComponentType<{ className?: string }>; accent: string }
 > = {
   team_message: { label: "Messages", icon: MessageSquare, accent: "text-blue-600" },
+  broadcast: { label: "Announcements", icon: Megaphone, accent: "text-[#C97B3F]" },
   debrief: { label: "Debriefs", icon: FileText, accent: "text-emerald-600" },
   calendly_meeting: { label: "Meetings", icon: Calendar, accent: "text-purple-600" },
   daily_briefing: { label: "Briefings", icon: Sparkles, accent: "text-amber-600" },
@@ -95,6 +98,7 @@ const SOURCE_META: Record<
 
 const FILTERS = [
   { value: "all", label: "All" },
+  { value: "broadcast", label: "Announcements" },
   { value: "team_message", label: "Messages" },
   { value: "debrief", label: "Debriefs" },
   { value: "calendly_meeting", label: "Meetings" },
@@ -575,6 +579,8 @@ function SourceBody({ item }: { item: TriageItem }) {
   switch (item.source_type) {
     case "team_message":
       return <TeamMessageBody item={item} />
+    case "broadcast":
+      return <BroadcastBody item={item} />
     case "debrief":
       return <DebriefBody item={item} />
     case "calendly_meeting":
@@ -616,6 +622,28 @@ function TeamMessageBody({ item }: { item: TriageItem }) {
           {commentCount > 0 ? <span>{commentCount} comments</span> : null}
         </div>
       )}
+    </>
+  )
+}
+
+function BroadcastBody({ item }: { item: TriageItem }) {
+  const postedBy = item.metadata?.posted_by as string | undefined
+  const actionItems = item.metadata?.action_items as string | undefined
+  return (
+    <>
+      <p className="mt-0.5 text-sm font-semibold text-gray-900 flex items-center gap-1.5">
+        <Megaphone className="h-3.5 w-3.5 text-[#C97B3F]" />
+        {item.title}
+      </p>
+      <p className="text-xs text-gray-500">
+        Firm announcement{postedBy ? ` • posted by ${postedBy}` : ""}
+      </p>
+      <p className="mt-1 text-sm text-gray-700 whitespace-pre-wrap line-clamp-3">{item.summary}</p>
+      {actionItems ? (
+        <Badge variant="outline" className="mt-1.5 text-[10px] text-amber-700 border-amber-200">
+          Action items included
+        </Badge>
+      ) : null}
     </>
   )
 }
@@ -722,6 +750,8 @@ function ExpandedDetail({ item }: { item: TriageItem }) {
   switch (item.source_type) {
     case "team_message":
       return <TeamMessageExpanded item={item} />
+    case "broadcast":
+      return <BroadcastExpanded item={item} />
     case "debrief":
       return <DebriefExpanded item={item} />
     case "calendly_meeting":
@@ -805,6 +835,37 @@ function TeamMessageExpanded({ item }: { item: TriageItem }) {
             ))}
           </ul>
         </div>
+      ) : null}
+    </div>
+  )
+}
+
+function BroadcastExpanded({ item }: { item: TriageItem }) {
+  const announcement = (item.metadata?.announcement as string) || item.summary || ""
+  const actionItems = item.metadata?.action_items as string | undefined
+  const postedBy = item.metadata?.posted_by as string | undefined
+  return (
+    <div className="space-y-3 text-sm">
+      <div>
+        <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Topic</div>
+        <p className="font-semibold text-gray-900">{item.title}</p>
+      </div>
+      <div>
+        <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Announcement</div>
+        <p className="whitespace-pre-wrap text-gray-800 rounded-md border border-gray-200 bg-white p-3">
+          {announcement}
+        </p>
+      </div>
+      {actionItems ? (
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Action Items</div>
+          <p className="whitespace-pre-wrap text-amber-900 rounded-md border border-amber-200 bg-amber-50 p-3">
+            {actionItems}
+          </p>
+        </div>
+      ) : null}
+      {postedBy ? (
+        <p className="text-xs text-gray-500">Posted by {postedBy}</p>
       ) : null}
     </div>
   )

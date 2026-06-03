@@ -43,6 +43,7 @@ export async function GET(request: Request) {
       debriefsRes,
       calendlyRes,
       proposalsRes,
+      announcementsRes,
       dismissalsRes,
     ] = await Promise.allSettled([
       supabase
@@ -80,6 +81,12 @@ export async function GET(request: Request) {
         )
         .gte("accepted_at", lookback14d.toISOString())
         .order("accepted_at", { ascending: false })
+        .limit(40),
+      supabase
+        .from("firm_announcements")
+        .select("id, topic, announcement, action_items, created_by_name, created_at, email_sent_count")
+        .gte("created_at", lookback14d.toISOString())
+        .order("created_at", { ascending: false })
         .limit(40),
       teamMemberId
         ? supabase
@@ -148,6 +155,37 @@ export async function GET(request: Request) {
                 created_at: c.created_at,
               })),
             updated_at: m.updated_at,
+          },
+        })
+      }
+    }
+
+    // ── Firm Announcements (Broadcast) ───────────────────────────────────
+    // Firm-wide announcements composed in /admin/broadcast. Each row is
+    // visible to everyone until they personally clear it.
+    if (announcementsRes.status === "fulfilled" && !announcementsRes.value.error) {
+      for (const a of (announcementsRes.value.data || []) as Array<{
+        id: string
+        topic: string
+        announcement: string
+        action_items: string | null
+        created_by_name: string | null
+        created_at: string
+      }>) {
+        if (dismissed.has(`broadcast:${a.id}`)) continue
+        items.push({
+          id: a.id,
+          source_type: "broadcast",
+          source_id: a.id,
+          timestamp: a.created_at,
+          actor_name: a.created_by_name || "ALFRED Ai",
+          actor_initials: "AI",
+          title: a.topic,
+          summary: truncate(a.announcement, 240),
+          metadata: {
+            announcement: a.announcement,
+            action_items: a.action_items,
+            posted_by: a.created_by_name,
           },
         })
       }
@@ -500,6 +538,7 @@ export async function GET(request: Request) {
 
 export type TriageSourceType =
   | "team_message"
+  | "broadcast"
   | "debrief"
   | "calendly_meeting"
   | "daily_briefing"
