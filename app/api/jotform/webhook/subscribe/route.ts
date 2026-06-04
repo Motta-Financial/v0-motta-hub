@@ -13,7 +13,7 @@
  */
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
-import { addWebhook, listWebhooks } from "@/lib/jotform/client"
+import { addWebhook, listWebhooks, deleteWebhook } from "@/lib/jotform/client"
 
 const DEFAULT_FORM_ID = "242306172162144" // Motta | Intake Form
 
@@ -26,17 +26,25 @@ function getServiceClient() {
 }
 
 function getAppBaseUrl(req: Request): string {
-  const explicit =
-    process.env.NEXT_PUBLIC_APP_URL ??
-    process.env.APP_BASE_URL ??
-    process.env.AUTH0_BASE_URL
+  // The webhook is a SERVER-TO-SERVER callback that must reach THIS Hub
+  // app's API route. It must therefore resolve to the Hub's own origin
+  // (e.g. https://hub.motta.cpa), NOT the public marketing site.
+  //
+  // `NEXT_PUBLIC_APP_URL` is deliberately excluded: in this project it is
+  // set to the marketing domain (https://motta.cpa), which is a SEPARATE
+  // Vercel deployment that does not serve /api/jotform/webhook and returns
+  // 404. Registering the webhook there silently drops every submission.
+  // `APP_BASE_URL` / `AUTH0_BASE_URL` are the Hub's own self-URL.
+  const explicit = process.env.APP_BASE_URL ?? process.env.AUTH0_BASE_URL
   if (explicit) {
-    // Some envs store bare hostnames like "motta.cpa" without a scheme.
+    // Some envs store bare hostnames like "hub.motta.cpa" without a scheme.
     // Jotform requires fully-qualified https://… URLs, so normalize.
     const trimmed = explicit.replace(/\/+$/, "")
     if (/^https?:\/\//i.test(trimmed)) return trimmed
     return `https://${trimmed}`
   }
+  // Last resort: the request's own host (the Hub deployment serving this
+  // route). Correct in prod; resolves to localhost in dev.
   const url = new URL(req.url)
   return `${url.protocol}//${url.host}`
 }
@@ -95,6 +103,28 @@ export async function POST(req: Request) {
     added = true
   }
 
+  // 3b. Prune stale copies of OUR OWN webhook route registered on a
+  //     different origin (e.g. a previous registration that pointed at
+  //     the marketing domain https://motta.cpa, which 404s and silently
+  //     drops submissions). We only remove URLs whose path is exactly
+  //     /api/jotform/webhook on a host other than the current Hub origin
+  //     — genuine third-party webhooks (n8n, Zapier, etc.) on other
+  //     paths are left untouched.
+  const removedStale: string[] = []
+  for (const [hookId, hookUrl] of Object.entries(existing)) {
+    try {
+      const parsed = new URL(hookUrl)
+      const isOurRoute = parsed.pathname === "/api/jotform/webhook"
+      const isWrongOrigin = `${parsed.protocol}//${parsed.host}` !== baseUrl
+      if (isOurRoute && isWrongOrigin) {
+        await deleteWebhook(jotformFormId, hookId)
+        removedStale.push(hookUrl)
+      }
+    } catch {
+      // Non-URL value — skip.
+    }
+  }
+
   // 4. Update the form row with the latest webhook URL.
   await supabase
     .from("jotform_forms")
@@ -114,6 +144,7 @@ export async function POST(req: Request) {
     callback_url: callback,
     added,
     already_registered: alreadyRegistered,
+    removed_stale: removedStale,
     webhooks: Object.values(refreshed),
   })
 }
