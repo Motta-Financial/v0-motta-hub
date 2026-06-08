@@ -568,6 +568,37 @@ export async function POST(req: NextRequest) {
       console.error("[v0] POST /api/prospects enrichment failed:", err)
     }
 
+    // Shared intake-note payload — reused for the contact/org timeline
+    // note (3e) and, after a work item is created, the pinned note on
+    // the work item timeline (3f).
+    const intakeNotePayload = {
+      id: inserted.id,
+      submitter_full_name: fullName,
+      submitter_email: body.submitter_email ?? null,
+      submitter_phone: body.submitter_phone ?? null,
+      submitter_city: body.submitter_city ?? null,
+      submitter_state: body.submitter_state ?? null,
+      submitter_zip: body.submitter_zip ?? null,
+      business_name: body.business_name ?? null,
+      business_state: body.business_state ?? null,
+      business_summary: body.business_summary ?? null,
+      business_revenue_range: body.business_revenue_range ?? null,
+      business_tax_classification: body.business_tax_classification ?? null,
+      business_situation: body.business_situation ?? null,
+      service_focus: body.service_focus ?? null,
+      services_requested: body.services_requested ?? null,
+      entity_types: body.entity_types ?? null,
+      questions_or_concerns: null,
+      additional_notes: body.internal_notes ?? null,
+      website: body.website ?? body.business_website ?? null,
+      linkedin_url: body.linkedin_url ?? body.business_linkedin_url ?? null,
+      twitter_handle: body.twitter_url ?? body.business_twitter_url ?? null,
+      facebook_url: body.facebook_url ?? body.business_facebook_url ?? null,
+      instagram_url: body.instagram_url ?? body.business_instagram_url ?? null,
+      referral: referralInfo,
+      enrichment: enrichmentSummary ? { summary: enrichmentSummary } : null,
+    }
+
     // ── 3e. Karbon timeline note (pinned, best-effort) ─────────────
     // Posts a rich "New prospect" note to the contact/org timeline so
     // the prospect's Karbon profile carries full context immediately.
@@ -578,33 +609,7 @@ export async function POST(req: NextRequest) {
           : "Contact"
         await postIntakeNoteToKarbon(
           { entityType, entityKey: karbonKey },
-          {
-            id: inserted.id,
-            submitter_full_name: fullName,
-            submitter_email: body.submitter_email ?? null,
-            submitter_phone: body.submitter_phone ?? null,
-            submitter_city: body.submitter_city ?? null,
-            submitter_state: body.submitter_state ?? null,
-            submitter_zip: body.submitter_zip ?? null,
-            business_name: body.business_name ?? null,
-            business_state: body.business_state ?? null,
-            business_summary: body.business_summary ?? null,
-            business_revenue_range: body.business_revenue_range ?? null,
-            business_tax_classification: body.business_tax_classification ?? null,
-            business_situation: body.business_situation ?? null,
-            service_focus: body.service_focus ?? null,
-            services_requested: body.services_requested ?? null,
-            entity_types: body.entity_types ?? null,
-            questions_or_concerns: null,
-            additional_notes: body.internal_notes ?? null,
-            website: body.website ?? body.business_website ?? null,
-            linkedin_url: body.linkedin_url ?? body.business_linkedin_url ?? null,
-            twitter_handle: body.twitter_url ?? body.business_twitter_url ?? null,
-            facebook_url: body.facebook_url ?? body.business_facebook_url ?? null,
-            instagram_url: body.instagram_url ?? body.business_instagram_url ?? null,
-            referral: referralInfo,
-            enrichment: enrichmentSummary ? { summary: enrichmentSummary } : null,
-          },
+          intakeNotePayload,
           { pinned: true },
         )
       } catch (err) {
@@ -651,6 +656,23 @@ export async function POST(req: NextRequest) {
               karbon_work_item_url: wi.workItemUrl ?? null,
             })
             .eq("id", inserted.id)
+
+          // Pin the full intake form onto the new work item's timeline so
+          // it sits at the top of the work item the moment it's created.
+          // Separate POST from 3e because the work item didn't exist yet
+          // when the contact/org note was written. Fire-and-forget.
+          try {
+            await postIntakeNoteToKarbon(
+              { entityType: "WorkItem", entityKey: wi.workItemKey },
+              intakeNotePayload,
+              {
+                pinned: true,
+                workItem: { title: wi.title || "Work item", url: wi.workItemUrl ?? "" },
+              },
+            )
+          } catch (err) {
+            console.error("[v0] POST /api/prospects work item note failed:", err)
+          }
         } else {
           console.warn("[v0] POST /api/prospects work item create failed:", wi.error)
         }
