@@ -29,8 +29,12 @@ import { getKarbonCredentials, karbonFetch, type KarbonApiConfig } from "@/lib/k
 // ── Types ────────────────────────────────────────────────────────────
 
 export type IntakeNoteEntity = {
-  /** "Contact" or "Organization" — must match Karbon's entity type. */
-  entityType: "Contact" | "Organization"
+  /**
+   * Karbon entity type the note attaches to. "Contact"/"Organization"
+   * for the prospect's profile timeline; "WorkItem" to pin the intake
+   * summary directly onto a work item's timeline.
+   */
+  entityType: "Contact" | "Organization" | "WorkItem"
   /** Karbon entity key the note should attach to. */
   entityKey: string
 }
@@ -98,6 +102,15 @@ export type IntakeNoteContext = {
    * posted. When the flag is silently accepted the note is pinned.
    */
   pinned?: boolean
+  /**
+   * Extra timelines to attach this SAME note to, in addition to the
+   * primary `entity`. Karbon's Notes API accepts multiple `Timelines`
+   * on a single note, so passing e.g. a WorkItem here lands the intake
+   * summary on the work item AND the contact in one POST. Combined with
+   * `pinned`, this is how the intake form gets pinned onto a freshly
+   * created Karbon work item. Duplicate entity keys are de-duplicated.
+   */
+  additionalTimelines?: IntakeNoteEntity[]
 }
 
 export type PostIntakeNoteResult = {
@@ -346,11 +359,26 @@ export async function postIntakeNoteToKarbon(
 
   const body = buildNoteBody(submission, { ...context, hubUrl })
 
+  // Build the timeline list: the primary entity plus any additional
+  // targets (e.g. a WorkItem). De-dupe on EntityType+EntityKey so we
+  // never send the same timeline twice if a caller passes the primary
+  // entity again in additionalTimelines.
+  const seenTimelines = new Set<string>()
+  const timelines = [entity, ...(context.additionalTimelines ?? [])]
+    .filter((t): t is IntakeNoteEntity => Boolean(t?.entityKey))
+    .filter((t) => {
+      const key = `${t.entityType}:${t.entityKey}`
+      if (seenTimelines.has(key)) return false
+      seenTimelines.add(key)
+      return true
+    })
+    .map((t) => ({ EntityType: t.entityType, EntityKey: t.entityKey }))
+
   const payload: Record<string, unknown> = {
     Subject: subject,
     Body: body,
     AuthorEmailAddress: authorEmail,
-    Timelines: [{ EntityType: entity.entityType, EntityKey: entity.entityKey }],
+    Timelines: timelines,
   }
   if (submission.jotform_created_at) {
     payload.TodoDate = submission.jotform_created_at

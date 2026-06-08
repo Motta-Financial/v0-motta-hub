@@ -271,6 +271,10 @@ export async function POST(
     // the user-visible request over. Karbon's automatic
     // "work item attached" timeline entry already covers the worst
     // case if this POST fails.
+    //
+    // The same note is attached to BOTH the contact's timeline and the
+    // new work item's timeline (additionalTimelines) and pinned, so the
+    // full intake form context is pinned to the top of the work item.
     void postIntakeNoteToKarbon(
       { entityType: "Contact", entityKey: contact.karbon_contact_key },
       row as any,
@@ -280,6 +284,10 @@ export async function POST(
           url: result.workItemUrl ?? "",
         },
         authorEmail: assignee.email,
+        pinned: true,
+        additionalTimelines: [
+          { entityType: "WorkItem", entityKey: result.workItemKey },
+        ],
       },
     ).catch((err) => {
       console.error("[karbon-work-item] cross-link note failed:", err)

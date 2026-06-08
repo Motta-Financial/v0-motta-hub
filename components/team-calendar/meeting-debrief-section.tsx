@@ -15,11 +15,20 @@
  * the post-meeting ALFRED email stay in sync.
  */
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { CheckCircle2, ClipboardList, ExternalLink, Link2, Loader2, Plus } from "lucide-react"
+import { Check, CheckCircle2, ClipboardList, ExternalLink, Link2, Loader2, Plus, Search } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   buildDebriefPrefillPath,
   resolveMeetingType,
@@ -51,7 +60,14 @@ export function MeetingDebriefSection({ event, currentUser }: Props) {
   const [linked, setLinked] = useState<LinkedDebrief | null>(null)
   const [candidates, setCandidates] = useState<LinkedDebrief[]>([])
   const [linking, setLinking] = useState(false)
-  const [selected, setSelected] = useState<string>("")
+
+  // Searchable picker state.
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [debounced, setDebounced] = useState("")
+  const [searchResults, setSearchResults] = useState<LinkedDebrief[]>([])
+  const [searching, setSearching] = useState(false)
+  const reqIdRef = useRef(0)
 
   const queryKey = source === "calendly" ? "calendly_event_id" : "zoom_meeting_id"
 
@@ -74,6 +90,34 @@ export function MeetingDebriefSection({ event, currentUser }: Props) {
   useEffect(() => {
     void load()
   }, [load])
+
+  // Debounce the search input so we don't hit the API on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 200)
+    return () => clearTimeout(t)
+  }, [query])
+
+  // Fetch matching unlinked debriefs while the picker is open and the user
+  // types. An incrementing request id guards against out-of-order responses.
+  useEffect(() => {
+    if (!pickerOpen) return
+    const reqId = ++reqIdRef.current
+    setSearching(true)
+    const params = new URLSearchParams({ [queryKey]: event.id })
+    if (debounced) params.set("search", debounced)
+    fetch(`/api/debriefs/link?${params.toString()}`)
+      .then((r) => r.json())
+      .then((json) => {
+        if (reqIdRef.current !== reqId) return
+        setSearchResults(Array.isArray(json?.candidates) ? json.candidates : [])
+      })
+      .catch(() => {
+        if (reqIdRef.current === reqId) setSearchResults([])
+      })
+      .finally(() => {
+        if (reqIdRef.current === reqId) setSearching(false)
+      })
+  }, [pickerOpen, debounced, event.id, queryKey])
 
   // Build the prefilled /debriefs/new URL from the meeting's known details.
   const prefillPath = (() => {
@@ -100,22 +144,33 @@ export function MeetingDebriefSection({ event, currentUser }: Props) {
     })
   })()
 
-  async function linkExisting() {
-    if (!selected) return
+  async function linkExisting(debriefId: string) {
+    if (!debriefId) return
     setLinking(true)
     try {
       const res = await fetch("/api/debriefs/link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ debrief_id: selected, [queryKey]: event.id }),
+        body: JSON.stringify({ debrief_id: debriefId, [queryKey]: event.id }),
       })
       if (res.ok) {
-        setSelected("")
+        setPickerOpen(false)
+        setQuery("")
         await load()
       }
     } finally {
       setLinking(false)
     }
+  }
+
+  // The list to show in the picker: live search results when the user has
+  // typed, otherwise the same-client auto-candidates from the initial load.
+  const pickerItems = debounced ? searchResults : candidates.length > 0 ? candidates : searchResults
+
+  function formatDebriefLabel(c: LinkedDebrief): string {
+    const date = new Date(c.debrief_date).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    const who = c.contact_full_name || c.organization_name || "Untagged"
+    return `${date} · ${who}`
   }
 
   const typeLabel = meetingTypeLabel(resolveMeetingType(source, event.location_type))
@@ -174,40 +229,70 @@ export function MeetingDebriefSection({ event, currentUser }: Props) {
                 Start debrief
               </Link>
             </Button>
-          </div>
 
-          {candidates.length > 0 && (
-            <div className="space-y-2 border-t pt-3">
-              <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                <Link2 className="h-3.5 w-3.5" />
-                Link an existing debrief
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <Select value={selected} onValueChange={setSelected}>
-                  <SelectTrigger className="h-9 w-full sm:w-[280px]">
-                    <SelectValue placeholder="Select a debrief…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {candidates.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>
-                        {new Date(c.debrief_date).toLocaleDateString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                        })}
-                        {" · "}
-                        {c.contact_full_name || c.organization_name || "Untagged"}
-                        {c.team_member_full_name ? ` · ${c.team_member_full_name}` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button size="sm" variant="secondary" disabled={!selected || linking} onClick={linkExisting} className="gap-2">
+            {/* Always-available searchable picker so ANY submitted debrief can
+                be attached — not just the recent same-client auto-matches. */}
+            <Popover open={pickerOpen} onOpenChange={setPickerOpen} modal>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  role="combobox"
+                  aria-expanded={pickerOpen}
+                  disabled={linking}
+                  className="gap-2 bg-transparent"
+                >
                   {linking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
-                  Link
+                  Link existing debrief
                 </Button>
-              </div>
-            </div>
-          )}
+              </PopoverTrigger>
+              <PopoverContent className="w-[320px] p-0" align="start">
+                <Command shouldFilter={false}>
+                  <CommandInput
+                    value={query}
+                    onValueChange={setQuery}
+                    placeholder="Search debriefs by client or notes…"
+                  />
+                  <CommandList>
+                    {searching ? (
+                      <div className="space-y-2 p-2">
+                        <Skeleton className="h-7 w-full" />
+                        <Skeleton className="h-7 w-full" />
+                        <Skeleton className="h-7 w-full" />
+                      </div>
+                    ) : pickerItems.length === 0 ? (
+                      <CommandEmpty>
+                        {debounced ? "No matching debriefs." : "No unlinked debriefs found. Type to search…"}
+                      </CommandEmpty>
+                    ) : (
+                      <CommandGroup heading={debounced ? "Search results" : "Recent unlinked debriefs"}>
+                        {pickerItems.map((c) => (
+                          <CommandItem
+                            key={c.id}
+                            value={c.id}
+                            onSelect={() => void linkExisting(c.id)}
+                            className="flex items-start gap-2"
+                          >
+                            <Search className="mt-0.5 h-4 w-4 shrink-0 opacity-60" />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm">{formatDebriefLabel(c)}</div>
+                              {c.team_member_full_name && (
+                                <div className="truncate text-xs text-muted-foreground">
+                                  by {c.team_member_full_name}
+                                </div>
+                              )}
+                            </div>
+                            {linking && <Check className="h-4 w-4 opacity-0" />}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+          </div>
         </div>
       )}
     </div>

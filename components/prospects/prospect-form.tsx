@@ -270,6 +270,10 @@ export function ProspectForm() {
   const [businessSummary, setBusinessSummary] = useState("")
   const [bizEmailSameAsOwner, setBizEmailSameAsOwner] = useState(false)
   const [bizPhoneSameAsOwner, setBizPhoneSameAsOwner] = useState(false)
+  // For business owners (individual_business): also create the business
+  // itself as its own Hub Organization + Karbon contact, linked to the
+  // person as owner. Defaults on — most owners want both records.
+  const [createBusinessContact, setCreateBusinessContact] = useState(true)
 
   // ── Business socials ───────────────────────────────────────────────
   const [bizWebsite, setBizWebsite] = useState("")
@@ -600,6 +604,8 @@ export function ProspectForm() {
           business_phone: onlyPersonal ? null : effectiveBusinessPhone,
           business_email_same_as_owner: isOwner ? bizEmailSameAsOwner : false,
           business_phone_same_as_owner: isOwner ? bizPhoneSameAsOwner : false,
+          // Only owners get the option to spin up a separate business org.
+          create_business_contact: isOwner ? createBusinessContact : false,
           business_state: onlyPersonal ? null : businessState,
           business_tax_classification: onlyPersonal ? null : businessTaxClass || null,
           business_revenue_range: onlyPersonal ? null : businessRevenue || null,
@@ -852,6 +858,26 @@ export function ProspectForm() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {isOwner && (
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-muted/40 p-3">
+                <Checkbox
+                  className="mt-0.5"
+                  checked={createBusinessContact}
+                  onCheckedChange={(c) => setCreateBusinessContact(!!c)}
+                />
+                <span className="space-y-0.5">
+                  <span className="block text-sm font-medium text-foreground">
+                    Also create the business as its own contact
+                  </span>
+                  <span className="block text-xs text-muted-foreground text-pretty">
+                    Creates a separate Hub organization (and Karbon contact) for{" "}
+                    {businessName.trim() || "the business"} and links{" "}
+                    {firstName.trim() || "the individual"} to it as the owner — so work, proposals,
+                    and tax returns can hang off the company.
+                  </span>
+                </span>
+              </label>
+            )}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="biz-name">

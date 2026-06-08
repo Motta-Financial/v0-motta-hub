@@ -66,6 +66,10 @@ interface CreateProspectBody {
   business_phone?: string | null
   business_email_same_as_owner?: boolean | null
   business_phone_same_as_owner?: boolean | null
+  // When prospect_type === "individual_business", also create the
+  // business itself as a separate Hub Organization (+ Karbon contact)
+  // linked to the person as owner. Defaults true when omitted.
+  create_business_contact?: boolean | null
   business_state?: string | null
   business_tax_classification?: string | null
   business_revenue_range?: string | null
@@ -415,12 +419,93 @@ export async function POST(req: NextRequest) {
         .eq("id", inserted.id)
     }
 
-    if (finalContactId || finalOrganizationId) {
+    // ── 3a-1. Separate business Organization (business owners) ──────
+    // For an "individual & business" prospect (e.g. John Arthun who
+    // owns 208 Mobile Detailing) the contact above is the person. When
+    // the teammate opts in, ALSO create the company as its own Hub
+    // Organization + Karbon contact and link the person to it as owner,
+    // so work items, proposals, and tax returns can hang off the
+    // business. Hub-first: the org is always created; the Karbon push
+    // is gated by pushToKarbon. Best-effort — never breaks intake.
+    let businessOrgId: string | null = null
+    const wantsBusinessOrg =
+      body.prospect_type === "individual_business" &&
+      (body.create_business_contact ?? true) &&
+      !!body.business_name?.trim()
+
+    if (wantsBusinessOrg) {
+      try {
+        // Resolve the business email/phone, honoring "same as owner".
+        const ownerEmail = body.submitter_email?.trim().toLowerCase() || null
+        const rawBizEmail = (
+          body.business_email_same_as_owner ? body.submitter_email : body.business_email
+        )
+          ?.trim()
+          .toLowerCase() || null
+        // Never feed the OWNER's email to the org resolver — it would
+        // match the person contact we just created (email is the first
+        // match key) and skip organization creation entirely.
+        const bizEmail = rawBizEmail && rawBizEmail !== ownerEmail ? rawBizEmail : null
+        const bizPhone = (
+          body.business_phone_same_as_owner ? body.submitter_phone : body.business_phone
+        )?.trim() || null
+
+        const org = await findOrCreateHubContact(
+          {
+            // Pass ONLY business signals so the helper takes its
+            // organization path instead of re-matching the person.
+            businessName: body.business_name ?? null,
+            email: bizEmail,
+            phone: bizPhone,
+            state: body.business_state ?? null,
+            city: body.submitter_city ?? null,
+          },
+          { source: "prospect_form", supabase },
+        )
+        businessOrgId = org.organization_id
+
+        // Push the org INTO Karbon (same Hub-first pattern as the contact).
+        if (businessOrgId && pushToKarbon) {
+          try {
+            await pushHubOrganizationToKarbon(businessOrgId, {
+              source: "Motta Hub Prospect Form",
+            })
+          } catch (err) {
+            console.error("[v0] POST /api/prospects business org Karbon push failed:", err)
+          }
+        }
+
+        // Link the person to the business in the Hub junction table so
+        // the relationship shows on both profiles. De-duped + best-effort.
+        if (businessOrgId && finalContactId) {
+          const { data: existingLink } = await supabase
+            .from("contact_organizations")
+            .select("id")
+            .eq("contact_id", finalContactId)
+            .eq("organization_id", businessOrgId)
+            .maybeSingle()
+          if (!existingLink) {
+            await supabase.from("contact_organizations").insert({
+              contact_id: finalContactId,
+              organization_id: businessOrgId,
+              is_primary_contact: true,
+              role_or_title: "Owner",
+            })
+          }
+        }
+      } catch (err) {
+        console.error("[v0] POST /api/prospects business org create failed:", err)
+      }
+    }
+
+    if (finalContactId || finalOrganizationId || businessOrgId) {
       const { error: linkErr } = await supabase
         .from("prospect_submissions")
         .update({
           contact_id: finalContactId,
-          organization_id: finalOrganizationId,
+          // Carry the business org on the prospect row too (the person
+          // contact stays the primary `contact_id`).
+          organization_id: finalOrganizationId ?? businessOrgId,
           link_method: finalLinkMethod,
           linked_at: new Date().toISOString(),
         })
@@ -470,14 +555,18 @@ export async function POST(req: NextRequest) {
           await supabase.from("contacts").update(patch).eq("id", finalContactId)
         }
       }
-      if (finalOrganizationId) {
+      // Mirror business socials onto whichever org we ended up with —
+      // either an org-only prospect (finalOrganizationId) or the
+      // separately-created business org for a business owner.
+      const orgIdForSocials = finalOrganizationId ?? businessOrgId
+      if (orgIdForSocials) {
         const patch: Record<string, string> = {}
         if (body.business_website?.trim()) patch.website = body.business_website.trim()
         if (body.business_linkedin_url?.trim()) patch.linkedin_url = body.business_linkedin_url.trim()
         if (body.business_twitter_url?.trim()) patch.twitter_handle = body.business_twitter_url.trim()
         if (body.business_facebook_url?.trim()) patch.facebook_url = body.business_facebook_url.trim()
         if (Object.keys(patch).length > 0) {
-          await supabase.from("organizations").update(patch).eq("id", finalOrganizationId)
+          await supabase.from("organizations").update(patch).eq("id", orgIdForSocials)
         }
       }
     } catch (err) {
@@ -554,7 +643,7 @@ export async function POST(req: NextRequest) {
         questions_or_concerns: null,
         additional_notes: enrichmentNotes || null,
         service_focus: body.service_focus?.trim() || null,
-        organization_id: finalOrganizationId,
+        organization_id: finalOrganizationId ?? businessOrgId,
         contact_id: finalContactId,
       })
       if (blob) {
@@ -568,6 +657,37 @@ export async function POST(req: NextRequest) {
       console.error("[v0] POST /api/prospects enrichment failed:", err)
     }
 
+    // Shared intake-note payload — reused for the contact/org timeline
+    // note (3e) and, after a work item is created, the pinned note on
+    // the work item timeline (3f).
+    const intakeNotePayload = {
+      id: inserted.id,
+      submitter_full_name: fullName,
+      submitter_email: body.submitter_email ?? null,
+      submitter_phone: body.submitter_phone ?? null,
+      submitter_city: body.submitter_city ?? null,
+      submitter_state: body.submitter_state ?? null,
+      submitter_zip: body.submitter_zip ?? null,
+      business_name: body.business_name ?? null,
+      business_state: body.business_state ?? null,
+      business_summary: body.business_summary ?? null,
+      business_revenue_range: body.business_revenue_range ?? null,
+      business_tax_classification: body.business_tax_classification ?? null,
+      business_situation: body.business_situation ?? null,
+      service_focus: body.service_focus ?? null,
+      services_requested: body.services_requested ?? null,
+      entity_types: body.entity_types ?? null,
+      questions_or_concerns: null,
+      additional_notes: body.internal_notes ?? null,
+      website: body.website ?? body.business_website ?? null,
+      linkedin_url: body.linkedin_url ?? body.business_linkedin_url ?? null,
+      twitter_handle: body.twitter_url ?? body.business_twitter_url ?? null,
+      facebook_url: body.facebook_url ?? body.business_facebook_url ?? null,
+      instagram_url: body.instagram_url ?? body.business_instagram_url ?? null,
+      referral: referralInfo,
+      enrichment: enrichmentSummary ? { summary: enrichmentSummary } : null,
+    }
+
     // ── 3e. Karbon timeline note (pinned, best-effort) ─────────────
     // Posts a rich "New prospect" note to the contact/org timeline so
     // the prospect's Karbon profile carries full context immediately.
@@ -578,33 +698,7 @@ export async function POST(req: NextRequest) {
           : "Contact"
         await postIntakeNoteToKarbon(
           { entityType, entityKey: karbonKey },
-          {
-            id: inserted.id,
-            submitter_full_name: fullName,
-            submitter_email: body.submitter_email ?? null,
-            submitter_phone: body.submitter_phone ?? null,
-            submitter_city: body.submitter_city ?? null,
-            submitter_state: body.submitter_state ?? null,
-            submitter_zip: body.submitter_zip ?? null,
-            business_name: body.business_name ?? null,
-            business_state: body.business_state ?? null,
-            business_summary: body.business_summary ?? null,
-            business_revenue_range: body.business_revenue_range ?? null,
-            business_tax_classification: body.business_tax_classification ?? null,
-            business_situation: body.business_situation ?? null,
-            service_focus: body.service_focus ?? null,
-            services_requested: body.services_requested ?? null,
-            entity_types: body.entity_types ?? null,
-            questions_or_concerns: null,
-            additional_notes: body.internal_notes ?? null,
-            website: body.website ?? body.business_website ?? null,
-            linkedin_url: body.linkedin_url ?? body.business_linkedin_url ?? null,
-            twitter_handle: body.twitter_url ?? body.business_twitter_url ?? null,
-            facebook_url: body.facebook_url ?? body.business_facebook_url ?? null,
-            instagram_url: body.instagram_url ?? body.business_instagram_url ?? null,
-            referral: referralInfo,
-            enrichment: enrichmentSummary ? { summary: enrichmentSummary } : null,
-          },
+          intakeNotePayload,
           { pinned: true },
         )
       } catch (err) {
@@ -651,6 +745,23 @@ export async function POST(req: NextRequest) {
               karbon_work_item_url: wi.workItemUrl ?? null,
             })
             .eq("id", inserted.id)
+
+          // Pin the full intake form onto the new work item's timeline so
+          // it sits at the top of the work item the moment it's created.
+          // Separate POST from 3e because the work item didn't exist yet
+          // when the contact/org note was written. Fire-and-forget.
+          try {
+            await postIntakeNoteToKarbon(
+              { entityType: "WorkItem", entityKey: wi.workItemKey },
+              intakeNotePayload,
+              {
+                pinned: true,
+                workItem: { title: wi.title || "Work item", url: wi.workItemUrl ?? "" },
+              },
+            )
+          } catch (err) {
+            console.error("[v0] POST /api/prospects work item note failed:", err)
+          }
         } else {
           console.warn("[v0] POST /api/prospects work item create failed:", wi.error)
         }
