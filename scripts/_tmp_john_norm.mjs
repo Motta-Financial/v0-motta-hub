@@ -1,4 +1,0 @@
-import { createClient } from "@supabase/supabase-js"
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
-const { data } = await supabase.from("jotform_intake_submissions").select("id, contact_id, organization_id, submitter_full_name, submitter_email, submitter_phone, submitter_city, submitter_state, submitter_zip, business_name, business_email, business_phone, business_state, business_summary, business_situation, business_revenue_range, business_tax_classification, service_focus, services_requested, entity_types, questions_or_concerns, additional_notes, karbon_work_item_key, karbon_work_item_url, enrichment, question_research, jotform_created_at").eq("contact_id", "653e6f3c-f493-458e-baf8-9216c4bd576d").single()
-console.log(JSON.stringify(data, null, 2))
