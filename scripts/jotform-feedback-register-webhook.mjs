@@ -16,7 +16,11 @@ import { createClient } from "@supabase/supabase-js"
 
 const FORM_ID = process.env.JOTFORM_FEEDBACK_FORM_ID || "240915444941155"
 const API_KEY = process.env.JOTFORM_API_KEY
-const APP = "https://www.motta.cpa"
+// The webhook must hit the HUB (which serves /api/jotform/webhook), NOT
+// the marketing site (https://www.motta.cpa / https://motta.cpa) which is
+// a separate deployment that 404s the route and silently drops every
+// submission. Prefer the Hub's own self-URL.
+const APP = (process.env.APP_BASE_URL ?? process.env.AUTH0_BASE_URL ?? "https://hub.motta.cpa").replace(/\/+$/, "")
 
 const sb = createClient(
   process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL,
