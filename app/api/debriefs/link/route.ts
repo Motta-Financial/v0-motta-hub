@@ -18,6 +18,21 @@ import { createAdminClient } from "@/lib/supabase/server"
 
 const CANDIDATE_DAYS = 60
 const CANDIDATE_LIMIT = 25
+// When the user actively searches, widen the window so older debriefs are
+// still attachable (the auto-candidate list intentionally stays recent).
+const SEARCH_DAYS = 365
+const SEARCH_LIMIT = 25
+
+/**
+ * Sanitize a free-text query before interpolating it into a PostgREST
+ * `.or(...)` filter. Commas and parentheses are control characters in the
+ * or-grammar, so we strip them to avoid breaking the query (or worse,
+ * injecting filter logic). Percent/underscore are left intact since we wrap
+ * the term in `%…%` for ilike anyway.
+ */
+function sanitizeSearch(raw: string): string {
+  return raw.replace(/[(),]/g, " ").trim()
+}
 
 const DEBRIEF_FIELDS =
   "id, debrief_date, debrief_type, status, notes, contact_id, organization_id, organization_name, team_member_id, calendly_event_id, zoom_meeting_id, contacts:contact_id (full_name), team_member:team_member_id (full_name)"
@@ -45,6 +60,10 @@ export async function GET(request: NextRequest) {
   const sp = request.nextUrl.searchParams
   const calendlyEventId = sp.get("calendly_event_id")
   const zoomMeetingId = sp.get("zoom_meeting_id")
+  // Optional free-text search. When present, the candidate list ignores the
+  // same-client preference and searches ALL unlinked debriefs by client name,
+  // org name, or notes — so any debrief can be attached, not just auto-matches.
+  const search = sanitizeSearch(sp.get("search") || "")
 
   if (!calendlyEventId && !zoomMeetingId) {
     return NextResponse.json({ error: "calendly_event_id or zoom_meeting_id is required" }, { status: 400 })
@@ -78,8 +97,12 @@ export async function GET(request: NextRequest) {
     if (r.organization_id) orgIds.add(r.organization_id)
   }
 
-  // 3. Candidate debriefs: recent, not yet linked to ANY meeting.
-  const sinceIso = new Date(Date.now() - CANDIDATE_DAYS * 24 * 60 * 60 * 1000)
+  // 3. Candidate debriefs: not yet linked to ANY meeting. In normal mode we
+  //    show recent ones (preferring the same client); in search mode we widen
+  //    the window and match the typed term across client/org name and notes.
+  const windowDays = search ? SEARCH_DAYS : CANDIDATE_DAYS
+  const limit = search ? SEARCH_LIMIT : CANDIDATE_LIMIT
+  const sinceIso = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000)
     .toISOString()
     .split("T")[0]
 
@@ -90,11 +113,26 @@ export async function GET(request: NextRequest) {
     .is("zoom_meeting_id", null)
     .gte("debrief_date", sinceIso)
     .order("debrief_date", { ascending: false })
-    .limit(CANDIDATE_LIMIT)
+    .limit(limit)
 
-  // Prefer same-client debriefs when we know the client; otherwise show all
-  // recent unlinked debriefs so the user can still attach one manually.
-  if (contactIds.size > 0 || orgIds.size > 0) {
+  if (search) {
+    // Resolve contacts whose name matches so we can search by the joined
+    // contact name (which isn't a column on `debriefs` itself).
+    const { data: matchedContacts } = await supabase
+      .from("contacts")
+      .select("id")
+      .ilike("full_name", `%${search}%`)
+      .limit(50)
+    const matchedContactIds = (matchedContacts || []).map((c) => c.id)
+
+    const ors = [`organization_name.ilike.%${search}%`, `notes.ilike.%${search}%`]
+    if (matchedContactIds.length > 0) {
+      ors.push(`contact_id.in.(${matchedContactIds.join(",")})`)
+    }
+    candQuery = candQuery.or(ors.join(","))
+  } else if (contactIds.size > 0 || orgIds.size > 0) {
+    // Prefer same-client debriefs when we know the client; otherwise show all
+    // recent unlinked debriefs so the user can still attach one manually.
     const ors: string[] = []
     for (const id of contactIds) ors.push(`contact_id.eq.${id}`)
     for (const id of orgIds) ors.push(`organization_id.eq.${id}`)
