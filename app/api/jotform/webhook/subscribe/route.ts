@@ -88,14 +88,15 @@ export async function POST(req: Request) {
   const baseUrl = getAppBaseUrl(req)
   const callback = `${baseUrl}/api/jotform/webhook?token=${formRow.webhook_secret}`
 
-  // 3. Inspect existing webhooks. If our base URL is already registered,
-  //    skip the add (Jotform's API will silently dedupe but we want to
-  //    return a consistent response).
+  // 3. Inspect existing webhooks. Only treat the form as already wired
+  //    when the EXACT tokenized callback is present. A prefix match here
+  //    is a trap: a token-less `…/api/jotform/webhook` (or one carrying a
+  //    rotated/wrong token) would satisfy it, so we'd skip the add and
+  //    leave the form pointed at a URL the webhook route 401s — silently
+  //    dropping every submission. Exact-match forces a repair in that case.
   const existing = await listWebhooks(jotformFormId).catch(() => ({}) as Record<string, string>)
   const existingUrls = Object.values(existing)
-  const alreadyRegistered = existingUrls.some(
-    (u) => u.startsWith(`${baseUrl}/api/jotform/webhook`),
-  )
+  const alreadyRegistered = existingUrls.some((u) => u === callback)
 
   let added = false
   if (!alreadyRegistered) {
@@ -103,20 +104,22 @@ export async function POST(req: Request) {
     added = true
   }
 
-  // 3b. Prune stale copies of OUR OWN webhook route registered on a
-  //     different origin (e.g. a previous registration that pointed at
-  //     the marketing domain https://motta.cpa, which 404s and silently
-  //     drops submissions). We only remove URLs whose path is exactly
-  //     /api/jotform/webhook on a host other than the current Hub origin
-  //     — genuine third-party webhooks (n8n, Zapier, etc.) on other
-  //     paths are left untouched.
+  // 3b. Prune stale copies of OUR OWN webhook route. This covers both a
+  //     wrong ORIGIN (e.g. a previous registration that pointed at the
+  //     marketing domain https://motta.cpa, which 404s) AND a same-origin
+  //     copy carrying the wrong/missing `?token=` (which the route 401s).
+  //     Anything on path /api/jotform/webhook that isn't the exact current
+  //     callback is removed; genuine third-party webhooks (n8n, Zapier,
+  //     etc.) live on other paths and are left untouched. Because this
+  //     loops over `existing` (the pre-add snapshot), the freshly added
+  //     correct callback is never a deletion candidate.
   const removedStale: string[] = []
   for (const [hookId, hookUrl] of Object.entries(existing)) {
     try {
       const parsed = new URL(hookUrl)
       const isOurRoute = parsed.pathname === "/api/jotform/webhook"
-      const isWrongOrigin = `${parsed.protocol}//${parsed.host}` !== baseUrl
-      if (isOurRoute && isWrongOrigin) {
+      const isStale = hookUrl !== callback
+      if (isOurRoute && isStale) {
         await deleteWebhook(jotformFormId, hookId)
         removedStale.push(hookUrl)
       }
