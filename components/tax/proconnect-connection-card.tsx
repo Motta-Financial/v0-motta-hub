@@ -14,6 +14,7 @@ import {
   Building2,
   Users,
   FileText,
+  UserCircle,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -42,6 +43,9 @@ type ProconnectStatus = {
   accessExpired: boolean
   lastTokenRefresh: string | null
   connectedSince: string | null
+  connectedBy: { name: string | null } | null
+  reconnectRequired: boolean
+  lastRefreshError: string | null
   lastClientSync: string | null
   lastEngagementSync: string | null
   clientCount: number
@@ -125,13 +129,18 @@ export function ProconnectConnectionCard() {
     )
   }
 
-  const { connected, accessExpired } = data
+  const { connected, accessExpired, reconnectRequired } = data
 
   // ─── Status pill ───
   const statusBadge = !connected ? (
     <Badge variant="outline" className="border-muted-foreground/30 text-muted-foreground gap-1">
       <Unplug className="size-3" />
       Not connected
+    </Badge>
+  ) : reconnectRequired ? (
+    <Badge variant="outline" className="border-destructive/40 bg-destructive/10 text-destructive gap-1">
+      <AlertTriangle className="size-3" />
+      Reconnect required
     </Badge>
   ) : accessExpired ? (
     <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400 gap-1">
@@ -206,6 +215,24 @@ export function ProconnectConnectionCard() {
           )}
         </div>
 
+        {/* ─── Production-only / admin-only note ─── */}
+        <p className="text-xs italic text-muted-foreground">
+          Production-only integration. Only the firm&apos;s Primary Admin can connect.
+        </p>
+
+        {/* ─── Refresh failure banner ─── */}
+        {reconnectRequired && (
+          <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <div className="space-y-1">
+              <p className="font-medium">Token refresh failed — reconnect required.</p>
+              {data.lastRefreshError && (
+                <p className="text-xs opacity-90">{data.lastRefreshError}</p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* ─── Connection metadata grid ─── */}
         {connected && (
           <>
@@ -221,6 +248,11 @@ export function ProconnectConnectionCard() {
                 label="Connected since"
                 value={formatExact(data.connectedSince)}
                 hint={timeAgo(data.connectedSince)}
+              />
+              <MetaRow
+                icon={<UserCircle className="size-4" />}
+                label="Connected by"
+                value={data.connectedBy?.name ?? "—"}
               />
               <MetaRow
                 icon={<RefreshCw className="size-4" />}

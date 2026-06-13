@@ -195,6 +195,13 @@ export async function middleware(request: NextRequest) {
   // require a logged-in team member).
   const isCalendlyOAuthCallback = pathname === "/api/calendly/oauth/callback"
 
+  // Intuit sends the user back to /api/proconnect/oauth/callback after consent
+  // on appcenter.intuit.com — that cross-domain redirect won't carry our Hub
+  // session cookie, so exempt ONLY the callback. Identity/CSRF is enforced
+  // inside the handler via the HMAC-signed `state`. /connect, /disconnect, and
+  // /launch are deliberately NOT exempt — they require a logged-in admin.
+  const isProconnectOAuthCallback = pathname === "/api/proconnect/oauth/callback"
+
   // Allow internal server-to-server calls (e.g. cron -> /api/karbon/sync -> /api/karbon/contacts)
   // These pass a shared secret so middleware doesn't block the sync chain.
   const isInternalCall =
@@ -254,6 +261,7 @@ export async function middleware(request: NextRequest) {
     isHubMeetingsSync ||
     isCron ||
     isCalendlyOAuthCallback ||
+    isProconnectOAuthCallback ||
     isInternalCall ||
     isAlfredDataCall ||
     isAlfredHealthCheck ||
