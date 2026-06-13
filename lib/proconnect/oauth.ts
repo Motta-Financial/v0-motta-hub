@@ -109,6 +109,8 @@ async function storeTokens(tokens: TokenResponse): Promise<void> {
     // for this app (Phase 1 §2.1) and surface a re-consent CTA.
     scope: tokens.scope ?? "com.intuit.proconnect.taxreturns",
     realm_id: PROCONNECT_REALM_ID,
+    // A successful refresh clears any prior failure flag.
+    last_refresh_error: null,
     updated_at: now,
   }
 
@@ -128,6 +130,7 @@ async function storeTokens(tokens: TokenResponse): Promise<void> {
           token_type: tokens.token_type,
           expires_at: expiresAt,
           scope: tokens.scope ?? "com.intuit.proconnect.taxreturns",
+          last_refresh_error: null,
           updated_at: now,
         })
         .eq("is_singleton", true)
@@ -138,6 +141,25 @@ async function storeTokens(tokens: TokenResponse): Promise<void> {
     } else {
       throw new Error(`Failed to insert tokens: ${insertError.message}`)
     }
+  }
+}
+
+/**
+ * Best-effort: record a refresh failure on the singleton row so the
+ * /tax/settings card can surface a "Reconnect required" banner. A failed
+ * refresh almost always means the stored refresh token was revoked/expired
+ * and an admin must re-consent. We swallow any write error here so this
+ * never masks the original refresh failure that the caller is about to see.
+ */
+async function recordRefreshError(message: string): Promise<void> {
+  try {
+    const supabase = getSupabaseAdmin()
+    await supabase
+      .from("proconnect_oauth_tokens")
+      .update({ last_refresh_error: message.slice(0, 1000), updated_at: new Date().toISOString() })
+      .eq("is_singleton", true)
+  } catch {
+    // ignore — diagnostics only
   }
 }
 
@@ -199,7 +221,15 @@ export async function getAccessToken(): Promise<string> {
   }
 
   console.log("[v0] getAccessToken - refreshing token", Date.now() - fnStart, "ms")
-  const newTokens = await refreshAccessToken(refreshToken)
+  let newTokens: TokenResponse
+  try {
+    newTokens = await refreshAccessToken(refreshToken)
+  } catch (err) {
+    // Surface the failure on the singleton row so the settings card shows
+    // "Reconnect required", then rethrow so callers behave exactly as before.
+    await recordRefreshError(err instanceof Error ? err.message : String(err))
+    throw err
+  }
   console.log("[v0] getAccessToken - got new tokens", Date.now() - fnStart, "ms")
 
   await storeTokens(newTokens)
