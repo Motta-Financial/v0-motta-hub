@@ -263,6 +263,10 @@ const navigation = [
       // checks "where are we vs MRR target" before drilling into the
       // funnel below.
       { name: "Recurring Revenue", href: "/sales/recurring-revenue", icon: Repeat },
+      // Payment Links is the Hub-native "send a client a Stripe pay link for a
+      // fixed service package" flow — distinct from the read-only Ignition
+      // Payments feed below (which only mirrors payments that already cleared).
+      { name: "Payment Links", href: "/sales/payment-links", icon: Wallet },
       // Ignition is the proposal-to-payment engine, so Proposals,
       // Invoices, and Payments live underneath it as a single grouped
       // workflow (matches the way Ignition organizes them in its own
