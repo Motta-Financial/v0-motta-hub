@@ -1,7 +1,23 @@
 import "server-only"
 import { createAdminClient } from "@/lib/supabase/server"
-import { stripe } from "@/lib/stripe"
+import { stripe, STRIPE_LIVE_MODE } from "@/lib/stripe"
 import { toStripeRecurring, type ServicePackage } from "./types"
+
+/**
+ * Stripe Products/Prices are environment-specific, so we cache them in separate
+ * columns per mode and always read/write the pair that matches the active key.
+ * Flipping to live keys then mints fresh live objects instead of reusing the
+ * test ids that were cached during development.
+ */
+const PRODUCT_COL = STRIPE_LIVE_MODE ? "stripe_product_id_live" : "stripe_product_id"
+const PRICE_COL = STRIPE_LIVE_MODE ? "stripe_price_id_live" : "stripe_price_id"
+
+function cachedProductId(pkg: ServicePackage): string | null {
+  return STRIPE_LIVE_MODE ? pkg.stripe_product_id_live : pkg.stripe_product_id
+}
+function cachedPriceId(pkg: ServicePackage): string | null {
+  return STRIPE_LIVE_MODE ? pkg.stripe_price_id_live : pkg.stripe_price_id
+}
 
 /**
  * Catalog access + lazy Stripe Product/Price synchronization.
@@ -51,8 +67,8 @@ export async function ensureStripePrice(
 ): Promise<string> {
   const supabase = createAdminClient()
 
-  // 1. Make sure a Product exists.
-  let productId = pkg.stripe_product_id
+  // 1. Make sure a Product exists in the ACTIVE Stripe mode.
+  let productId = cachedProductId(pkg)
   if (!productId) {
     const product = await stripe.products.create({
       name: pkg.name,
@@ -62,7 +78,7 @@ export async function ensureStripePrice(
     productId = product.id
     await supabase
       .from("service_packages")
-      .update({ stripe_product_id: productId })
+      .update({ [PRODUCT_COL]: productId })
       .eq("id", pkg.id)
   }
 
@@ -77,13 +93,18 @@ export async function ensureStripePrice(
       : undefined
 
   // 3. Reuse the cached price only for the standard (non-override) amount.
-  if (!isOverride && pkg.stripe_price_id) {
-    const existing = await stripe.prices.retrieve(pkg.stripe_price_id)
-    if (existing.active && existing.unit_amount === amount) {
-      return pkg.stripe_price_id
+  const priceId = cachedPriceId(pkg)
+  if (!isOverride && priceId) {
+    // retrieve() can 404 if the id belongs to the other Stripe mode; treat that
+    // as a cache miss and mint a fresh price below rather than throwing.
+    const existing = await stripe.prices.retrieve(priceId).catch(() => null)
+    if (existing && existing.active && existing.unit_amount === amount) {
+      return priceId
     }
-    // Price drifted — deactivate the stale one before minting a new price.
-    await stripe.prices.update(pkg.stripe_price_id, { active: false }).catch(() => {})
+    if (existing) {
+      // Price drifted — deactivate the stale one before minting a new price.
+      await stripe.prices.update(priceId, { active: false }).catch(() => {})
+    }
   }
 
   const price = await stripe.prices.create({
@@ -98,7 +119,7 @@ export async function ensureStripePrice(
   if (!isOverride) {
     await supabase
       .from("service_packages")
-      .update({ stripe_price_id: price.id })
+      .update({ [PRICE_COL]: price.id })
       .eq("id", pkg.id)
   }
 

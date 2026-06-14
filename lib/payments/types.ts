@@ -15,8 +15,13 @@ export interface ServicePackage {
   currency: string
   billing_type: BillingType
   recurring_interval: RecurringInterval | null
+  // Stripe Product/Price ids are environment-specific. Test ids live in the
+  // legacy columns; live ids in the *_live columns. catalog.ts picks the pair
+  // that matches STRIPE_LIVE_MODE (see scripts/346_stripe_live_price_cache.sql).
   stripe_product_id: string | null
   stripe_price_id: string | null
+  stripe_product_id_live: string | null
+  stripe_price_id_live: string | null
   active: boolean
   sort_order: number
   created_at: string
