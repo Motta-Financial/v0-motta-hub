@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server"
+import type Stripe from "stripe"
 import { stripe } from "@/lib/stripe"
 import { createAdminClient } from "@/lib/supabase/server"
 import { getPaymentRequestByToken } from "@/lib/payments/requests"
@@ -72,10 +73,12 @@ export async function POST(
     }
   }
 
-  const mode = req.billing_type === "recurring" ? "subscription" : "payment"
+  const mode: Stripe.Checkout.SessionCreateParams.Mode =
+    req.billing_type === "recurring" ? "subscription" : "payment"
 
-  const session = await stripe.checkout.sessions.create({
-    ui_mode: "embedded",
+  const sessionParams: Stripe.Checkout.SessionCreateParams = {
+    // dahlia API renamed the embedded value: 'embedded' → 'embedded_page'.
+    ui_mode: "embedded_page",
     mode,
     line_items: [{ price: priceId, quantity: 1 }],
     redirect_on_completion: "never",
@@ -93,7 +96,9 @@ export async function POST(
     ...(mode === "subscription"
       ? { subscription_data: { metadata: { payment_request_id: req.id } } }
       : { payment_intent_data: { metadata: { payment_request_id: req.id } } }),
-  })
+  }
+
+  const session = await stripe.checkout.sessions.create(sessionParams)
 
   // Persist the session id so a refresh reuses it instead of creating dupes.
   await admin
