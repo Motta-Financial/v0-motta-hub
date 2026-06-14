@@ -25,7 +25,9 @@ export async function GET() {
   // 1. OAuth singleton
   const { data: token } = await supabase
     .from("proconnect_oauth_tokens")
-    .select("realm_id, expires_at, updated_at, created_at, scope, token_type")
+    .select(
+      "realm_id, expires_at, updated_at, created_at, scope, token_type, connected_by_team_member_id, last_refresh_error"
+    )
     .eq("is_singleton", true)
     .maybeSingle()
 
@@ -33,6 +35,20 @@ export async function GET() {
   const now = Date.now()
   const expiresAt = token?.expires_at ? new Date(token.expires_at).getTime() : null
   const accessExpired = expiresAt !== null && expiresAt <= now
+  // A non-null refresh error means the stored refresh token stopped working,
+  // so an admin must re-consent. Surfaced as "Reconnect required" in the UI.
+  const reconnectRequired = !!token?.last_refresh_error
+
+  // Resolve who connected the firm (admin name shown on the settings card).
+  let connectedBy: { name: string | null } | null = null
+  if (token?.connected_by_team_member_id) {
+    const { data: tm } = await supabase
+      .from("team_members")
+      .select("full_name")
+      .eq("id", token.connected_by_team_member_id)
+      .maybeSingle()
+    connectedBy = { name: tm?.full_name ?? null }
+  }
 
   // 2. Last sync watermarks
   const [{ data: clientWatermark }, { data: engagementWatermark }] = await Promise.all([
@@ -70,6 +86,9 @@ export async function GET() {
     accessExpired,
     lastTokenRefresh: token?.updated_at ?? null,
     connectedSince: token?.created_at ?? null,
+    connectedBy,
+    reconnectRequired,
+    lastRefreshError: token?.last_refresh_error ?? null,
     lastClientSync: clientWatermark?.[0]?.synced_at ?? null,
     lastEngagementSync: engagementWatermark?.[0]?.synced_at ?? null,
     clientCount: clientCount ?? 0,

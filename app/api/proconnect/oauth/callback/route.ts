@@ -1,16 +1,22 @@
 /**
  * ProConnect OAuth - Callback
  *
- * Receives the authorization code from Intuit after the user grants
- * consent, exchanges it for access + refresh tokens, and persists them
- * to proconnect_oauth_tokens.
+ * Receives the authorization code from Intuit after the user grants consent,
+ * exchanges it for access + refresh tokens, and persists them to the singleton
+ * proconnect_oauth_tokens row.
+ *
+ * Identity / CSRF is enforced via the HMAC-signed `state` minted in /connect
+ * (lib/proconnect/oauth-state). Because the state is self-contained we do not
+ * rely on a session cookie here — Intuit's cross-domain redirect would not send
+ * one — which is also why middleware.ts exempts this exact path.
  *
  * Configured in Intuit Developer:
- *   Redirect URIs (Development): https://hub.motta.cpa/api/proconnect/oauth/callback
+ *   Redirect URIs: https://hub.motta.cpa/api/proconnect/oauth/callback
  */
-import { NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { getRedirectUri } from "@/lib/proconnect/oauth"
+import { verifyState } from "@/lib/proconnect/oauth-state"
 
 const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 
@@ -23,44 +29,44 @@ export async function GET(request: NextRequest) {
   const errorDescription = searchParams.get("error_description")
 
   // The /tax dashboard lives on the Hub host, not the marketing site, so
-  // post-OAuth UI redirects use APP_BASE_URL (hub.motta.cpa) rather than
-  // NEXT_PUBLIC_APP_URL (motta.cpa).
+  // post-OAuth UI redirects use APP_BASE_URL (hub.motta.cpa).
   const baseUrl = process.env.APP_BASE_URL || "https://hub.motta.cpa"
 
-  // Handle user-denied consent or other errors from Intuit
-  if (error) {
+  // Verify the signed state BEFORE doing anything else. An invalid/expired
+  // state means a CSRF attempt or a stale tab — bounce to settings.
+  const decoded = verifyState(state)
+  if (!decoded) {
     const url = new URL("/tax/settings", baseUrl)
+    url.searchParams.set("error", "proconnect_invalid_state")
+    return NextResponse.redirect(url)
+  }
+  const returnTo = decoded.returnTo || "/tax/settings"
+
+  // Handle user-denied consent or other errors from Intuit.
+  if (error) {
+    const url = new URL(returnTo, baseUrl)
     url.searchParams.set("oauth_error", error)
     if (errorDescription) url.searchParams.set("oauth_error_description", errorDescription)
     return NextResponse.redirect(url)
   }
 
   if (!code) {
-    return NextResponse.json({ error: "Missing authorization code" }, { status: 400 })
-  }
-
-  // Verify state matches the cookie we set in /connect
-  const cookieState = request.cookies.get("pc_oauth_state")?.value
-  if (!cookieState || cookieState !== state) {
-    return NextResponse.json(
-      { error: "Invalid state — possible CSRF attempt" },
-      { status: 400 }
-    )
+    const url = new URL(returnTo, baseUrl)
+    url.searchParams.set("error", "proconnect_missing_code")
+    return NextResponse.redirect(url)
   }
 
   const clientId = process.env.PROCONNECT_CLIENT_ID
   const clientSecret = process.env.PROCONNECT_CLIENT_SECRET
-
   if (!clientId || !clientSecret) {
-    return NextResponse.json(
-      { error: "ProConnect OAuth credentials not configured" },
-      { status: 500 }
-    )
+    const url = new URL(returnTo, baseUrl)
+    url.searchParams.set("error", "proconnect_not_configured")
+    return NextResponse.redirect(url)
   }
 
-  // Exchange the authorization code for tokens. The redirect_uri here must
-  // be byte-for-byte identical to the one sent in /connect and registered
-  // with Intuit, so it comes from the same resolver.
+  // Exchange the authorization code for tokens. The redirect_uri here must be
+  // byte-for-byte identical to the one sent in /connect and registered with
+  // Intuit, so it comes from the same resolver.
   const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64")
   const redirectUri = getRedirectUri()
 
@@ -81,10 +87,9 @@ export async function GET(request: NextRequest) {
   if (!tokenResponse.ok) {
     const errText = await tokenResponse.text()
     console.error("[ProConnect OAuth] Token exchange failed:", tokenResponse.status, errText)
-    return NextResponse.json(
-      { error: "Token exchange failed", details: errText },
-      { status: 500 }
-    )
+    const url = new URL(returnTo, baseUrl)
+    url.searchParams.set("error", "proconnect_token_exchange_failed")
+    return NextResponse.redirect(url)
   }
 
   const tokens = (await tokenResponse.json()) as {
@@ -96,7 +101,6 @@ export async function GET(request: NextRequest) {
     scope?: string
   }
 
-  // Persist tokens to Supabase (singleton row)
   const supabase = createClient(
     process.env.SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
@@ -105,10 +109,9 @@ export async function GET(request: NextRequest) {
 
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
   const now = new Date().toISOString()
-  // Persist the *granted* scope from Intuit (not the requested one) so
-  // the dashboard can detect when the Phase 1 tax-returns scope was
-  // not actually granted (Intuit must explicitly allow-list it per
-  // spec §2.1) and prompt re-consent.
+  // Persist the *granted* scope from Intuit (not the requested one) so the
+  // dashboard can detect when the Phase 1 tax-returns scope was not actually
+  // granted (Intuit must explicitly allow-list it) and prompt re-consent.
   const grantedScope = tokens.scope ?? "com.intuit.proconnect.taxreturns"
   const payload = {
     is_singleton: true,
@@ -118,10 +121,14 @@ export async function GET(request: NextRequest) {
     expires_at: expiresAt,
     scope: grantedScope,
     realm_id: realmId,
+    // Record which admin completed the consent (from the signed state) and
+    // clear any prior refresh error now that we have a fresh grant.
+    connected_by_team_member_id: decoded.teamMemberId,
+    last_refresh_error: null,
     updated_at: now,
   }
 
-  // Upsert (insert, fall back to update on unique violation)
+  // Upsert (insert, fall back to update on the singleton unique violation).
   const { error: insertError } = await supabase
     .from("proconnect_oauth_tokens")
     .insert(payload)
@@ -134,27 +141,25 @@ export async function GET(request: NextRequest) {
         refresh_token: tokens.refresh_token,
         token_type: tokens.token_type,
         expires_at: expiresAt,
+        scope: grantedScope,
         realm_id: realmId,
+        connected_by_team_member_id: decoded.teamMemberId,
+        last_refresh_error: null,
         updated_at: now,
       })
       .eq("is_singleton", true)
     if (updateError) {
-      return NextResponse.json(
-        { error: `Failed to update tokens: ${updateError.message}` },
-        { status: 500 }
-      )
+      const url = new URL(returnTo, baseUrl)
+      url.searchParams.set("error", "proconnect_save_failed")
+      return NextResponse.redirect(url)
     }
   } else if (insertError) {
-    return NextResponse.json(
-      { error: `Failed to insert tokens: ${insertError.message}` },
-      { status: 500 }
-    )
+    const url = new URL(returnTo, baseUrl)
+    url.searchParams.set("error", "proconnect_save_failed")
+    return NextResponse.redirect(url)
   }
 
-  // Clear the state cookie and redirect to the tax dashboard
-  const successUrl = new URL("/tax", baseUrl)
+  const successUrl = new URL(returnTo, baseUrl)
   successUrl.searchParams.set("connected", "1")
-  const response = NextResponse.redirect(successUrl)
-  response.cookies.delete("pc_oauth_state")
-  return response
+  return NextResponse.redirect(successUrl)
 }
