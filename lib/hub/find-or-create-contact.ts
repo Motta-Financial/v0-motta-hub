@@ -133,6 +133,97 @@ function cleanedBusinessName(name: string): string {
 }
 
 /**
+ * Match-or-create a Hub organization by email → cleaned business name.
+ *
+ * Karbon-free by design (this module never touches Karbon — callers push
+ * to Karbon afterward via `pushHubOrganizationToKarbon`). Used to build the
+ * "business half" of a business prospect so a person contact and their
+ * company both exist and can be linked. Never throws.
+ */
+export async function findOrCreateHubOrganization(
+  args: {
+    name: string
+    email?: string | null
+    phone?: string | null
+    city?: string | null
+    state?: string | null
+    zip?: string | null
+    source: HubContactSource
+  },
+  supabase?: SupabaseClient,
+): Promise<{ organization_id: string | null; created: boolean }> {
+  const db = supabase ?? getServiceClient()
+  const name = args.name.trim()
+  if (name.length < 2) return { organization_id: null, created: false }
+  const email = args.email?.trim().toLowerCase() || null
+
+  // Match by email first (most reliable), then by cleaned business name.
+  if (email) {
+    const { data } = await db.from("organizations").select("id").ilike("primary_email", email).limit(1)
+    if (data && data.length > 0) return { organization_id: data[0].id, created: false }
+  }
+  const cleaned = cleanedBusinessName(name)
+  if (cleaned.length >= 2) {
+    const { data: orgs } = await db
+      .from("organizations")
+      .select("id, name")
+      .ilike("name", `%${cleaned}%`)
+      .limit(5)
+    const exact = (orgs || []).find((o) => cleanedBusinessName(o.name || "") === cleaned)
+    if (exact) return { organization_id: exact.id, created: false }
+  }
+
+  const nowIso = new Date().toISOString()
+  const { data: newOrg, error } = await db
+    .from("organizations")
+    .insert({
+      name,
+      primary_email: email,
+      phone: args.phone?.trim() || null,
+      state: args.state?.trim() || null,
+      city: args.city?.trim() || null,
+      zip_code: args.zip?.trim() || null,
+      status: "Active",
+      source: args.source,
+      created_at: nowIso,
+      updated_at: nowIso,
+    })
+    .select("id")
+    .single()
+  if (error || !newOrg) {
+    console.error("[hub] organization insert failed:", error)
+    return { organization_id: null, created: false }
+  }
+  return { organization_id: newOrg.id, created: true }
+}
+
+/**
+ * Link a person contact to an organization in the `contact_organizations`
+ * junction. Deduped (no-op if the link already exists) and best-effort.
+ */
+export async function linkContactToOrganization(
+  contactId: string,
+  organizationId: string,
+  options: { supabase?: SupabaseClient; role?: string; isPrimary?: boolean } = {},
+): Promise<void> {
+  const db = options.supabase ?? getServiceClient()
+  const { data: existing } = await db
+    .from("contact_organizations")
+    .select("id")
+    .eq("contact_id", contactId)
+    .eq("organization_id", organizationId)
+    .maybeSingle()
+  if (existing) return
+  const { error } = await db.from("contact_organizations").insert({
+    contact_id: contactId,
+    organization_id: organizationId,
+    is_primary_contact: options.isPrimary ?? true,
+    role_or_title: options.role ?? "Owner",
+  })
+  if (error) console.error("[hub] contact_organizations link failed:", error.message)
+}
+
+/**
  * Hub-first match-or-create. NEVER throws — returns a structured result
  * with `method = "insufficient_data"` when there isn't enough signal.
  */

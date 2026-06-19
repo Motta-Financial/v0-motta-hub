@@ -91,6 +91,12 @@ interface CreateProspectBody {
   referred_by_contact_id?: string | null
   referred_by_raw?: string | null
 
+  // Explicit "link to this existing client" id chosen by the teammate via
+  // the prospect form's client linker. When set (and valid), we skip the
+  // fuzzy match-or-create entirely and attach the prospect to this exact
+  // Hub contact — the strongest possible duplicate guard.
+  link_contact_id?: string | null
+
   // Optional Karbon work item to create alongside the prospect.
   work_item?: {
     template_key: string
@@ -340,21 +346,39 @@ export async function POST(req: NextRequest) {
     let karbonKey: string | null = null
 
     try {
-      const hub = await findOrCreateHubContact(
-        {
-          email: body.submitter_email ?? null,
-          fullName: fullName ?? null,
-          businessName: body.business_name ?? null,
-          phone: body.submitter_phone ?? null,
-        },
-        { source: "prospect_form", supabase },
-      )
-      finalContactId = hub.contact_id
-      finalOrganizationId = hub.organization_id
-      // Map to a CHECK-constraint-valid link_method. Writing the raw
-      // hub method (e.g. "auto_hub_created") silently fails the
-      // link-back UPDATE below and leaves contact_id null.
-      finalLinkMethod = mapHubMethodToLinkMethod(hub.method)
+      // Explicit linker wins: the teammate picked an existing client, so
+      // attach to that exact contact instead of fuzzy match-or-create.
+      // Verify the id resolves to a real contact before trusting it.
+      let linkedContactId: string | null = null
+      if (isUuid(body.link_contact_id)) {
+        const { data: linked } = await supabase
+          .from("contacts")
+          .select("id")
+          .eq("id", body.link_contact_id)
+          .maybeSingle()
+        if (linked) linkedContactId = linked.id
+      }
+
+      if (linkedContactId) {
+        finalContactId = linkedContactId
+        finalLinkMethod = "manual"
+      } else {
+        const hub = await findOrCreateHubContact(
+          {
+            email: body.submitter_email ?? null,
+            fullName: fullName ?? null,
+            businessName: body.business_name ?? null,
+            phone: body.submitter_phone ?? null,
+          },
+          { source: "prospect_form", supabase },
+        )
+        finalContactId = hub.contact_id
+        finalOrganizationId = hub.organization_id
+        // Map to a CHECK-constraint-valid link_method. Writing the raw
+        // hub method (e.g. "auto_hub_created") silently fails the
+        // link-back UPDATE below and leaves contact_id null.
+        finalLinkMethod = mapHubMethodToLinkMethod(hub.method)
+      }
     } catch (err) {
       console.error("[v0] POST /api/prospects hub create failed:", err)
     }
@@ -372,28 +396,33 @@ export async function POST(req: NextRequest) {
     // operate on the Hub record directly and create in Karbon when no
     // key exists (the same proven pattern the Calendly webhook uses).
     if (pushToKarbon && (finalContactId || finalOrganizationId)) {
+      let pushError: string | null = null
       try {
         if (finalContactId) {
           const res = await pushHubContactToKarbon(finalContactId, {
             source: "Motta Hub Prospect Form",
           })
           karbonKey = res.karbonKey
+          pushError = res.error ?? null
         } else if (finalOrganizationId) {
           const res = await pushHubOrganizationToKarbon(finalOrganizationId, {
             source: "Motta Hub Prospect Form",
           })
           karbonKey = res.karbonKey
+          pushError = res.error ?? null
         }
 
         // Success is gated on an ACTUAL Karbon key — not merely the
         // presence of a Hub contact id (the old false-positive bug).
+        // Persist the REAL underlying error (e.g. the Karbon HTTP status)
+        // so failures are diagnosable instead of an opaque generic string.
         await supabase
           .from("prospect_submissions")
           .update({
             karbon_push_status: karbonKey ? "success" : "failed",
             karbon_push_error: karbonKey
               ? null
-              : "Karbon create/link returned no key",
+              : pushError || "Karbon create/link returned no key",
             karbon_pushed_at: new Date().toISOString(),
           })
           .eq("id", inserted.id)

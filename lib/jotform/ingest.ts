@@ -8,8 +8,12 @@ import { createClient } from "@supabase/supabase-js"
 import { buildIntakeRow } from "./parse"
 import { buildFeedbackRow } from "./parse-feedback"
 import { autoLinkIntakeSubmission, autoLinkFeedbackSubmission } from "./match-client"
-import { findOrCreateClient } from "@/lib/karbon/client-sync"
-import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
+import { findOrCreateClient, pushHubOrganizationToKarbon } from "@/lib/karbon/client-sync"
+import {
+  findOrCreateHubContact,
+  findOrCreateHubOrganization,
+  linkContactToOrganization,
+} from "@/lib/hub/find-or-create-contact"
 import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
 import { resolvePreferredTeamMember } from "./assign"
 import { enrichIntakeSubmission } from "./enrich"
@@ -173,6 +177,46 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
           console.log(
             `[Jotform] resolved intake: hub=${!!hubFallback.contact_id || !!hubFallback.organization_id} karbon=${karbonResult.method} reason=${karbonResult.reason ?? "n/a"}`,
           )
+
+          // ── Business intake: guarantee the Person + Organization pair ──
+          // findOrCreateClient / findOrCreateHubContact each resolve only
+          // ONE entity, so a business prospect who also gave their personal
+          // name would otherwise be missing the company half. When we have a
+          // person contact AND a business name, find-or-create the org in the
+          // Hub, link it to the person (Owner), mirror it onto the intake row,
+          // and push it to Karbon. pushHubOrganizationToKarbon now searches
+          // Karbon first, so this never mints a duplicate org.
+          const businessName = persisted.business_name?.trim() || null
+          if (finalContactId && businessName && businessName.length >= 2) {
+            try {
+              const org = await findOrCreateHubOrganization(
+                {
+                  name: businessName,
+                  email: persisted.submitter_email ?? null,
+                  phone: persisted.phone_number ?? null,
+                  source: "jotform_intake",
+                },
+                supabase,
+              )
+              if (org.organization_id) {
+                await linkContactToOrganization(finalContactId, org.organization_id, { supabase })
+                await supabase
+                  .from("jotform_intake_submissions")
+                  .update({ organization_id: org.organization_id })
+                  .eq("id", persisted.id)
+                try {
+                  await pushHubOrganizationToKarbon(org.organization_id, { source: "Jotform Intake" })
+                } catch (err) {
+                  console.log("[Jotform] business org Karbon push failed:", (err as Error).message)
+                }
+                console.log(
+                  `[Jotform] linked business org ${org.organization_id} (${org.created ? "created" : "matched"}) to contact ${finalContactId}`,
+                )
+              }
+            } catch (err) {
+              console.log("[Jotform] business org create/link failed:", (err as Error).message)
+            }
+          }
         }
       } else {
         console.log(`[Jotform] auto-linked intake ${submission.id} via ${result.link_method}: ${result.reason}`)

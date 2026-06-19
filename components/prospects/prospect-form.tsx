@@ -53,6 +53,7 @@ import {
   Target,
   Trash2,
   User,
+  UserCheck,
   Users,
   X,
 } from "lucide-react"
@@ -80,6 +81,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
@@ -293,6 +295,20 @@ export function ProspectForm() {
   const [referralOpen, setReferralOpen] = useState(false)
   const [selectedReferrer, setSelectedReferrer] = useState<SearchHit | null>(null)
   const referralDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const referralAnchorRef = useRef<HTMLDivElement>(null)
+
+  // ── Existing-client linker ─────────────────────────────────────────
+  // Lets a teammate attach this prospect to an existing client instead of
+  // creating a new contact. Picking a client prefills the personal fields
+  // and passes `link_contact_id` so the server links to that exact contact
+  // (the strongest duplicate guard, on top of the route's fuzzy matcher).
+  const [clientQuery, setClientQuery] = useState("")
+  const [clientResults, setClientResults] = useState<SearchHit[]>([])
+  const [clientLoading, setClientLoading] = useState(false)
+  const [clientOpen, setClientOpen] = useState(false)
+  const [linkedClient, setLinkedClient] = useState<SearchHit | null>(null)
+  const clientDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clientAnchorRef = useRef<HTMLDivElement>(null)
 
   // ── Internal notes ─────────────────────────────────────────────────
   const [internalNotes, setInternalNotes] = useState("")
@@ -435,6 +451,35 @@ export function ProspectForm() {
     }
   }, [referralQuery, selectedReferrer])
 
+  // ── Existing-client search (debounced) ─────────────────────────────
+  useEffect(() => {
+    if (linkedClient) return
+    if (clientDebounce.current) clearTimeout(clientDebounce.current)
+    const q = clientQuery.trim()
+    if (q.length < 2) {
+      setClientResults([])
+      setClientLoading(false)
+      return
+    }
+    setClientLoading(true)
+    clientDebounce.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/contacts-and-orgs/search?q=${encodeURIComponent(q)}`)
+        const data = await res.json()
+        // Only people can be linked as the prospect's client contact.
+        setClientResults((data.results || []).filter((h: SearchHit) => h.kind === "contact"))
+        setClientOpen(true)
+      } catch (err) {
+        console.error("[v0] client search failed:", err)
+      } finally {
+        setClientLoading(false)
+      }
+    }, 250)
+    return () => {
+      if (clientDebounce.current) clearTimeout(clientDebounce.current)
+    }
+  }, [clientQuery, linkedClient])
+
   // ── Auto-recommend platform pushes ─────────────────────────────────
   useEffect(() => {
     const services = selectedServices.map((s) => s.toLowerCase())
@@ -516,6 +561,38 @@ export function ProspectForm() {
     setSelectedReferrer(null)
     setReferralQuery("")
     setReferralResults([])
+  }
+
+  async function pickClient(hit: SearchHit) {
+    setLinkedClient(hit)
+    setClientQuery(hit.name)
+    setClientOpen(false)
+    // Prefill the personal fields from the linked contact so the teammate
+    // sees who they're attaching to and required fields (phone) are filled.
+    try {
+      const res = await fetch(`/api/contacts/${hit.id}`)
+      if (res.ok) {
+        const { contact } = await res.json()
+        if (contact) {
+          const [fn, ...rest] = (contact.full_name || hit.name || "").trim().split(/\s+/)
+          setFirstName(contact.first_name || fn || "")
+          setLastName(contact.last_name || rest.join(" ") || "")
+          setEmail(contact.primary_email || hit.email || "")
+          setPhone(contact.phone_primary || "")
+          setCity(contact.city || "")
+          setState(contact.state || "")
+          setZip(contact.zip_code || "")
+        }
+      }
+    } catch (err) {
+      console.error("[v0] client prefill failed:", err)
+    }
+  }
+
+  function clearLinkedClient() {
+    setLinkedClient(null)
+    setClientQuery("")
+    setClientResults([])
   }
 
   function addActionItem() {
@@ -619,6 +696,11 @@ export function ProspectForm() {
           business_twitter_url: onlyPersonal ? null : bizTwitter || null,
           business_facebook_url: onlyPersonal ? null : bizFacebook || null,
           business_instagram_url: onlyPersonal ? null : bizInstagram || null,
+
+          // Explicit existing-client link chosen via the linker. When set,
+          // the server attaches to this exact contact instead of fuzzy
+          // match-or-create.
+          link_contact_id: linkedClient?.id ?? null,
 
           // Referral — link a matched contact, else record free text.
           referred_by_contact_id:
@@ -731,6 +813,97 @@ export function ProspectForm() {
               )
             })}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* ─── Existing client linker ─── */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <UserCheck className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">Existing client?</CardTitle>
+          </div>
+          <CardDescription>
+            Search to attach this prospect to a client already in the Hub. Picking one prefills
+            their details and links instead of creating a duplicate. Leave blank for a brand-new
+            prospect.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {linkedClient ? (
+            <div className="flex items-center gap-2 rounded-md border border-foreground/30 bg-muted/50 px-3 py-2">
+              <UserCheck className="h-4 w-4 shrink-0 text-foreground" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-foreground">{linkedClient.name}</p>
+                {linkedClient.email && (
+                  <p className="truncate text-xs text-muted-foreground">{linkedClient.email}</p>
+                )}
+              </div>
+              <Badge variant="secondary" className="shrink-0">
+                Linking to existing
+              </Badge>
+              <button
+                type="button"
+                onClick={clearLinkedClient}
+                className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                aria-label="Unlink client"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <Popover
+              open={clientOpen && clientResults.length > 0 && !linkedClient}
+              onOpenChange={setClientOpen}
+            >
+              <PopoverAnchor asChild>
+                <div ref={clientAnchorRef} className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={clientQuery}
+                    onChange={(e) => setClientQuery(e.target.value)}
+                    onFocus={() => clientResults.length > 0 && setClientOpen(true)}
+                    placeholder="Search existing clients by name or email…"
+                    className="pl-8 pr-8"
+                    aria-label="Existing client search"
+                  />
+                  {clientLoading && (
+                    <Loader2 className="absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+              </PopoverAnchor>
+              <PopoverContent
+                align="start"
+                sideOffset={4}
+                onOpenAutoFocus={(e) => e.preventDefault()}
+                onInteractOutside={(e) => {
+                  if (clientAnchorRef.current?.contains(e.target as Node)) {
+                    e.preventDefault()
+                  }
+                }}
+                className="max-h-64 w-[var(--radix-popover-trigger-width)] overflow-auto p-1"
+              >
+                <ul className="space-y-0.5">
+                  {clientResults.map((hit) => (
+                    <li key={`client-${hit.id}`}>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => pickClient(hit)}
+                        className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+                      >
+                        <User className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate text-foreground">{hit.name}</span>
+                        {hit.email && (
+                          <span className="truncate text-xs text-muted-foreground">{hit.email}</span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </PopoverContent>
+            </Popover>
+          )}
         </CardContent>
       </Card>
 
@@ -1055,41 +1228,65 @@ export function ProspectForm() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
-          <div className="relative">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={referralQuery}
-                onChange={(e) => {
-                  setReferralQuery(e.target.value)
-                  if (selectedReferrer) setSelectedReferrer(null)
-                }}
-                onFocus={() => referralResults.length > 0 && setReferralOpen(true)}
-                placeholder="Search by name or email…"
-                className="pl-8 pr-8"
-                aria-label="Referrer search"
-              />
-              {referralLoading && (
-                <Loader2 className="absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
-              )}
-              {!referralLoading && (selectedReferrer || referralQuery) && (
-                <button
-                  type="button"
-                  onClick={clearReferrer}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                  aria-label="Clear referrer"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
+          {/* Portaled Popover so the results list paints above every following
+              card (the previous `absolute` list was clipped/overlapped, which
+              is why results showed but couldn't be clicked). PopoverContent
+              renders in a body portal at z-50 and is anchored to the input. */}
+          <Popover
+            open={referralOpen && referralResults.length > 0 && !selectedReferrer}
+            onOpenChange={setReferralOpen}
+          >
+            <PopoverAnchor asChild>
+              <div ref={referralAnchorRef} className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={referralQuery}
+                  onChange={(e) => {
+                    setReferralQuery(e.target.value)
+                    if (selectedReferrer) setSelectedReferrer(null)
+                  }}
+                  onFocus={() => referralResults.length > 0 && setReferralOpen(true)}
+                  placeholder="Search by name or email…"
+                  className="pl-8 pr-8"
+                  aria-label="Referrer search"
+                />
+                {referralLoading && (
+                  <Loader2 className="absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                )}
+                {!referralLoading && (selectedReferrer || referralQuery) && (
+                  <button
+                    type="button"
+                    onClick={clearReferrer}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    aria-label="Clear referrer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            </PopoverAnchor>
 
-            {referralOpen && referralResults.length > 0 && !selectedReferrer && (
-              <ul className="absolute z-20 mt-1 max-h-64 w-full overflow-auto rounded-md border bg-popover p-1 shadow-md">
+            <PopoverContent
+              align="start"
+              sideOffset={4}
+              // Keep the keyboard cursor in the search input as results stream in.
+              onOpenAutoFocus={(e) => e.preventDefault()}
+              // Clicking back into the input must not dismiss the list.
+              onInteractOutside={(e) => {
+                if (referralAnchorRef.current?.contains(e.target as Node)) {
+                  e.preventDefault()
+                }
+              }}
+              className="max-h-64 w-[var(--radix-popover-trigger-width)] overflow-auto p-1"
+            >
+              <ul className="space-y-0.5">
                 {referralResults.map((hit) => (
                   <li key={`${hit.kind}-${hit.id}`}>
                     <button
                       type="button"
+                      // preventDefault on mousedown keeps focus on the input so
+                      // the popover's outside-interaction logic stays stable.
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => pickReferrer(hit)}
                       className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
                     >
@@ -1106,8 +1303,8 @@ export function ProspectForm() {
                   </li>
                 ))}
               </ul>
-            )}
-          </div>
+            </PopoverContent>
+          </Popover>
 
           {selectedReferrer && (
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
