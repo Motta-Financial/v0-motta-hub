@@ -417,6 +417,34 @@ export async function pushHubContactToKarbon(
 
   const firstName = contact.first_name || "Unknown"
   const lastName = contact.last_name || ""
+  const fullName = `${firstName} ${lastName}`.trim()
+
+  // 3a. Search Karbon FIRST so we never mint a duplicate Karbon contact for a
+  // person who already exists there. Without this, a Hub row whose
+  // karbon_contact_key happens to be null (e.g. created from a meeting or an
+  // intake before the nightly sync linked it) would create a *second* Karbon
+  // contact, which then re-imports as a third Hub row. Adopt the existing key.
+  const existingMatches = await searchKarbonContacts(
+    contact.primary_email || undefined,
+    fullName || undefined,
+  )
+  const existingContact = existingMatches.find((m) => m.type === "contact" && m.contactKey)
+  if (existingContact?.contactKey) {
+    const adoptedKey = existingContact.contactKey
+    console.log(
+      `[pushHubContactToKarbon] Found existing Karbon contact ${adoptedKey} for ${fullName} — adopting instead of creating`,
+    )
+    await supabase
+      .from("contacts")
+      .update({
+        karbon_contact_key: adoptedKey,
+        karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/contacts/${adoptedKey}`,
+        last_synced_at: new Date().toISOString(),
+      })
+      .eq("id", contactId)
+    return { karbonKey: adoptedKey, alreadyLinked: true }
+  }
+
   const body = buildKarbonContactBody({
     firstName,
     lastName,
@@ -501,6 +529,27 @@ export async function pushHubOrganizationToKarbon(
   if (!credentials) {
     console.warn("[pushHubOrganizationToKarbon] Karbon credentials not configured")
     return { karbonKey: null, alreadyLinked: false, error: "Karbon credentials not configured" }
+  }
+
+  // 3a. Search Karbon FIRST to avoid minting a duplicate organization. Same
+  // dedupe rationale as pushHubContactToKarbon — adopt an existing org key
+  // rather than creating a second record that re-imports as a new Hub org.
+  const existingOrgs = org.name ? await searchKarbonOrganizations(org.name) : []
+  const existingOrg = existingOrgs.find((m) => m.organizationKey)
+  if (existingOrg?.organizationKey) {
+    const adoptedKey = existingOrg.organizationKey
+    console.log(
+      `[pushHubOrganizationToKarbon] Found existing Karbon org ${adoptedKey} for "${org.name}" — adopting instead of creating`,
+    )
+    await supabase
+      .from("organizations")
+      .update({
+        karbon_organization_key: adoptedKey,
+        karbon_url: `https://app2.karbonhq.com/4mTyp9lLRWTC#/organizations/${adoptedKey}`,
+        last_synced_at: new Date().toISOString(),
+      })
+      .eq("id", organizationId)
+    return { karbonKey: adoptedKey, alreadyLinked: true }
   }
 
   const body = buildKarbonOrganizationBody({

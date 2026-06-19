@@ -80,6 +80,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
@@ -293,6 +294,7 @@ export function ProspectForm() {
   const [referralOpen, setReferralOpen] = useState(false)
   const [selectedReferrer, setSelectedReferrer] = useState<SearchHit | null>(null)
   const referralDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const referralAnchorRef = useRef<HTMLDivElement>(null)
 
   // ── Internal notes ─────────────────────────────────────────────────
   const [internalNotes, setInternalNotes] = useState("")
@@ -1055,41 +1057,65 @@ export function ProspectForm() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
-          <div className="relative">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={referralQuery}
-                onChange={(e) => {
-                  setReferralQuery(e.target.value)
-                  if (selectedReferrer) setSelectedReferrer(null)
-                }}
-                onFocus={() => referralResults.length > 0 && setReferralOpen(true)}
-                placeholder="Search by name or email…"
-                className="pl-8 pr-8"
-                aria-label="Referrer search"
-              />
-              {referralLoading && (
-                <Loader2 className="absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
-              )}
-              {!referralLoading && (selectedReferrer || referralQuery) && (
-                <button
-                  type="button"
-                  onClick={clearReferrer}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                  aria-label="Clear referrer"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
+          {/* Portaled Popover so the results list paints above every following
+              card (the previous `absolute` list was clipped/overlapped, which
+              is why results showed but couldn't be clicked). PopoverContent
+              renders in a body portal at z-50 and is anchored to the input. */}
+          <Popover
+            open={referralOpen && referralResults.length > 0 && !selectedReferrer}
+            onOpenChange={setReferralOpen}
+          >
+            <PopoverAnchor asChild>
+              <div ref={referralAnchorRef} className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={referralQuery}
+                  onChange={(e) => {
+                    setReferralQuery(e.target.value)
+                    if (selectedReferrer) setSelectedReferrer(null)
+                  }}
+                  onFocus={() => referralResults.length > 0 && setReferralOpen(true)}
+                  placeholder="Search by name or email…"
+                  className="pl-8 pr-8"
+                  aria-label="Referrer search"
+                />
+                {referralLoading && (
+                  <Loader2 className="absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                )}
+                {!referralLoading && (selectedReferrer || referralQuery) && (
+                  <button
+                    type="button"
+                    onClick={clearReferrer}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    aria-label="Clear referrer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            </PopoverAnchor>
 
-            {referralOpen && referralResults.length > 0 && !selectedReferrer && (
-              <ul className="absolute z-20 mt-1 max-h-64 w-full overflow-auto rounded-md border bg-popover p-1 shadow-md">
+            <PopoverContent
+              align="start"
+              sideOffset={4}
+              // Keep the keyboard cursor in the search input as results stream in.
+              onOpenAutoFocus={(e) => e.preventDefault()}
+              // Clicking back into the input must not dismiss the list.
+              onInteractOutside={(e) => {
+                if (referralAnchorRef.current?.contains(e.target as Node)) {
+                  e.preventDefault()
+                }
+              }}
+              className="max-h-64 w-[var(--radix-popover-trigger-width)] overflow-auto p-1"
+            >
+              <ul className="space-y-0.5">
                 {referralResults.map((hit) => (
                   <li key={`${hit.kind}-${hit.id}`}>
                     <button
                       type="button"
+                      // preventDefault on mousedown keeps focus on the input so
+                      // the popover's outside-interaction logic stays stable.
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => pickReferrer(hit)}
                       className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
                     >
@@ -1106,8 +1132,8 @@ export function ProspectForm() {
                   </li>
                 ))}
               </ul>
-            )}
-          </div>
+            </PopoverContent>
+          </Popover>
 
           {selectedReferrer && (
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
