@@ -396,28 +396,33 @@ export async function POST(req: NextRequest) {
     // operate on the Hub record directly and create in Karbon when no
     // key exists (the same proven pattern the Calendly webhook uses).
     if (pushToKarbon && (finalContactId || finalOrganizationId)) {
+      let pushError: string | null = null
       try {
         if (finalContactId) {
           const res = await pushHubContactToKarbon(finalContactId, {
             source: "Motta Hub Prospect Form",
           })
           karbonKey = res.karbonKey
+          pushError = res.error ?? null
         } else if (finalOrganizationId) {
           const res = await pushHubOrganizationToKarbon(finalOrganizationId, {
             source: "Motta Hub Prospect Form",
           })
           karbonKey = res.karbonKey
+          pushError = res.error ?? null
         }
 
         // Success is gated on an ACTUAL Karbon key — not merely the
         // presence of a Hub contact id (the old false-positive bug).
+        // Persist the REAL underlying error (e.g. the Karbon HTTP status)
+        // so failures are diagnosable instead of an opaque generic string.
         await supabase
           .from("prospect_submissions")
           .update({
             karbon_push_status: karbonKey ? "success" : "failed",
             karbon_push_error: karbonKey
               ? null
-              : "Karbon create/link returned no key",
+              : pushError || "Karbon create/link returned no key",
             karbon_pushed_at: new Date().toISOString(),
           })
           .eq("id", inserted.id)

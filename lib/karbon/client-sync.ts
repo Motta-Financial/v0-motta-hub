@@ -153,22 +153,31 @@ export async function searchKarbonOrganizations(name: string): Promise<KarbonSea
   const results: KarbonSearchResult[] = []
   const cleanedName = name.replace(/['"]/g, "")
 
+  // Karbon's Organization model exposes the name as `FullName` (there is NO
+  // `Name` property). Filtering on `Name` returns 400 "Could not find a
+  // property named 'Name'", which made this search silently return [] every
+  // time — breaking org dedupe so every business prospect created a NEW
+  // Karbon org (or, when one already existed, failed the duplicate create).
   const { data: orgs, error } = await karbonFetch<any[]>(
     "/Organizations",
     credentials,
     {
       queryOptions: {
-        filter: `contains(Name, '${cleanedName}')`,
+        filter: `contains(FullName, '${cleanedName}')`,
         top: 10,
       },
     }
   )
 
+  if (error) {
+    console.error("[searchKarbonOrganizations] Karbon search failed:", error)
+  }
+
   if (!error && orgs) {
     for (const o of orgs) {
       results.push({
         organizationKey: o.OrganizationKey,
-        name: o.Name,
+        name: o.FullName,
         email: o.EmailAddress,
         type: "organization",
       })
@@ -507,9 +516,13 @@ export async function pushHubOrganizationToKarbon(
   const supabase = getServiceClient()
 
   // 1. Fetch the Hub organization
+  // NOTE: the organizations table's phone column is `phone` (NOT
+  // `phone_primary`, which only exists on contacts). Selecting a
+  // non-existent column errors the whole query, which returned no key and
+  // silently failed EVERY business-prospect Karbon push.
   const { data: org, error: fetchErr } = await supabase
     .from("organizations")
-    .select("id, name, primary_email, phone_primary, karbon_organization_key")
+    .select("id, name, primary_email, phone, karbon_organization_key")
     .eq("id", organizationId)
     .single()
 
@@ -555,7 +568,7 @@ export async function pushHubOrganizationToKarbon(
   const body = buildKarbonOrganizationBody({
     name: org.name,
     email: org.primary_email,
-    phone: org.phone_primary,
+    phone: org.phone,
   })
 
   const { data: karbonResult, error: karbonErr } = await karbonFetch<any>(
