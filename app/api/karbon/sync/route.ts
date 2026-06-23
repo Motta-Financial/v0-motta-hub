@@ -41,18 +41,30 @@ const DEFAULT_ENTITIES = [
 type SyncSource = "manual" | "cron" | "backfill" | "webhook-replay"
 
 function resolveBaseUrl(request: NextRequest): string {
-  if (process.env.NEXT_PUBLIC_APP_URL) {
-    const url = process.env.NEXT_PUBLIC_APP_URL
-    // Ensure https:// protocol is present
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      return `https://${url}`
-    }
-    return url
+  // This orchestrator fans out to its OWN per-entity routes
+  // (/api/karbon/contacts, /work-items, …) on the SAME deployment. Those are
+  // internal server-to-server calls, so we must target this deployment's own
+  // origin — NOT NEXT_PUBLIC_APP_URL.
+  //
+  // History: NEXT_PUBLIC_APP_URL on the Hub project is set to the *marketing*
+  // domain (https://motta.cpa), which has none of these routes. Using it here
+  // made every fan-out call 404, silently breaking the entire Karbon drift /
+  // full sync (work items, contacts, orgs went weeks stale). Always prefer the
+  // request's own origin; fall back to Vercel's deployment URLs, and only then
+  // to NEXT_PUBLIC_APP_URL as a last resort for unusual dev setups.
+  try {
+    const origin = new URL(request.url).origin
+    if (origin && !origin.includes("localhost:0")) return origin
+  } catch {
+    // fall through to env-based resolution
   }
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
-  // Last resort: use the request's own origin so dev still works
-  return new URL(request.url).origin
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    const url = process.env.NEXT_PUBLIC_APP_URL
+    return url.startsWith("http") ? url : `https://${url}`
+  }
+  return "http://localhost:3000"
 }
 
 export async function GET(request: NextRequest) {
