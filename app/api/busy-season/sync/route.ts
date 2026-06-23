@@ -95,12 +95,14 @@ function calculateProgress(status: string): number {
 }
 
 // POST - Sync tax work items from Karbon to Supabase
-export async function POST() {
+export async function POST(request: Request) {
   try {
     const supabase = await createClient()
-    // Fetch work items from Karbon
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
-    const baseUrl = appUrl.startsWith("http") ? appUrl : `https://${appUrl}`
+    // These fetches call THIS deployment's own Karbon routes (internal
+    // server-to-server). Use our own origin — never NEXT_PUBLIC_APP_URL, which
+    // on the Hub points at the marketing domain (motta.cpa) and has none of
+    // these routes, so every call would 404.
+    const baseUrl = new URL(request.url).origin
     const karbonResponse = await fetch(
       `${baseUrl}/api/karbon/work-items`,
       { cache: "no-store" }
@@ -233,9 +235,9 @@ export async function POST() {
       }
     }
 
-    // Fetch tasks for each work item and update task counts
-    const taskAppUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
-    const taskBaseUrl = taskAppUrl.startsWith("http") ? taskAppUrl : `https://${taskAppUrl}`
+    // Fetch tasks for each work item and update task counts (same own-origin
+    // rule as above — reuse the request's origin for internal calls).
+    const taskBaseUrl = baseUrl
     
     // Get all synced items to update task info
     const { data: allItems } = await supabase
