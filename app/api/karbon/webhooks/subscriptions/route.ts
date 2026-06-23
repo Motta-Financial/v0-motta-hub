@@ -54,7 +54,18 @@ export async function GET() {
       const res = await fetch(`${KARBON_BASE}/WebhookSubscriptions/${type}`, { headers })
       if (res.ok) {
         const json = await res.json()
-        const items = Array.isArray(json.value) ? json.value : Array.isArray(json) ? json : []
+        // Karbon's GET /WebhookSubscriptions/{type} returns a SINGLE $entity
+        // object ({ TargetUrl, WebhookType }) when a subscription exists — NOT
+        // a { value: [...] } collection. Handle all three shapes so the admin
+        // UI accurately reflects what's registered (previously single-entity
+        // responses were dropped, making it look like remote=0).
+        const items = Array.isArray(json.value)
+          ? json.value
+          : Array.isArray(json)
+            ? json
+            : json && (json.TargetUrl || json.WebhookType)
+              ? [json]
+              : []
         for (const it of items) remote.push({ ...it, _webhookType: type })
       }
     } catch (e) {

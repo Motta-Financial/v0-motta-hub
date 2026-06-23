@@ -88,17 +88,25 @@ function authorizeRequest(request: Request): boolean {
   return false
 }
 
-function resolveBaseUrl(): string {
-  if (process.env.NEXT_PUBLIC_APP_URL) {
-    const url = process.env.NEXT_PUBLIC_APP_URL
-    // Ensure https:// protocol is present
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      return `https://${url}`
+function resolveBaseUrl(request?: Request): string {
+  // The drift step calls /api/karbon/sync on THIS deployment (internal
+  // server-to-server). Target our own origin, never NEXT_PUBLIC_APP_URL —
+  // on the Hub that env points at the marketing domain (https://motta.cpa),
+  // which has none of these routes, so using it black-holed every drift sync.
+  if (request) {
+    try {
+      const origin = new URL(request.url).origin
+      if (origin && !origin.includes("localhost:0")) return origin
+    } catch {
+      // fall through
     }
-    return url
   }
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    const url = process.env.NEXT_PUBLIC_APP_URL
+    return url.startsWith("http") ? url : `https://${url}`
+  }
   return "http://localhost:3000"
 }
 
@@ -306,10 +314,11 @@ async function runWatchdog(db: NonNullable<ReturnType<typeof tryCreateAdminClien
 async function maybeRunDrift(
   db: NonNullable<ReturnType<typeof tryCreateAdminClient>>,
   watchdog: CronResult["watchdog"],
+  request: Request,
 ): Promise<{ triggered: boolean; reason?: string; result?: any }> {
   // Always run if any sub was just recreated (we may have missed events)
   if (watchdog.recreated > 0) {
-    return triggerDrift("subscription-recreated")
+    return triggerDrift("subscription-recreated", request)
   }
 
   // Otherwise run every Nth time. Use cron run count from sync_log.
@@ -336,14 +345,17 @@ async function maybeRunDrift(
   const fourHoursAgo = Date.now() - DRIFT_RUN_INTERVAL * 15 * 60 * 1000
 
   if (lastAt < fourHoursAgo) {
-    return triggerDrift(`scheduled-drift (last cron sync >${DRIFT_RUN_INTERVAL * 15}m ago, count=${count || 0})`)
+    return triggerDrift(
+      `scheduled-drift (last cron sync >${DRIFT_RUN_INTERVAL * 15}m ago, count=${count || 0})`,
+      request,
+    )
   }
 
   return { triggered: false, reason: `recent cron sync at ${last.data?.started_at}` }
 }
 
-async function triggerDrift(reason: string) {
-  const baseUrl = resolveBaseUrl()
+async function triggerDrift(reason: string, request: Request) {
+  const baseUrl = resolveBaseUrl(request)
   try {
     const res = await fetch(
       `${baseUrl}/api/karbon/sync?incremental=true&expand=false&source=cron`,
@@ -410,7 +422,7 @@ export async function GET(request: Request) {
 
   // 3. Drift
   try {
-    result.drift = await maybeRunDrift(db, result.watchdog)
+    result.drift = await maybeRunDrift(db, result.watchdog, request)
   } catch (e) {
     console.error("[karbon-cron] drift failed:", (e as Error).message)
     result.ok = false
