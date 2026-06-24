@@ -141,6 +141,71 @@ export async function sendEmail({
   }
 }
 
+/**
+ * Send many emails in as few API calls as possible using Resend's batch
+ * endpoint (`resend.batch.send`), which accepts up to 100 messages per call.
+ *
+ * Why this exists: firing one `sendEmail` per recipient (via Promise.all or a
+ * sequential loop with sleeps) was both slow and rate-limit-prone. Batching
+ * collapses an N-recipient fan-out into ceil(N/100) calls, which is the
+ * efficient way to use a paid Resend plan.
+ *
+ * Each entry is its own message with its own `to`, so recipients are
+ * individually addressed — they never see each other's addresses.
+ *
+ * NOTE: Resend's batch endpoint does NOT support attachments. Callers that
+ * need attachments must use `sendEmail` per message instead (see
+ * `sendCategoryEmail`).
+ */
+const RESEND_BATCH_LIMIT = 100
+
+export async function sendBatchEmail(
+  messages: Array<Omit<SendEmailParams, "attachments">>,
+): Promise<{ sent: number; failed: number; ids: string[] }> {
+  if (messages.length === 0) return { sent: 0, failed: 0, ids: [] }
+
+  const resend = await getResendClient()
+  if (!resend) {
+    console.warn("[email] Email service not configured -- skipping batch send")
+    return { sent: 0, failed: messages.length, ids: [] }
+  }
+
+  let sent = 0
+  let failed = 0
+  const ids: string[] = []
+
+  for (let i = 0; i < messages.length; i += RESEND_BATCH_LIMIT) {
+    const chunk = messages.slice(i, i + RESEND_BATCH_LIMIT)
+    try {
+      const { data, error } = await resend.batch.send(
+        chunk.map((m) => ({
+          from: FROM_EMAIL,
+          to: Array.isArray(m.to) ? m.to : [m.to],
+          subject: m.subject,
+          html: m.html,
+          replyTo: m.replyTo,
+        })),
+      )
+
+      if (error) {
+        console.error("[email] Resend batch error:", error)
+        failed += chunk.length
+        continue
+      }
+
+      // Resend returns { data: [{ id }, ...] } for the batch.
+      const results = (data as { data?: Array<{ id?: string }> } | null)?.data ?? []
+      sent += chunk.length
+      for (const r of results) if (r?.id) ids.push(r.id)
+    } catch (err) {
+      console.error("[email] Failed to send batch chunk:", err)
+      failed += chunk.length
+    }
+  }
+
+  return { sent, failed, ids }
+}
+
 // Brand palette (Motta Hub)
 const BRAND = {
   primary: "#6B745D", // Olive green
@@ -929,7 +994,7 @@ export function buildProspectEmailHtml({
 // cron jobs, and admin broadcast).
 // ============================================================
 
-interface RecipientResolution {
+export interface RecipientResolution {
   team_member_id: string
   email: string
   full_name: string
@@ -1005,19 +1070,73 @@ export async function sendCategoryEmail(opts: {
     return { attempted, sent: 0, skipped: attempted }
   }
 
-  const result = await sendEmail({
-    to: recipients.map((r) => r.email),
-    subject: opts.subject,
-    html: opts.html,
-    replyTo: opts.replyTo,
-    attachments: opts.attachments,
-  })
+  let sent = 0
+
+  if (opts.attachments && opts.attachments.length > 0) {
+    // Resend's batch endpoint can't carry attachments, so send one message
+    // per recipient. Still individually addressed (no shared `to` list), so
+    // recipients never see each other's addresses.
+    const results = await Promise.all(
+      recipients.map((r) =>
+        sendEmail({
+          to: r.email,
+          subject: opts.subject,
+          html: opts.html,
+          replyTo: opts.replyTo,
+          attachments: opts.attachments,
+        }).then((res) => res.success),
+      ),
+    )
+    sent = results.filter(Boolean).length
+  } else {
+    // No attachments -> collapse the whole fan-out into one batch call.
+    const { sent: batchSent } = await sendBatchEmail(
+      recipients.map((r) => ({
+        to: r.email,
+        subject: opts.subject,
+        html: opts.html,
+        replyTo: opts.replyTo,
+      })),
+    )
+    sent = batchSent
+  }
 
   return {
     attempted,
-    sent: result.success ? recipients.length : 0,
-    skipped: attempted - (result.success ? recipients.length : 0),
+    sent,
+    skipped: attempted - sent,
   }
+}
+
+/**
+ * Like `sendCategoryEmail`, but the HTML body is built PER recipient via a
+ * callback — used by digests (e.g. the Daily Briefing) that personalize the
+ * greeting. Respects per-user category opt-out and sends every message in a
+ * single batch call instead of a sequential loop with sleeps.
+ */
+export async function sendCategoryEmailPersonalized(opts: {
+  category: EmailCategory
+  teamMemberIds: string[]
+  subject: string | ((r: RecipientResolution) => string)
+  buildHtml: (r: RecipientResolution) => string
+  replyTo?: string
+}): Promise<{ attempted: number; sent: number; skipped: number }> {
+  const recipients = await resolveRecipientsForCategory(opts.teamMemberIds, opts.category)
+  const attempted = opts.teamMemberIds.length
+  if (recipients.length === 0) {
+    return { attempted, sent: 0, skipped: attempted }
+  }
+
+  const { sent } = await sendBatchEmail(
+    recipients.map((r) => ({
+      to: r.email,
+      subject: typeof opts.subject === "function" ? opts.subject(r) : opts.subject,
+      html: opts.buildHtml(r),
+      replyTo: opts.replyTo,
+    })),
+  )
+
+  return { attempted, sent, skipped: attempted - sent }
 }
 
 // ============================================================

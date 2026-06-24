@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { generateText } from "ai"
 import { createAdminClient } from "@/lib/supabase/server"
-import { buildDailyBriefingHtml, sendCategoryEmail } from "@/lib/email"
+import { buildDailyBriefingHtml, sendCategoryEmailPersonalized } from "@/lib/email"
 import { fetchNewsCategory, type NewsItem } from "@/lib/news-feed"
 import { getRemindersForRange } from "@/lib/team-reminders"
 import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
@@ -367,50 +367,40 @@ export async function GET(request: Request) {
     )
 
     /*
-     * Send sequentially with a small delay between attempts.
+     * Send every personalized briefing in a SINGLE Resend batch call.
      *
-     * Resend's default rate limit is 2 requests/second. Firing all
-     * 12 sends in parallel (Promise.all) was tripping that limit and
-     * causing ~7 of 12 emails to silently fail every weekday. A 600ms
-     * spacing keeps us safely under 2/sec while still finishing the
-     * whole fan-out in <10 seconds.
+     * Previously this fanned out one API call per recipient, spaced 600ms
+     * apart to dodge the old free-tier 2 req/s limit (~10s of runtime, and
+     * ~7 of 12 silently failing before the spacing was added). With batch
+     * sending the whole firm goes out in one call, individually addressed,
+     * and `sendCategoryEmailPersonalized` still honors each user's
+     * daily_briefing opt-out. The greeting is personalized per recipient.
      */
-    let totalSent = 0
-    let totalSkipped = 0
-    for (let i = 0; i < eligible.length; i++) {
-      const m = eligible[i]
-      const html = buildDailyBriefingHtml({
-        recipientName: m.full_name?.split(" ")[0] || "there",
-        dateLabel,
-        weekRangeLabel,
-        executiveSummary,
-        recentDebriefs,
-        upcomingMeetings,
-        teamReminders,
-        marketNews,
-        taxNews,
-        techNews,
-        hubUpdates,
-        newIntakeForms,
-        newFeedback,
-        newProposalsAccepted,
-        proposalsTotalValue,
-        signOff,
-        hubUrl,
-      })
-      const r = await sendCategoryEmail({
-        category: "daily_briefing",
-        teamMemberIds: [m.id],
-        subject: `Your Daily Briefing - ${dateLabel}`,
-        html,
-      })
-      totalSent += r.sent
-      totalSkipped += r.skipped
-      // Don't sleep after the last one — keeps total runtime tight.
-      if (i < eligible.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 600))
-      }
-    }
+    const { sent: totalSent, skipped: totalSkipped } = await sendCategoryEmailPersonalized({
+      category: "daily_briefing",
+      teamMemberIds: eligible.map((m) => m.id),
+      subject: `Your Daily Briefing - ${dateLabel}`,
+      buildHtml: (r) =>
+        buildDailyBriefingHtml({
+          recipientName: r.full_name?.split(" ")[0] || "there",
+          dateLabel,
+          weekRangeLabel,
+          executiveSummary,
+          recentDebriefs,
+          upcomingMeetings,
+          teamReminders,
+          marketNews,
+          taxNews,
+          techNews,
+          hubUpdates,
+          newIntakeForms,
+          newFeedback,
+          newProposalsAccepted,
+          proposalsTotalValue,
+          signOff,
+          hubUrl,
+        }),
+    })
 
     // Mark briefing run as completed
     if (briefingRunId) {
