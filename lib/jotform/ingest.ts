@@ -327,6 +327,10 @@ export async function runIntakePostProcessing(
         "referral_source",
         "referral_contact_id",
         "referral_organization_id",
+        "behind_on_filings",
+        "pending_tax_notices",
+        "current_cpa_status",
+        "cpa_switch_reason",
         "enrichment",
         "question_research",
         "fee_estimate",
@@ -368,6 +372,10 @@ export async function runIntakePostProcessing(
     referral_source: string | null
     referral_contact_id: string | null
     referral_organization_id: string | null
+    behind_on_filings: string | null
+    pending_tax_notices: string | null
+    current_cpa_status: string | null
+    cpa_switch_reason: string | null
     enrichment: Record<string, unknown> | null
     question_research: Record<string, unknown> | null
     fee_estimate: Record<string, unknown> | null
@@ -585,6 +593,10 @@ export async function runIntakePostProcessing(
         business_revenue_range: submissionRow.business_revenue_range,
         questions_or_concerns: submissionRow.questions_or_concerns,
         additional_notes: submissionRow.additional_notes,
+        behind_on_filings: submissionRow.behind_on_filings,
+        pending_tax_notices: submissionRow.pending_tax_notices,
+        current_cpa_status: submissionRow.current_cpa_status,
+        cpa_switch_reason: submissionRow.cpa_switch_reason,
         preferred_team_member: submissionRow.preferred_team_member,
         assigned_to_id: submissionRow.assigned_to_id,
         enrichment: enrichment
