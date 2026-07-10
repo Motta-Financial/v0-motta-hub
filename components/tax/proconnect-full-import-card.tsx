@@ -74,9 +74,6 @@ type SyncRunResult = {
   errorCount?: number
   errors?: string[]
   duration?: string
-  partial?: boolean
-  timedOut?: boolean
-  lastClientIndex?: number
   error?: string
 }
 
@@ -122,7 +119,7 @@ export function ProconnectFullImportCard() {
     setRunning(true)
     setLastResult(null)
     const toastId = toast.loading(
-      "Running ProConnect import — this can take a minute. Re-click after each batch until status reaches 'success'.",
+      "Running ProConnect import — this usually takes a few seconds.",
       { duration: Infinity }
     )
 
@@ -131,13 +128,7 @@ export function ProconnectFullImportCard() {
       const json: SyncRunResult = await res.json()
       setLastResult(json)
 
-      if (json.partial) {
-        // Resumable partial — UX expectation is that the user clicks again.
-        toast.warning(
-          `Partial batch done (${json.engagementsSynced ?? 0} engagements). Click 'Run full import' again to resume from client ${json.lastClientIndex ?? "?"}.`,
-          { id: toastId, duration: 10_000 }
-        )
-      } else if (!res.ok || !json.ok) {
+      if (!res.ok || !json.ok) {
         toast.error(`Import failed: ${json.error ?? "unknown error"}`, {
           id: toastId,
           duration: 8000,
@@ -236,10 +227,10 @@ export function ProconnectFullImportCard() {
           </CardTitle>
           <CardDescription>
             Pull every client, every engagement (TY 2021–2026), and every custom
-            status from ProConnect into the Hub. Each click runs for ~40s and is
-            resumable — if the status comes back &quot;partial&quot;, click again to
-            resume from where it stopped. Use this after connecting, then let the
-            nightly cron handle ongoing changes.
+            status from ProConnect into the Hub. Runs the same fast bulk path as
+            the nightly cron (~8 API calls) and completes in a single pass. Use
+            this after connecting, then let the nightly cron handle ongoing
+            changes.
           </CardDescription>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -273,9 +264,9 @@ export function ProconnectFullImportCard() {
                 <AlertDialogDescription>
                   This will fetch every client and every engagement for tax years
                   2021–2026 from ProConnect and upsert them into Supabase. Existing
-                  rows are updated, not duplicated. Expect 2–5 minutes of runtime.
-                  Webhook updates and the nightly cron will continue to work
-                  during and after the import.
+                  rows are updated, not duplicated. It completes in a single pass
+                  (usually a few seconds). Webhook updates and the nightly cron
+                  will continue to work during and after the import.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -353,18 +344,7 @@ export function ProconnectFullImportCard() {
             </div>
           </div>
         )}
-        {lastResult && lastResult.partial && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-            <div className="font-medium">Partial batch — re-run to resume</div>
-            <div className="mt-1 text-xs">
-              Processed {lastResult.engagementsSynced ?? 0} engagements through client
-              index {lastResult.lastClientIndex ?? "?"}. Click <em>Run full import</em>{" "}
-              again to continue from where this batch stopped. Counts accumulate
-              across runs.
-            </div>
-          </div>
-        )}
-        {lastResult && !lastResult.ok && !lastResult.partial && (
+        {lastResult && !lastResult.ok && (
           <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
             <div className="font-medium">Import failed</div>
             <div className="mt-1 text-xs">{lastResult.error ?? "Unknown error"}</div>

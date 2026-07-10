@@ -4,14 +4,17 @@
  * POST /api/proconnect/sync - Trigger a manual full sync (runs in Vercel)
  * GET /api/proconnect/sync - Get sync status and stats
  *
- * The sync work runs inline via lib/proconnect/sync.runFullSync(). It is
- * resumable — if the 55s self-timeout fires before all clients are
- * processed, the run is marked "partial" with a last_client_index, and
- * the next POST resumes from that point. Repeat until status === "success".
+ * The sync work runs inline via lib/proconnect/sync.runBulkSync() — the same
+ * fast path the nightly cron uses (/api/cron/proconnect-sync). It fetches
+ * clients in one call and engagements in one call per tax year (~8 ProConnect
+ * requests total), so it completes in a single invocation with no timeout
+ * pressure. This replaced the old per-client runFullSync() loop, which fanned
+ * out one request per (client, year) pair and had to checkpoint/resume across
+ * many POSTs to stay under the serverless limit.
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { getSyncStats, runFullSync } from "@/lib/proconnect/sync"
+import { getSyncStats, runBulkSync } from "@/lib/proconnect/sync"
 import { getTokenStatus } from "@/lib/proconnect/oauth"
 import { requireLeadership } from "@/lib/auth/require-leadership"
 
@@ -82,10 +85,10 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  console.log("[ProConnect API] Manual sync triggered - running inline")
+  console.log("[ProConnect API] Manual sync triggered - running bulk sync inline")
 
   try {
-    const result = await runFullSync("manual")
+    const result = await runBulkSync("manual")
 
     return NextResponse.json({
       ok: result.success,
@@ -96,9 +99,6 @@ export async function POST(request: NextRequest) {
       errorCount: result.errors.length,
       errors: result.errors.slice(0, 20),
       duration: `${result.duration}ms`,
-      partial: result.partial,
-      timedOut: result.timedOut,
-      lastClientIndex: result.lastClientIndex,
     })
   } catch (err) {
     return NextResponse.json(
