@@ -30,9 +30,6 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 // Tax years to sync (inclusive)
 const TAX_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 
-// Number of clients to process in parallel
-const PARALLEL_CLIENTS = 6
-
 // Skip clients synced within this many hours (unless full reset)
 const SKIP_IF_SYNCED_WITHIN_HOURS = 24
 
@@ -301,29 +298,29 @@ async function syncClients(
  * Sync engagements for a single client across all tax years.
  * Returns the count and any errors.
  *
- * The 6 tax-year fetches run in parallel (Promise.allSettled) — this is
- * the dominant cost in syncEngagements. ProConnect's engagement endpoint
- * happily handles 6 concurrent reads per client and the savings drop
- * per-client wall time from ~9s sequential to ~1.5s parallel.
+ * The tax-year fetches run SEQUENTIALLY (one at a time). Combined with the
+ * global ~4 req/s rate limiter in client.ts, this keeps the full import
+ * comfortably under ProConnect's confirmed 5 TPS limit. The previous
+ * implementation fired all 6 years in parallel (Promise.allSettled), which —
+ * multiplied across the concurrent client batch — burst to ~36 simultaneous
+ * requests and triggered 429 Too Many Requests.
  */
 async function syncClientEngagements(
   supabase: SupabaseClient,
   clientId: string
 ): Promise<{ count: number; errors: string[] }> {
-  const yearResults = await Promise.allSettled(
-    TAX_YEARS.map((year) => syncClientYear(supabase, clientId, year))
-  )
-
   let count = 0
   const errors: string[] = []
-  for (const r of yearResults) {
-    if (r.status === "fulfilled") {
-      count += r.value.count
-      errors.push(...r.value.errors)
-    } else {
+
+  for (const year of TAX_YEARS) {
+    try {
+      const r = await syncClientYear(supabase, clientId, year)
+      count += r.count
+      errors.push(...r.errors)
+    } catch (err) {
       errors.push(
-        `Client ${clientId} year fetch rejected: ${
-          r.reason instanceof Error ? r.reason.message : String(r.reason)
+        `Client ${clientId}/${year} year fetch rejected: ${
+          err instanceof Error ? err.message : String(err)
         }`
       )
     }
@@ -333,8 +330,10 @@ async function syncClientEngagements(
 }
 
 /**
- * Sync engagements for a single (client, year) pair. Extracted so the
- * 6 years can run in parallel inside syncClientEngagements.
+ * Sync engagements for a single (client, year) pair. Extracted so
+ * syncClientEngagements can walk the tax years one at a time. The fetch is
+ * wrapped in withRetry so a transient 429/5xx backs off and retries rather
+ * than dropping the (client, year) pair from the import.
  */
 async function syncClientYear(
   supabase: SupabaseClient,
@@ -345,7 +344,10 @@ async function syncClientYear(
   const errors: string[] = []
 
   try {
-    const response = await fetchEngagements(clientId, year)
+    const response = await withRetry(
+      () => fetchEngagements(clientId, year),
+      `engagements ${clientId}/${year}`
+    )
 
     if (!response.ok) {
       // 404 is expected if client has no engagements for that year
@@ -415,7 +417,9 @@ async function syncClientYear(
 /**
  * Sync engagements for all clients across all tax years.
  * Supports resumable sync - starts from startIndex and tracks progress.
- * Processes clients in parallel batches of PARALLEL_CLIENTS.
+ * Processes clients SEQUENTIALLY (one at a time); each client's tax years
+ * are also fetched sequentially. Combined with the global ~4 req/s rate
+ * limiter in client.ts this keeps the import under ProConnect's 5 TPS limit.
  * Skips clients synced within SKIP_IF_SYNCED_WITHIN_HOURS unless forceFullSync.
  */
 async function syncEngagements(
@@ -474,9 +478,11 @@ async function syncEngagements(
   let lastClientIndex = startIndex
   let skippedClients = 0
 
-  // Process clients in parallel batches starting from startIndex
-  for (let i = startIndex; i < clients.length; i += PARALLEL_CLIENTS) {
-    // Check timeout before processing each batch
+  // Process clients one at a time starting from startIndex. Rate limiting is
+  // enforced globally in client.ts (~4 req/s), so there is no client-level
+  // concurrency here — that is exactly what was bursting past the 429 limit.
+  for (let i = startIndex; i < clients.length; i++) {
+    // Check timeout before processing each client
     const elapsed = Date.now() - startTime
     if (elapsed > MAX_EXECUTION_MS) {
       console.log(
@@ -487,51 +493,36 @@ async function syncEngagements(
       break
     }
 
-    // Get the next batch of clients
-    const batch = clients.slice(i, Math.min(i + PARALLEL_CLIENTS, clients.length))
-
-    // Filter out recently synced clients (unless force full sync)
-    const clientsToSync: string[] = []
-    for (const client of batch) {
-      const clientId = client.proconnect_client_id
-      if (!clientId) continue
-
-      if (!forceFullSync) {
-        const lastSync = lastSyncMap.get(clientId)
-        if (lastSync && Date.parse(lastSync) > cutoffTime) {
-          skippedClients++
-          continue
-        }
-      }
-
-      clientsToSync.push(clientId)
-    }
-
-    if (clientsToSync.length === 0) {
-      lastClientIndex = i + batch.length
+    const clientId = clients[i].proconnect_client_id
+    if (!clientId) {
+      lastClientIndex = i + 1
       continue
     }
 
-    // Process this batch in parallel
-    console.log(
-      `[v0] Processing batch of ${clientsToSync.length} clients at index ${i}, ${Date.now() - startTime}ms elapsed`
-    )
-
-    const results = await Promise.all(
-      clientsToSync.map((clientId) => syncClientEngagements(supabase, clientId))
-    )
-
-    // Aggregate results
-    for (const result of results) {
-      count += result.count
-      errors.push(...result.errors)
+    // Skip recently synced clients (unless force full sync)
+    if (!forceFullSync) {
+      const lastSync = lastSyncMap.get(clientId)
+      if (lastSync && Date.parse(lastSync) > cutoffTime) {
+        skippedClients++
+        lastClientIndex = i + 1
+        continue
+      }
     }
 
-    // Update last processed index after each batch
-    lastClientIndex = i + batch.length
+    console.log(
+      `[v0] Processing client ${clientId} at index ${i}, ${Date.now() - startTime}ms elapsed`
+    )
+
+    const result = await syncClientEngagements(supabase, clientId)
+    count += result.count
+    errors.push(...result.errors)
+
+    // Update last processed index after each client so a timeout resumes
+    // from the next unprocessed client.
+    lastClientIndex = i + 1
 
     console.log(
-      `[v0] Batch done: ${count} total engagements, ${Date.now() - startTime}ms elapsed`
+      `[v0] Client ${clientId} done: ${count} total engagements, ${Date.now() - startTime}ms elapsed`
     )
   }
 
