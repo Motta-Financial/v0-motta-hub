@@ -33,6 +33,28 @@ interface ApiResponse<T> {
   error: string | null
 }
 
+// ─── Global rate limiter ──────────────────────────────────────────────────
+// ProConnect enforces a confirmed ~5 TPS limit per realm; bursting above it
+// returns 429. Every outbound request reserves the next time slot before it
+// fires, so the whole process stays at or below ~4 req/s no matter how many
+// callers run concurrently. This is the single choke point for all
+// ProConnect traffic (clients, engagements, custom statuses).
+const MIN_REQUEST_INTERVAL_MS = 250 // 1000ms / 250ms = 4 requests/second
+let nextRequestSlot = 0
+
+async function acquireRateLimitSlot(): Promise<void> {
+  const now = Date.now()
+  // Reserve a slot at least MIN_REQUEST_INTERVAL_MS after the previous one.
+  // Read-then-write is atomic here (JS is single-threaded and there is no
+  // await between them), so concurrent callers each get a distinct slot.
+  const slot = Math.max(now, nextRequestSlot)
+  nextRequestSlot = slot + MIN_REQUEST_INTERVAL_MS
+  const wait = slot - now
+  if (wait > 0) {
+    await new Promise((resolve) => setTimeout(resolve, wait))
+  }
+}
+
 /**
  * Make an authenticated request to a ProConnect API
  */
@@ -68,6 +90,11 @@ async function apiRequest<T>(
   }
 
   try {
+    // Throttle to ~4 req/s (see acquireRateLimitSlot) before every fetch so
+    // a full import can never burst past ProConnect's rate limit. Retries
+    // route back through here, so they are rate-limited too.
+    await acquireRateLimitSlot()
+
     const response = await fetch(url, {
       method,
       headers,
