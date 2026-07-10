@@ -29,12 +29,15 @@ import { createClient } from "@supabase/supabase-js"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import {
   syncSingleClient,
+  prefetchClientList,
+  refreshClientYearEngagements,
   deleteClient,
 } from "@/lib/proconnect/sync"
 import { exportReturnData, flattenSeriesMap } from "@/lib/proconnect/data"
 import { scanRelationships } from "@/lib/tax/relationships/scanner"
 
-const SUPABASE_URL = process.env.SUPABASE_URL!
+const SUPABASE_URL = (process.env.SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL)!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
 interface WebhookEntity {
@@ -115,17 +118,23 @@ async function updateWebhookEvent(
 }
 
 /**
- * Process a Client event
+ * Process a Client event.
+ *
+ * ProConnect has no single-client GET, so Create/Update events resolve
+ * against the full /v1/clients list. `sharedClientList` is fetched at
+ * most once per webhook delivery (Intuit batches many entities into one
+ * POST) — fetching it per-entity is what produced the 429 storms.
  */
 async function processClientEvent(
-  entity: WebhookEntity
+  entity: WebhookEntity,
+  sharedClientList: unknown[] | null
 ): Promise<{ success: boolean; error?: string }> {
   if (entity.operation === "Delete") {
     return deleteClient(entity.id)
   }
 
   // Create or Update - fetch fresh data
-  return syncSingleClient(entity.id)
+  return syncSingleClient(entity.id, sharedClientList)
 }
 
 /**
@@ -260,15 +269,44 @@ async function processTaxReturnEvent(
 }
 
 /**
- * Process a TaxReturnWorkStatus event
- * Similar to TaxReturn - log and rely on nightly sync
+ * Process a TaxReturnWorkStatus event.
+ *
+ * The entity id maps to the return/engagement UUID (same id space as
+ * TaxReturn events). Refresh that client+year's engagements — one API
+ * call — so the new work status shows in the Hub immediately instead
+ * of waiting for the nightly sync. If we can't resolve the engagement
+ * yet, soft-succeed: the nightly sync will pick it up.
  */
 async function processTaxReturnWorkStatusEvent(
   entity: WebhookEntity
 ): Promise<{ success: boolean; error?: string }> {
-  console.log(
-    `[ProConnect Webhook] TaxReturnWorkStatus ${entity.operation}: ${entity.id} - will sync on next full sync`
+  const sb = getSupabaseAdmin()
+  const { data: eng, error: engErr } = await sb
+    .from("proconnect_engagements")
+    .select("proconnect_client_id, tax_year")
+    .eq("engagement_id", entity.id)
+    .maybeSingle()
+
+  if (engErr) {
+    return { success: false, error: `engagement lookup failed: ${engErr.message}` }
+  }
+  if (!eng?.proconnect_client_id || !eng.tax_year) {
+    console.log(
+      `[ProConnect Webhook] TaxReturnWorkStatus ${entity.id} not yet in proconnect_engagements; nightly sync will pick it up`
+    )
+    return { success: true }
+  }
+
+  const result = await refreshClientYearEngagements(
+    eng.proconnect_client_id as string,
+    eng.tax_year as number
   )
+  if (!result.success) {
+    // Soft-fail: the status change isn't lost, the nightly sync covers it.
+    console.warn(
+      `[ProConnect Webhook] work-status refresh failed for ${entity.id}: ${result.error}`
+    )
+  }
   return { success: true }
 }
 
@@ -278,7 +316,8 @@ async function processTaxReturnWorkStatusEvent(
 async function processEntity(
   entity: WebhookEntity,
   realmId: string,
-  payload: unknown
+  payload: unknown,
+  sharedClientList: unknown[] | null
 ): Promise<void> {
   const eventId = await logWebhookEvent(entity, realmId, payload, "pending")
 
@@ -287,7 +326,7 @@ async function processEntity(
 
     switch (entity.name) {
       case "Client":
-        result = await processClientEvent(entity)
+        result = await processClientEvent(entity, sharedClientList)
         break
       case "TaxReturn":
         result = await processTaxReturnEvent(entity)
@@ -371,6 +410,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Fetch the client list at most once per delivery — Client
+    // Create/Update events resolve against it (no single-client GET),
+    // and per-entity fetches are what rate-limited us in the past.
+    const needsClientList = payload.eventNotifications.some((n) =>
+      (n.dataChangeEvent?.entities || []).some(
+        (e) => e.name === "Client" && e.operation !== "Delete"
+      )
+    )
+    const sharedClientList = needsClientList ? await prefetchClientList() : null
+
     // Process each notification
     const results: Array<{ entity: string; success: boolean; error?: string }> = []
 
@@ -379,7 +428,7 @@ export async function POST(request: NextRequest) {
       const entities = notification.dataChangeEvent?.entities || []
 
       for (const entity of entities) {
-        await processEntity(entity, realmId, payload)
+        await processEntity(entity, realmId, payload, sharedClientList)
         results.push({
           entity: `${entity.name}:${entity.id}`,
           success: true,

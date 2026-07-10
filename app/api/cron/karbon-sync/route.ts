@@ -26,6 +26,7 @@
  *                via `?force=tenant-config`.
  */
 import { NextResponse } from "next/server"
+import { Resend } from "resend"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
 import { processWebhookEvent, type WebhookEventRow } from "@/lib/karbon/process-webhook-event"
 import { getKarbonCredentials } from "@/lib/karbon-api"
@@ -440,8 +441,91 @@ export async function GET(request: Request) {
     result.tenantConfig = { triggered: true, reason: "error", report: undefined }
   }
 
+  // 5. Auth-failure alert — a dead bearer token took Karbon down for 17
+  // days in June/July 2026 with zero notification (the cron logged
+  // partial_failure every run but nothing emailed). Detect wholesale
+  // 401s and alert at most once per ~day via integration_alerts.
+  try {
+    await maybeSendKarbonAuthAlert(db, result)
+  } catch (e) {
+    console.error("[karbon-cron] auth-alert step failed:", (e as Error).message)
+  }
+
   result.durationMs = Date.now() - t0
   return NextResponse.json(result)
+}
+
+// ---------------------------------------------------------------------------
+// 5. AUTH ALERT: email when Karbon rejects our credentials
+// ---------------------------------------------------------------------------
+const ALERT_INTEGRATION_KEY = "karbon_auth"
+const ALERT_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000 // ~once a day
+const ALERT_RECIPIENTS = ["team@motta.co"]
+
+async function maybeSendKarbonAuthAlert(
+  db: NonNullable<ReturnType<typeof tryCreateAdminClient>>,
+  result: CronResult,
+): Promise<void> {
+  // Wholesale 401s show up as watchdog check/recreate failures and/or
+  // tenant-config entity errors, all carrying Karbon's 401 body.
+  const evidence = JSON.stringify({
+    watchdog: result.watchdog.details,
+    tenantConfig: result.tenantConfig.report ?? null,
+  })
+  const isAuthFailure =
+    evidence.includes('"statusCode":401') ||
+    evidence.includes("Unauthorized. Auth token is missing or invalid")
+  if (!isAuthFailure) return
+
+  const { data: prior } = await db
+    .from("integration_alerts")
+    .select("last_alert_at")
+    .eq("integration", ALERT_INTEGRATION_KEY)
+    .maybeSingle()
+
+  if (
+    prior?.last_alert_at &&
+    Date.now() - new Date(prior.last_alert_at).getTime() < ALERT_MIN_INTERVAL_MS
+  ) {
+    return // already alerted within the last day
+  }
+
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) {
+    console.error("[karbon-cron] Karbon auth is failing but RESEND_API_KEY is unset — cannot alert")
+    return
+  }
+
+  const resend = new Resend(apiKey)
+  await resend.emails.send({
+    from: process.env.RESEND_FROM_EMAIL || "noreply@motta.co",
+    to: ALERT_RECIPIENTS,
+    subject: "[Motta Hub] Karbon API credentials are being rejected (401)",
+    html: `
+      <h2>Karbon integration is down — credentials rejected</h2>
+      <p>The karbon-sync cron is receiving <strong>401 Unauthorized</strong> from the Karbon API.
+      Until this is fixed, work items, contacts, organizations, timesheets, webhook
+      subscriptions, and debrief note push-back are all frozen.</p>
+      <h3>Fix</h3>
+      <ol>
+        <li>Generate a new API bearer token in Karbon (Settings → Connected Apps / API).</li>
+        <li>Update <code>KARBON_BEARER_TOKEN</code> (and verify <code>KARBON_ACCESS_KEY</code>) in the Vercel project env.</li>
+        <li>Redeploy, then hit <code>/api/cron/karbon-sync?force=tenant-config</code> to confirm recovery.</li>
+      </ol>
+      <p>This alert repeats at most once per day while the failure persists.</p>
+    `,
+  })
+
+  await db.from("integration_alerts").upsert(
+    {
+      integration: ALERT_INTEGRATION_KEY,
+      last_alert_at: new Date().toISOString(),
+      last_alert_reason: "Karbon API 401 Unauthorized",
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "integration" },
+  )
+  console.log("[karbon-cron] Karbon auth-failure alert sent to", ALERT_RECIPIENTS.join(", "))
 }
 
 // ---------------------------------------------------------------------------
