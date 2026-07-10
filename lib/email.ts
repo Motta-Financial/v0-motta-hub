@@ -176,30 +176,50 @@ export async function sendBatchEmail(
 
   for (let i = 0; i < messages.length; i += RESEND_BATCH_LIMIT) {
     const chunk = messages.slice(i, i + RESEND_BATCH_LIMIT)
-    try {
-      const { data, error } = await resend.batch.send(
-        chunk.map((m) => ({
-          from: FROM_EMAIL,
-          to: Array.isArray(m.to) ? m.to : [m.to],
-          subject: m.subject,
-          html: m.html,
-          replyTo: m.replyTo,
-        })),
-      )
+    const payload = chunk.map((m) => ({
+      from: FROM_EMAIL,
+      to: Array.isArray(m.to) ? m.to : [m.to],
+      subject: m.subject,
+      html: m.html,
+      replyTo: m.replyTo,
+    }))
 
-      if (error) {
-        console.error("[email] Resend batch error:", error)
+    // Resend enforces 10 requests/second account-wide. When a cron fires
+    // several sends in the same second (e.g. tommy-ballot-reminder), the
+    // batch call can 429 — previously that silently dropped the whole
+    // chunk. Retry rate-limited chunks with a pause instead.
+    let chunkSent = false
+    for (let attempt = 0; attempt < 3 && !chunkSent; attempt++) {
+      try {
+        const { data, error } = await resend.batch.send(payload)
+
+        if (error) {
+          const isRateLimit =
+            (error as { name?: string }).name === "rate_limit_exceeded" ||
+            (error as { statusCode?: number }).statusCode === 429
+          if (isRateLimit && attempt < 2) {
+            console.warn(`[email] Resend rate-limited, retrying chunk in ${1100 * (attempt + 1)}ms`)
+            await new Promise((r) => setTimeout(r, 1100 * (attempt + 1)))
+            continue
+          }
+          console.error("[email] Resend batch error:", error)
+          failed += chunk.length
+          break
+        }
+
+        // Resend returns { data: [{ id }, ...] } for the batch.
+        const results = (data as { data?: Array<{ id?: string }> } | null)?.data ?? []
+        sent += chunk.length
+        for (const r of results) if (r?.id) ids.push(r.id)
+        chunkSent = true
+      } catch (err) {
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 1100 * (attempt + 1)))
+          continue
+        }
+        console.error("[email] Failed to send batch chunk:", err)
         failed += chunk.length
-        continue
       }
-
-      // Resend returns { data: [{ id }, ...] } for the batch.
-      const results = (data as { data?: Array<{ id?: string }> } | null)?.data ?? []
-      sent += chunk.length
-      for (const r of results) if (r?.id) ids.push(r.id)
-    } catch (err) {
-      console.error("[email] Failed to send batch chunk:", err)
-      failed += chunk.length
     }
   }
 

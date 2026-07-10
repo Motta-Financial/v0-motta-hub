@@ -183,12 +183,14 @@ export async function generateZoomMeetingTodos(
     }
   })
 
-  // ── 4. Upsert with the partial unique index doing the dedup ───────
-  // We can't use Supabase's `.upsert({ onConflict })` here because the
-  // dedup target is a *partial* unique index (where zoom_meeting_id is
-  // not null). Supabase's REST layer wants a column tuple. Instead we
-  // INSERT and let the index reject duplicates with `ignoreDuplicates`,
-  // then count returned rows to know what was actually created.
+  // ── 4. Upsert with the unique index doing the dedup ────────────────
+  // `tasks_unique_zoom_meeting_per_assignee` is a FULL unique index on
+  // (assignee_id, zoom_meeting_id) — migration 349. It must stay
+  // non-partial: Postgres can only match PostgREST's plain-column
+  // ON CONFLICT arbiter against a complete index, and the original
+  // partial version (WHERE zoom_meeting_id IS NOT NULL) made every
+  // sweep run error out. Normal tasks (NULL zoom_meeting_id) never
+  // conflict because NULLs are distinct in unique indexes.
   const { data: inserted, error: insErr } = await supabase
     .from("tasks")
     .upsert(insertRows, {
