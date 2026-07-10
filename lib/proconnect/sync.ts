@@ -15,7 +15,6 @@ import {
   fetchAllEngagementsForYear,
   fetchCustomStatuses,
   extractClientEmail,
-  extractClientId,
   extractClientName,
   RETURN_TYPE_MAP,
 } from "./client"
@@ -33,9 +32,15 @@ const TAX_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 // Skip clients synced within this many hours (unless full reset)
 const SKIP_IF_SYNCED_WITHIN_HOURS = 24
 
-// Max execution time before we gracefully stop (Vercel timeout is 300s on Pro plan)
-// Leave 15s buffer for cleanup and response serialization
-const MAX_EXECUTION_MS = 285_000
+// Time budget before we gracefully stop, checkpoint, and let the next run
+// resume. The Vercel function limit is 300s (Pro plan); we stop well before it
+// because we need headroom for the in-flight fetch to finish (up to ~4 retries
+// with backoff), the partial-progress log write, and response serialization.
+// The loop checkpoints at (client, year) granularity, so a single slow client
+// can't overshoot this by more than one fetch. Override with
+// PROCONNECT_SYNC_BUDGET_MS (e.g. lower it if the platform limit is < 300s).
+const MAX_EXECUTION_MS =
+  Number(process.env.PROCONNECT_SYNC_BUDGET_MS) || 240_000
 
 interface SyncResult {
   success: boolean
@@ -228,65 +233,35 @@ async function syncClients(
   let count = 0
   const errors: string[] = []
 
-  for (const client of clients) {
-    try {
-      const clientId = extractClientId(client)
-      if (!clientId) {
-        errors.push(`Client missing ID: ${JSON.stringify(client).slice(0, 100)}`)
-        continue
-      }
+  // Map with mapClientRow — the same mapper runBulkSync uses. The previous
+  // per-field extraction called extractClientId() = (c.id || c.clientId ||
+  // c.oiiClientId); but in the real ProConnect payload `id` is an object
+  // ({ value }), so that returned the object itself, every upsert set
+  // proconnect_client_id to an object and failed the write — which is why the
+  // logs showed "2001 clients" fetched but "Synced 0 clients". mapClientRow
+  // reads oiiClientId / id.value correctly and also populates the client_type
+  // / client_state / contact columns the /tax UI and auto-link trigger need.
+  //
+  // hub_contact_id / hub_organization_id are intentionally omitted (see
+  // mapClientRow) so INSERTs are linked by the BEFORE-INSERT trigger and
+  // UPDATEs preserve any existing auto_fuzzy / manual mappings.
+  const rows = clients.map(mapClientRow).filter((r) => r.proconnect_client_id)
+  const skipped = clients.length - rows.length
+  if (skipped > 0) {
+    errors.push(`${skipped} clients skipped (no resolvable client id)`)
+  }
 
-      const email = extractClientEmail(client)
-      const names = extractClientName(client)
-      // NOTE: We deliberately do NOT pass hub_contact_id /
-      // hub_organization_id in the upsert payload below. Three reasons:
-      //   1. INSERTs are handled by the BEFORE INSERT trigger
-      //      `auto_link_proconnect_to_hub` (scripts/151_*.sql), which
-      //      already does the email + exact-name match.
-      //   2. UPDATEs would otherwise clobber any auto_fuzzy mapping
-      //      previously written by /api/tax/client-links/auto-link
-      //      (e.g. the 198 organizations linked on
-      //      2025-05-25 by scripts/apply-proconnect-auto-link.ts) —
-      //      because matchClientToContact() returns null for any
-      //      ORGANIZATION client (it only looks at contacts.email).
-      //   3. Manual links written via /tax/settings (link_source=
-      //      'manual') must also survive sync. Omitting the field is
-      //      the only way Postgres preserves the existing value on a
-      //      conflict-update.
-      // If you ever need to *change* a hub link from sync, do it as a
-      // dedicated UPDATE that respects link_source priority instead.
-
-      // Upsert client
-      const { error } = await supabase
-        .from("proconnect_clients")
-        .upsert(
-          {
-            proconnect_client_id: clientId,
-            email,
-            first_name: names.firstName,
-            last_name: names.lastName,
-            business_name: names.businessName,
-            display_name: names.displayName,
-            name_for_matching: names.displayName?.toLowerCase(),
-            raw_json: client,
-            // hub_contact_id intentionally omitted — see syncClients
-            // for the full rationale. Trigger handles INSERTs; UPDATEs
-            // preserve existing fuzzy/manual mappings.
-            synced_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "proconnect_client_id" }
-        )
-
-      if (error) {
-        errors.push(`Client ${clientId}: ${error.message}`)
-      } else {
-        count++
-      }
-    } catch (err) {
-      errors.push(
-        `Client error: ${err instanceof Error ? err.message : "Unknown"}`
-      )
+  // Batched upsert — one round trip per 100 rows instead of ~2000 serial
+  // writes, which also keeps the (fresh-run) client phase short.
+  for (let i = 0; i < rows.length; i += UPSERT_BATCH_SIZE) {
+    const batch = rows.slice(i, i + UPSERT_BATCH_SIZE)
+    const { error } = await supabase
+      .from("proconnect_clients")
+      .upsert(batch, { onConflict: "proconnect_client_id" })
+    if (error) {
+      errors.push(`clients upsert @${i}: ${error.message}`)
+    } else {
+      count += batch.length
     }
   }
 
@@ -307,12 +282,20 @@ async function syncClients(
  */
 async function syncClientEngagements(
   supabase: SupabaseClient,
-  clientId: string
-): Promise<{ count: number; errors: string[] }> {
+  clientId: string,
+  deadline: number
+): Promise<{ count: number; errors: string[]; incomplete: boolean }> {
   let count = 0
   const errors: string[] = []
 
   for (const year of TAX_YEARS) {
+    // Checkpoint at year granularity: never START a new ProConnect fetch once
+    // we're past the time budget, so a client with many years can't run the
+    // invocation past the serverless limit. The caller redoes this client on
+    // the next run (upserts are idempotent), so no data is lost.
+    if (Date.now() > deadline) {
+      return { count, errors, incomplete: true }
+    }
     try {
       const r = await syncClientYear(supabase, clientId, year)
       count += r.count
@@ -326,7 +309,7 @@ async function syncClientEngagements(
     }
   }
 
-  return { count, errors }
+  return { count, errors, incomplete: false }
 }
 
 /**
@@ -478,15 +461,16 @@ async function syncEngagements(
   let lastClientIndex = startIndex
   let skippedClients = 0
 
+  const deadline = startTime + MAX_EXECUTION_MS
+
   // Process clients one at a time starting from startIndex. Rate limiting is
   // enforced globally in client.ts (~4 req/s), so there is no client-level
   // concurrency here — that is exactly what was bursting past the 429 limit.
   for (let i = startIndex; i < clients.length; i++) {
-    // Check timeout before processing each client
-    const elapsed = Date.now() - startTime
-    if (elapsed > MAX_EXECUTION_MS) {
+    // Check the time budget before starting each client.
+    if (Date.now() > deadline) {
       console.log(
-        `[v0] Timeout after ${i - startIndex} clients (index ${i}), ${elapsed}ms elapsed`
+        `[v0] Time budget reached before client index ${i}, ${Date.now() - startTime}ms elapsed`
       )
       timedOut = true
       lastClientIndex = i
@@ -513,9 +497,21 @@ async function syncEngagements(
       `[v0] Processing client ${clientId} at index ${i}, ${Date.now() - startTime}ms elapsed`
     )
 
-    const result = await syncClientEngagements(supabase, clientId)
+    const result = await syncClientEngagements(supabase, clientId, deadline)
     count += result.count
     errors.push(...result.errors)
+
+    // Ran out of budget partway through this client's tax years — stop and
+    // resume from THIS client next run (leave lastClientIndex = i so it is
+    // reprocessed; upserts are idempotent).
+    if (result.incomplete) {
+      console.log(
+        `[v0] Time budget reached during client ${clientId} (index ${i}), ${Date.now() - startTime}ms elapsed`
+      )
+      timedOut = true
+      lastClientIndex = i
+      break
+    }
 
     // Update last processed index after each client so a timeout resumes
     // from the next unprocessed client.
