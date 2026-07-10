@@ -1,32 +1,35 @@
 /**
- * ProConnect Nightly Sync Cron - Edge Function Proxy
+ * ProConnect Nightly Sync Cron
  *
- * This Vercel cron is now a thin wrapper that invokes the Supabase Edge
- * Function (which does the actual sync work). This was migrated from the
- * Vercel-only implementation because of repeated 60-second timeouts.
- *
- * The Edge Function lives at: supabase/functions/proconnect-sync/index.ts
- * URL: https://<project-ref>.supabase.co/functions/v1/proconnect-sync
+ * Runs the bulk sync inline on Vercel (maxDuration 300s). The previous
+ * implementation proxied to a Supabase Edge Function named
+ * `proconnect-sync` that was never deployed, so the nightly sync 404'd
+ * every day. The bulk strategy (one /v1/clients call + one
+ * /v2/engagements call per tax year + one custom-status call) is ~8
+ * ProConnect API calls total, which completes in well under a minute —
+ * the original reason for the Edge Function (per-client fan-out
+ * timeouts) no longer applies.
  *
  * Schedule: Nightly (configured in vercel.json)
  *
  * Environment variables:
  * - CRON_SECRET: Vercel cron secret for authorization
- * - SUPABASE_URL: Used to build the Edge Function URL
- * - SUPABASE_SERVICE_ROLE_KEY: Used to authenticate to the Edge Function
- * - RESEND_API_KEY: For failure alerts
- * - RESEND_FROM_EMAIL: Sender email for alerts
+ * - SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL): Supabase project URL
+ * - SUPABASE_SERVICE_ROLE_KEY: service-role key
+ * - RESEND_API_KEY / RESEND_FROM_EMAIL: failure alerts
  */
 
 import { NextRequest, NextResponse } from "next/server"
 import { Resend } from "resend"
 import { createClient } from "@supabase/supabase-js"
+import { runBulkSync } from "@/lib/proconnect/sync"
+
+export const maxDuration = 300
+export const dynamic = "force-dynamic"
 
 const CRON_SECRET = process.env.CRON_SECRET
 const RESEND_API_KEY = process.env.RESEND_API_KEY
 const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "noreply@motta.co"
-const SUPABASE_URL = process.env.SUPABASE_URL!
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
 // Alert after this many consecutive failures
 const FAILURE_THRESHOLD = 3
@@ -34,61 +37,15 @@ const FAILURE_THRESHOLD = 3
 // Who to alert
 const ALERT_RECIPIENTS = ["team@motta.co"]
 
-// Build the Edge Function URL from SUPABASE_URL
-// e.g. https://gylupzxitoebhqjnvzuw.supabase.co/functions/v1/proconnect-sync
-function getEdgeFunctionUrl(): string {
-  return `${SUPABASE_URL}/functions/v1/proconnect-sync`
-}
-
 function getSupabaseAdmin() {
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
+  }
+  return createClient(url, key, {
     auth: { persistSession: false },
   })
-}
-
-/**
- * Invoke the Supabase Edge Function and wait for the response.
- * The Edge Function has a 400s limit and runs the full sync to completion.
- */
-async function invokeEdgeFunction(syncType: string): Promise<{
-  success: boolean
-  syncLogId: string | null
-  clientsSynced: number
-  engagementsSynced: number
-  customStatusesSynced: number
-  errorCount: number
-  errors: string[]
-  duration: number
-}> {
-  const url = getEdgeFunctionUrl()
-
-  console.log(`[Cron] Invoking Edge Function: ${url}`)
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ syncType }),
-  })
-
-  const result = await response.json()
-
-  if (!response.ok) {
-    throw new Error(`Edge Function failed: ${response.status} - ${JSON.stringify(result)}`)
-  }
-
-  return {
-    success: result.success || false,
-    syncLogId: result.syncLogId || null,
-    clientsSynced: result.clientsSynced || 0,
-    engagementsSynced: result.engagementsSynced || 0,
-    customStatusesSynced: result.customStatusesSynced || 0,
-    errorCount: result.errorCount || 0,
-    errors: result.errors || [],
-    duration: result.duration || 0,
-  }
 }
 
 /**
@@ -171,10 +128,10 @@ async function sendFailureAlert(
         <pre style="background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto;">- ${errorSummary || "No specific errors captured"}</pre>
         <h3>Next Steps</h3>
         <ol>
-          <li>Check the Supabase Edge Function logs in the dashboard</li>
-          <li>Verify ProConnect OAuth tokens are valid</li>
+          <li>Check the Vercel function logs for /api/cron/proconnect-sync</li>
+          <li>Verify ProConnect OAuth tokens are valid (/tax/settings)</li>
           <li>Verify ProConnect API is accessible</li>
-          <li>Manual sync: POST to /api/proconnect/sync</li>
+          <li>Manual sync: POST to /api/cron/proconnect-sync</li>
         </ol>
       `,
     })
@@ -187,46 +144,59 @@ async function sendFailureAlert(
   }
 }
 
-export async function GET(request: NextRequest) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+async function runSync(syncType: "full" | "manual") {
+  const result = await runBulkSync(syncType)
 
-  console.log("[Cron] Starting nightly sync via Edge Function...")
+  console.log("[Cron] Bulk sync complete:", {
+    success: result.success,
+    clients: result.clientsSynced,
+    engagements: result.engagementsSynced,
+    customStatuses: result.customStatusesSynced,
+    errors: result.errors.length,
+    duration: `${result.duration}ms`,
+  })
 
-  try {
-    const result = await invokeEdgeFunction("full")
+  // Check if we need to send a failure alert
+  if (!result.success && result.syncLogId) {
+    const consecutiveFailures = await getConsecutiveFailures()
 
-    console.log("[Cron] Edge Function complete:", {
-      success: result.success,
-      clients: result.clientsSynced,
-      engagements: result.engagementsSynced,
-      customStatuses: result.customStatusesSynced,
-      errors: result.errorCount,
-      duration: `${result.duration}ms`,
-    })
+    if (consecutiveFailures >= FAILURE_THRESHOLD) {
+      const alreadySent = await wasAlertSent()
 
-    // Check if we need to send a failure alert
-    if (!result.success && result.syncLogId) {
-      const consecutiveFailures = await getConsecutiveFailures()
-
-      if (consecutiveFailures >= FAILURE_THRESHOLD) {
-        const alreadySent = await wasAlertSent()
-
-        if (!alreadySent) {
-          const sent = await sendFailureAlert(
-            result.syncLogId,
-            consecutiveFailures,
-            result.errors
-          )
-          if (sent) {
-            await markAlertSent(result.syncLogId)
-          }
+      if (!alreadySent) {
+        const sent = await sendFailureAlert(
+          result.syncLogId,
+          consecutiveFailures,
+          result.errors
+        )
+        if (sent) {
+          await markAlertSent(result.syncLogId)
         }
       }
     }
+  }
+
+  return result
+}
+
+function isAuthorized(request: NextRequest): boolean {
+  // Vercel cron invocations carry the x-vercel-cron header; manual
+  // invocations must present the CRON_SECRET bearer token.
+  if (request.headers.get("x-vercel-cron")) return true
+  const authHeader = request.headers.get("authorization")
+  if (CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}`) return true
+  return !CRON_SECRET
+}
+
+export async function GET(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  console.log("[Cron] Starting nightly ProConnect bulk sync...")
+
+  try {
+    const result = await runSync("full")
 
     return NextResponse.json({
       success: result.success,
@@ -234,11 +204,11 @@ export async function GET(request: NextRequest) {
       clientsSynced: result.clientsSynced,
       engagementsSynced: result.engagementsSynced,
       customStatusesSynced: result.customStatusesSynced,
-      errorCount: result.errorCount,
+      errorCount: result.errors.length,
       duration: result.duration,
     })
   } catch (err) {
-    console.error("[Cron] Fatal error invoking Edge Function:", err)
+    console.error("[Cron] Fatal error running bulk sync:", err)
 
     return NextResponse.json(
       {
@@ -252,15 +222,14 @@ export async function GET(request: NextRequest) {
 
 // Allow POST for manual triggers
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization")
-  if (CRON_SECRET && authHeader && authHeader !== `Bearer ${CRON_SECRET}`) {
+  if (!isAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  console.log("[Cron] Manual sync triggered via Edge Function...")
+  console.log("[Cron] Manual ProConnect bulk sync triggered...")
 
   try {
-    const result = await invokeEdgeFunction("manual")
+    const result = await runSync("manual")
 
     return NextResponse.json({
       success: result.success,
@@ -268,7 +237,7 @@ export async function POST(request: NextRequest) {
       clientsSynced: result.clientsSynced,
       engagementsSynced: result.engagementsSynced,
       customStatusesSynced: result.customStatusesSynced,
-      errorCount: result.errorCount,
+      errorCount: result.errors.length,
       errors: result.errors.slice(0, 20),
       duration: result.duration,
     })

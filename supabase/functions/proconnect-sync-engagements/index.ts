@@ -36,8 +36,9 @@ const corsHeaders = {
 
 const PROCONNECT_ENGAGEMENTS_URL =
   "https://engagement.accountant.intuit.com/v2/engagements"
-const REFRESH_TOKEN_FUNCTION_URL =
-  "https://gylupzxitoebhqjnvzuw.supabase.co/functions/v1/proconnect-refresh-token"
+// Built from the auto-injected SUPABASE_URL so the function is portable
+// across Supabase projects (was previously a hardcoded project URL).
+const REFRESH_TOKEN_FUNCTION_URL = `${Deno.env.get("SUPABASE_URL")}/functions/v1/proconnect-refresh-token`
 
 const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000
 const MAX_RETRIES = 5

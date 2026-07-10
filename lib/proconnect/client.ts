@@ -130,8 +130,10 @@ export async function fetchClients(): Promise<ApiResponse<unknown[]>> {
 }
 
 /**
- * Fetch a single client by ID
- * GET /v1/clients/{id}
+ * @deprecated ProConnect's client service has no single-client GET —
+ * `GET /v1/clients/{id}` returns a bare Tomcat 404 (this failed every
+ * Client webhook from launch through 2026-07). Use `fetchClients()` and
+ * filter by id instead (see `syncSingleClient` in ./sync.ts).
  */
 export async function fetchClient(
   clientId: string
@@ -168,6 +170,42 @@ export async function fetchEngagements(
   }
 
   // API may return { engagements: [...] } or just an array
+  const engagements = response.data.engagements || response.data
+  return {
+    ok: true,
+    status: response.status,
+    data: Array.isArray(engagements) ? engagements : [engagements],
+    error: null,
+  }
+}
+
+/**
+ * Fetch ALL engagements for a tax year in a single call.
+ * GET /v2/engagements?source=ITO&period={year}
+ *
+ * The engagement service returns every engagement for the firm's realm
+ * when oiiClientId is omitted, which makes a full-firm sync ~1 request
+ * per tax year instead of one request per (client, year) pair. This is
+ * the same strategy as the proconnect-sync-engagements Edge Function.
+ */
+export async function fetchAllEngagementsForYear(
+  taxYear: number
+): Promise<ApiResponse<unknown[]>> {
+  const response = await apiRequest<{ engagements: unknown[] }>(
+    ENGAGEMENT_SERVICE_URL,
+    "/v2/engagements",
+    {
+      params: {
+        source: "ITO",
+        period: taxYear.toString(),
+      },
+    }
+  )
+
+  if (!response.ok || !response.data) {
+    return { ...response, data: null }
+  }
+
   const engagements = response.data.engagements || response.data
   return {
     ok: true,

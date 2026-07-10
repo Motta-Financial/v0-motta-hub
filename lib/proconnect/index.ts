@@ -20,6 +20,7 @@ export {
   fetchClients,
   fetchClient,
   fetchEngagements,
+  fetchAllEngagementsForYear,
   fetchCustomStatuses,
   extractClientEmail,
   extractClientId,
@@ -30,7 +31,10 @@ export {
 // Sync
 export {
   runFullSync,
+  runBulkSync,
   getSyncStats,
   syncSingleClient,
+  prefetchClientList,
+  refreshClientYearEngagements,
   deleteClient,
 } from "./sync"

@@ -12,6 +12,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js"
 import {
   fetchClients,
   fetchEngagements,
+  fetchAllEngagementsForYear,
   fetchCustomStatuses,
   extractClientEmail,
   extractClientId,
@@ -19,7 +20,11 @@ import {
   RETURN_TYPE_MAP,
 } from "./client"
 
-const SUPABASE_URL = process.env.SUPABASE_URL!
+// SUPABASE_URL is not set on every Vercel project that serves this repo —
+// fall back to the public URL (same project) so cron/webhook code paths
+// never build "undefined/..." URLs.
+const SUPABASE_URL = (process.env.SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL)!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
 // Tax years to sync (inclusive)
@@ -612,6 +617,323 @@ async function syncCustomStatuses(
   return { count, errors }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Bulk sync (per-year engagement fetch) — the nightly-cron strategy
+// ═══════════════════════════════════════════════════════════════════════════
+
+// First tax year ProConnect holds data for this firm.
+const FIRST_TAX_YEAR = 2021
+
+function taxYearsThroughCurrent(): number[] {
+  const years: number[] = []
+  for (let y = FIRST_TAX_YEAR; y <= new Date().getFullYear(); y++) years.push(y)
+  return years
+}
+
+const UPSERT_BATCH_SIZE = 100
+
+interface RawEngagement {
+  engagementId?: string
+  id?: string
+  clientId?: string
+  period?: string
+  type?: string
+  name?: string
+  state?: string
+  status?: string
+  workStatus?: string
+  userDefinedStatus?: string
+  assignee?: { profileId?: string; authId?: string }
+  createdBy?: { profileId?: string }
+  modifiedBy?: { profileId?: string }
+  createdDate?: string
+  modifiedDate?: string
+  taxFiling?: {
+    filings?: Array<{
+      filingStatuses?: Array<{ status?: string; date?: string }>
+    }>
+  }
+}
+
+/**
+ * The e-file status lives in taxFiling.filings[].filingStatuses[], not in a
+ * top-level `efileStatus` field. Pick the most recent status by date.
+ */
+function getLatestEfileStatus(eng: RawEngagement): string | null {
+  let latest: { status?: string; date?: string } | null = null
+  let latestDate = new Date(0)
+  for (const filing of eng.taxFiling?.filings || []) {
+    for (const s of filing.filingStatuses || []) {
+      if (s.date) {
+        const d = new Date(s.date)
+        if (d > latestDate) {
+          latestDate = d
+          latest = s
+        }
+      }
+    }
+  }
+  return latest?.status ?? null
+}
+
+function mapEngagementRow(raw: unknown, fallbackYear: number) {
+  const eng = raw as RawEngagement
+  const now = new Date().toISOString()
+  const period = eng.period ? Number.parseInt(eng.period, 10) : NaN
+  return {
+    engagement_id: eng.engagementId || eng.id || null,
+    proconnect_client_id: eng.clientId || null,
+    tax_year: Number.isFinite(period) ? period : fallbackYear,
+    return_type: eng.type ?? null,
+    form_type: eng.type ?? null,
+    engagement_name: eng.name ?? null,
+    engagement_state: eng.state ?? null,
+    status: eng.status ?? null,
+    work_status: eng.workStatus ?? null,
+    user_defined_status_id: eng.userDefinedStatus ?? null,
+    efile_status: getLatestEfileStatus(eng),
+    assignee_profile_id: eng.assignee?.profileId ?? null,
+    assignee_auth_id: eng.assignee?.authId ?? null,
+    created_by_profile_id: eng.createdBy?.profileId ?? null,
+    modified_by_profile_id: eng.modifiedBy?.profileId ?? null,
+    proconnect_created_at: eng.createdDate ?? null,
+    proconnect_modified_at: eng.modifiedDate ?? null,
+    raw_json: raw,
+    synced_at: now,
+    updated_at: now,
+  }
+}
+
+interface RawClient {
+  oiiClientId?: string
+  id?: { value?: string } | string
+  clientState?: string
+  person?: RawClientEntity
+  organization?: RawClientEntity
+}
+
+interface RawClientEntity {
+  taxId?: string
+  names?: Array<{ firstName?: string; lastName?: string; name?: string }>
+  emailAddresses?: Array<{ address?: string; properties?: { isPrimary?: string } }>
+  phoneNumbers?: Array<{ number?: string; properties?: { isPrimary?: string } }>
+  physicalAddresses?: Array<{
+    city?: string
+    stateOrProvince?: string
+    postalCode?: string
+    properties?: { isPrimary?: string }
+  }>
+}
+
+function getPrimary<T extends { properties?: { isPrimary?: string } }>(
+  items: T[] | undefined
+): T | undefined {
+  if (!items || items.length === 0) return undefined
+  return items.find((i) => i.properties?.isPrimary === "true") || items[0]
+}
+
+/**
+ * Map a raw /v1/clients entry to a proconnect_clients row, including the
+ * fields the auto-link trigger and the /tax UI depend on (client_type,
+ * client_state, contact info). hub_contact_id / hub_organization_id are
+ * intentionally omitted — see syncClients() for the rationale.
+ */
+export function mapClientRow(raw: unknown) {
+  const client = raw as RawClient
+  const names = extractClientName(raw)
+  const contactSource = client.person || client.organization
+  const primaryEmail = getPrimary(contactSource?.emailAddresses)
+  const primaryPhone = getPrimary(contactSource?.phoneNumbers)
+  const primaryAddress = getPrimary(contactSource?.physicalAddresses)
+  const now = new Date().toISOString()
+
+  return {
+    proconnect_client_id:
+      client.oiiClientId ||
+      (typeof client.id === "string" ? client.id : client.id?.value) ||
+      null,
+    top_level_entity_id:
+      typeof client.id === "object" ? (client.id?.value ?? null) : null,
+    client_type: client.person
+      ? "PERSON"
+      : client.organization
+        ? "ORGANIZATION"
+        : null,
+    client_state: client.clientState ?? null,
+    first_name: names.firstName,
+    last_name: names.lastName,
+    business_name: names.businessName,
+    display_name: names.displayName,
+    name_for_matching: names.displayName?.toLowerCase() ?? null,
+    email: primaryEmail?.address || extractClientEmail(raw),
+    phone: primaryPhone?.number ?? null,
+    city: primaryAddress?.city ?? null,
+    state: primaryAddress?.stateOrProvince ?? null,
+    zip: primaryAddress?.postalCode ?? null,
+    tax_id: client.person?.taxId || client.organization?.taxId || null,
+    raw_json: raw,
+    synced_at: now,
+    updated_at: now,
+  }
+}
+
+/** Does a raw /v1/clients entry match a webhook entity id? */
+function clientMatchesId(raw: unknown, targetId: string): boolean {
+  const client = raw as RawClient
+  const topLevelId =
+    typeof client.id === "string" ? client.id : client.id?.value
+  return client.oiiClientId === targetId || topLevelId === targetId
+}
+
+async function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+/**
+ * Retry a ProConnect fetch on 429/5xx with exponential backoff. The
+ * apiRequest layer surfaces those as ok=false with a status code.
+ */
+async function withRetry<T>(
+  fn: () => Promise<{ ok: boolean; status: number; data: T | null; error: string | null }>,
+  label: string,
+  retries = 4
+): Promise<{ ok: boolean; status: number; data: T | null; error: string | null }> {
+  let last: { ok: boolean; status: number; data: T | null; error: string | null } = {
+    ok: false,
+    status: 0,
+    data: null,
+    error: "not attempted",
+  }
+  for (let attempt = 0; attempt < retries; attempt++) {
+    last = await fn()
+    if (last.ok || (last.status !== 429 && last.status < 500)) return last
+    const backoff = 800 * Math.pow(2, attempt)
+    console.log(`[ProConnect Sync] ${label}: ${last.status} — retrying in ${backoff}ms`)
+    await sleep(backoff)
+  }
+  return last
+}
+
+/**
+ * Bulk sync: clients (1 call) → engagements (1 call per tax year) →
+ * custom statuses (1 call). ~8 API calls total instead of the legacy
+ * per-client loop's ~12,000, so it comfortably completes inside a
+ * single Vercel invocation. This is what the nightly cron runs.
+ */
+export async function runBulkSync(
+  syncType: "full" | "manual" = "full"
+): Promise<SyncResult> {
+  const startTime = Date.now()
+  const supabase = getSupabaseAdmin()
+  const errors: string[] = []
+  const syncLogId = await createSyncLog(supabase, syncType)
+
+  let clientsSynced = 0
+  let engagementsSynced = 0
+  let customStatusesSynced = 0
+
+  try {
+    // ── 1. Clients ─────────────────────────────────────────────────────
+    const clientsResp = await withRetry(() => fetchClients(), "clients")
+    if (!clientsResp.ok || !clientsResp.data) {
+      errors.push(`clients fetch failed: ${clientsResp.error}`)
+    } else {
+      const rows = clientsResp.data
+        .map(mapClientRow)
+        .filter((r) => r.proconnect_client_id)
+      for (let i = 0; i < rows.length; i += UPSERT_BATCH_SIZE) {
+        const batch = rows.slice(i, i + UPSERT_BATCH_SIZE)
+        const { error } = await supabase
+          .from("proconnect_clients")
+          .upsert(batch, { onConflict: "proconnect_client_id" })
+        if (error) {
+          errors.push(`clients upsert @${i}: ${error.message}`)
+        } else {
+          clientsSynced += batch.length
+        }
+      }
+    }
+
+    // ── 2. Engagements, one bulk call per tax year ─────────────────────
+    for (const year of taxYearsThroughCurrent()) {
+      const resp = await withRetry(
+        () => fetchAllEngagementsForYear(year),
+        `engagements ${year}`
+      )
+      if (!resp.ok || !resp.data) {
+        // 404 just means no engagements exist for that year
+        if (resp.status !== 404) {
+          errors.push(`engagements ${year} fetch failed: ${resp.error}`)
+        }
+        continue
+      }
+      const rows = resp.data
+        .map((raw) => mapEngagementRow(raw, year))
+        .filter((r) => r.engagement_id && r.proconnect_client_id)
+      for (let i = 0; i < rows.length; i += UPSERT_BATCH_SIZE) {
+        const batch = rows.slice(i, i + UPSERT_BATCH_SIZE)
+        const { error } = await supabase
+          .from("proconnect_engagements")
+          .upsert(batch, { onConflict: "engagement_id" })
+        if (error) {
+          errors.push(`engagements ${year} upsert @${i}: ${error.message}`)
+        } else {
+          engagementsSynced += batch.length
+        }
+      }
+    }
+
+    // ── 3. Custom statuses ─────────────────────────────────────────────
+    const statusResult = await syncCustomStatuses(supabase)
+    customStatusesSynced = statusResult.count
+    errors.push(...statusResult.errors)
+
+    const success = errors.length === 0
+    await updateSyncLog(supabase, syncLogId, {
+      status: success ? "success" : "failed",
+      clients_synced: clientsSynced,
+      engagements_synced: engagementsSynced,
+      custom_statuses_synced: customStatusesSynced,
+      last_client_index: 0,
+      error_message: success
+        ? `Bulk sync: ${clientsSynced} clients, ${engagementsSynced} engagements in ${Math.round((Date.now() - startTime) / 1000)}s`
+        : `${errors.length} errors occurred`,
+      error_details: success ? null : { errors: errors.slice(0, 50) },
+    })
+
+    return {
+      success,
+      syncLogId,
+      clientsSynced,
+      engagementsSynced,
+      customStatusesSynced,
+      errors,
+      duration: Date.now() - startTime,
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error"
+    errors.push(msg)
+    await updateSyncLog(supabase, syncLogId, {
+      status: "failed",
+      clients_synced: clientsSynced,
+      engagements_synced: engagementsSynced,
+      custom_statuses_synced: customStatusesSynced,
+      last_client_index: 0,
+      error_message: msg,
+      error_details: { errors: errors.slice(0, 50), stack: err instanceof Error ? err.stack : null },
+    })
+    return {
+      success: false,
+      syncLogId,
+      clientsSynced,
+      engagementsSynced,
+      customStatusesSynced,
+      errors,
+      duration: Date.now() - startTime,
+    }
+  }
+}
+
 /**
  * Run the full sync with timeout awareness and resumable progress.
  * If a previous run was partial, this will resume from where it left off.
@@ -857,48 +1179,54 @@ export async function getSyncStats(): Promise<{
 }
 
 /**
- * Sync a single client (for webhook updates)
+ * Fetch the full client list once so a webhook batch with many Client
+ * entities doesn't hit /v1/clients once per entity (that's what caused
+ * the 429 bursts). Returns null on failure.
+ */
+export async function prefetchClientList(): Promise<unknown[] | null> {
+  const response = await withRetry(() => fetchClients(), "clients (webhook prefetch)")
+  return response.ok && response.data ? response.data : null
+}
+
+/**
+ * Sync a single client (for webhook updates).
+ *
+ * ProConnect has no single-client GET (`/v1/clients/{id}` 404s), so we
+ * pull the full list and filter by id. Pass `prefetchedClients` when
+ * processing several Client events in one webhook delivery.
  */
 export async function syncSingleClient(
-  proconnectClientId: string
+  proconnectClientId: string,
+  prefetchedClients?: unknown[] | null
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = getSupabaseAdmin()
 
   try {
-    // Import fetchClient dynamically to avoid circular deps
-    const { fetchClient } = await import("./client")
-    const response = await fetchClient(proconnectClientId)
-
-    if (!response.ok || !response.data) {
-      return { success: false, error: response.error || "Not found" }
+    let clients = prefetchedClients ?? null
+    if (!clients) {
+      clients = await prefetchClientList()
+      if (!clients) {
+        return { success: false, error: "Failed to fetch client list" }
+      }
     }
 
-    const client = response.data
-    const email = extractClientEmail(client)
-    const names = extractClientName(client)
-    // hub_contact_id intentionally omitted from the upsert payload —
-    // see syncClients() above for the full rationale. INSERTs are
-    // handled by the BEFORE-INSERT trigger; UPDATEs must preserve any
-    // auto_fuzzy / manual mappings already on the row.
+    const client = clients.find((c) => clientMatchesId(c, proconnectClientId))
+    if (!client) {
+      // Deleted between the event and processing, or an id we don't
+      // recognize. The nightly bulk sync is the safety net.
+      return {
+        success: false,
+        error: `Client ${proconnectClientId} not present in /v1/clients response`,
+      }
+    }
 
+    // hub_contact_id / hub_organization_id intentionally omitted from
+    // the row (see syncClients / mapClientRow). INSERTs are handled by
+    // the BEFORE-INSERT trigger; UPDATEs must preserve any auto_fuzzy /
+    // manual mappings.
     const { error } = await supabase
       .from("proconnect_clients")
-      .upsert(
-        {
-          proconnect_client_id: proconnectClientId,
-          email,
-          first_name: names.firstName,
-          last_name: names.lastName,
-          business_name: names.businessName,
-          display_name: names.displayName,
-          name_for_matching: names.displayName?.toLowerCase(),
-          raw_json: client,
-          // hub_contact_id intentionally omitted (see syncClients).
-          synced_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "proconnect_client_id" }
-      )
+      .upsert(mapClientRow(client), { onConflict: "proconnect_client_id" })
 
     if (error) {
       return { success: false, error: error.message }
@@ -911,6 +1239,42 @@ export async function syncSingleClient(
       error: err instanceof Error ? err.message : "Unknown error",
     }
   }
+}
+
+/**
+ * Refresh all engagements for one (client, year) pair — used by the
+ * TaxReturnWorkStatus webhook so status changes land without waiting
+ * for the nightly sync. One API call.
+ */
+export async function refreshClientYearEngagements(
+  proconnectClientId: string,
+  taxYear: number
+): Promise<{ success: boolean; count: number; error?: string }> {
+  const supabase = getSupabaseAdmin()
+
+  const resp = await withRetry(
+    () => fetchEngagements(proconnectClientId, taxYear),
+    `engagements ${proconnectClientId}/${taxYear}`
+  )
+  if (!resp.ok || !resp.data) {
+    if (resp.status === 404) return { success: true, count: 0 }
+    return { success: false, count: 0, error: resp.error || "fetch failed" }
+  }
+
+  // The engagement endpoint can return engagements belonging to other
+  // clients — trust each row's own clientId (mapEngagementRow does).
+  const rows = resp.data
+    .map((raw) => mapEngagementRow(raw, taxYear))
+    .filter((r) => r.engagement_id && r.proconnect_client_id)
+
+  if (rows.length === 0) return { success: true, count: 0 }
+
+  const { error } = await supabase
+    .from("proconnect_engagements")
+    .upsert(rows, { onConflict: "engagement_id" })
+
+  if (error) return { success: false, count: 0, error: error.message }
+  return { success: true, count: rows.length }
 }
 
 /**
