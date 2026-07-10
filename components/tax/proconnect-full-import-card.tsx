@@ -330,7 +330,9 @@ export function ProconnectFullImportCard() {
                 <Meta label="Engagements synced" value={lastSync.engagementsSynced.toLocaleString()} />
                 <Meta label="Custom statuses synced" value={lastSync.customStatusesSynced.toLocaleString()} />
               </div>
-              {lastSync.errorMessage && (
+              {lastSync.errorMessage &&
+                lastSync.status !== "success" &&
+                lastSync.status !== "completed" && (
                 <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
                   <span className="font-medium">Error:</span> {lastSync.errorMessage}
                 </div>
