@@ -159,6 +159,11 @@ export async function sendEmail({
  */
 const RESEND_BATCH_LIMIT = 100
 
+// Resend enforces a hard 10 requests/second limit. When we must send one
+// request per recipient (attachment sends, which the batch endpoint can't
+// carry), cap concurrency to 8 per ~1.1s window to stay safely under it.
+const RESEND_MAX_RPS = 8
+
 export async function sendBatchEmail(
   messages: Array<Omit<SendEmailParams, "attachments">>,
 ): Promise<{ sent: number; failed: number; ids: string[] }> {
@@ -1096,18 +1101,31 @@ export async function sendCategoryEmail(opts: {
     // Resend's batch endpoint can't carry attachments, so send one message
     // per recipient. Still individually addressed (no shared `to` list), so
     // recipients never see each other's addresses.
-    const results = await Promise.all(
-      recipients.map((r) =>
-        sendEmail({
-          to: r.email,
-          subject: opts.subject,
-          html: opts.html,
-          replyTo: opts.replyTo,
-          attachments: opts.attachments,
-        }).then((res) => res.success),
-      ),
-    )
-    sent = results.filter(Boolean).length
+    //
+    // Resend enforces a hard 10 requests/second limit. Firing every send in
+    // one Promise.all tripped 429s (e.g. the 18-recipient Tommy recap only
+    // landed 10 of 18). Send in throttled chunks that stay safely under the
+    // limit: RESEND_MAX_RPS per ~1.1s window.
+    const chunkSize = RESEND_MAX_RPS
+    for (let i = 0; i < recipients.length; i += chunkSize) {
+      const chunk = recipients.slice(i, i + chunkSize)
+      const results = await Promise.all(
+        chunk.map((r) =>
+          sendEmail({
+            to: r.email,
+            subject: opts.subject,
+            html: opts.html,
+            replyTo: opts.replyTo,
+            attachments: opts.attachments,
+          }).then((res) => res.success),
+        ),
+      )
+      sent += results.filter(Boolean).length
+      // Pace the next chunk to respect the per-second cap (skip after last).
+      if (i + chunkSize < recipients.length) {
+        await new Promise((resolve) => setTimeout(resolve, 1100))
+      }
+    }
   } else {
     // No attachments -> collapse the whole fan-out into one batch call.
     const { sent: batchSent } = await sendBatchEmail(
