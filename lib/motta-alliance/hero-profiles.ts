@@ -202,6 +202,61 @@ export const HERO_PROFILES: HeroProfile[] = [
     ],
   },
   {
+    slug: "shinika-shelley",
+    name: "Shinika Shelley",
+    alias: "The Control Tower",
+    role: "Multi-Client Accounting. Financial Review. The Final Review.",
+    quote: "When the numbers get noisy, I bring the signal back.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Shinika_Shelley.png",
+    appearance:
+      "Adult WOMAN — Black/African-American, long dark curly hair in a high half-up style, hoop earrings, red lipstick, poised commanding stance. Black tactical suit with white lotus chest emblem, olive-green cape. Signature: glowing multi-client dashboard and cash-flow analysis holograms orbiting her.",
+    aliases: [
+      "shinika shelley",
+      "the control tower",
+      "shinika.shelley@mottafinancial.com",
+      "shinika",
+    ],
+  },
+  {
+    slug: "justin-bestel",
+    name: "Justin Bestel",
+    alias: "The Systems Strategist",
+    role: "Accounting Consulting. Financial Analysis. The Systems Reset.",
+    quote: "When the process breaks down, I build the system back stronger.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Justin_Bestel.png",
+    appearance:
+      "Adult man, Caucasian, short dark hair, warm confident smile, open welcoming stance. Black tactical suit with white lotus chest emblem, olive-green cape, gold belt. Signature: glowing cash-flow forecast, KPI dashboard, and systems-map (ERP/GL/AP/AR) holograms arrayed around him.",
+    aliases: [
+      "justin bestel",
+      "the systems strategist",
+      "justin.bestel@mottafinancial.com",
+      "justin",
+    ],
+  },
+  {
+    slug: "matthew-pereira",
+    name: "Matthew Pereira",
+    alias: "The Fastest Closer",
+    role: "Accounting Leadership. FP&A. The Lightning Close.",
+    quote: "Speed matters. Accuracy matters more. I bring both.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Matt_Pereira.png",
+    appearance:
+      "Adult man, Caucasian, short dark hair, trimmed beard, broad grin, dynamic forward-leaning pose. Black tactical suit with white lotus chest emblem, gold lightning-bolt accents and crackling green-gold lightning energy. Signature: 'BOOKS CLOSED' checkmark hologram and variance-analysis dashboards.",
+    aliases: [
+      "matthew pereira",
+      "matt pereira",
+      "the fastest closer",
+      "matthew.pereira@mottafinancial.com",
+      "matt",
+    ],
+  },
+  {
     slug: "alfred",
     name: "ALFRED",
     alias: "The AI Operative",
