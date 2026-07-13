@@ -6,12 +6,16 @@
  *   GET  /v2/clients/{clientId}/returns/{returnId}/data
  *   POST /v2/clients/{clientId}/returns/{returnId}/import/series/{seriesId}
  *
- * These live on https://api.intuit.com (NOT on client.accountant or
- * engagement.accountant) and require the scope
- * `com.intuit.proconnect.taxreturns` which Intuit must explicitly
- * allow-list for our app. If our existing refresh token doesn't have
- * that scope, calls will return 401 — we surface that distinctly so
- * the dashboard can prompt re-consent rather than silently failing.
+ * These live on https://protaxdata.api.intuit.com (the Data Service host —
+ * NOT client.accountant, engagement.accountant, or the plain api.intuit.com
+ * gateway) and require the scope `com.intuit.proconnect.taxreturns`, which
+ * Intuit must explicitly allow-list for our app (Phase 1 doc §2.1 / §7).
+ * Until that provisioning happens, the gateway rejects calls at the edge
+ * with `403 insufficient_scope` / `AuthorizationFailed` (verified 2026-07-13
+ * against realm 9130356180193146 with a freshly-minted, valid token) — even
+ * though the same scope works on the Client + Engagement services. We surface
+ * the 403 as `scope_missing` (see classify) so the dashboard can prompt
+ * re-consent rather than silently failing.
  *
  * Reference: ProConnect Open API Doc — Phase 1.
  */
@@ -19,7 +23,7 @@
 import { getAccessToken, getRealmId } from "./oauth"
 
 const TAX_RETURNS_BASE_URL =
-  process.env.PROCONNECT_TAX_RETURNS_BASE_URL || "https://api.intuit.com"
+  process.env.PROCONNECT_TAX_RETURNS_BASE_URL || "https://protaxdata.api.intuit.com"
 
 // Spec caps a single import at 500 entries. We split anything larger.
 export const MAX_ENTRIES_PER_IMPORT = 500
