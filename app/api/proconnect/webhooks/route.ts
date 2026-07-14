@@ -102,7 +102,7 @@ async function logWebhookEvent(
  */
 async function updateWebhookEvent(
   eventId: string,
-  status: "processed" | "failed",
+  status: "processed" | "failed" | "skipped",
   error?: string
 ): Promise<void> {
   const supabase = getSupabaseAdmin()
@@ -128,7 +128,7 @@ async function updateWebhookEvent(
 async function processClientEvent(
   entity: WebhookEntity,
   sharedClientList: unknown[] | null
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
   if (entity.operation === "Delete") {
     return deleteClient(entity.id)
   }
@@ -322,7 +322,7 @@ async function processEntity(
   const eventId = await logWebhookEvent(entity, realmId, payload, "pending")
 
   try {
-    let result: { success: boolean; error?: string }
+    let result: { success: boolean; skipped?: boolean; error?: string }
 
     switch (entity.name) {
       case "Client":
@@ -338,7 +338,12 @@ async function processEntity(
         result = { success: false, error: `Unknown entity type: ${entity.name}` }
     }
 
-    if (result.success) {
+    // skipped = received but intentionally not applied (e.g. an event for a
+    // client/return that's no longer in ProConnect). Not a fault — kept
+    // distinct from "failed" so the status panel doesn't cry wolf.
+    if (result.skipped) {
+      await updateWebhookEvent(eventId, "skipped", result.error)
+    } else if (result.success) {
       await updateWebhookEvent(eventId, "processed")
     } else {
       await updateWebhookEvent(eventId, "failed", result.error)
