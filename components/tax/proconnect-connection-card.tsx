@@ -303,28 +303,40 @@ export function ProconnectConnectionCard() {
                 </p>
               ) : (
                 <ul className="divide-y rounded-md border">
-                  {data.recentWebhooks.map((ev) => (
-                    <li
-                      key={ev.id}
-                      className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-                    >
-                      <div className="flex min-w-0 items-center gap-2">
-                        <WebhookStatusDot status={ev.processing_status} />
-                        <span className="font-medium">{ev.event_type}</span>
-                        {ev.operation && (
-                          <Badge variant="secondary" className="text-xs">
-                            {ev.operation}
-                          </Badge>
+                  {data.recentWebhooks.map((ev) => {
+                    const failed =
+                      ev.processing_status === "failed" ||
+                      ev.processing_status === "error"
+                    return (
+                      <li key={ev.id} className="px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <WebhookStatusDot
+                              status={ev.processing_status}
+                              error={ev.processing_error}
+                            />
+                            <span className="font-medium">{ev.event_type}</span>
+                            {ev.operation && (
+                              <Badge variant="secondary" className="text-xs">
+                                {ev.operation}
+                              </Badge>
+                            )}
+                            <code className="truncate text-xs text-muted-foreground">
+                              {ev.entity_id}
+                            </code>
+                          </div>
+                          <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                            {timeAgo(ev.received_at)}
+                          </span>
+                        </div>
+                        {failed && ev.processing_error && (
+                          <p className="mt-1 pl-4 text-xs text-destructive">
+                            {ev.processing_error}
+                          </p>
                         )}
-                        <code className="truncate text-xs text-muted-foreground">
-                          {ev.entity_id}
-                        </code>
-                      </div>
-                      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                        {timeAgo(ev.received_at)}
-                      </span>
-                    </li>
-                  ))}
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
             </div>
@@ -383,17 +395,41 @@ function MetaRow({
   )
 }
 
-function WebhookStatusDot({ status }: { status: string | null }) {
-  const color =
-    status === "processed" || status === "success"
-      ? "bg-emerald-500"
-      : status === "error" || status === "failed"
-        ? "bg-destructive"
+function WebhookStatusDot({
+  status,
+  error,
+}: {
+  status: string | null
+  error?: string | null
+}) {
+  const isOk = status === "processed" || status === "success"
+  const isSkipped = status === "skipped"
+  const isFail = status === "error" || status === "failed"
+
+  // Both processed and skipped read as healthy green — skipped is drawn as a
+  // hollow (ringed) dot so it's distinguishable on close inspection without
+  // looking like a problem. Only genuine failures are red.
+  const color = isFail
+    ? "bg-destructive"
+    : isSkipped
+      ? "bg-transparent ring-1 ring-inset ring-emerald-500"
+      : isOk
+        ? "bg-emerald-500"
         : "bg-muted-foreground/40"
+
+  const label = isFail
+    ? `Failed: ${error ?? "unknown error"}`
+    : isSkipped
+      ? `Skipped: ${error ?? "not applied"}`
+      : isOk
+        ? "Processed successfully"
+        : status ?? "pending"
+
   return (
     <span
       className={`inline-block size-2 shrink-0 rounded-full ${color}`}
-      aria-label={status ?? "pending"}
+      title={label}
+      aria-label={label}
     />
   )
 }

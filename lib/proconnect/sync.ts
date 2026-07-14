@@ -1185,7 +1185,7 @@ export async function prefetchClientList(): Promise<unknown[] | null> {
 export async function syncSingleClient(
   proconnectClientId: string,
   prefetchedClients?: unknown[] | null
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
   const supabase = getSupabaseAdmin()
 
   try {
@@ -1199,11 +1199,16 @@ export async function syncSingleClient(
 
     const client = clients.find((c) => clientMatchesId(c, proconnectClientId))
     if (!client) {
-      // Deleted between the event and processing, or an id we don't
-      // recognize. The nightly bulk sync is the safety net.
+      // The client isn't in the active /v1/clients list — it was archived
+      // or deleted in ProConnect (which still emits Update events for it),
+      // or it's an id we don't sync. This is an expected steady state, not
+      // a fault: there's nothing to apply and retrying can't help, so we
+      // report it as *skipped* rather than failed. The nightly bulk sync
+      // remains the safety net if it ever reappears.
       return {
-        success: false,
-        error: `Client ${proconnectClientId} not present in /v1/clients response`,
+        success: true,
+        skipped: true,
+        error: `Client ${proconnectClientId} is not in the active ProConnect client list (likely archived or deleted). Nothing to sync.`,
       }
     }
 
