@@ -56,6 +56,10 @@ export async function generatePodiumImage(opts: {
   weekLabel: string
   winners: PodiumImageWinner[]
   quality?: "low" | "medium" | "high"
+  /** Optional free-text refinements appended to the prompt, e.g.
+   *  "Make Amy's hair more golden and flowing". Lets admins iterate
+   *  on the image from the hub without redeploying. */
+  extraPrompt?: string
 }): Promise<PodiumImageResult | null> {
   if (opts.winners.length === 0) return null
 
@@ -90,9 +94,8 @@ export async function generatePodiumImage(opts: {
   const tierLines = Array.from(tierMap.entries())
     .sort(([a], [b]) => a - b)
     .map(([rank, hs]) => {
-      const who = hs.map((h) => `${h.alias} (${h.name})`).join(" AND ")
-      const appearances = hs.map((h) => `${h.alias}: ${h.appearance}`).join(" | ")
-      return `${ordinal(rank)} place: ${who}\n  Appearance: ${appearances}`
+      const entries = hs.map((h) => `- ${h.alias} (${h.name}): ${h.appearance}`)
+      return [`${ordinal(rank)} PLACE PODIUM TIER:`, ...entries].join("\n")
     })
     .join("\n\n")
 
@@ -109,23 +112,27 @@ export async function generatePodiumImage(opts: {
     `BANNER: Across the top of the image — "MOTTA ALLIANCE — TOMMY AWARDS" (large, gold lettering)`,
     `with "${opts.weekLabel}" as a subtitle below. Both lines fully visible, never cropped.`,
     ``,
-    `WINNERS — render each character EXACTLY as shown in their reference images provided:`,
+    `=== WINNERS — FOLLOW EVERY DETAIL BELOW EXACTLY ===`,
     tierLines,
     ``,
-    `CHARACTER RULES (NON-NEGOTIABLE):`,
-    `- Use the reference images provided for EACH character's exact face, hair colour, skin tone, body type, and costume.`,
-    `- DO NOT substitute or invent new character designs — copy directly from the reference art.`,
-    `- Female characters (Amy Sparaco, Micaela Palacios, Shinika Shelley, Samprina Zekio) MUST be drawn as women.`,
+    `=== NON-NEGOTIABLE CHARACTER RULES ===`,
+    `- HAIR COLOUR IS MANDATORY: each character above has an explicit hair colour — you MUST render it exactly.`,
+    `  Amy Sparaco = LONG WAVY BLONDE HAIR. Do not make her brunette. Do not make her have dark hair. BLONDE.`,
+    `  Micaela Palacios = long dark hair. Shinika Shelley = long curly dark hair. Terry Song = short dark spiky hair.`,
+    `  Caleb Long = short brown hair. Every other character follows their description above.`,
+    `- Female characters MUST be drawn as women: Amy Sparaco, Micaela Palacios, Shinika Shelley.`,
     `- Every character wears a black tactical suit with a white lotus flower chest emblem.`,
     `- Each hero holds a champagne bottle spraying golden/olive "Motta Mist" confetti.`,
-    `- Multiple winners on the same tier stand side by side on the same block.`,
+    `- Multiple winners on the same tier stand side by side on the same podium block.`,
+    `- Do NOT invent characters, change appearances, or default to generic figures.`,
     ``,
-    `STYLE RULES:`,
-    `- Palette: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), off-white. NO purple. NO pink.`,
-    `- Stylised comic-book heroic figures — same art style as the reference images.`,
-    `- Background: dark night sky, city skyline silhouette, dramatic spotlight rays from below.`,
+    `=== STYLE ===`,
+    `Palette: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), off-white. NO purple. NO pink.`,
+    `Background: dark night sky, city skyline silhouette, dramatic spotlight rays from below.`,
     ``,
-    `TEXT RULE: Only text allowed = the banner + week label + the numerals 1, 2, 3. No names, no labels.`,
+    `=== TEXT RULE ===`,
+    `Only text in the image: the banner, week label, and numerals 1, 2, 3. No hero names, no labels.`,
+    ...(opts.extraPrompt ? [``, `=== ADDITIONAL INSTRUCTIONS ===`, opts.extraPrompt] : []),
   ].join("\n")
 
   // ── Build multimodal content with hero reference images ───────────

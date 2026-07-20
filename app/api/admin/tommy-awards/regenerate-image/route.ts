@@ -32,6 +32,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "week_id is required" }, { status: 400 })
   }
 
+  // Optional free-text refinement from the in-hub prompt box
+  let extraPrompt: string | undefined
+  try {
+    const body = await request.json()
+    extraPrompt = body?.extra_prompt?.trim() || undefined
+  } catch {
+    // no JSON body is fine
+  }
+
   const adminSupabase = createAdminClient()
 
   // Load the recap row eagerly so we can validate before accepting
@@ -83,6 +92,7 @@ export async function POST(request: NextRequest) {
         // background task completes within serverless after() limits.
         // The Friday cron still uses "high" for maximum quality.
         quality: "medium",
+        extraPrompt,
         winners: topThree.map((t) => ({
           name: t.name,
           rank: t.rank,

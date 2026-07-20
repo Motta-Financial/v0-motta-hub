@@ -52,6 +52,7 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
   const [regenerating, setRegenerating] = useState(false)
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null)
   const [regenerateError, setRegenerateError] = useState<string | null>(null)
+  const [extraPrompt, setExtraPrompt] = useState("")
   // Weekly recap is rendered ONLY when exactly one week is selected —
   // the API enforces this too, but we mirror the condition here so we
   // don't show a stale recap from a previous filter state while a
@@ -151,7 +152,11 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
       // 1. Fire the POST — returns 202 immediately, generation runs in background
       const res = await fetch(
         `/api/admin/tommy-awards/regenerate-image?week_id=${recap.week_id}`,
-        { method: "POST" },
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ extra_prompt: extraPrompt.trim() || undefined }),
+        },
       )
       const json = await res.json()
       if (!res.ok) {
@@ -363,7 +368,26 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                   {recap.ai_summary}
                 </p>
               )}
-              <div className="pt-1 flex flex-wrap gap-2">
+              {/* In-hub prompt refinement — lets admins tweak the image without redeploying */}
+              <div className="pt-1 space-y-2">
+                <p className="text-xs uppercase tracking-wider font-semibold" style={{ color: "#A8C566", opacity: 0.7 }}>
+                  Image refinement (optional)
+                </p>
+                <textarea
+                  value={extraPrompt}
+                  onChange={(e) => setExtraPrompt(e.target.value)}
+                  disabled={regenerating}
+                  placeholder={'e.g. "Make Amy\'s hair more golden and flowing" or "Add more confetti"'}
+                  rows={2}
+                  className="w-full rounded-md border px-3 py-2 text-xs resize-none focus:outline-none disabled:opacity-50"
+                  style={{
+                    backgroundColor: "rgba(168,197,102,0.05)",
+                    borderColor: "rgba(168,197,102,0.25)",
+                    color: "#E8E3DA",
+                  }}
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
                 {recap.podium_pdf_url && (
                   <a
                     href={recap.podium_pdf_url}

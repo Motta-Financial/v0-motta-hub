@@ -115,7 +115,7 @@ export const HERO_PROFILES: HeroProfile[] = [
     imageUrl:
       "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Amy%20Sparaco-vDEPVYSRH30YlXaAqNGA7DQjcgXgcI.png",
     appearance:
-      "Adult WOMAN — feminine build, long hair pulled back, poised analytical stance. Black tactical suit with white lotus chest emblem, AMBER/gold accents (distinct from the olive-green team). Signature: a glowing open ledger book or floating Balance Sheet / P&L / Cash Flow holograms.",
+      "Adult WOMAN — feminine build, LONG WAVY BLONDE HAIR (golden blonde, not dark), poised analytical stance. Black tactical suit with white lotus chest emblem, AMBER/gold accents (distinct from the olive-green team). Signature: a glowing open ledger book or floating Balance Sheet / P&L / Cash Flow holograms. CRITICAL: hair must be BLONDE.",
     aliases: ["amy sparaco", "the ledger oracle", "the newest member"],
   },
   {
