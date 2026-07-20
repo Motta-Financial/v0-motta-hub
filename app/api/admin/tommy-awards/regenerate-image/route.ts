@@ -1,26 +1,25 @@
-import { NextResponse } from "next/server"
-import { createAdminClient } from "@/lib/supabase/server"
+import { type NextRequest, NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 
 /**
  * Admin proxy for triggering a podium image regeneration from the UI.
  *
  * The underlying regenerate-image endpoint requires a CRON_SECRET Bearer
- * token, which cannot be safely exposed to the browser. This server-side
- * route:
- *   1. Verifies the caller is an authenticated Supabase user (session cookie).
- *   2. Forwards the request to the real regenerate endpoint with the
- *      CRON_SECRET attached — keeping the secret server-only.
+ * token which cannot be safely exposed to the browser. This server-side
+ * route verifies the caller has a valid session, then forwards the request
+ * internally with the CRON_SECRET attached — keeping the secret server-only.
  *
  * Usage: POST /api/admin/tommy-awards/regenerate-image?week_id=<uuid>
  */
-export async function POST(request: Request) {
-  // Require an active Supabase session — anyone logged in to the hub can
-  // trigger a regeneration (admin-gating can be tightened later).
-  const supabase = createAdminClient()
+export async function POST(request: NextRequest) {
+  // Use createClient (reads session cookies) + getAuthenticatedUser — same
+  // pattern as the rest of the codebase (profile route, ballot route, etc.)
+  const supabase = await createClient()
   const {
     data: { user },
     error: authErr,
-  } = await supabase.auth.getUser()
+  } = await getAuthenticatedUser(supabase)
 
   if (authErr || !user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -32,7 +31,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "week_id is required" }, { status: 400 })
   }
 
-  // Build the internal URL — same host, real regenerate route.
+  // Build internal URL — same origin, real regenerate route.
   const internalUrl = new URL(
     `/api/tommy-awards/recap/regenerate-image?week_id=${weekId}`,
     url.origin,
