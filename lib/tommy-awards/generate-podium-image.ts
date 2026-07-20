@@ -32,6 +32,7 @@ import { generateImage } from "ai"
 import { put } from "@vercel/blob"
 import { findHeroProfile, findHeroProfileBySlug } from "@/lib/motta-alliance/hero-profiles"
 import { IMAGE_GENERATION_MODEL } from "@/lib/ai/models"
+import { composePodiumImage } from "@/lib/tommy-awards/compose-podium-image"
 
 /** Image model — currently bound to `openai/gpt-image-2`, OpenAI's
  *  latest image generator (May 2026). Same `quality` provider option
@@ -67,6 +68,26 @@ export async function generatePodiumImage(opts: {
   quality?: "low" | "medium" | "high"
 }): Promise<PodiumImageResult | null> {
   if (opts.winners.length === 0) return null
+
+  // ── Primary path: compositor (real hero PNGs, no AI hallucination) ──
+  // Fetch the actual hero profile images from Blob and composite them
+  // directly onto the podium layout. This guarantees pixel-perfect
+  // character fidelity — no text descriptions, no AI-drawn faces.
+  const compositorResult = await composePodiumImage({
+    weekLabel: opts.weekLabel,
+    winners: opts.winners,
+  })
+  if (compositorResult) {
+    return {
+      imageUrl: compositorResult.imageUrl,
+      promptUsed: "compositor — real hero PNGs composited directly",
+      promptModel: "compositor",
+      imageModel: "compositor",
+    }
+  }
+
+  // ── Fallback: AI image generation (if compositor fails) ─────────
+  console.warn("[v0] tommy podium image: compositor failed, falling back to AI generation")
 
   // Default to "high" for the Friday cron; admin manual regenerations
   // pass "medium" so the job finishes well within background task limits.
