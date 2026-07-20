@@ -265,8 +265,6 @@ export async function composePodiumImage(opts: {
                 style={{
                   position: "absolute",
                   bottom: "12px",
-                  left: "50%",
-                  transform: "translateX(-50%)",
                   color: "#d4af37",
                   fontSize: "20px",
                   opacity: 0.6,
