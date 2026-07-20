@@ -146,7 +146,7 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
     setRegenerateError(null)
     try {
       const res = await fetch(
-        `/api/tommy-awards/recap/regenerate-image?week_id=${recap.week_id}`,
+        `/api/admin/tommy-awards/regenerate-image?week_id=${recap.week_id}`,
         { method: "POST" },
       )
       const json = await res.json()
