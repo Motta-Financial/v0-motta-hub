@@ -190,15 +190,33 @@ export async function composeWeeklyRecap(
 
   // Hidden members are excluded from the leaderboard, then dense ranks
   // (1, 1, 2, 3) handle ties so a 4-way tie at 3rd keeps all four.
+  //
+  // Tiebreaker order (descending):
+  //   1. totalPoints
+  //   2. first-place votes  (3 pts each — most decisive)
+  //   3. second-place votes (2 pts each)
+  //   4. third-place votes  (1 pt each)
+  // Dense ranking only groups entries that are truly tied on ALL four
+  // criteria, so "Amy (1 First, 1 Second = 5pts)" ranks above
+  // "Terry (2 Second, 1 Third = 5pts)" because Amy has more first-place votes.
   const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
   const sortedLeaderboard = Object.entries(voteMap)
     .filter(([name]) => !HIDDEN_MEMBERS.includes(name))
     .map(([name, stats]) => ({ name, ...stats }))
-    .sort((a, b) => b.totalPoints - a.totalPoints)
+    .sort((a, b) => {
+      if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints
+      if (b.first !== a.first) return b.first - a.first
+      if (b.second !== a.second) return b.second - a.second
+      return b.third - a.third
+    })
 
   const rankedLeaderboard = assignDenseRanks(
     sortedLeaderboard,
-    (a, b) => a.totalPoints === b.totalPoints,
+    (a, b) =>
+      a.totalPoints === b.totalPoints &&
+      a.first === b.first &&
+      a.second === b.second &&
+      a.third === b.third,
   )
 
   const topThree = rankedLeaderboard.filter((entry) => entry.rank <= 3) as TopThreeEntry[]
