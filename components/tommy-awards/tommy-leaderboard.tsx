@@ -5,7 +5,7 @@ import Image from "next/image"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { Trophy, Medal, Award, Sparkles, Lock, FileDown } from "lucide-react"
+import { Trophy, Medal, Award, Sparkles, Lock, FileDown, RefreshCw } from "lucide-react"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 import { TommyMemberBreakdownDialog } from "./tommy-member-breakdown-dialog"
 
@@ -49,6 +49,8 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
   const [totalBallots, setTotalBallots] = useState(0)
   const [loading, setLoading] = useState(true)
   const [selectedMember, setSelectedMember] = useState<string | null>(null)
+  const [regenerating, setRegenerating] = useState(false)
+  const [regenerateError, setRegenerateError] = useState<string | null>(null)
   // Weekly recap is rendered ONLY when exactly one week is selected —
   // the API enforces this too, but we mirror the condition here so we
   // don't show a stale recap from a previous filter state while a
@@ -135,6 +137,29 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
       console.error("Error fetching leaderboard:", error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleRegenerateImage = async () => {
+    if (!recap?.week_id || regenerating) return
+    setRegenerating(true)
+    setRegenerateError(null)
+    try {
+      const res = await fetch(
+        `/api/tommy-awards/recap/regenerate-image?week_id=${recap.week_id}`,
+        { method: "POST" },
+      )
+      const json = await res.json()
+      if (!res.ok) {
+        setRegenerateError(json?.error ?? "Image generation failed — check server logs.")
+      } else {
+        // Refresh the leaderboard so the new podium_image_url is picked up
+        await fetchLeaderboard()
+      }
+    } catch (err) {
+      setRegenerateError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      setRegenerating(false)
     }
   }
 
@@ -294,8 +319,8 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                   {recap.ai_summary}
                 </p>
               )}
-              {recap.podium_pdf_url && (
-                <div className="pt-1">
+              <div className="pt-1 flex flex-wrap gap-2">
+                {recap.podium_pdf_url && (
                   <a
                     href={recap.podium_pdf_url}
                     target="_blank"
@@ -310,8 +335,28 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                     <FileDown className="h-3.5 w-3.5" />
                     Download Dispatch PDF
                   </a>
-                </div>
-              )}
+                )}
+                {/* Admin: re-generate podium image from corrected top_three */}
+                <button
+                  type="button"
+                  onClick={handleRegenerateImage}
+                  disabled={regenerating}
+                  className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{
+                    backgroundColor: "rgba(230,168,92,0.10)",
+                    borderColor: "rgba(230,168,92,0.40)",
+                    color: "#E6A85C",
+                  }}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${regenerating ? "animate-spin" : ""}`} />
+                  {regenerating ? "Generating…" : "Regenerate Podium Image"}
+                </button>
+                {regenerateError && (
+                  <p className="w-full text-xs mt-1" style={{ color: "#E6A85C" }}>
+                    Error: {regenerateError}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         )}
