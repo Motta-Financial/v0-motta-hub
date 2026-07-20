@@ -34,7 +34,17 @@ type WebhookEvent = {
   processing_error: string | null
 }
 
+type Phase1Status = {
+  status: "ok" | "blocked" | "inactive"
+  snapshotCount: number
+  lastSuccessfulExport: string | null
+  exportFailures7d: number
+  lastExportError: string | null
+  lastExportErrorAt: string | null
+}
+
 type ProconnectStatus = {
+  phase1?: Phase1Status
   connected: boolean
   realmId: string | null
   scope: string | null
@@ -285,6 +295,63 @@ export function ProconnectConnectionCard() {
               <div className="text-xs text-muted-foreground">
                 <span className="font-medium">Scopes:</span>{" "}
                 <code className="rounded bg-muted px-1 py-0.5">{data.scope}</code>
+              </div>
+            )}
+
+            <Separator />
+
+            {/* ─── Phase 1 return-data export health ─── */}
+            {data.phase1 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <FileText className="size-4 text-muted-foreground" />
+                  Return data (Phase 1 export/import)
+                  {data.phase1.status === "ok" ? (
+                    <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 gap-1">
+                      <CheckCircle2 className="size-3" />
+                      Exports working
+                    </Badge>
+                  ) : data.phase1.status === "blocked" ? (
+                    <Badge variant="outline" className="border-destructive/40 bg-destructive/10 text-destructive gap-1">
+                      <AlertTriangle className="size-3" />
+                      Blocked by Intuit
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="border-muted-foreground/30 text-muted-foreground gap-1">
+                      No activity
+                    </Badge>
+                  )}
+                </div>
+                {data.phase1.status === "blocked" ? (
+                  <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                    <div className="space-y-1">
+                      <p className="font-medium">
+                        Return-data exports are being rejected by Intuit
+                        ({data.phase1.exportFailures7d} failures in the last 7 days).
+                      </p>
+                      <p className="text-xs opacity-90">
+                        The token has the <code>taxreturns</code> scope, so this usually
+                        means the app is not yet allow-listed for the Phase 1 data
+                        endpoints. Contact the Intuit ProConnect API partner team, then
+                        Reconnect / re-consent above.
+                      </p>
+                      {data.phase1.lastExportError && (
+                        <p className="text-xs opacity-75">
+                          Last error {timeAgo(data.phase1.lastExportErrorAt)}: {data.phase1.lastExportError}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {data.phase1.snapshotCount.toLocaleString()} return snapshot
+                    {data.phase1.snapshotCount === 1 ? "" : "s"} stored
+                    {data.phase1.lastSuccessfulExport
+                      ? ` · last export ${timeAgo(data.phase1.lastSuccessfulExport)}`
+                      : " · no exports yet — snapshots populate as TaxReturn webhooks arrive"}
+                  </p>
+                )}
               </div>
             )}
 

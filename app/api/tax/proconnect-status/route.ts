@@ -77,7 +77,59 @@ export async function GET() {
     supabase.from("proconnect_engagements").select("id", { count: "exact", head: true }),
   ])
 
+  // 5. Phase 1 return-data export health. Exports run on every TaxReturn
+  // webhook; failures are recorded on the event row (processing_error
+  // starts with "export failed:"). This surfaced the fact that exports
+  // had NEVER succeeded (403 scope_missing — app not allow-listed for
+  // the data endpoints) after months of silent soft-fails.
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const [
+    { data: lastSnapshot },
+    { count: snapshotCount },
+    { count: exportFailures7d },
+    { data: lastExportFailure },
+  ] = await Promise.all([
+    supabase
+      .from("proconnect_return_snapshots")
+      .select("exported_at")
+      .order("exported_at", { ascending: false })
+      .limit(1),
+    supabase.from("proconnect_return_snapshots").select("id", { count: "exact", head: true }),
+    supabase
+      .from("proconnect_webhook_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "TaxReturn")
+      .eq("processing_status", "failed")
+      .gte("received_at", sevenDaysAgo),
+    supabase
+      .from("proconnect_webhook_events")
+      .select("processing_error, received_at")
+      .eq("event_type", "TaxReturn")
+      .eq("processing_status", "failed")
+      .order("received_at", { ascending: false })
+      .limit(1),
+  ])
+
+  const lastExportError = lastExportFailure?.[0]?.processing_error ?? null
+  const scopeBlocked =
+    !!lastExportError &&
+    (lastExportError.includes("scope_missing") || lastExportError.includes("access_denied"))
+  const phase1Status: "ok" | "blocked" | "inactive" =
+    scopeBlocked && (snapshotCount ?? 0) === 0
+      ? "blocked"
+      : (snapshotCount ?? 0) > 0
+        ? "ok"
+        : "inactive"
+
   return NextResponse.json({
+    phase1: {
+      status: phase1Status,
+      snapshotCount: snapshotCount ?? 0,
+      lastSuccessfulExport: lastSnapshot?.[0]?.exported_at ?? null,
+      exportFailures7d: exportFailures7d ?? 0,
+      lastExportError,
+      lastExportErrorAt: lastExportFailure?.[0]?.received_at ?? null,
+    },
     connected,
     realmId: token?.realm_id ?? null,
     scope: token?.scope ?? null,

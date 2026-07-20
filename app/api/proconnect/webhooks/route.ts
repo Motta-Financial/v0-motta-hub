@@ -180,15 +180,33 @@ async function processTaxReturnEvent(
     return { success: true }
   }
 
-  // Create / Update: refresh the snapshot. Errors here shouldn't fail
-  // the webhook (Intuit will retry the whole thing) — log and move on.
+  // Create / Update: refresh the snapshot. Export failures must not
+  // 4xx/5xx the webhook response (Intuit would retry the whole batch),
+  // but they DO mark the event row failed — the old warn-and-return-
+  // success pattern hid months of scope_missing 403s behind "processed"
+  // statuses and left every Phase 1 table empty with no signal anywhere.
   try {
     const result = await exportReturnData(clientId, entity.id)
     if (!result.ok) {
       console.warn(
         `[ProConnect Webhook] TaxReturn ${entity.id} export failed: ${result.error.kind} ${result.error.status}`
       )
-      return { success: true } // soft-fail; nightly sync will retry
+      // Config-shaped failures (missing scope / app not allow-listed)
+      // additionally raise a throttled email — they never self-heal.
+      if (result.error.kind === "scope_missing" || result.error.kind === "access_denied") {
+        try {
+          await maybeSendPhase1ExportAlert(sb, result.error.kind, result.error.status)
+        } catch (alertErr) {
+          console.error(
+            "[ProConnect Webhook] phase1 export alert failed:",
+            alertErr instanceof Error ? alertErr.message : alertErr
+          )
+        }
+      }
+      return {
+        success: false,
+        error: `export failed: ${result.error.kind} ${result.error.status}${result.intuitTid ? ` (intuit-tid ${result.intuitTid})` : ""}`,
+      }
     }
     const exp = result.data
     const flatCells = flattenSeriesMap(exp.data)
@@ -266,6 +284,74 @@ async function processTaxReturnEvent(
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/**
+ * Email a throttled alert when Phase 1 return-data exports are blocked
+ * by a configuration problem (missing scope / app not allow-listed by
+ * Intuit). Deduped to ~once per day via the integration_alerts table —
+ * same pattern as the Karbon auth alert in the karbon-sync cron.
+ */
+const PHASE1_ALERT_KEY = "proconnect_phase1_export"
+const PHASE1_ALERT_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000
+const PHASE1_ALERT_RECIPIENTS = ["team@motta.co"]
+
+async function maybeSendPhase1ExportAlert(
+  sb: ReturnType<typeof getSupabaseAdmin>,
+  kind: string,
+  status: number
+): Promise<void> {
+  const { data: prior } = await sb
+    .from("integration_alerts")
+    .select("last_alert_at")
+    .eq("integration", PHASE1_ALERT_KEY)
+    .maybeSingle()
+
+  if (
+    prior?.last_alert_at &&
+    Date.now() - new Date(prior.last_alert_at).getTime() < PHASE1_ALERT_MIN_INTERVAL_MS
+  ) {
+    return
+  }
+
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) {
+    console.error(
+      "[ProConnect Webhook] Phase 1 exports are blocked but RESEND_API_KEY is unset — cannot alert"
+    )
+    return
+  }
+
+  const { Resend } = await import("resend")
+  const resend = new Resend(apiKey)
+  await resend.emails.send({
+    from: process.env.RESEND_FROM_EMAIL || "noreply@motta.co",
+    to: PHASE1_ALERT_RECIPIENTS,
+    subject: "[Motta Hub] ProConnect return-data exports are blocked",
+    html: `
+      <h2>ProConnect Phase 1 export is failing (${kind}, HTTP ${status})</h2>
+      <p>Tax-return webhooks are arriving, but every attempt to export the
+      return's field data from <code>api.intuit.com</code> is rejected. Until
+      this is resolved, <code>proconnect_return_snapshots</code> stays stale/empty
+      and the return-data viewer and import (write-back) features cannot work.</p>
+      <h3>Most likely cause</h3>
+      <p><strong>${kind === "scope_missing" ? "The app is not allow-listed for the Phase 1 data endpoints." : "The token's firm does not have access to this return."}</strong>
+      The OAuth token already carries <code>com.intuit.proconnect.taxreturns</code>, so a
+      ${kind === "scope_missing" ? "403 here usually means Intuit must enable the export/import endpoints for the app — contact the Intuit ProConnect API partner team (realm 9130356180193146), then re-run the OAuth consent from /tax/settings." : "review of the client/return ownership is needed."}</p>
+      <p>Details: docs/proconnect-integration-review.md · This alert repeats at most once per day while the failure persists.</p>
+    `,
+  })
+
+  await sb.from("integration_alerts").upsert(
+    {
+      integration: PHASE1_ALERT_KEY,
+      last_alert_at: new Date().toISOString(),
+      last_alert_reason: `Phase 1 export ${kind} (HTTP ${status})`,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "integration" }
+  )
+  console.log("[ProConnect Webhook] Phase 1 export alert sent to", PHASE1_ALERT_RECIPIENTS.join(", "))
 }
 
 /**

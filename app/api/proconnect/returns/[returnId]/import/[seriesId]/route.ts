@@ -26,6 +26,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { requireLeadership } from "@/lib/auth/require-leadership"
 import {
   importSeries,
   exportReturnData,
@@ -57,6 +58,12 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ returnId: string; seriesId: string }> },
 ) {
+  // Write-back modifies field values on live tax returns in ProConnect —
+  // gate it to leadership, matching /api/proconnect/sync and the OAuth
+  // connect/disconnect routes. (Middleware only enforces "any session".)
+  const auth = await requireLeadership()
+  if (!auth.ok) return auth.response
+
   const sb = admin()
   const { returnId, seriesId } = await ctx.params
   const body = (await req.json().catch(() => ({}))) as Body
@@ -82,8 +89,14 @@ export async function POST(
 
   // ------------------------------------------------------------------ create audit row up-front
   const dryRun = Boolean(body.dryRun)
-  const trigger = body.actor ? `manual:${body.actor}` : "manual"
-  const triggerCtx: Record<string, unknown> = {}
+  // Audit the VERIFIED caller identity, not the body's self-declared
+  // actor — body.actor is kept in trigger_context for context only.
+  const trigger = `manual:${auth.email ?? auth.userId}`
+  const triggerCtx: Record<string, unknown> = {
+    team_member_id: auth.teamMemberId,
+    role: auth.role,
+  }
+  if (body.actor) triggerCtx.declared_actor = body.actor
   if (body.reason) triggerCtx.reason = body.reason
   const { data: jobRow, error: jobErr } = await sb
     .from("proconnect_import_jobs")
