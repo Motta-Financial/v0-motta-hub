@@ -292,7 +292,7 @@ This Week's Podium:
 ${podiumWithHero
   .map(
     (p) =>
-      `${ordinal(p.rank)}. ${p.name}${p.alias ? ` aka "${p.alias}"` : ""} — ${p.totalPoints} points (${p.first}×1st, ${p.second}×2nd, ${p.third}×3rd)${p.role ? ` [${p.role}]` : ""}`,
+      `${ordinal(p.rank)}. ${p.name}${p.alias ? ` aka "${p.alias}"` : ""} — ${p.totalPoints} points${p.role ? ` [${p.role}]` : ""}`,
   )
   .join("\n")}
 ${hasPodiumTies(topThree) ? "\nTies on the podium this week — celebrate tied heroes together as co-winners of that position, never as one outranking the other." : ""}
