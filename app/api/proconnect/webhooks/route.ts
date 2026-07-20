@@ -33,7 +33,8 @@ import {
   refreshClientYearEngagements,
   deleteClient,
 } from "@/lib/proconnect/sync"
-import { exportReturnData, flattenSeriesMap } from "@/lib/proconnect/data"
+import { exportReturnData } from "@/lib/proconnect/data"
+import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
 import { scanRelationships } from "@/lib/tax/relationships/scanner"
 
 const SUPABASE_URL = (process.env.SUPABASE_URL ||
@@ -208,64 +209,7 @@ async function processTaxReturnEvent(
         error: `export failed: ${result.error.kind} ${result.error.status}${result.intuitTid ? ` (intuit-tid ${result.intuitTid})` : ""}`,
       }
     }
-    const exp = result.data
-    const flatCells = flattenSeriesMap(exp.data)
-
-    const { data: snap, error: snapErr } = await sb
-      .from("proconnect_return_snapshots")
-      .upsert(
-        {
-          return_id: entity.id,
-          proconnect_client_id: clientId,
-          return_name: exp.name ?? null,
-          client_name: exp.clientName ?? null,
-          tax_year: exp.year ?? null,
-          return_type: exp.type ?? null,
-          version: exp.version ?? null,
-          series_versions: exp.seriesVersion ?? [],
-          efile_items: exp.efileItems ?? [],
-          agencies: exp.agency ?? [],
-          firm_id: exp.id_firm ?? null,
-          proconnect_created_by: exp.createdBy ?? null,
-          proconnect_created_time: exp.createdTime
-            ? new Date(exp.createdTime).toISOString()
-            : null,
-          raw_data: exp.data ?? null,
-          exported_at: new Date().toISOString(),
-          deleted_at: null,
-        },
-        { onConflict: "proconnect_client_id,return_id" }
-      )
-      .select("id")
-      .single()
-    if (snapErr) {
-      return { success: false, error: `snapshot upsert failed: ${snapErr.message}` }
-    }
-    const snapshotId = snap.id as string
-
-    await sb.from("proconnect_return_field_cells").delete().eq("return_id", entity.id)
-    if (flatCells.length > 0) {
-      const rows = flatCells.map((c) => ({
-        snapshot_id: snapshotId,
-        return_id: entity.id,
-        series_id: c.seriesId,
-        prefix_id: c.prefixId,
-        code_id: c.codeId,
-        suffix_id: c.suffixId,
-        val: c.cell.val ?? null,
-        description: c.cell.desc ?? null,
-        src: c.cell.src ?? null,
-        tsj: c.cell.tsj ?? null,
-        scope: c.cell.scope ?? null,
-        source: c.cell.source ?? null,
-        city_abbrev: c.cell.cityAbbrev ?? null,
-        import_source: c.cell.importSource ?? null,
-        raw_cell: c.cell,
-      }))
-      for (let i = 0; i < rows.length; i += 1000) {
-        await sb.from("proconnect_return_field_cells").insert(rows.slice(i, i + 1000))
-      }
-    }
+    await persistReturnSnapshot(sb, clientId, entity.id, result.data)
     // Re-scan relationships against the freshly imported snapshot so
     // newly visible K-1 issuers / Schedule-E payers / business owners
     // surface in the review queue without waiting for the next cron.
