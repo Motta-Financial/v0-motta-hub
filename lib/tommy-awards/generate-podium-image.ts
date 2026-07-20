@@ -65,12 +65,21 @@ export interface PodiumImageResult {
 /**
  * Generate + upload the weekly podium image. Returns `null` on failure
  * so the cron can fall back to an image-less email gracefully.
+ *
+ * @param opts.quality - "high" (default, best quality, used by cron) or
+ *   "medium" (faster, used by manual admin regeneration to stay within
+ *   serverless background task time limits).
  */
 export async function generatePodiumImage(opts: {
   weekLabel: string
   winners: PodiumImageWinner[]
+  quality?: "low" | "medium" | "high"
 }): Promise<PodiumImageResult | null> {
   if (opts.winners.length === 0) return null
+
+  // Default to "high" for the Friday cron; admin manual regenerations
+  // pass "medium" so the job finishes well within background task limits.
+  const imageQuality = opts.quality ?? "high"
 
   try {
     // ── Step 1 — resolve hero profiles for each winner ────────────
@@ -174,15 +183,16 @@ Winners this week (images follow below, in podium order):`,
 
     // gpt-5.5-pro is a deep-reasoning model — it spends a large share
     // of its output budget on hidden reasoning tokens BEFORE emitting
-    // any visible text. Vision inputs increase reasoning load further,
-    // so we keep the output budget generous (8k tokens). Image-prompt
-    // drafting is a once-a-week job so cost is negligible.
+    // any visible text. Vision inputs increase reasoning load further.
+    // We cap the VISIBLE output at 1500 tokens — we only need a ~200-word
+    // prompt, not 8k tokens. This cuts latency significantly without
+    // affecting output quality (the model still reasons internally).
     let cleanedPrompt = ""
     try {
       const { text: imagePrompt } = await generateText({
         model: PODIUM_PROMPT_MODEL,
         messages: [{ role: "user", content: userContent }],
-        maxOutputTokens: 8000,
+        maxOutputTokens: 1500,
       })
       cleanedPrompt = imagePrompt.trim().replace(/^["']|["']$/g, "")
       console.log(
@@ -227,10 +237,10 @@ Winners this week (images follow below, in podium order):`,
           size: "1536x1024", // wide format suits the F1 podium composition
           providerOptions: {
             openai: {
-              // gpt-image-1's top tier — the "extended pro" output the user
-              // asked for. "low" / "medium" / "high" are the supported
-              // values; "high" is the slowest + most detailed.
-              quality: "high",
+              // "high" = best quality (used by the Friday cron).
+              // "medium" = faster, used for manual admin regenerations
+              // to stay within serverless background task time limits.
+              quality: imageQuality,
             },
           },
         })

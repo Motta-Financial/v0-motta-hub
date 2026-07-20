@@ -159,14 +159,15 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
         return
       }
 
-      // 2. Poll every 6 s for up to 3 minutes
-      setRegenerateStatus("Generating podium image — this takes about 60–90 s…")
-      const POLL_INTERVAL = 6000
-      const MAX_POLLS = 30 // 30 × 6 s = 180 s
+      // 2. Poll every 8 s for up to 5 minutes
+      setRegenerateStatus("Generating podium image — this usually takes 60–90 s…")
+      const POLL_INTERVAL = 8000
+      const MAX_POLLS = 37 // 37 × 8 s ≈ 300 s (5 min)
       let polls = 0
 
       const poll = async (): Promise<void> => {
         polls++
+        const elapsed = polls * 8
         try {
           const pollRes = await fetch(
             `/api/admin/tommy-awards/regenerate-image?week_id=${recap.week_id}`,
@@ -184,12 +185,15 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
         }
 
         if (polls >= MAX_POLLS) {
-          setRegenerateError("Timed out after 3 minutes — check server logs.")
+          setRegenerateError("Image generation is taking longer than expected. Try clicking the button again in a minute.")
           setRegenerateStatus(null)
           return
         }
 
-        setRegenerateStatus(`Generating… (${polls * 6}s elapsed, checking again in 6s)`)
+        const mins = Math.floor(elapsed / 60)
+        const secs = elapsed % 60
+        const elapsedStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+        setRegenerateStatus(`Still generating… (${elapsedStr} elapsed)`)
         await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL))
         return poll()
       }

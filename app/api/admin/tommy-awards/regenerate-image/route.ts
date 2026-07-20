@@ -79,6 +79,10 @@ export async function POST(request: NextRequest) {
 
       const result = await generatePodiumImage({
         weekLabel: recap.week_label,
+        // "medium" keeps total pipeline time under ~90s so the
+        // background task completes within serverless after() limits.
+        // The Friday cron still uses "high" for maximum quality.
+        quality: "medium",
         winners: topThree.map((t) => ({
           name: t.name,
           rank: t.rank,
