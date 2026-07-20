@@ -50,6 +50,7 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
   const [loading, setLoading] = useState(true)
   const [selectedMember, setSelectedMember] = useState<string | null>(null)
   const [regenerating, setRegenerating] = useState(false)
+  const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null)
   const [regenerateError, setRegenerateError] = useState<string | null>(null)
   // Weekly recap is rendered ONLY when exactly one week is selected —
   // the API enforces this too, but we mirror the condition here so we
@@ -144,18 +145,57 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
     if (!recap?.week_id || regenerating) return
     setRegenerating(true)
     setRegenerateError(null)
+    setRegenerateStatus("Starting image generation…")
+
     try {
+      // 1. Fire the POST — returns 202 immediately, generation runs in background
       const res = await fetch(
         `/api/admin/tommy-awards/regenerate-image?week_id=${recap.week_id}`,
         { method: "POST" },
       )
       const json = await res.json()
       if (!res.ok) {
-        setRegenerateError(json?.error ?? "Image generation failed — check server logs.")
-      } else {
-        // Refresh the leaderboard so the new podium_image_url is picked up
-        await fetchLeaderboard()
+        setRegenerateError(json?.error ?? "Failed to start image generation.")
+        return
       }
+
+      // 2. Poll every 6 s for up to 3 minutes
+      setRegenerateStatus("Generating podium image — this takes about 60–90 s…")
+      const POLL_INTERVAL = 6000
+      const MAX_POLLS = 30 // 30 × 6 s = 180 s
+      let polls = 0
+
+      const poll = async (): Promise<void> => {
+        polls++
+        try {
+          const pollRes = await fetch(
+            `/api/admin/tommy-awards/regenerate-image?week_id=${recap.week_id}`,
+          )
+          const pollJson = await pollRes.json()
+
+          if (pollJson.ready) {
+            setRegenerateStatus("Done! Loading new image…")
+            await fetchLeaderboard()
+            setRegenerateStatus(null)
+            return
+          }
+        } catch {
+          // transient network error — keep polling
+        }
+
+        if (polls >= MAX_POLLS) {
+          setRegenerateError("Timed out after 3 minutes — check server logs.")
+          setRegenerateStatus(null)
+          return
+        }
+
+        setRegenerateStatus(`Generating… (${polls * 6}s elapsed, checking again in 6s)`)
+        await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL))
+        return poll()
+      }
+
+      await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL))
+      await poll()
     } catch (err) {
       setRegenerateError(err instanceof Error ? err.message : "Unknown error")
     } finally {
@@ -351,6 +391,11 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                   <RefreshCw className={`h-3.5 w-3.5 ${regenerating ? "animate-spin" : ""}`} />
                   {regenerating ? "Generating…" : "Regenerate Podium Image"}
                 </button>
+                {regenerateStatus && !regenerateError && (
+                  <p className="w-full text-xs mt-1 opacity-75" style={{ color: "#A8C566" }}>
+                    {regenerateStatus}
+                  </p>
+                )}
                 {regenerateError && (
                   <p className="w-full text-xs mt-1" style={{ color: "#E6A85C" }}>
                     Error: {regenerateError}
