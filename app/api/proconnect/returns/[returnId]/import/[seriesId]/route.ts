@@ -26,14 +26,15 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { requireLeadership } from "@/lib/auth/require-leadership"
 import {
   importSeries,
   exportReturnData,
-  flattenSeriesMap,
   MAX_ENTRIES_PER_IMPORT,
   type ImportEntry,
   type ImportRequest,
 } from "@/lib/proconnect/data"
+import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -57,6 +58,12 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ returnId: string; seriesId: string }> },
 ) {
+  // Write-back modifies field values on live tax returns in ProConnect —
+  // gate it to leadership, matching /api/proconnect/sync and the OAuth
+  // connect/disconnect routes. (Middleware only enforces "any session".)
+  const auth = await requireLeadership()
+  if (!auth.ok) return auth.response
+
   const sb = admin()
   const { returnId, seriesId } = await ctx.params
   const body = (await req.json().catch(() => ({}))) as Body
@@ -80,10 +87,48 @@ export async function POST(
     return NextResponse.json({ error: "version must be string or null" }, { status: 400 })
   }
 
-  // ------------------------------------------------------------------ create audit row up-front
+  // ------------------------------------------------------------------ dryRun-first gate
+  // There is no ProConnect sandbox — a commit writes onto a live return.
+  // A non-dry-run commit is only allowed when a CLEAN dry run (zero
+  // errors) of the same shape ran recently for this (return, series).
   const dryRun = Boolean(body.dryRun)
-  const trigger = body.actor ? `manual:${body.actor}` : "manual"
-  const triggerCtx: Record<string, unknown> = {}
+  if (!dryRun) {
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+    const { data: priorDry } = await sb
+      .from("proconnect_import_jobs")
+      .select("id, entry_count_requested, error_count, status")
+      .eq("return_id", returnId)
+      .eq("series_id", seriesId)
+      .eq("dry_run", true)
+      .eq("status", "succeeded")
+      .eq("error_count", 0)
+      .gte("started_at", thirtyMinAgo)
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (!priorDry || priorDry.entry_count_requested !== body.entries.length) {
+      return NextResponse.json(
+        {
+          error:
+            "dryRun-first required: run this exact import with dryRun:true first. " +
+            "A commit is only accepted within 30 minutes of a clean (zero-error) dry run " +
+            "of the same entry count for this return + series.",
+        },
+        { status: 409 },
+      )
+    }
+  }
+
+  // ------------------------------------------------------------------ create audit row up-front
+  // Audit the VERIFIED caller identity, not the body's self-declared
+  // actor — body.actor is kept in trigger_context for context only.
+  const trigger = `manual:${auth.email ?? auth.userId}`
+  const triggerCtx: Record<string, unknown> = {
+    team_member_id: auth.teamMemberId,
+    role: auth.role,
+  }
+  if (body.actor) triggerCtx.declared_actor = body.actor
   if (body.reason) triggerCtx.reason = body.reason
   const { data: jobRow, error: jobErr } = await sb
     .from("proconnect_import_jobs")
@@ -94,7 +139,22 @@ export async function POST(
       request_version: body.version ?? null,
       dry_run: dryRun,
       entry_count_requested: body.entries.length,
-      entries_payload: { entries: body.entries },
+      // PII discipline: audit rows store field ADDRESSES and which
+      // attributes were set — never the values. Tax field values are
+      // SSNs, wages, names; they live only on the return (and in the
+      // snapshot mirror), not in a log table.
+      entries_payload: {
+        entries: body.entries.map((e) => ({
+          prefixId: e.prefixId,
+          codeId: e.codeId,
+          suffixId: e.suffixId,
+          tsj: e.tsj ?? null,
+          has_val: e.val !== undefined,
+          has_desc: e.desc !== undefined,
+          has_src: e.src !== undefined,
+        })),
+        redacted: true,
+      },
       status: "pending",
       triggered_by: trigger,
       trigger_context: Object.keys(triggerCtx).length ? triggerCtx : null,
@@ -189,66 +249,11 @@ export async function POST(
   return NextResponse.json({ jobId, ...result.data, intuitTid: result.intuitTid })
 }
 
-// Background snapshot refresher — same shape as data/route.ts. Kept
-// duplicated rather than imported because `data/route.ts` is a Route
-// Handler and Next refuses cross-route imports of non-exported helpers.
+// Background snapshot refresher — shared implementation in
+// lib/proconnect/snapshots.ts (also used by the webhook receiver and
+// the data route).
 async function refreshSnapshot(clientId: string, returnId: string) {
-  const sb = admin()
   const result = await exportReturnData(clientId, returnId)
   if (!result.ok) return
-  const exp = result.data
-  const flatCells = flattenSeriesMap(exp.data)
-
-  const { data: snap, error: snapErr } = await sb
-    .from("proconnect_return_snapshots")
-    .upsert(
-      {
-        return_id: returnId,
-        proconnect_client_id: clientId,
-        return_name: exp.name ?? null,
-        client_name: exp.clientName ?? null,
-        tax_year: exp.year ?? null,
-        return_type: exp.type ?? null,
-        version: exp.version ?? null,
-        series_versions: exp.seriesVersion ?? [],
-        efile_items: exp.efileItems ?? [],
-        agencies: exp.agency ?? [],
-        firm_id: exp.id_firm ?? null,
-        proconnect_created_by: exp.createdBy ?? null,
-        proconnect_created_time: exp.createdTime
-          ? new Date(exp.createdTime).toISOString()
-          : null,
-        raw_data: exp.data ?? null,
-        exported_at: new Date().toISOString(),
-        deleted_at: null,
-      },
-      { onConflict: "proconnect_client_id,return_id" },
-    )
-    .select("id")
-    .single()
-  if (snapErr || !snap) return
-  const snapshotId = snap.id as string
-
-  await sb.from("proconnect_return_field_cells").delete().eq("return_id", returnId)
-  if (flatCells.length === 0) return
-  const rows = flatCells.map((c) => ({
-    snapshot_id: snapshotId,
-    return_id: returnId,
-    series_id: c.seriesId,
-    prefix_id: c.prefixId,
-    code_id: c.codeId,
-    suffix_id: c.suffixId,
-    val: c.cell.val ?? null,
-    description: c.cell.desc ?? null,
-    src: c.cell.src ?? null,
-    tsj: c.cell.tsj ?? null,
-    scope: c.cell.scope ?? null,
-    source: c.cell.source ?? null,
-    city_abbrev: c.cell.cityAbbrev ?? null,
-    import_source: c.cell.importSource ?? null,
-    raw_cell: c.cell,
-  }))
-  for (let i = 0; i < rows.length; i += 1000) {
-    await sb.from("proconnect_return_field_cells").insert(rows.slice(i, i + 1000))
-  }
+  await persistReturnSnapshot(admin(), clientId, returnId, result.data)
 }

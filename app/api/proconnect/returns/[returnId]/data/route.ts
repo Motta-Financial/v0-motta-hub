@@ -18,7 +18,8 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
-import { exportReturnData, flattenSeriesMap } from "@/lib/proconnect/data"
+import { exportReturnData } from "@/lib/proconnect/data"
+import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -33,77 +34,9 @@ async function loadAndPersist(clientId: string, returnId: string) {
   const result = await exportReturnData(clientId, returnId)
   if (!result.ok) return result
 
-  const sb = admin()
-  const exp = result.data
-  const flatCells = flattenSeriesMap(exp.data)
-
-  // 1. Upsert the snapshot row. Column names match scripts/130 — we
-  //    persist `raw_data` (the full nested response) for forensics, but
-  //    every queryable field is hoisted into proconnect_return_field_cells.
-  const { data: snap, error: snapErr } = await sb
-    .from("proconnect_return_snapshots")
-    .upsert(
-      {
-        return_id: returnId,
-        proconnect_client_id: clientId,
-        return_name: exp.name ?? null,
-        client_name: exp.clientName ?? null,
-        tax_year: exp.year ?? null,
-        return_type: exp.type ?? null,
-        version: exp.version ?? null,
-        series_versions: exp.seriesVersion ?? [],
-        efile_items: exp.efileItems ?? [],
-        agencies: exp.agency ?? [],
-        firm_id: exp.id_firm ?? null,
-        proconnect_created_by: exp.createdBy ?? null,
-        proconnect_created_time: exp.createdTime
-          ? new Date(exp.createdTime).toISOString()
-          : null,
-        raw_data: exp.data ?? null,
-        exported_at: new Date().toISOString(),
-        deleted_at: null,
-      },
-      { onConflict: "proconnect_client_id,return_id" },
-    )
-    .select("id")
-    .single()
-  if (snapErr) throw snapErr
-  const snapshotId = snap.id as string
-
-  // 2. Replace flat cells. We delete-then-insert so partial replacements
-  //    never leave the table in a half-state. Typical IND return runs
-  //    well under 5k cells; we chunk inserts at 1000 rows.
-  const { error: delErr } = await sb
-    .from("proconnect_return_field_cells")
-    .delete()
-    .eq("return_id", returnId)
-  if (delErr) throw delErr
-
-  if (flatCells.length > 0) {
-    const rows = flatCells.map((c) => ({
-      snapshot_id: snapshotId,
-      return_id: returnId,
-      series_id: c.seriesId,
-      prefix_id: c.prefixId,
-      code_id: c.codeId,
-      suffix_id: c.suffixId,
-      val: c.cell.val ?? null,
-      description: c.cell.desc ?? null,   // `desc` is a SQL reserved word
-      src: c.cell.src ?? null,
-      tsj: c.cell.tsj ?? null,
-      scope: c.cell.scope ?? null,
-      source: c.cell.source ?? null,
-      city_abbrev: c.cell.cityAbbrev ?? null,
-      import_source: c.cell.importSource ?? null,
-      raw_cell: c.cell,
-    }))
-    for (let i = 0; i < rows.length; i += 1000) {
-      const { error: insErr } = await sb
-        .from("proconnect_return_field_cells")
-        .insert(rows.slice(i, i + 1000))
-      if (insErr) throw insErr
-    }
-  }
+  // Persist the snapshot + flattened cells (shared with the webhook
+  // receiver and the import route's post-write refresh).
+  await persistReturnSnapshot(admin(), clientId, returnId, result.data)
 
   return result
 }
@@ -127,7 +60,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ returnId: s
         .select("*")
         .eq("return_id", returnId)
         .maybeSingle()
-      if (cached) {
+      // Tombstoned snapshots (return deleted in ProConnect) must not be
+      // served as a live cache hit — fall through to a fresh export,
+      // which will 404 upstream if the return is really gone.
+      if (cached && !cached.deleted_at) {
         // Stale-while-revalidate: return cached, kick off a background
         // refresh if older than 5 minutes. We don't await it.
         const age = Date.now() - new Date(cached.exported_at).getTime()

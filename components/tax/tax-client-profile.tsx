@@ -664,7 +664,10 @@ function ReturnCard({
   clientId: string
 }) {
   const handleView1040 = () => {
-    const url = `/tax/returns/${engagement.engagement_id}/1040?clientId=${clientId}`
+    // Land on the base return-data viewer: it degrades gracefully when
+    // no snapshot has been exported yet (the 1040 view 404s in that
+    // case) and links onward to the Form 1040 rendering for IND returns.
+    const url = `/tax/returns/${engagement.engagement_id}?clientId=${clientId}`
     window.open(url, "_blank", "noopener,noreferrer")
   }
 
