@@ -269,7 +269,7 @@ function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
         {/* Footer note */}
         <div className="px-2 pb-2">
           <p className="text-[10px] text-gray-400 leading-tight">
-            Motta Financial &mdash; Client Portal
+            {"Motta Financial \u2014 Client Portal"}
           </p>
         </div>
       </nav>

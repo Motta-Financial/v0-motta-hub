@@ -237,7 +237,7 @@ export default function MessagesPage() {
             </Button>
           </div>
           <p className="text-[11px] text-gray-400 mt-1.5">
-            Cmd+Enter to send &nbsp;·&nbsp; Your team typically replies within 1 business day
+            {"Cmd+Enter to send \u00b7 Your team typically replies within 1 business day"}
           </p>
         </div>
       </div>
