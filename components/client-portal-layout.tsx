@@ -234,10 +234,8 @@ function NavItem({
       onMouseLeave={() => setHovered(false)}
     >
       <item.icon
-        className={cn(
-          "h-5 w-5 shrink-0 transition-colors duration-150",
-          isActive || hovered ? "text-white" : "text-gray-400",
-        )}
+        className="h-5 w-5 shrink-0 transition-colors duration-150"
+        style={{ color: isActive || hovered ? "#ffffff" : "#9CA3AF" }}
         aria-hidden="true"
       />
       <span className="flex-1">{item.name}</span>
