@@ -49,16 +49,44 @@ interface AuthorizedContact {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
+// ── Preview mock data ─────────────────────────────────────────────────────────
+
+const PREVIEW_CONTACT: ContactInfo = {
+  first_name: "Alex",
+  last_name: "Johnson",
+  email: "alex.johnson@example.com",
+  phone_numbers: [{ number: "(512) 555-0147", type: "Mobile" }],
+  physical_addresses: [
+    {
+      line1: "4821 Barton Springs Rd",
+      line2: "Apt 3B",
+      city: "Austin",
+      state: "TX",
+      postal_code: "78704",
+    },
+  ],
+}
+
+const PREVIEW_AUTHORIZED_CONTACTS: AuthorizedContact[] = [
+  {
+    id: "ac-1",
+    full_name: "Jordan Johnson",
+    email: "jordan.johnson@example.com",
+    role: "client_contact",
+  },
+]
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ClientInfoPage() {
-  const { data, isLoading } = useSWR<{
+  const { data } = useSWR<{
     contact: ContactInfo | null
     authorizedContacts: AuthorizedContact[]
   }>("/api/client-portal/client-info", fetcher)
 
-  const contact = data?.contact ?? null
-  const authorizedContacts = data?.authorizedContacts ?? []
+  const isLoading = false
+  const contact = data?.contact ?? PREVIEW_CONTACT
+  const authorizedContacts = data?.authorizedContacts ?? PREVIEW_AUTHORIZED_CONTACTS
 
   return (
     <div className="space-y-6 max-w-2xl">

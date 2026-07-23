@@ -38,6 +38,68 @@ interface PortalMessage {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
+// ── Preview mock data (remove when real API is wired up) ──────────────────────
+
+const PREVIEW_WORK: WorkItem[] = [
+  {
+    id: "1",
+    title: "2024 Individual Tax Return",
+    work_type_name: "Tax Return",
+    statusDisplay: { label: "In Progress", color: "#3B82F6" },
+    assignee_name: "Sarah Martinez",
+    due_date: new Date(Date.now() + 12 * 24 * 60 * 60 * 1000).toISOString(),
+    has_blocking_todos: true,
+    progressPct: 45,
+  },
+  {
+    id: "2",
+    title: "Q3 2024 Bookkeeping",
+    work_type_name: "Bookkeeping",
+    statusDisplay: { label: "Under Review", color: "#8B5CF6" },
+    assignee_name: "James Motta",
+    due_date: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
+    has_blocking_todos: false,
+    progressPct: 80,
+  },
+  {
+    id: "3",
+    title: "2023 Amended Return",
+    work_type_name: "Amended Return",
+    statusDisplay: { label: "Complete", color: "#10B981" },
+    assignee_name: "Sarah Martinez",
+    due_date: null,
+    has_blocking_todos: false,
+    progressPct: 100,
+  },
+]
+
+const PREVIEW_MESSAGES: PortalMessage[] = [
+  {
+    id: "1",
+    sender_role: "team",
+    sender_name: "Sarah Martinez",
+    body: "Hi Alex! We need a few more documents to complete your 2024 return — specifically your W-2 from your second employer and any 1099s.",
+    created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    read_at: null,
+  },
+  {
+    id: "2",
+    sender_role: "client",
+    sender_name: "Alex Johnson",
+    body: "Got it, I'll upload those today. Thank you!",
+    created_at: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
+    read_at: new Date().toISOString(),
+  },
+  {
+    id: "3",
+    sender_role: "team",
+    sender_name: "James Motta",
+    body: "Your Q3 bookkeeping looks good. Just a couple of questions on some transactions — I'll send over details shortly.",
+    created_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+    read_at: null,
+  },
+]
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function PortalDashboardPage() {
@@ -45,15 +107,12 @@ export default function PortalDashboardPage() {
   const { data: workData } = useSWR("/api/client-portal/work-items", fetcher)
   const { data: msgData } = useSWR("/api/client-portal/messages", fetcher)
 
-  const isLoading = !meData && !workData && !msgData
+  const isLoading = false // preview always has data
 
-  const firstName: string =
-    meData?.contact?.first_name ||
-    meData?.portalUser?.fullName?.split(" ")[0] ||
-    "there"
+  const firstName = "Alex"
 
-  const workItems: WorkItem[] = workData?.workItems ?? []
-  const messages: PortalMessage[] = msgData?.messages ?? []
+  const workItems: WorkItem[] = workData?.workItems ?? PREVIEW_WORK
+  const messages: PortalMessage[] = msgData?.messages ?? PREVIEW_MESSAGES
 
   const activeCount = workItems.length
   const hasBlockingItems = workItems.some((w) => w.has_blocking_todos)

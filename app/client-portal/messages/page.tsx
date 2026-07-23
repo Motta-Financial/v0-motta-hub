@@ -23,6 +23,53 @@ interface PortalMessage {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
+// ── Preview mock data ─────────────────────────────────────────────────────────
+
+const PREVIEW_MESSAGES: PortalMessage[] = [
+  {
+    id: "1",
+    sender_role: "team",
+    sender_name: "Sarah Martinez",
+    body: "Hi Alex! Welcome to your Motta Financial client portal. This is your dedicated space to communicate with our team and track your work.",
+    created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+    read_at: new Date().toISOString(),
+  },
+  {
+    id: "2",
+    sender_role: "client",
+    sender_name: "Alex Johnson",
+    body: "Thanks Sarah! This is really helpful. Quick question — do you need me to send over my W-2s for the 2024 return yet?",
+    created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+    read_at: new Date().toISOString(),
+  },
+  {
+    id: "3",
+    sender_role: "team",
+    sender_name: "Sarah Martinez",
+    body: "Yes, please! We need your W-2 from both employers, any 1099s you received, and your mortgage interest statement (Form 1098). You can upload them directly in the Documents section once we set that up.",
+    created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000 + 30 * 60 * 1000).toISOString(),
+    read_at: new Date().toISOString(),
+  },
+  {
+    id: "4",
+    sender_role: "client",
+    sender_name: "Alex Johnson",
+    body: "Perfect, I'll pull those together. Should have them to you by end of week.",
+    created_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
+    read_at: new Date().toISOString(),
+  },
+  {
+    id: "5",
+    sender_role: "team",
+    sender_name: "James Motta",
+    body: "Alex — just wanted to flag that we also have a few questions on the Q3 bookkeeping. I'll follow up with specifics once Sarah has reviewed the documents.",
+    created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    read_at: null,
+  },
+]
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
 function formatMessageDate(dateStr: string): string {
   const d = parseISO(dateStr)
   if (isToday(d)) return format(d, "h:mm a")
@@ -33,13 +80,14 @@ function formatMessageDate(dateStr: string): string {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function MessagesPage() {
-  const { data, isLoading } = useSWR<{ messages: PortalMessage[] }>(
+  const { data } = useSWR<{ messages: PortalMessage[] }>(
     "/api/client-portal/messages",
     fetcher,
-    { refreshInterval: 15000 }, // poll every 15s for new messages
+    { refreshInterval: 15000 },
   )
 
-  const messages = data?.messages ?? []
+  const isLoading = false
+  const messages = data?.messages ?? PREVIEW_MESSAGES
 
   const [body, setBody] = useState("")
   const [sending, setSending] = useState(false)

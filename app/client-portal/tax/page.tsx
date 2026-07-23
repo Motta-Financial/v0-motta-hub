@@ -39,16 +39,85 @@ interface TaxReturn {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
+// ── Preview mock data ─────────────────────────────────────────────────────────
+
+const PREVIEW_WORK_ITEMS: TaxWorkItem[] = [
+  {
+    id: "wi-1",
+    title: "2024 Individual Tax Return",
+    work_type_name: "Tax Return",
+    statusDisplay: { label: "In Progress", color: "#3B82F6" },
+    assignee_name: "Sarah Martinez",
+    due_date: new Date(Date.now() + 12 * 24 * 60 * 60 * 1000).toISOString(),
+    has_blocking_todos: true,
+    progressPct: 45,
+    completed_todo_count: 5,
+    todo_count: 11,
+  },
+  {
+    id: "wi-2",
+    title: "2023 Amended Return (1040-X)",
+    work_type_name: "Amended Return",
+    statusDisplay: { label: "Under Review", color: "#8B5CF6" },
+    assignee_name: "James Motta",
+    due_date: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
+    has_blocking_todos: false,
+    progressPct: 85,
+    completed_todo_count: 17,
+    todo_count: 20,
+  },
+]
+
+const PREVIEW_TAX_RETURNS: TaxReturn[] = [
+  {
+    id: "tr-1",
+    tax_year: 2024,
+    form_type: "1040",
+    statusDisplay: { label: "In Progress", color: "#3B82F6" },
+    description: "Individual income tax return — federal and state",
+    last_updated_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+    assigned_user_name: "Sarah Martinez",
+  },
+  {
+    id: "tr-2",
+    tax_year: 2023,
+    form_type: "1040",
+    statusDisplay: { label: "Complete", color: "#10B981" },
+    description: "Federal and state filed — April 2024",
+    last_updated_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
+    assigned_user_name: "Sarah Martinez",
+  },
+  {
+    id: "tr-3",
+    tax_year: 2022,
+    form_type: "1040",
+    statusDisplay: { label: "Complete", color: "#10B981" },
+    description: "Federal and state filed — April 2023",
+    last_updated_at: new Date(Date.now() - 450 * 24 * 60 * 60 * 1000).toISOString(),
+    assigned_user_name: "James Motta",
+  },
+  {
+    id: "tr-4",
+    tax_year: 2021,
+    form_type: "1040",
+    statusDisplay: { label: "Complete", color: "#10B981" },
+    description: "Federal and state filed",
+    last_updated_at: new Date(Date.now() - 800 * 24 * 60 * 60 * 1000).toISOString(),
+    assigned_user_name: "James Motta",
+  },
+]
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function TaxPage() {
-  const { data, isLoading } = useSWR<{
+  const { data } = useSWR<{
     taxWorkItems: TaxWorkItem[]
     taxReturns: TaxReturn[]
   }>("/api/client-portal/tax", fetcher)
 
-  const workItems = data?.taxWorkItems ?? []
-  const taxReturns = data?.taxReturns ?? []
+  const isLoading = false
+  const workItems = data?.taxWorkItems ?? PREVIEW_WORK_ITEMS
+  const taxReturns = data?.taxReturns ?? PREVIEW_TAX_RETURNS
 
   const hasBlockingItems = workItems.some((w) => w.has_blocking_todos)
 
