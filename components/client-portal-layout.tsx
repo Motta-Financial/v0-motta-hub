@@ -197,28 +197,89 @@ function PortalHeader({
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
-function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
-  const pathname = usePathname()
+function NavItem({
+  item,
+  isActive,
+  showBadge,
+  unreadCount,
+}: {
+  item: (typeof PORTAL_NAV)[number]
+  isActive: boolean
+  showBadge: boolean
+  unreadCount: number
+}) {
   const router = useRouter()
-  const [clickedHref, setClickedHref] = useState<string | null>(null)
+  const [pressed, setPressed] = useState(false)
 
-  function handleClick(e: React.MouseEvent<HTMLAnchorElement>, href: string) {
+  function handleClick(e: React.MouseEvent<HTMLAnchorElement>) {
     e.preventDefault()
-    setClickedHref(href)
-    // Let the spring animation play before navigating
+    if (isActive) return
+
+    // Immediate visual press: slide right + slight scale down
+    setPressed(true)
+
     setTimeout(() => {
-      setClickedHref(null)
-      router.push(href)
-    }, 220)
+      setPressed(false)
+      router.push(item.href)
+    }, 200)
+  }
+
+  const baseStyle: React.CSSProperties = {
+    backgroundColor: isActive ? NAV_ACTIVE_BG : "transparent",
+    color: isActive ? "#ffffff" : "#374151",
+    transform: pressed ? "translateX(7px) scale(0.98)" : "translateX(0px) scale(1)",
+    transition: pressed
+      ? "transform 0.1s ease-out, background-color 0.15s ease, color 0.15s ease"
+      : "transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.15s ease, color 0.15s ease",
+    cursor: "pointer",
   }
 
   return (
+    <a
+      href={item.href}
+      onClick={handleClick}
+      style={baseStyle}
+      className="flex items-center gap-x-3 rounded-xl px-3 py-2.5 text-sm font-medium leading-6 select-none"
+      onMouseEnter={(e) => {
+        if (!isActive && !pressed) {
+          e.currentTarget.style.backgroundColor = NAV_HOVER_BG
+          e.currentTarget.style.color = "#ffffff"
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!isActive) {
+          e.currentTarget.style.backgroundColor = "transparent"
+          e.currentTarget.style.color = "#374151"
+        }
+      }}
+    >
+      <item.icon
+        className={cn("h-5 w-5 shrink-0", isActive ? "text-white" : "text-gray-400")}
+        aria-hidden="true"
+      />
+      <span className="flex-1">{item.name}</span>
+      {showBadge && (
+        <span
+          className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+          style={{ backgroundColor: "#B45309" }}
+        >
+          {unreadCount > 9 ? "9+" : unreadCount}
+        </span>
+      )}
+    </a>
+  )
+}
+
+function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
+  const pathname = usePathname()
+
+  return (
     <div
-      className="flex grow flex-col gap-y-5 overflow-y-auto bg-white px-2 pb-4 shadow-sm border-r"
+      className="flex grow flex-col overflow-y-auto bg-white px-2 pb-4 shadow-sm border-r"
       style={{ borderColor: SIDEBAR_BORDER }}
     >
       <nav className="flex flex-1 flex-col pt-3">
-        <ul role="list" className="flex flex-1 flex-col gap-y-7">
+        <ul role="list" className="flex flex-1 flex-col">
           <li>
             <ul role="list" className="space-y-0.5">
               {PORTAL_NAV.map((item) => {
@@ -227,60 +288,14 @@ function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
                     ? pathname === "/client-portal"
                     : pathname === item.href || pathname.startsWith(item.href + "/")
 
-                const showBadge = item.name === "Messages" && unreadCount > 0
-                const isClicked = clickedHref === item.href
-
                 return (
                   <li key={item.name}>
-                    <a
-                      href={item.href}
-                      onClick={(e) => handleClick(e, item.href)}
-                      style={{
-                        backgroundColor: isActive ? NAV_ACTIVE_BG : "transparent",
-                      }}
-                      className={cn(
-                        "group flex items-center gap-x-3 rounded-xl px-3 py-2.5 text-sm font-medium leading-6 transition-colors overflow-hidden",
-                        isActive ? "text-white" : "text-gray-700",
-                      )}
-                      onMouseEnter={(e) => {
-                        if (!isActive) {
-                          e.currentTarget.style.backgroundColor = NAV_HOVER_BG
-                          e.currentTarget.style.color = "#ffffff"
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!isActive) {
-                          e.currentTarget.style.backgroundColor = "transparent"
-                          e.currentTarget.style.color = ""
-                        }
-                      }}
-                    >
-                      {/* Inner wrapper that slides right on click */}
-                      <span
-                        className="flex items-center gap-x-3 flex-1 min-w-0"
-                        style={{
-                          transform: isClicked ? "translateX(6px)" : "translateX(0px)",
-                          transition: "transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1)",
-                        }}
-                      >
-                        <item.icon
-                          className={cn(
-                            "h-5 w-5 shrink-0",
-                            isActive ? "text-white" : "text-gray-400",
-                          )}
-                          aria-hidden="true"
-                        />
-                        <span className="flex-1">{item.name}</span>
-                      </span>
-                      {showBadge && (
-                        <span
-                          className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
-                          style={{ backgroundColor: "#B45309" }}
-                        >
-                          {unreadCount > 9 ? "9+" : unreadCount}
-                        </span>
-                      )}
-                    </a>
+                    <NavItem
+                      item={item}
+                      isActive={isActive}
+                      showBadge={item.name === "Messages" && unreadCount > 0}
+                      unreadCount={unreadCount}
+                    />
                   </li>
                 )
               })}
@@ -289,7 +304,7 @@ function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
         </ul>
 
         {/* Footer note */}
-        <div className="px-2 pb-2">
+        <div className="px-2 pb-2 mt-auto">
           <p className="text-[10px] text-gray-400 leading-tight">
             {"Motta Financial \u2014 Client Portal"}
           </p>
