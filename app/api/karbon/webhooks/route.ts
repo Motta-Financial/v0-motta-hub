@@ -188,7 +188,7 @@ export async function GET() {
     db
       .from("karbon_webhook_events")
       .select(
-        "id, resource_type, action_type, resource_perma_key, processing_status, received_at, processed_at, processing_error",
+        "id, resource_type, action_type, resource_perma_key, processing_status, retry_count, received_at, processed_at, processing_error",
       )
       .order("received_at", { ascending: false })
       .limit(25),
