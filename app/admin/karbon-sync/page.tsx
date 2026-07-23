@@ -26,6 +26,17 @@ import { formatDistanceToNow } from "date-fns"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
+// Guards against null / undefined / unparseable timestamps. date-fns'
+// formatDistanceToNow throws "Invalid time value" on an invalid Date, which
+// was crashing this whole page whenever a subscription/event/sync row had a
+// missing timestamp (e.g. last_event_at before the first delivery).
+function fromNow(value: string | null | undefined, fallback = "—"): string {
+  if (!value) return fallback
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return fallback
+  return formatDistanceToNow(d, { addSuffix: true })
+}
+
 interface Subscription {
   id: string
   webhook_type: string
@@ -33,7 +44,7 @@ interface Subscription {
   status: string
   failure_count: number
   last_event_at: string | null
-  subscribed_at: string
+  created_at: string
   karbon_subscription_id: string | null
 }
 
@@ -42,11 +53,10 @@ interface WebhookEvent {
   resource_type: string
   action_type: string
   resource_perma_key: string
-  status: string
+  processing_status: string
   retry_count: number
-  error_message: string | null
-  event_timestamp: string
-  created_at: string
+  processing_error: string | null
+  received_at: string
   processed_at: string | null
 }
 
@@ -54,7 +64,7 @@ export default function KarbonSyncAdminPage() {
   // Subscriptions + recent events from the receiver's GET handler.
   const { data: webhookData, mutate: mutateWebhooks, isLoading: webhooksLoading } = useSWR<{
     subscriptions: Subscription[]
-    recent_events: WebhookEvent[]
+    recentEvents: WebhookEvent[]
   }>("/api/karbon/webhooks", fetcher, {
     // Was 30s — bumped to 2min to reduce middleware auth-request load.
     // Webhook subscription state changes infrequently and Realtime
@@ -168,11 +178,11 @@ export default function KarbonSyncAdminPage() {
   }
 
   const subs = webhookData?.subscriptions ?? []
-  const events = webhookData?.recent_events ?? []
+  const events = webhookData?.recentEvents ?? []
   const activeSubs = subs.filter((s) => s.status === "active").length
   const failingSubs = subs.filter((s) => s.status === "failing" || s.failure_count > 0).length
-  const failedEvents = events.filter((e) => e.status === "failed").length
-  const pendingEvents = events.filter((e) => e.status === "pending" || e.status === "processing").length
+  const failedEvents = events.filter((e) => e.processing_status === "failed").length
+  const pendingEvents = events.filter((e) => e.processing_status === "pending" || e.processing_status === "processing").length
 
   return (
     <DashboardLayout>
@@ -304,13 +314,8 @@ export default function KarbonSyncAdminPage() {
                           </div>
                         </div>
                         <div className="flex flex-col items-end text-right text-xs text-muted-foreground">
-                          <span>
-                            last event:{" "}
-                            {s.last_event_at
-                              ? formatDistanceToNow(new Date(s.last_event_at), { addSuffix: true })
-                              : "never"}
-                          </span>
-                          <span>since {formatDistanceToNow(new Date(s.subscribed_at), { addSuffix: true })}</span>
+                          <span>last event: {fromNow(s.last_event_at, "never")}</span>
+                          <span>since {fromNow(s.created_at)}</span>
                         </div>
                       </li>
                     ))}
@@ -342,7 +347,7 @@ export default function KarbonSyncAdminPage() {
                     {events.map((e) => (
                       <li key={e.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
                         <div className="flex min-w-0 items-center gap-2">
-                          <EventStatusDot status={e.status} />
+                          <EventStatusDot status={e.processing_status} />
                           <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{e.resource_type}</code>
                           <span className="text-muted-foreground">{e.action_type}</span>
                           <span className="text-xs text-muted-foreground truncate">
@@ -355,10 +360,10 @@ export default function KarbonSyncAdminPage() {
                           ) : null}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {formatDistanceToNow(new Date(e.event_timestamp), { addSuffix: true })}
+                          {fromNow(e.received_at)}
                         </div>
-                        {e.error_message ? (
-                          <div className="w-full text-xs text-destructive font-mono break-all">{e.error_message}</div>
+                        {e.processing_error ? (
+                          <div className="w-full text-xs text-destructive font-mono break-all">{e.processing_error}</div>
                         ) : null}
                       </li>
                     ))}
@@ -392,7 +397,7 @@ export default function KarbonSyncAdminPage() {
                           </span>
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {formatDistanceToNow(new Date(r.started_at), { addSuffix: true })}
+                          {fromNow(r.started_at)}
                         </div>
                       </li>
                     ))}
@@ -455,7 +460,7 @@ function SubBadge({ status, failureCount }: { status: string; failureCount: numb
 
 function EventStatusDot({ status }: { status: string }) {
   const color =
-    status === "processed"
+    status === "succeeded"
       ? "bg-green-500"
       : status === "failed"
         ? "bg-destructive"
