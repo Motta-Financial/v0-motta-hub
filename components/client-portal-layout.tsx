@@ -35,10 +35,12 @@ const PORTAL_NAV = [
   { name: "Messages",     href: "/client-portal/messages",    icon: MessageSquare },
 ] as const
 
-// Brand palette (matches hub exactly)
+// Exact palette from dashboard-layout.tsx — do not change independently
 const NAV_ACTIVE_BG     = "#6B745D"
 const NAV_HOVER_BG      = "#8E9B79"
 const NAV_ACTIVE_BORDER = "#333333"
+const SIDEBAR_BORDER    = "#8E9B79"
+const HUB_BG            = "#EAE6E1"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -65,7 +67,7 @@ export function ClientPortalLayout({
   const [mobileOpen, setMobileOpen] = useState(false)
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: "#EAE6E1" }}>
+    <div className="min-h-screen" style={{ backgroundColor: HUB_BG }}>
       {/* Fixed top header */}
       <PortalHeader
         portalUser={portalUser}
@@ -115,7 +117,7 @@ function PortalHeader({
   return (
     <header
       className="fixed top-0 left-0 right-0 z-40 h-16 bg-white border-b shadow-sm"
-      style={{ borderColor: "#8E9B79" }}
+      style={{ borderColor: SIDEBAR_BORDER }}
     >
       <div className="flex h-full items-center justify-between px-4 md:px-6">
         {/* Left: mobile menu + logo */}
@@ -136,17 +138,17 @@ function PortalHeader({
             <img
               src="/images/alfred-logo.png"
               alt="Motta Financial"
-              className="h-9 w-auto"
+              className="h-10 w-auto"
             />
             <div className="flex flex-col leading-tight">
               <span
-                className="text-sm font-bold tracking-wide"
+                className="text-base font-bold tracking-wide"
                 style={{ color: "#6B745D" }}
               >
                 CLIENT PORTAL
               </span>
               <span className="text-[10px] text-gray-500 uppercase tracking-wider">
-                Motta Financial
+                A Motta Financial product
               </span>
             </div>
           </a>
@@ -199,74 +201,79 @@ function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
   const pathname = usePathname()
 
   return (
-    <nav
-      className="flex h-full flex-col gap-y-1 overflow-y-auto py-4 px-2"
-      style={{ backgroundColor: "#2C2C2C" }}
+    <div
+      className="flex grow flex-col gap-y-5 overflow-y-auto bg-white px-3 pb-4 shadow-sm border-r"
+      style={{ borderColor: SIDEBAR_BORDER }}
     >
-      <ul className="space-y-0.5" role="list">
-        {PORTAL_NAV.map((item) => {
-          // Dashboard is only active on the exact path; others use prefix
-          const isActive =
-            item.href === "/client-portal"
-              ? pathname === "/client-portal"
-              : pathname === item.href || pathname.startsWith(item.href + "/")
+      <nav className="flex flex-1 flex-col pt-4">
+        <ul role="list" className="flex flex-1 flex-col gap-y-7">
+          <li>
+            <ul role="list" className="-mx-2 space-y-1">
+              {PORTAL_NAV.map((item) => {
+                // Dashboard is only active on the exact path; others use prefix
+                const isActive =
+                  item.href === "/client-portal"
+                    ? pathname === "/client-portal"
+                    : pathname === item.href || pathname.startsWith(item.href + "/")
 
-          const showBadge = item.name === "Messages" && unreadCount > 0
+                const showBadge = item.name === "Messages" && unreadCount > 0
 
-          return (
-            <li key={item.name}>
-              <a
-                href={item.href}
-                style={{
-                  backgroundColor: isActive ? NAV_ACTIVE_BG : "transparent",
-                  borderColor: isActive ? NAV_ACTIVE_BORDER : "transparent",
-                }}
-                className={cn(
-                  "group flex items-center gap-x-3 rounded-l-md py-2 pl-3 pr-3 text-sm font-medium leading-6 border-r-2 transition-colors",
-                  isActive ? "text-white" : "text-gray-300 hover:text-white",
-                )}
-                onMouseEnter={(e) => {
-                  if (!isActive)
-                    e.currentTarget.style.backgroundColor = NAV_HOVER_BG
-                }}
-                onMouseLeave={(e) => {
-                  if (!isActive)
-                    e.currentTarget.style.backgroundColor = "transparent"
-                }}
-              >
-                <item.icon
-                  className={cn(
-                    "h-5 w-5 shrink-0",
-                    isActive
-                      ? "text-white"
-                      : "text-gray-400 group-hover:text-white",
-                  )}
-                  aria-hidden="true"
-                />
-                <span className="flex-1">{item.name}</span>
-                {showBadge && (
-                  <span
-                    className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
-                    style={{ backgroundColor: "#B45309" }}
-                  >
-                    {unreadCount > 9 ? "9+" : unreadCount}
-                  </span>
-                )}
-              </a>
-            </li>
-          )
-        })}
-      </ul>
+                return (
+                  <li key={item.name}>
+                    <a
+                      href={item.href}
+                      style={{
+                        paddingLeft: 8,
+                        backgroundColor: isActive ? NAV_ACTIVE_BG : "transparent",
+                        borderColor: isActive ? NAV_ACTIVE_BORDER : "transparent",
+                      }}
+                      className={cn(
+                        "group flex items-center gap-x-3 rounded-l-md py-2 pr-3 text-sm font-medium leading-6 border-r-2 transition-colors",
+                        isActive ? "text-white" : "text-gray-700 hover:text-white",
+                      )}
+                      onMouseEnter={(e) => {
+                        if (!isActive)
+                          e.currentTarget.style.backgroundColor = NAV_HOVER_BG
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isActive)
+                          e.currentTarget.style.backgroundColor = "transparent"
+                      }}
+                    >
+                      <item.icon
+                        className={cn(
+                          "h-5 w-5 shrink-0",
+                          isActive
+                            ? "text-white"
+                            : "text-gray-400 group-hover:text-white",
+                        )}
+                        aria-hidden="true"
+                      />
+                      <span className="flex-1">{item.name}</span>
+                      {showBadge && (
+                        <span
+                          className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                          style={{ backgroundColor: "#B45309" }}
+                        >
+                          {unreadCount > 9 ? "9+" : unreadCount}
+                        </span>
+                      )}
+                    </a>
+                  </li>
+                )
+              })}
+            </ul>
+          </li>
+        </ul>
 
-      {/* Footer note */}
-      <div className="mt-auto px-3 pb-2">
-        <p className="text-[10px] text-gray-500 leading-tight">
-          Motta Financial
-          <br />
-          Client Portal
-        </p>
-      </div>
-    </nav>
+        {/* Footer note */}
+        <div className="px-2 pb-2">
+          <p className="text-[10px] text-gray-400 leading-tight">
+            Motta Financial &mdash; Client Portal
+          </p>
+        </div>
+      </nav>
+    </div>
   )
 }
 
