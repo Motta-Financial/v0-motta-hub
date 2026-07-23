@@ -157,13 +157,13 @@ export default function TaxPage() {
           className="flex items-start gap-3 rounded-lg border px-4 py-3 text-sm"
           style={{
             backgroundColor: "#FEF3C7",
-            borderColor: "#D97706",
+            borderColor: "#8E9B79",
             color: "#92400E",
           }}
         >
           <AlertTriangle
             className="h-5 w-5 mt-0.5 shrink-0"
-            style={{ color: "#D97706" }}
+            style={{ color: "#6B745D" }}
           />
           <div>
             <p className="font-medium">Action needed from you</p>
@@ -252,7 +252,7 @@ function WorkItemCard({ item }: { item: TaxWorkItem }) {
 
   return (
     <div
-      className={`rounded-lg border p-4 space-y-3 ${
+      className={`rounded-xl border p-4 space-y-3 ${
         item.has_blocking_todos
           ? "border-[#8E9B79]/40 bg-[#8E9B79]/5"
           : "border-gray-100 bg-gray-50/50"

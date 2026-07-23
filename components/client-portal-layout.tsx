@@ -199,24 +199,29 @@ function PortalHeader({
 
 function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
   const pathname = usePathname()
+  const router = useRouter()
   const [clickedHref, setClickedHref] = useState<string | null>(null)
 
-  function handleClick(href: string) {
+  function handleClick(e: React.MouseEvent<HTMLAnchorElement>, href: string) {
+    e.preventDefault()
     setClickedHref(href)
-    setTimeout(() => setClickedHref(null), 350)
+    // Let the spring animation play before navigating
+    setTimeout(() => {
+      setClickedHref(null)
+      router.push(href)
+    }, 220)
   }
 
   return (
     <div
-      className="flex grow flex-col gap-y-5 overflow-y-auto bg-white px-3 pb-4 shadow-sm border-r"
+      className="flex grow flex-col gap-y-5 overflow-y-auto bg-white px-2 pb-4 shadow-sm border-r"
       style={{ borderColor: SIDEBAR_BORDER }}
     >
-      <nav className="flex flex-1 flex-col pt-4">
+      <nav className="flex flex-1 flex-col pt-3">
         <ul role="list" className="flex flex-1 flex-col gap-y-7">
           <li>
-            <ul role="list" className="-mx-2 space-y-1">
+            <ul role="list" className="space-y-0.5">
               {PORTAL_NAV.map((item) => {
-                // Dashboard is only active on the exact path; others use prefix
                 const isActive =
                   item.href === "/client-portal"
                     ? pathname === "/client-portal"
@@ -229,14 +234,12 @@ function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
                   <li key={item.name}>
                     <a
                       href={item.href}
-                      onClick={() => handleClick(item.href)}
+                      onClick={(e) => handleClick(e, item.href)}
                       style={{
-                        paddingLeft: 8,
                         backgroundColor: isActive ? NAV_ACTIVE_BG : "transparent",
-                        borderColor: isActive ? NAV_ACTIVE_BORDER : "transparent",
                       }}
                       className={cn(
-                        "group flex items-center gap-x-3 rounded-l-md py-2 pr-3 text-sm font-medium leading-6 border-r-2 transition-colors",
+                        "group flex items-center gap-x-3 rounded-xl px-3 py-2.5 text-sm font-medium leading-6 transition-colors overflow-hidden",
                         isActive ? "text-white" : "text-gray-700",
                       )}
                       onMouseEnter={(e) => {
@@ -256,10 +259,8 @@ function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
                       <span
                         className="flex items-center gap-x-3 flex-1 min-w-0"
                         style={{
-                          transform: isClicked ? "translateX(5px)" : "translateX(0px)",
-                          transition: isClicked
-                            ? "transform 0.12s cubic-bezier(0.34, 1.56, 0.64, 1)"
-                            : "transform 0.25s ease-out",
+                          transform: isClicked ? "translateX(6px)" : "translateX(0px)",
+                          transition: "transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1)",
                         }}
                       >
                         <item.icon

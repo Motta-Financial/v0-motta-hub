@@ -167,11 +167,11 @@ export default function PortalDashboardPage() {
           className="flex items-start gap-3 rounded-lg border px-4 py-3 text-sm"
           style={{
             backgroundColor: "#FEF3C7",
-            borderColor: "#D97706",
+            borderColor: "#8E9B79",
             color: "#92400E",
           }}
         >
-          <AlertTriangle className="h-5 w-5 mt-0.5 shrink-0" style={{ color: "#D97706" }} />
+          <AlertTriangle className="h-5 w-5 mt-0.5 shrink-0" style={{ color: "#6B745D" }} />
           <div>
             <p className="font-medium">Action needed from you</p>
             <p className="mt-0.5 text-xs">
@@ -336,7 +336,7 @@ function StatCard({
 
 function WorkItemRow({ item }: { item: WorkItem }) {
   return (
-    <div className="flex items-start gap-3 rounded-lg border border-gray-100 bg-gray-50/60 px-3 py-2.5">
+    <div className="flex items-start gap-3 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5">
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-gray-900 truncate">{item.title}</p>
         <div className="flex items-center gap-2 mt-1">
@@ -369,7 +369,7 @@ function MessageRow({ msg }: { msg: PortalMessage }) {
     <div
       className={`flex items-start gap-2.5 rounded-lg px-3 py-2.5 ${
         isUnread ? "bg-[#8E9B79]/10 border border-[#8E9B79]/30" : "bg-gray-50/60 border border-gray-100"
-      }`}
+      } rounded-xl`}
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
