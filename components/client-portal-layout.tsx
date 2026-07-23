@@ -229,23 +229,25 @@ function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
                       }}
                       className={cn(
                         "group flex items-center gap-x-3 rounded-l-md py-2 pr-3 text-sm font-medium leading-6 border-r-2 transition-colors",
-                        isActive ? "text-white" : "text-gray-700 hover:text-white",
+                        isActive ? "text-white" : "text-gray-700",
                       )}
                       onMouseEnter={(e) => {
-                        if (!isActive)
+                        if (!isActive) {
                           e.currentTarget.style.backgroundColor = NAV_HOVER_BG
+                          e.currentTarget.style.color = "#ffffff"
+                        }
                       }}
                       onMouseLeave={(e) => {
-                        if (!isActive)
+                        if (!isActive) {
                           e.currentTarget.style.backgroundColor = "transparent"
+                          e.currentTarget.style.color = ""
+                        }
                       }}
                     >
                       <item.icon
                         className={cn(
                           "h-5 w-5 shrink-0",
-                          isActive
-                            ? "text-white"
-                            : "text-gray-400 group-hover:text-white",
+                          isActive ? "text-white" : "text-gray-400",
                         )}
                         aria-hidden="true"
                       />
