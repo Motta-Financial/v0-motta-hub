@@ -37,7 +37,7 @@ const PORTAL_NAV = [
 
 // Exact palette from dashboard-layout.tsx — do not change independently
 const NAV_ACTIVE_BG     = "#6B745D"
-const NAV_HOVER_BG      = "#8E9B79"
+const NAV_HOVER_BG      = "#4A5240"  // darker green — clear contrast on white sidebar
 const NAV_ACTIVE_BORDER = "#333333"
 const SIDEBAR_BORDER    = "#8E9B79"
 const HUB_BG            = "#EAE6E1"
@@ -208,53 +208,36 @@ function NavItem({
   showBadge: boolean
   unreadCount: number
 }) {
-  const router = useRouter()
-  const [pressed, setPressed] = useState(false)
+  const [hovered, setHovered] = useState(false)
 
-  function handleClick(e: React.MouseEvent<HTMLAnchorElement>) {
-    e.preventDefault()
-    if (isActive) return
-
-    // Immediate visual press: slide right + slight scale down
-    setPressed(true)
-
-    setTimeout(() => {
-      setPressed(false)
-      router.push(item.href)
-    }, 200)
-  }
-
-  const baseStyle: React.CSSProperties = {
-    backgroundColor: isActive ? NAV_ACTIVE_BG : "transparent",
-    color: isActive ? "#ffffff" : "#374151",
-    transform: pressed ? "translateX(7px) scale(0.98)" : "translateX(0px) scale(1)",
-    transition: pressed
-      ? "transform 0.1s ease-out, background-color 0.15s ease, color 0.15s ease"
-      : "transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.15s ease, color 0.15s ease",
+  const style: React.CSSProperties = {
+    backgroundColor: isActive ? NAV_ACTIVE_BG : hovered ? NAV_HOVER_BG : "transparent",
+    color: isActive || hovered ? "#ffffff" : "#374151",
+    // Slide right on hover, spring back on leave
+    transform: hovered && !isActive ? "translateX(6px)" : "translateX(0px)",
+    transition: [
+      hovered
+        ? "transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1)"
+        : "transform 0.22s ease-out",
+      "background-color 0.15s ease",
+      "color 0.15s ease",
+    ].join(", "),
     cursor: "pointer",
   }
 
   return (
     <a
       href={item.href}
-      onClick={handleClick}
-      style={baseStyle}
+      style={style}
       className="flex items-center gap-x-3 rounded-xl px-3 py-2.5 text-sm font-medium leading-6 select-none"
-      onMouseEnter={(e) => {
-        if (!isActive && !pressed) {
-          e.currentTarget.style.backgroundColor = NAV_HOVER_BG
-          e.currentTarget.style.color = "#ffffff"
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!isActive) {
-          e.currentTarget.style.backgroundColor = "transparent"
-          e.currentTarget.style.color = "#374151"
-        }
-      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       <item.icon
-        className={cn("h-5 w-5 shrink-0", isActive ? "text-white" : "text-gray-400")}
+        className={cn(
+          "h-5 w-5 shrink-0 transition-colors duration-150",
+          isActive || hovered ? "text-white" : "text-gray-400",
+        )}
         aria-hidden="true"
       />
       <span className="flex-1">{item.name}</span>
