@@ -199,6 +199,12 @@ function PortalHeader({
 
 function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
   const pathname = usePathname()
+  const [clickedHref, setClickedHref] = useState<string | null>(null)
+
+  function handleClick(href: string) {
+    setClickedHref(href)
+    setTimeout(() => setClickedHref(null), 350)
+  }
 
   return (
     <div
@@ -217,11 +223,13 @@ function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
                     : pathname === item.href || pathname.startsWith(item.href + "/")
 
                 const showBadge = item.name === "Messages" && unreadCount > 0
+                const isClicked = clickedHref === item.href
 
                 return (
                   <li key={item.name}>
                     <a
                       href={item.href}
+                      onClick={() => handleClick(item.href)}
                       style={{
                         paddingLeft: 8,
                         backgroundColor: isActive ? NAV_ACTIVE_BG : "transparent",
@@ -244,14 +252,25 @@ function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
                         }
                       }}
                     >
-                      <item.icon
-                        className={cn(
-                          "h-5 w-5 shrink-0",
-                          isActive ? "text-white" : "text-gray-400",
-                        )}
-                        aria-hidden="true"
-                      />
-                      <span className="flex-1">{item.name}</span>
+                      {/* Inner wrapper that slides right on click */}
+                      <span
+                        className="flex items-center gap-x-3 flex-1 min-w-0"
+                        style={{
+                          transform: isClicked ? "translateX(5px)" : "translateX(0px)",
+                          transition: isClicked
+                            ? "transform 0.12s cubic-bezier(0.34, 1.56, 0.64, 1)"
+                            : "transform 0.25s ease-out",
+                        }}
+                      >
+                        <item.icon
+                          className={cn(
+                            "h-5 w-5 shrink-0",
+                            isActive ? "text-white" : "text-gray-400",
+                          )}
+                          aria-hidden="true"
+                        />
+                        <span className="flex-1">{item.name}</span>
+                      </span>
                       {showBadge && (
                         <span
                           className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
