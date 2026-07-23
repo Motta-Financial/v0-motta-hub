@@ -1,0 +1,281 @@
+"use client"
+
+import type React from "react"
+import { useState } from "react"
+import { usePathname, useRouter } from "next/navigation"
+import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  LayoutDashboard,
+  UserCircle,
+  FileText,
+  MessageSquare,
+  LogOut,
+  Menu,
+} from "lucide-react"
+import { createClient } from "@/lib/supabase/client"
+import { clearUserCache } from "@/contexts/user-context"
+
+// ── Navigation items ──────────────────────────────────────────────────────────
+
+const PORTAL_NAV = [
+  { name: "Dashboard",    href: "/client-portal",             icon: LayoutDashboard },
+  { name: "Client Info",  href: "/client-portal/client-info", icon: UserCircle },
+  { name: "Tax",          href: "/client-portal/tax",         icon: FileText },
+  { name: "Messages",     href: "/client-portal/messages",    icon: MessageSquare },
+] as const
+
+// Brand palette (matches hub exactly)
+const NAV_ACTIVE_BG     = "#6B745D"
+const NAV_HOVER_BG      = "#8E9B79"
+const NAV_ACTIVE_BORDER = "#333333"
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface PortalUserInfo {
+  fullName: string | null
+  email: string
+  role: "client" | "client_contact"
+}
+
+interface ClientPortalLayoutProps {
+  children: React.ReactNode
+  portalUser: PortalUserInfo
+  /** Unread message count — drives the badge on the Messages nav item */
+  unreadCount?: number
+}
+
+// ── Layout root ───────────────────────────────────────────────────────────────
+
+export function ClientPortalLayout({
+  children,
+  portalUser,
+  unreadCount = 0,
+}: ClientPortalLayoutProps) {
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  return (
+    <div className="min-h-screen" style={{ backgroundColor: "#EAE6E1" }}>
+      {/* Fixed top header */}
+      <PortalHeader
+        portalUser={portalUser}
+        mobileOpen={mobileOpen}
+        setMobileOpen={setMobileOpen}
+      />
+
+      {/* Desktop sidebar — fixed below header */}
+      <div className="hidden md:fixed md:top-16 md:bottom-0 md:flex md:w-56 md:flex-col">
+        <PortalSidebar unreadCount={unreadCount} />
+      </div>
+
+      {/* Content area — padded to clear the fixed header + sidebar */}
+      <div className="pt-16 md:pl-56">
+        <main className="py-6">
+          <div className="mx-auto w-full max-w-[1400px] px-4 sm:px-6 lg:px-8">
+            {children}
+          </div>
+        </main>
+      </div>
+    </div>
+  )
+}
+
+// ── Header ────────────────────────────────────────────────────────────────────
+
+function PortalHeader({
+  portalUser,
+  mobileOpen,
+  setMobileOpen,
+}: {
+  portalUser: PortalUserInfo
+  mobileOpen: boolean
+  setMobileOpen: (v: boolean) => void
+}) {
+  const router = useRouter()
+
+  async function handleSignOut() {
+    const supabase = createClient()
+    clearUserCache()
+    await supabase.auth.signOut()
+    router.push("/client-portal/login")
+  }
+
+  const initials = getInitials(portalUser.fullName ?? portalUser.email)
+
+  return (
+    <header
+      className="fixed top-0 left-0 right-0 z-40 h-16 bg-white border-b shadow-sm"
+      style={{ borderColor: "#8E9B79" }}
+    >
+      <div className="flex h-full items-center justify-between px-4 md:px-6">
+        {/* Left: mobile menu + logo */}
+        <div className="flex items-center gap-3">
+          <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon" className="md:hidden">
+                <Menu className="h-5 w-5" />
+                <span className="sr-only">Open navigation</span>
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-56 p-0">
+              <PortalSidebar />
+            </SheetContent>
+          </Sheet>
+
+          <a href="/client-portal" className="flex items-center gap-3">
+            <img
+              src="/images/alfred-logo.png"
+              alt="Motta Financial"
+              className="h-9 w-auto"
+            />
+            <div className="flex flex-col leading-tight">
+              <span
+                className="text-sm font-bold tracking-wide"
+                style={{ color: "#6B745D" }}
+              >
+                CLIENT PORTAL
+              </span>
+              <span className="text-[10px] text-gray-500 uppercase tracking-wider">
+                Motta Financial
+              </span>
+            </div>
+          </a>
+        </div>
+
+        {/* Right: user menu */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" className="flex items-center gap-2 h-9 px-2">
+              <Avatar className="h-7 w-7">
+                <AvatarFallback
+                  className="text-xs text-white"
+                  style={{ backgroundColor: "#6B745D" }}
+                >
+                  {initials}
+                </AvatarFallback>
+              </Avatar>
+              <span className="hidden sm:block text-sm font-medium text-gray-700 max-w-[140px] truncate">
+                {portalUser.fullName ?? portalUser.email}
+              </span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuLabel className="font-normal">
+              <p className="text-sm font-medium leading-none">
+                {portalUser.fullName ?? "My Account"}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1 truncate">
+                {portalUser.email}
+              </p>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={handleSignOut}
+              className="text-red-600 focus:text-red-600 focus:bg-red-50 cursor-pointer"
+            >
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </header>
+  )
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+
+function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
+  const pathname = usePathname()
+
+  return (
+    <nav
+      className="flex h-full flex-col gap-y-1 overflow-y-auto py-4 px-2"
+      style={{ backgroundColor: "#2C2C2C" }}
+    >
+      <ul className="space-y-0.5" role="list">
+        {PORTAL_NAV.map((item) => {
+          // Dashboard is only active on the exact path; others use prefix
+          const isActive =
+            item.href === "/client-portal"
+              ? pathname === "/client-portal"
+              : pathname === item.href || pathname.startsWith(item.href + "/")
+
+          const showBadge = item.name === "Messages" && unreadCount > 0
+
+          return (
+            <li key={item.name}>
+              <a
+                href={item.href}
+                style={{
+                  backgroundColor: isActive ? NAV_ACTIVE_BG : "transparent",
+                  borderColor: isActive ? NAV_ACTIVE_BORDER : "transparent",
+                }}
+                className={cn(
+                  "group flex items-center gap-x-3 rounded-l-md py-2 pl-3 pr-3 text-sm font-medium leading-6 border-r-2 transition-colors",
+                  isActive ? "text-white" : "text-gray-300 hover:text-white",
+                )}
+                onMouseEnter={(e) => {
+                  if (!isActive)
+                    e.currentTarget.style.backgroundColor = NAV_HOVER_BG
+                }}
+                onMouseLeave={(e) => {
+                  if (!isActive)
+                    e.currentTarget.style.backgroundColor = "transparent"
+                }}
+              >
+                <item.icon
+                  className={cn(
+                    "h-5 w-5 shrink-0",
+                    isActive
+                      ? "text-white"
+                      : "text-gray-400 group-hover:text-white",
+                  )}
+                  aria-hidden="true"
+                />
+                <span className="flex-1">{item.name}</span>
+                {showBadge && (
+                  <span
+                    className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                    style={{ backgroundColor: "#B45309" }}
+                  >
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </a>
+            </li>
+          )
+        })}
+      </ul>
+
+      {/* Footer note */}
+      <div className="mt-auto px-3 pb-2">
+        <p className="text-[10px] text-gray-500 leading-tight">
+          Motta Financial
+          <br />
+          Client Portal
+        </p>
+      </div>
+    </nav>
+  )
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/)
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+  }
+  return name.slice(0, 2).toUpperCase()
+}

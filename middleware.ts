@@ -73,6 +73,24 @@ export async function middleware(request: NextRequest) {
     }
   }
 
+  // The client portal has its own login screen. Let it through without a Hub
+  // session so clients can authenticate independently of the internal /login.
+  const isPortalLoginPage = pathname === "/client-portal/login"
+
+  // The portal route layout (app/client-portal/layout.tsx) is a Server
+  // Component that does its own portal_users auth check and redirects to
+  // /client-portal/login on failure. Middleware only needs to ensure the
+  // portal pages are NOT blocked by the Hub-only redirects below (e.g. the
+  // "no session → /welcome" rule would catch unauthenticated clients hitting
+  // any portal page if we didn't exempt them here). We let the request through;
+  // the layout's own redirect handles gate-keeping.
+  const isPortalPage =
+    pathname.startsWith("/client-portal") && !isPortalLoginPage
+
+  // Portal API routes are guarded by requirePortalAuth() inside each handler.
+  // Middleware must let them reach the handler (same reason as Alfred bearer calls).
+  const isPortalApi = pathname.startsWith("/api/client-portal/")
+
   const isLoginPage = pathname === "/login"
   // Anonymous landing page served at motta.cpa. We deliberately do not
   // redirect signed-in users away from /welcome — a logged-in team
@@ -249,8 +267,9 @@ export async function middleware(request: NextRequest) {
       .toLowerCase()
       .startsWith("bearer ")
 
-  // Allow auth callback, public API, webhooks, cron, OAuth callbacks, and
-  // internal calls without auth checks
+  // Allow auth callback, public API, webhooks, cron, OAuth callbacks,
+  // internal calls, and the client portal (which does its own auth) without
+  // the Hub-session auth checks that follow.
   if (
     isAuthCallback ||
     isPublicApi ||
@@ -272,7 +291,10 @@ export async function middleware(request: NextRequest) {
     isLegalPage ||
     isDocsPage ||
     isPublicEmbed ||
-    isWelcomePage
+    isWelcomePage ||
+    isPortalLoginPage ||
+    isPortalPage ||
+    isPortalApi
   ) {
     return supabaseResponse
   }
