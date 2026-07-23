@@ -40,12 +40,24 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
 // ── Preview mock data (remove when real API is wired up) ──────────────────────
 
+// Motta status color palette — used everywhere in the portal
+const STATUS_COLORS: Record<string, string> = {
+  "In Progress":         "#8E9B79",
+  "Under Review":        "#6B745D",
+  "Awaiting Info":       "#B5BFA8",
+  "Complete":            "#4A5240",
+  "Awaiting Signature":  "#8E9B79",
+}
+function statusColor(label: string): string {
+  return STATUS_COLORS[label] ?? "#6B745D"
+}
+
 const PREVIEW_WORK: WorkItem[] = [
   {
     id: "1",
     title: "2024 Individual Tax Return",
     work_type_name: "Tax Return",
-    statusDisplay: { label: "In Progress", color: "#3B82F6" },
+    statusDisplay: { label: "In Progress", color: statusColor("In Progress") },
     assignee_name: "Sarah Martinez",
     due_date: new Date(Date.now() + 12 * 24 * 60 * 60 * 1000).toISOString(),
     has_blocking_todos: true,
@@ -55,7 +67,7 @@ const PREVIEW_WORK: WorkItem[] = [
     id: "2",
     title: "Q3 2024 Bookkeeping",
     work_type_name: "Bookkeeping",
-    statusDisplay: { label: "Under Review", color: "#8B5CF6" },
+    statusDisplay: { label: "Under Review", color: statusColor("Under Review") },
     assignee_name: "James Motta",
     due_date: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
     has_blocking_todos: false,
@@ -65,7 +77,7 @@ const PREVIEW_WORK: WorkItem[] = [
     id: "3",
     title: "2023 Amended Return",
     work_type_name: "Amended Return",
-    statusDisplay: { label: "Complete", color: "#10B981" },
+    statusDisplay: { label: "Complete", color: statusColor("Complete") },
     assignee_name: "Sarah Martinez",
     due_date: null,
     has_blocking_todos: false,
@@ -294,7 +306,7 @@ function StatCard({
     <a href={href} className="block">
       <Card
         className={`shadow-sm border-0 transition-shadow hover:shadow-md ${
-          highlight ? "ring-1 ring-amber-400" : ""
+          highlight ? "ring-1 ring-[#8E9B79]" : ""
         }`}
       >
         <CardContent className="flex items-center gap-4 py-5 px-5">
@@ -344,7 +356,7 @@ function WorkItemRow({ item }: { item: WorkItem }) {
       {item.has_blocking_todos && (
         <AlertTriangle
           className="h-4 w-4 shrink-0 mt-0.5"
-          style={{ color: "#D97706" }}
+          style={{ color: "#6B745D" }}
         />
       )}
     </div>
@@ -356,7 +368,7 @@ function MessageRow({ msg }: { msg: PortalMessage }) {
   return (
     <div
       className={`flex items-start gap-2.5 rounded-lg px-3 py-2.5 ${
-        isUnread ? "bg-amber-50 border border-amber-100" : "bg-gray-50/60 border border-gray-100"
+        isUnread ? "bg-[#8E9B79]/10 border border-[#8E9B79]/30" : "bg-gray-50/60 border border-gray-100"
       }`}
     >
       <div className="min-w-0 flex-1">
@@ -365,7 +377,7 @@ function MessageRow({ msg }: { msg: PortalMessage }) {
             {msg.sender_role === "team" ? msg.sender_name ?? "Motta Financial" : "You"}
           </p>
           {isUnread && (
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0" />
+            <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: "#6B745D" }} />
           )}
         </div>
         <p className="text-sm text-gray-600 mt-0.5 line-clamp-2 leading-snug">

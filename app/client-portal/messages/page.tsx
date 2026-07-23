@@ -274,7 +274,7 @@ function MessageBubble({
           isClient
             ? "text-white rounded-br-sm"
             : "bg-gray-100 text-gray-800 rounded-bl-sm",
-          isUnread && "ring-1 ring-amber-300",
+          isUnread && "ring-1 ring-[#8E9B79]/50",
         )}
         style={isClient ? { backgroundColor: "#6B745D" } : {}}
       >

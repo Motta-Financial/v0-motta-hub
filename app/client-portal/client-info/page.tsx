@@ -91,7 +91,7 @@ export default function ClientInfoPage() {
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">My Info</h1>
+        <h1 className="text-2xl font-bold text-gray-900">My Account</h1>
         <p className="text-sm text-gray-500 mt-1">
           Review your information on file. To request a change, click Edit — your
           Motta team will be notified and update your records.

@@ -30,7 +30,7 @@ import { clearUserCache } from "@/contexts/user-context"
 
 const PORTAL_NAV = [
   { name: "Dashboard",    href: "/client-portal",             icon: LayoutDashboard },
-  { name: "My Info",      href: "/client-portal/client-info", icon: UserCircle },
+  { name: "My Account",   href: "/client-portal/client-info", icon: UserCircle },
   { name: "Tax",          href: "/client-portal/tax",         icon: FileText },
   { name: "Messages",     href: "/client-portal/messages",    icon: MessageSquare },
 ] as const
