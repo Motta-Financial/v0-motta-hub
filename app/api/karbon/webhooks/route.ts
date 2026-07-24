@@ -7,8 +7,8 @@
  *     ResourceType: 'Contact' | 'Organization' | 'ClientGroup' | 'Work' | 'Note' | 'NoteComment' |
  *                   'User' | 'IntegrationTask' | 'Invoice' | 'Estimate' | 'EstimateSummary' |
  *                   'CustomFieldValue',
- *     ActionType: 'Inserted' | 'Modified' | 'Deleted',
- *     TimeStamp: ISO8601,
+ *     ActionType: 'Inserted' | 'Updated' | 'Deleted' | 'Paid' | ...,
+ *     Timestamp: ISO8601,   // NOTE: Karbon spells it "Timestamp" (lowercase s)
  *     ParentEntityKey?: string,    // NoteComment payloads
  *     ClientKey?: string,          // IntegrationTask / CustomFieldValue payloads
  *     ClientType?: 'Contact' | 'Organization',
@@ -34,7 +34,11 @@ interface KarbonWebhookPayload {
   ResourcePermaKey: string
   ResourceType: string
   ActionType: string
-  TimeStamp: string
+  // Karbon sends "Timestamp" (per the API docs). Earlier code required
+  // "TimeStamp" (capital S), which is undefined on every real payload — so the
+  // required-fields guard 400'd every delivery. Accept both casings defensively.
+  Timestamp?: string
+  TimeStamp?: string
   ParentEntityKey?: string
   ClientKey?: string
   ClientType?: string
@@ -108,9 +112,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
   }
 
-  if (!payload.ResourcePermaKey || !payload.ResourceType || !payload.ActionType || !payload.TimeStamp) {
+  const eventTimestamp = payload.Timestamp ?? payload.TimeStamp
+  if (!payload.ResourcePermaKey || !payload.ResourceType || !payload.ActionType || !eventTimestamp) {
     return NextResponse.json(
-      { error: "Missing required fields (ResourcePermaKey, ResourceType, ActionType, TimeStamp)" },
+      { error: "Missing required fields (ResourcePermaKey, ResourceType, ActionType, Timestamp)" },
       { status: 400 },
     )
   }
@@ -131,7 +136,7 @@ export async function POST(request: NextRequest) {
       parent_entity_key: payload.ParentEntityKey || null,
       client_key: payload.ClientKey || null,
       client_type: payload.ClientType || null,
-      event_timestamp: payload.TimeStamp,
+      event_timestamp: eventTimestamp,
       raw_payload: payload as any,
       signature_valid: signatureValid,
       processing_status: "pending",
