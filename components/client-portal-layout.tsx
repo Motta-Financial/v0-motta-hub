@@ -137,7 +137,7 @@ function PortalHeader({
           <a href="/client-portal" className="flex items-center gap-3">
             <img
               src="/images/alfred-logo.png"
-              alt="Motta Financial"
+              alt="ALFRED Hub"
               className="h-10 w-auto"
             />
             <div className="flex flex-col leading-tight">
@@ -145,10 +145,10 @@ function PortalHeader({
                 className="text-base font-bold tracking-wide"
                 style={{ color: "#6B745D" }}
               >
-                CLIENT PORTAL
+                ALFRED HUB
               </span>
               <span className="text-[10px] text-gray-500 uppercase tracking-wider">
-                A Motta Financial product
+                Client Portal
               </span>
             </div>
           </a>
