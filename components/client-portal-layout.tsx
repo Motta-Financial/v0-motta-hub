@@ -19,6 +19,7 @@ import {
   LayoutDashboard,
   UserCircle,
   FileText,
+  FolderOpen,
   MessageSquare,
   LogOut,
   Menu,
@@ -32,6 +33,7 @@ const PORTAL_NAV = [
   { name: "Dashboard",    href: "/client-portal",             icon: LayoutDashboard },
   { name: "My Account",   href: "/client-portal/client-info", icon: UserCircle },
   { name: "Tax",          href: "/client-portal/tax",         icon: FileText },
+  { name: "Documents",    href: "/client-portal/documents",   icon: FolderOpen },
   { name: "Messages",     href: "/client-portal/messages",    icon: MessageSquare },
 ] as const
 

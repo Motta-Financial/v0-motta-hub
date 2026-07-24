@@ -1,34 +1,7 @@
 import { requirePortalAuth } from "@/lib/portal/require-portal-auth"
 import { createClient } from "@/lib/supabase/server"
+import { mapStatus } from "@/lib/portal/map-status"
 import { NextResponse } from "next/server"
-
-/**
- * Maps Karbon internal work statuses to plain-English client-facing labels.
- * Clients should never see the raw Karbon codes.
- */
-function mapStatus(karbonStatus: string | null): {
-  label: string
-  variant: "default" | "secondary" | "destructive" | "outline"
-  color: string
-} {
-  const s = (karbonStatus ?? "").toLowerCase()
-  if (s.includes("complete") || s.includes("filed") || s.includes("finished")) {
-    return { label: "Complete", variant: "default", color: "#16a34a" }
-  }
-  if (s.includes("review") || s.includes("partner")) {
-    return { label: "Under Review", variant: "secondary", color: "#7c3aed" }
-  }
-  if (s.includes("waiting") || s.includes("info") || s.includes("client") || s.includes("block")) {
-    return { label: "Waiting on You", variant: "destructive", color: "#d97706" }
-  }
-  if (s.includes("progress") || s.includes("started") || s.includes("work")) {
-    return { label: "In Progress", variant: "default", color: "#2563eb" }
-  }
-  if (s.includes("not started") || s.includes("scheduled")) {
-    return { label: "Scheduled", variant: "outline", color: "#6b7280" }
-  }
-  return { label: "In Progress", variant: "default", color: "#2563eb" }
-}
 
 /**
  * GET /api/client-portal/work-items

@@ -251,8 +251,9 @@ function WorkItemCard({ item }: { item: TaxWorkItem }) {
   const progressWidth = `${item.progressPct}%`
 
   return (
-    <div
-      className={`rounded-xl border p-4 space-y-3 ${
+    <a
+      href={`/client-portal/tax/${item.id}`}
+      className={`block rounded-xl border p-4 space-y-3 transition-colors hover:border-[#8E9B79]/60 ${
         item.has_blocking_todos
           ? "border-[#8E9B79]/40 bg-[#8E9B79]/5"
           : "border-gray-100 bg-gray-50/50"
@@ -312,13 +313,13 @@ function WorkItemCard({ item }: { item: TaxWorkItem }) {
           </span>
         )}
         {item.has_blocking_todos && (
-          <span className="flex items-center gap-1 font-medium" style={{ color: "#D97706" }}>
+          <span className="flex items-center gap-1 font-medium" style={{ color: "#6B745D" }}>
             <AlertTriangle className="h-3.5 w-3.5" />
             Waiting on you
           </span>
         )}
       </div>
-    </div>
+    </a>
   )
 }
 
