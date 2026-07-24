@@ -269,6 +269,10 @@ export async function computeClientProfile(
     .from("debriefs")
     .select("id, debrief_date, debrief_type, notes, action_items")
     .match(debriefFilter)
+    // Exclude soft-deleted debriefs (migration 351) so a deleted debrief
+    // stops counting toward totalDebriefs / openActionItems and never
+    // becomes the cached "last debrief" on the client profile.
+    .is("deleted_at", null)
     .order("debrief_date", { ascending: false, nullsFirst: false })
 
   const debriefList = debriefs || []
@@ -413,7 +417,7 @@ export async function computeClientProfile(
     proconnectClientId = pc?.proconnect_client_id || null
   }
 
-  // ── Quality / attention ─────────────────────────────────────────────────
+  // ── Quality / attention ────────────────────���────────────────────────────
   let completeness = 0
   if (displayName) completeness += 20
   if (primaryEmail) completeness += 15

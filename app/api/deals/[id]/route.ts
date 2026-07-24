@@ -60,6 +60,9 @@ export async function GET(
       "id, debrief_date, debrief_type, notes, action_items, follow_up_date, status, created_at, team_member_id, meeting_id, work_item_id",
     )
     .eq("deal_id", id)
+    // Base-table read, so the soft-delete filter baked into the debriefs_*
+    // views doesn't apply here (migration 351).
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
 
   let debriefs: unknown[] = debriefRows ?? []

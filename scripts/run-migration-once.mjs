@@ -33,8 +33,15 @@ if (!connectionString) {
 // sandbox. We disable strict verification *only* for this admin one-shot
 // migration — application code goes through Supabase's SSR client, which
 // handles trust correctly on its own.
+//
+// NOTE: a `sslmode=` param in the connection string takes precedence over the
+// `ssl` option below, so `sslmode=require` re-enables chain verification and
+// fails with "self-signed certificate in certificate chain". Strip it first.
+const dsn = new URL(connectionString)
+dsn.searchParams.delete("sslmode")
+
 const client = new Client({
-  connectionString,
+  connectionString: dsn.toString(),
   ssl: { rejectUnauthorized: false },
 })
 try {

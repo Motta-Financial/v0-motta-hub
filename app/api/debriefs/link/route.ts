@@ -70,7 +70,10 @@ export async function GET(request: NextRequest) {
   }
 
   // 1. Already-linked debrief for this meeting.
-  const linkedQuery = supabase.from("debriefs").select(DEBRIEF_FIELDS)
+  // `.is("deleted_at", null)` throughout: a soft-deleted debrief (migration
+  // 351) should neither show as a meeting's linked debrief nor appear as a
+  // match candidate.
+  const linkedQuery = supabase.from("debriefs").select(DEBRIEF_FIELDS).is("deleted_at", null)
   const { data: linkedRows, error: linkedErr } = await (calendlyEventId
     ? linkedQuery.eq("calendly_event_id", calendlyEventId)
     : linkedQuery.eq("zoom_meeting_id", zoomMeetingId!)
@@ -111,6 +114,7 @@ export async function GET(request: NextRequest) {
     .select(DEBRIEF_FIELDS)
     .is("calendly_event_id", null)
     .is("zoom_meeting_id", null)
+    .is("deleted_at", null)
     .gte("debrief_date", sinceIso)
     .order("debrief_date", { ascending: false })
     .limit(limit)

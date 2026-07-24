@@ -24,7 +24,9 @@ export async function GET() {
         .from("debriefs")
         .select("id", { count: "exact", head: true })
         .is("contact_id", null)
-        .is("organization_id", null),
+        .is("organization_id", null)
+        // Don't count soft-deleted debriefs as unlinked (migration 351).
+        .is("deleted_at", null),
     ])
 
     return NextResponse.json({

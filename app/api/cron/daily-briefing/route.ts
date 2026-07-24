@@ -138,6 +138,8 @@ export async function GET(request: Request) {
         .select(
           "id, debrief_date, organization_name, contact_id, work_item_id, created_by_id, created_at, action_items, karbon_client_key",
         )
+        // Don't report soft-deleted debriefs in the briefing (migration 351).
+        .is("deleted_at", null)
         .gte("created_at", dataWindowStart.toISOString())
         .lt("created_at", dataWindowEnd.toISOString())
         .order("created_at", { ascending: true }),

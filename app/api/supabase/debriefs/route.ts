@@ -37,6 +37,9 @@ export async function GET(request: Request) {
           organization:organizations(name),
           work_item:work_items(title, client_name, karbon_url)
         `)
+        // The debriefs_full view filters soft-deleted rows internally; this
+        // base-table fallback has to do it explicitly (migration 351).
+        .is("deleted_at", null)
         .order("created_at", { ascending: false })
         .limit(limit)
 

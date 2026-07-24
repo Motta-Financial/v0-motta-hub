@@ -1,24 +1,120 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
+import { getTeamMemberByAuthId } from "@/lib/team-members"
 
+/**
+ * Resolve the signed-in user, plus their team_members row when we can find
+ * one. Any signed-in team member may delete a debrief (mirrors the PATCH
+ * policy above — the Hub is a small internal tool and partners routinely
+ * clean up each other's records), but we always record *who* did it.
+ *
+ * Returns null when there is no valid session.
+ */
+async function resolveActor() {
+  try {
+    const auth = await createClient()
+    const {
+      data: { user },
+    } = await getAuthenticatedUser(auth)
+    if (!user) return null
+
+    // Best-effort: a missing team_members row shouldn't block the delete,
+    // it just leaves deleted_by_id null.
+    const member = await getTeamMemberByAuthId(user.id, user.email)
+    return { user, memberId: member?.id ?? null }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * DELETE /api/debriefs/[id]
+ * ────────────────────────────────────────────────────────────────────────
+ * Soft-deletes a debrief by stamping `deleted_at` / `deleted_by_id` /
+ * `deleted_reason` (migration 351). The row is retained so a mistaken
+ * delete is recoverable via PATCH ?restore=1.
+ *
+ * We deliberately do NOT hard-delete: debriefs feed client profiles, deal
+ * stats, the daily briefing, global search, and the meeting timeline. The
+ * debriefs_* views (and deals_enriched / hub_meetings_enriched) filter
+ * `deleted_at IS NULL`, so a soft-deleted debrief disappears from every
+ * read path immediately without losing history.
+ *
+ * Optional JSON body: { reason?: string }
+ */
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
+    if (!id) {
+      return NextResponse.json({ error: "Missing debrief id" }, { status: 400 })
+    }
+
+    const actor = await resolveActor()
+    if (!actor) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 })
+    }
+
+    // Body is optional — a bare DELETE with no payload is valid.
+    let reason: string | null = null
+    try {
+      const body = await request.json()
+      const raw = typeof body?.reason === "string" ? body.reason.trim() : ""
+      reason = raw.length > 0 ? raw.slice(0, 500) : null
+    } catch {
+      // No/invalid body: leave reason null.
+    }
+
     const supabase = createAdminClient()
 
-    const { error } = await supabase.from("debriefs").delete().eq("id", id)
+    // Only stamp rows that are still live, so a double-submit can't
+    // overwrite the original deleter/timestamp. `.select()` lets us tell
+    // "already deleted" apart from "no such debrief".
+    const { data, error } = await supabase
+      .from("debriefs")
+      .update({
+        deleted_at: new Date().toISOString(),
+        deleted_by_id: actor.memberId,
+        deleted_reason: reason,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .is("deleted_at", null)
+      .select("id")
+      .maybeSingle()
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    return NextResponse.json({ success: true })
+    if (!data) {
+      // Either the id doesn't exist or it was already soft-deleted. Check
+      // which so the client can show something useful.
+      const { data: existing } = await supabase
+        .from("debriefs")
+        .select("id, deleted_at")
+        .eq("id", id)
+        .maybeSingle()
+
+      if (!existing) {
+        return NextResponse.json({ error: "Debrief not found" }, { status: 404 })
+      }
+      // Idempotent: already deleted is a success from the caller's POV.
+      return NextResponse.json({ success: true, alreadyDeleted: true })
+    }
+
+    return NextResponse.json({ success: true, id: data.id })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to delete debrief"
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }
+
+/**
+ * Restoring a soft-deleted debrief is handled by PATCH — see the
+ * `?restore=1` branch near the top of the PATCH handler below. Route files
+ * may only export HTTP-method handlers, so there's no helper export here.
+ */
 
 /**
  * PATCH /api/debriefs/[id]
@@ -105,16 +201,33 @@ export async function PATCH(
   // already ran a `getSession()` to gate access to this route, so an
   // additional `getUser()` round-trip here was pure overhead that
   // contributed to the per-IP auth rate limit.
-  try {
-    const auth = await createClient()
-    const {
-      data: { user },
-    } = await getAuthenticatedUser(auth)
-    if (!user) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 })
-    }
-  } catch {
+  if (!(await resolveActor())) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 })
+  }
+
+  // Restore branch: `PATCH /api/debriefs/[id]?restore=1` clears the
+  // soft-delete stamp set by DELETE. Handled before body parsing because a
+  // restore takes no payload.
+  if (request.nextUrl.searchParams.get("restore") === "1") {
+    const { data, error } = await createAdminClient()
+      .from("debriefs")
+      .update({
+        deleted_at: null,
+        deleted_by_id: null,
+        deleted_reason: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select("id")
+      .maybeSingle()
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+    if (!data) {
+      return NextResponse.json({ error: "Debrief not found" }, { status: 404 })
+    }
+    return NextResponse.json({ success: true, restored: true, id: data.id })
   }
 
   let body: Record<string, any>

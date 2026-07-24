@@ -420,6 +420,8 @@ Use this to answer questions about clients, work items, team members, finances, 
           const { data } = await supabase
             .from("debriefs")
             .select("*")
+            // Don't surface soft-deleted debriefs to ALFRED (migration 351).
+            .is("deleted_at", null)
             .gte("created_at", cutoffDate)
             .order("created_at", { ascending: false })
             .limit(20)

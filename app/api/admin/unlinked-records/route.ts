@@ -92,6 +92,9 @@ export async function GET(request: NextRequest) {
           .select("id, organization_name, debrief_date, debrief_type, notes, created_at")
           .is("contact_id", null)
           .is("organization_id", null)
+          // A soft-deleted debrief isn't a record that still needs linking
+          // (migration 351).
+          .is("deleted_at", null)
           .order("created_at", { ascending: false })
           .limit(limit)
 

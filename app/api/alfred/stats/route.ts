@@ -50,15 +50,17 @@ export async function GET(request: NextRequest) {
         .from("organizations")
         .select("*", { count: "exact", head: true }),
 
-      // Total debriefs
+      // Total debriefs (excluding soft-deleted — migration 351)
       supabase
         .from("debriefs")
-        .select("*", { count: "exact", head: true }),
+        .select("*", { count: "exact", head: true })
+        .is("deleted_at", null),
 
       // Recent debriefs
       supabase
         .from("debriefs")
         .select("id, debrief_date, debrief_type, team_member, organization_name, status")
+        .is("deleted_at", null)
         .order("debrief_date", { ascending: false })
         .limit(5),
 

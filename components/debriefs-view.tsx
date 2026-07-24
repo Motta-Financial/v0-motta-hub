@@ -30,9 +30,14 @@ import {
   Loader2,
   Check,
   Pencil,
+  Trash2,
   X,
 } from "lucide-react"
 import { DebriefEditSheet } from "@/components/debriefs/debrief-edit-sheet"
+import {
+  DebriefDeleteDialog,
+  type DebriefDeleteTarget,
+} from "@/components/debriefs/debrief-delete-dialog"
 
 interface TeamMemberRef {
   id: string
@@ -152,6 +157,8 @@ export default function DebriefsView() {
   const [pendingTeamMemberId, setPendingTeamMemberId] = useState<string>("")
   const [savingTeamMember, setSavingTeamMember] = useState(false)
   const [editingDebrief, setEditingDebrief] = useState<Debrief | null>(null)
+  // The debrief queued for deletion (drives the confirmation dialog).
+  const [deleteTarget, setDeleteTarget] = useState<DebriefDeleteTarget | null>(null)
 
   const fetchDebriefs = async () => {
     setLoading(true)
@@ -257,6 +264,15 @@ export default function DebriefsView() {
       maximumFractionDigits: 0,
     }).format(amount)
   }
+
+  // Shape a debrief into the identifying fields the delete dialog echoes back
+  // so the user can confirm they're removing the right record.
+  const toDeleteTarget = (d: Debrief): DebriefDeleteTarget => ({
+    id: d.id,
+    clientName: resolveClientName(d),
+    dateLabel: d.debrief_date ? format(new Date(d.debrief_date), "MMM d, yyyy") : null,
+    memberName: getTeamMemberName(d),
+  })
 
   const openDetails = (debrief: Debrief) => {
     setSelectedDebrief(debrief)
@@ -562,6 +578,21 @@ export default function DebriefsView() {
                                   <ExternalLink className="h-4 w-4" />
                                 </Button>
                               )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setDeleteTarget(toDeleteTarget(debrief))
+                                }}
+                                title="Delete debrief"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                <span className="sr-only">
+                                  Delete debrief{clientName ? ` for ${clientName}` : ""}
+                                </span>
+                              </Button>
                             </div>
                           </TableCell>
                         </TableRow>
@@ -820,8 +851,20 @@ export default function DebriefsView() {
                   </div>
                 )}
 
-                {/* Edit shortcut */}
-                <div className="flex justify-end border-t pt-4">
+                {/* Edit / delete shortcuts */}
+                <div className="flex items-center justify-between gap-2 border-t pt-4">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => {
+                      setDeleteTarget(toDeleteTarget(selectedDebrief))
+                      setDetailsOpen(false)
+                    }}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete Debrief
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -849,6 +892,24 @@ export default function DebriefsView() {
             // Re-fetch the list so the table reflects the new mapping/notes/etc.
             fetchDebriefs()
           }}
+        />
+
+        <DebriefDeleteDialog
+          target={deleteTarget}
+          onOpenChange={(o) => {
+            if (!o) setDeleteTarget(null)
+          }}
+          onDeleted={(id) => {
+            // Optimistically drop the row instead of re-fetching, so the
+            // Undo toast can put it straight back without a round-trip.
+            setDebriefs((prev) => prev.filter((d) => d.id !== id))
+            setDeleteTarget(null)
+            if (selectedDebrief?.id === id) {
+              setSelectedDebrief(null)
+              setDetailsOpen(false)
+            }
+          }}
+          onRestored={() => fetchDebriefs()}
         />
       </div>
   )

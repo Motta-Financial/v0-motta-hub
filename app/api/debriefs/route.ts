@@ -48,6 +48,9 @@ export async function GET(request: NextRequest) {
   let query = supabase
     .from("debriefs")
     .select(selectFields)
+    // Hide soft-deleted debriefs (migration 351). The debriefs_* views
+    // filter this internally, but this route reads the base table.
+    .is("deleted_at", null)
     .order("debrief_date", { ascending: false })
     .limit(limit)
 

@@ -48,6 +48,9 @@ export async function GET(
         .from("debriefs")
         .select("id, debrief_date, debrief_type, notes, action_items, follow_up_date")
         .eq(refKey, id)
+        // Keep soft-deleted debriefs out of the ALFRED client context
+        // (migration 351).
+        .is("deleted_at", null)
         .order("debrief_date", { ascending: false, nullsFirst: false })
         .limit(5),
       supabase
