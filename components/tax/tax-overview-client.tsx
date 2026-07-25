@@ -116,8 +116,11 @@ export function TaxOverviewClient() {
   const { data, error, isLoading, mutate } = useSWR<OverviewResponse>(
     "/api/tax/overview",
     fetcher,
-    { refreshInterval: 60_000 }, // gentle live-refresh; the heavy sync
-    // is gated by the ProConnect cron, not this dashboard.
+    // 10-minute refresh. The overview endpoint scans/aggregates the full
+    // engagement + client tables, and its source data changes via the
+    // nightly 06:00 UTC sync plus occasional webhooks — polling it every
+    // 60s multiplied that heavy scan ~600x/user/day for no fresher data.
+    { refreshInterval: 600_000, revalidateOnFocus: true },
   )
 
   if (error) {
