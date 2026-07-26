@@ -103,7 +103,7 @@ admin-gated) so Karbon is given the same key.
 `proconnect_return_field_cells` are genuinely 0 — no return data has
 ever landed, which is why the 1040 viewer has nothing to show.
 
-**Fix:** Intuit must allow-list realm **9130356180193146** for the
+**Fix:** Intuit must allow-list the firm's realm (see private artifact) for the
 Phase 1 Export/Import endpoints. Nothing in the codebase can work around
 a 403 on the scope.
 

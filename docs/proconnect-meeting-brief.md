@@ -1,8 +1,12 @@
 # ProConnect Open API — Integration Status & Provisioning Request
 
-**Firm:** Motta Financial · **Realm / Company ID:** `9130356180193146`
-**Scope granted:** `com.intuit.proconnect.taxreturns` · **Source:** `ITO`
+**Firm:** Motta Financial · **Scope granted:** `com.intuit.proconnect.taxreturns` · **Source:** `ITO`
 **Prepared:** 2026-07-26 — every figure below is a live query against production.
+
+> ⚠️ **This repository is public.** The realm/company ID and client
+> identifiers have been redacted from this committed copy; the private
+> meeting artifact carries them. ProConnect endpoint paths and hostnames
+> are partner-confidential — see the note at the end of this file.
 
 ---
 
@@ -112,13 +116,22 @@ GET https://hub.motta.cpa/api/proconnect/returns/{returnId}/data
 ```
 
 Returns Intuit's raw response body verbatim plus the `intuit-tid`
-correlation ID. Known-unlocked TY2025 1040 pairs staged for the demo:
+correlation ID.
 
-| returnId | clientId (numeric `id_client`) |
-|---|---|
-| `229f3018-edb3-477e-803e-138e3cbe439e` | `9341453230983859` |
-| `e763811b-6219-41e6-84a4-d9e34eef7086` | `9130357916534516` |
-| `71d88998-5044-490e-8d3d-7541cf0d5d58` | `9341457318450177` |
+Three known-unlocked TY2025 1040 `(returnId, clientId)` pairs are staged
+for the demo. **The identifiers are deliberately not listed in this file —
+this repository is public.** Pull them fresh with:
+
+```sql
+SELECT engagement_id, proconnect_client_id
+FROM proconnect_engagements
+WHERE form_type = '1040' AND tax_year = 2025
+  AND coalesce((raw_json->'lockInfo'->>'locked')::boolean, false) = false
+ORDER BY proconnect_modified_at DESC NULLS LAST
+LIMIT 3;
+```
+
+(They are also listed in the private meeting artifact.)
 
 We also have `/api/tax/proconnect-status`, a diagnostics endpoint that
 reports Phase 1 health, snapshot count, 7-day failure count, and the last
@@ -126,7 +139,7 @@ error — currently `status: "blocked"`.
 
 ### 🔴 The ask
 
-**Please provision / allow-list realm `9130356180193146` for the Phase 1
+**Please provision / allow-list the firm's realm for the Phase 1
 Data Service Export and Import endpoints.**
 
 If provisioning is already in place from your side, we'd like to work
@@ -212,7 +225,7 @@ everything in §2. Layer C is the goal that made us invest in this API.
    documented `errorCode`.
 4. **We built the UI in advance.** The 1040 viewer is deployed and
    renders empty. This is ready to light up the moment Export returns 200.
-5. **The ask is narrow:** provision realm `9130356180193146` for Phase 1
+5. **The ask is narrow:** provision the firm's realm for Phase 1
    Data Service, and confirm the Data Service base URL.
 6. **Have the repro ready.** Offer to run the live call and hand over the
    `intuit-tid` so their team can trace it server-side.
