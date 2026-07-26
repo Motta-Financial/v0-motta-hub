@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
 import { assignDenseRanks, awardWeeklyPodiumCredit } from "@/lib/tommy-awards-ranking"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
@@ -158,22 +159,35 @@ export async function GET(request: NextRequest) {
 
     // Get leaderboard data
     if (type === "leaderboard") {
-      // Calculate points from ballots
-      let ballotsQuery = supabase.from("tommy_award_ballots").select("*")
+      // Calculate points from ballots. Paged: a full year of ballots
+      // crosses PostgREST's 1,000-row response cap, which would
+      // silently drop late-year ballots from the standings. Select
+      // only the name columns the tally reads.
+      const ballots = await fetchAllPaged<{
+        first_place_name: string | null
+        second_place_name: string | null
+        third_place_name: string | null
+        honorable_mention_name: string | null
+        partner_vote_name: string | null
+      }>(() => {
+        let ballotsQuery = supabase
+          .from("tommy_award_ballots")
+          .select(
+            "first_place_name, second_place_name, third_place_name, honorable_mention_name, partner_vote_name",
+          )
 
-      if (year) {
-        const startDate = `${year}-01-01`
-        const endDate = `${year}-12-31`
-        ballotsQuery = ballotsQuery.gte("week_date", startDate).lte("week_date", endDate)
-      }
+        if (year) {
+          const startDate = `${year}-01-01`
+          const endDate = `${year}-12-31`
+          ballotsQuery = ballotsQuery.gte("week_date", startDate).lte("week_date", endDate)
+        }
 
-      if (weekIdList.length > 0) {
-        ballotsQuery = ballotsQuery.in("week_id", weekIdList)
-      }
+        if (weekIdList.length > 0) {
+          ballotsQuery = ballotsQuery.in("week_id", weekIdList)
+        }
 
-      const { data: ballots, error } = await ballotsQuery
-
-      if (error) throw error
+        return ballotsQuery
+      })
 
       // Ganesh Vasan and Thameem JA are combined as "P24" (legacy "G&T" rolls up too)
       const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA", "G&T"]
@@ -273,16 +287,27 @@ export async function GET(request: NextRequest) {
       const targetYear = year || new Date().getFullYear().toString()
       const isYear2026OrLater = Number.parseInt(targetYear) >= 2026
 
-      // Fetch all ballots for the year
+      // Fetch all ballots for the year — paged past PostgREST's
+      // 1,000-row response cap, selecting only the columns the
+      // aggregation reads.
       const startDate = `${targetYear}-01-01`
       const endDate = `${targetYear}-12-31`
-      const { data: ballots, error: ballotsError } = await supabase
-        .from("tommy_award_ballots")
-        .select("*")
-        .gte("week_date", startDate)
-        .lte("week_date", endDate)
-
-      if (ballotsError) throw ballotsError
+      const ballots = await fetchAllPaged<{
+        week_date: string
+        first_place_name: string | null
+        second_place_name: string | null
+        third_place_name: string | null
+        honorable_mention_name: string | null
+        partner_vote_name: string | null
+      }>(() =>
+        supabase
+          .from("tommy_award_ballots")
+          .select(
+            "week_date, first_place_name, second_place_name, third_place_name, honorable_mention_name, partner_vote_name",
+          )
+          .gte("week_date", startDate)
+          .lte("week_date", endDate),
+      )
 
       // Group ballots by week
       const weekBuckets: Record<string, typeof ballots> = {}
@@ -460,15 +485,28 @@ export async function GET(request: NextRequest) {
       const yearEnd = `${targetYear}-12-31`
 
       const [
-        { data: ballots, error: ballotsError },
+        ballots,
         { data: weekRowsRaw, error: weeksError },
         { data: memberRows, error: membersError },
       ] = await Promise.all([
-        supabase
-          .from("tommy_award_ballots")
-          .select("*")
-          .gte("week_date", yearStart)
-          .lte("week_date", yearEnd),
+        // Paged: a full year of ballots crosses PostgREST's 1,000-row
+        // response cap. Select only the columns the aggregation reads.
+        fetchAllPaged<{
+          week_date: string
+          first_place_name: string | null
+          second_place_name: string | null
+          third_place_name: string | null
+          honorable_mention_name: string | null
+          partner_vote_name: string | null
+        }>(() =>
+          supabase
+            .from("tommy_award_ballots")
+            .select(
+              "week_date, first_place_name, second_place_name, third_place_name, honorable_mention_name, partner_vote_name",
+            )
+            .gte("week_date", yearStart)
+            .lte("week_date", yearEnd),
+        ),
         supabase
           .from("tommy_award_weeks")
           .select("week_date")
@@ -481,7 +519,6 @@ export async function GET(request: NextRequest) {
           .order("full_name"),
       ])
 
-      if (ballotsError) throw ballotsError
       if (weeksError) throw weeksError
       if (membersError) throw membersError
 
@@ -832,22 +869,37 @@ export async function GET(request: NextRequest) {
       const isP24 = memberName === "P24"
       const matchedNames = isP24 ? ["P24", ...COMBINED_VOTERS] : [memberName]
 
-      let ballotsQuery = supabase.from("tommy_award_ballots").select("*")
-
       const targetYear = year || new Date().getFullYear().toString()
 
-      if (mode === "ytd" || year) {
-        const startDate = `${targetYear}-01-01`
-        const endDate = `${targetYear}-12-31`
-        ballotsQuery = ballotsQuery.gte("week_date", startDate).lte("week_date", endDate)
-      }
+      // Same paging as the leaderboard/YTD blocks above: a full year
+      // of ballots crosses PostgREST's 1,000-row response cap.
+      const ballots = await fetchAllPaged<{
+        voter_name: string
+        week_date: string
+        first_place_name: string | null
+        second_place_name: string | null
+        third_place_name: string | null
+        honorable_mention_name: string | null
+        partner_vote_name: string | null
+      }>(() => {
+        let ballotsQuery = supabase
+          .from("tommy_award_ballots")
+          .select(
+            "voter_name, week_date, first_place_name, second_place_name, third_place_name, honorable_mention_name, partner_vote_name",
+          )
 
-      if (mode === "weekly" && weekIdList.length > 0) {
-        ballotsQuery = ballotsQuery.in("week_id", weekIdList)
-      }
+        if (mode === "ytd" || year) {
+          const startDate = `${targetYear}-01-01`
+          const endDate = `${targetYear}-12-31`
+          ballotsQuery = ballotsQuery.gte("week_date", startDate).lte("week_date", endDate)
+        }
 
-      const { data: ballots, error: bErr } = await ballotsQuery
-      if (bErr) throw bErr
+        if (mode === "weekly" && weekIdList.length > 0) {
+          ballotsQuery = ballotsQuery.in("week_id", weekIdList)
+        }
+
+        return ballotsQuery
+      })
 
       const isYear2026OrLater = Number.parseInt(targetYear) >= 2026
       const matches = (n: string | null | undefined) => !!n && matchedNames.includes(n)

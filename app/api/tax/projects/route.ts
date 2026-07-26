@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 const PAGE_SIZE = 50
 
@@ -106,14 +107,17 @@ export async function GET(req: Request) {
     const totalCount = count ?? 0
     const totalPages = Math.ceil(totalCount / PAGE_SIZE)
 
-    // Global stats for the filter chips
-    const { data: globalStats } = await supabase
-      .from("tax_return_links")
-      .select("status")
-      .not("project_id", "is", null)
+    // Global stats for the filter chips — paged so the tallies don't
+    // silently freeze at the 1,000-row PostgREST cap.
+    const globalStats = await fetchAllPaged<{ status: string | null }>(() =>
+      supabase
+        .from("tax_return_links")
+        .select("status")
+        .not("project_id", "is", null),
+    )
 
     const global = { total: 0, linked: 0, needsReview: 0, noMatch: 0 }
-    for (const r of globalStats ?? []) {
+    for (const r of globalStats) {
       global.total++
       if (r.status === "linked") global.linked++
       else if (r.status === "needs_review") global.needsReview++

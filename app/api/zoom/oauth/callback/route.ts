@@ -1,3 +1,4 @@
+import crypto from "crypto"
 import { NextResponse } from "next/server"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { firmConfigSync } from "@/lib/firm-settings"
@@ -8,7 +9,7 @@ import { firmConfigSync } from "@/lib/firm-settings"
  * Two install paths land here:
  *
  *  1. **In-Hub "Connect Zoom" button** -> /api/zoom/oauth/authorize
- *     builds a base64'd `state` JSON containing { team_member_id }
+ *     builds an HMAC-signed base64 `state` containing { team_member_id }
  *     and redirects to Zoom. Zoom redirects back to this route with
  *     `code` + `state`. We exchange the code, look up the user via
  *     /v2/users/me, and upsert into `zoom_connections` keyed on
@@ -63,13 +64,28 @@ export async function GET(request: Request) {
     let teamMemberId: string | null = null
 
     if (state) {
+      // State minted by /authorize is `<base64 payload>.<hmac-sha256 hex>`
+      // signed with ZOOM_CLIENT_SECRET. Verify the signature before
+      // trusting the embedded team_member_id -- an unsigned or forged
+      // state must not be able to point the token upsert at an
+      // arbitrary team member's row. Invalid/legacy unsigned states are
+      // rejected outright rather than falling back to the session.
+      const stateSecret = process.env.ZOOM_CLIENT_SECRET
+      const [statePayload, stateSig] = state.split(".")
+      if (!stateSecret || !statePayload || !stateSig) {
+        return fail("invalid_state")
+      }
+      const expectedSig = crypto.createHmac("sha256", stateSecret).update(statePayload).digest("hex")
+      const sigBuf = Buffer.from(stateSig)
+      const expectedBuf = Buffer.from(expectedSig)
+      if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+        return fail("invalid_state")
+      }
       try {
-        const decoded = JSON.parse(Buffer.from(state, "base64").toString("utf8"))
+        const decoded = JSON.parse(Buffer.from(statePayload, "base64").toString("utf8"))
         teamMemberId = decoded?.team_member_id ?? null
       } catch (err) {
-        console.error("[Zoom OAuth] Failed to decode state:", err)
-        // Fall through to session lookup -- a malformed state should
-        // not be fatal if we can identify the user another way.
+        return fail("invalid_state", err)
       }
     }
 

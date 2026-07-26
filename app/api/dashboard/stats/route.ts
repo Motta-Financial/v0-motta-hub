@@ -12,7 +12,7 @@ export async function GET(request: Request) {
     const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
 
     // Active clients
-    const { count: activeClients } = await supabase
+    const activeClientsQuery = supabase
       .from("contacts")
       .select("*", { count: "exact", head: true })
       .eq("status", "Active")
@@ -22,7 +22,6 @@ export async function GET(request: Request) {
     if (teamMemberId) {
       tasksQuery = tasksQuery.eq("assignee_id", teamMemberId)
     }
-    const { count: openTasks } = await tasksQuery
 
     // Tasks due today
     let tasksTodayQuery = supabase
@@ -33,7 +32,6 @@ export async function GET(request: Request) {
     if (teamMemberId) {
       tasksTodayQuery = tasksTodayQuery.eq("assignee_id", teamMemberId)
     }
-    const { count: tasksToday } = await tasksTodayQuery
 
     // Upcoming deadlines (work items due within a week)
     let deadlinesQuery = supabase
@@ -45,7 +43,6 @@ export async function GET(request: Request) {
     if (teamMemberId) {
       deadlinesQuery = deadlinesQuery.or(`assignee_id.eq.${teamMemberId},client_manager_id.eq.${teamMemberId}`)
     }
-    const { count: upcomingDeadlines } = await deadlinesQuery
 
     // Critical deadlines (due within 3 days)
     let criticalQuery = supabase
@@ -57,10 +54,9 @@ export async function GET(request: Request) {
     if (teamMemberId) {
       criticalQuery = criticalQuery.or(`assignee_id.eq.${teamMemberId},client_manager_id.eq.${teamMemberId}`)
     }
-    const { count: criticalDeadlines } = await criticalQuery
 
     // Pending documents
-    const { count: pendingDocuments } = await supabase
+    const pendingDocumentsQuery = supabase
       .from("documents")
       .select("*", { count: "exact", head: true })
       .eq("status", "Pending")
@@ -78,7 +74,25 @@ export async function GET(request: Request) {
       activityQuery = activityQuery.eq("team_member_id", teamMemberId)
     }
 
-    const { data: activityData } = await activityQuery
+    // All seven queries are independent — run them in parallel instead of
+    // serially on the Home-dashboard hot path.
+    const [
+      { count: activeClients },
+      { count: openTasks },
+      { count: tasksToday },
+      { count: upcomingDeadlines },
+      { count: criticalDeadlines },
+      { count: pendingDocuments },
+      { data: activityData },
+    ] = await Promise.all([
+      activeClientsQuery,
+      tasksQuery,
+      tasksTodayQuery,
+      deadlinesQuery,
+      criticalQuery,
+      pendingDocumentsQuery,
+      activityQuery,
+    ])
 
     return NextResponse.json({
       stats: {

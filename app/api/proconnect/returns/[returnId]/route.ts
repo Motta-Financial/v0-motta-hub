@@ -13,6 +13,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 export const dynamic = "force-dynamic"
 
@@ -60,18 +61,32 @@ export async function GET(
       return NextResponse.json({ error: "Return not found" }, { status: 404 })
     }
 
-    // Flat cells, grouped by series for the viewer. Typical IND returns
-    // are well under 5k cells so a single fetch is fine.
-    const { data: cells } = await sb
-      .from("proconnect_return_field_cells")
-      .select("series_id, prefix_id, code_id, suffix_id, val, description, src, tsj, scope")
-      .eq("return_id", returnId)
-      .order("series_id")
-      .order("prefix_id")
-      .order("code_id")
+    // Flat cells, grouped by series for the viewer. Returns hold up to
+    // ~5k cells while PostgREST caps each response at 1,000 rows, so
+    // page the fetch until a short page comes back.
+    type CellRow = {
+      series_id: string
+      prefix_id: string | null
+      code_id: string | null
+      suffix_id: string | null
+      val: string | null
+      description: string | null
+      src: string | null
+      tsj: string | null
+      scope: string | null
+    }
+    const cells = await fetchAllPaged<CellRow>(() =>
+      sb
+        .from("proconnect_return_field_cells")
+        .select("series_id, prefix_id, code_id, suffix_id, val, description, src, tsj, scope")
+        .eq("return_id", returnId)
+        .order("series_id")
+        .order("prefix_id")
+        .order("code_id"),
+    )
 
     const bySeries: Record<string, typeof cells> = {}
-    for (const c of cells ?? []) {
+    for (const c of cells) {
       ;(bySeries[c.series_id] ??= [] as NonNullable<typeof cells>).push(c)
     }
 
@@ -79,7 +94,7 @@ export async function GET(
       returnId,
       engagement: detail ?? null,
       snapshot: snapshot ?? null,
-      cellCount: cells?.length ?? 0,
+      cellCount: cells.length,
       seriesCount: Object.keys(bySeries).length,
       cellsBySeries: bySeries,
     })

@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
   if (Array.isArray(body.event_ids) && body.event_ids.length > 0) {
     eventsQuery = eventsQuery.in("id", body.event_ids)
   } else if (body.all_failed) {
-    eventsQuery = eventsQuery.eq("status", "failed")
+    eventsQuery = eventsQuery.eq("processing_status", "failed")
   } else {
     return NextResponse.json(
       { error: "Provide either { event_ids: [...] } or { all_failed: true }" },
@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
   // Reset to pending so the processor will re-enter the work
   await supabase
     .from("karbon_webhook_events")
-    .update({ status: "pending", error_message: null })
+    .update({ processing_status: "pending", processing_error: null })
     .in(
       "id",
       events.map((e) => e.id),

@@ -1,8 +1,20 @@
 import { NextResponse } from "next/server"
-import { createAdminClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
 
 export async function POST(request: Request) {
   try {
+    // Middleware exempts the whole /api/zoom/oauth/* subtree (the OAuth
+    // callback must be reachable without a Hub session), so this handler
+    // has to verify the session itself.
+    const supabase = await createClient()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
     const supabaseAdmin = createAdminClient()
     const { team_member_id } = await request.json()
 

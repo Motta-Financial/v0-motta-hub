@@ -1,3 +1,4 @@
+import crypto from "crypto"
 import { NextResponse } from "next/server"
 import { firmConfigSync } from "@/lib/firm-settings"
 
@@ -37,7 +38,7 @@ const ZOOM_SCOPES = [
  * Kick off the Zoom OAuth flow for a given team member.
  *
  * Builds Zoom's authorize URL with the team_member_id stashed in the
- * `state` param (base64-encoded JSON) so the callback route can
+ * `state` param (HMAC-signed base64 JSON) so the callback route can
  * resolve which Hub user the connection belongs to.
  *
  * The Hub UI calls this from a "Connect Zoom" button. Zoom's
@@ -53,13 +54,21 @@ export async function GET(request: Request) {
   }
 
   const clientId = process.env.ZOOM_CLIENT_ID
+  const clientSecret = process.env.ZOOM_CLIENT_SECRET
   const redirectUri = process.env.ZOOM_REDIRECT_URI || `${firmConfigSync().hubUrl}/api/zoom/oauth/callback`
 
-  if (!clientId) {
-    return NextResponse.json({ error: "Zoom client ID not configured" }, { status: 500 })
+  if (!clientId || !clientSecret) {
+    return NextResponse.json({ error: "Zoom OAuth not configured" }, { status: 500 })
   }
 
-  const state = Buffer.from(JSON.stringify({ team_member_id: teamMemberId })).toString("base64")
+  // Sign the state so the callback can trust the embedded
+  // team_member_id. Format: `<base64 payload>.<hmac-sha256 hex>` keyed
+  // on ZOOM_CLIENT_SECRET — the callback recomputes and rejects any
+  // state whose signature doesn't match, so a forged state can't point
+  // the token upsert at an arbitrary team member.
+  const statePayload = Buffer.from(JSON.stringify({ team_member_id: teamMemberId })).toString("base64")
+  const stateSig = crypto.createHmac("sha256", clientSecret).update(statePayload).digest("hex")
+  const state = `${statePayload}.${stateSig}`
 
   const authUrl = new URL("https://zoom.us/oauth/authorize")
   authUrl.searchParams.set("response_type", "code")
