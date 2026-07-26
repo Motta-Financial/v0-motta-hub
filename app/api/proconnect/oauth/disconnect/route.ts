@@ -14,6 +14,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { requireAdmin } from "@/lib/auth/require-admin"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 const REVOKE_URL = "https://developer.api.intuit.com/v2/oauth2/tokens/revoke"
 
@@ -65,7 +66,7 @@ async function performDisconnect(): Promise<{ ok: boolean; error?: string }> {
 }
 
 export async function GET(_request: NextRequest) {
-  const baseUrl = process.env.APP_BASE_URL || "https://hub.motta.cpa"
+  const baseUrl = firmConfigSync().hubUrl
 
   const admin = await requireAdmin()
   if (!admin.ok) {

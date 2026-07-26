@@ -19,10 +19,11 @@
 import { generateText } from "ai"
 import { createAdminClient } from "@/lib/supabase/server"
 import { sendCategoryEmail } from "@/lib/email"
+import { firmConfigSync } from "@/lib/firm-settings"
 import { getClientProfile, type ClientProfileSummary } from "@/lib/clients/profile"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+const APP_URL = () => firmConfigSync().hubUrl
 
 /** Hard cap on the AI research call so a slow model never delays the email
  *  indefinitely. The email send is already fire-and-forget, but we still
@@ -356,7 +357,7 @@ function buildMeetingBookedEmailHtml(
   const startFormatted = formatDateTime(p.startTime)
   const endFormatted = formatDateTime(p.endTime)
 
-  const hubLink = p.contactId ? `${APP_URL}/clients/${p.contactId}` : `${APP_URL}/clients/meetings/calendly`
+  const hubLink = p.contactId ? `${APP_URL()}/clients/${p.contactId}` : `${APP_URL()}/clients/meetings/calendly`
 
   const contactStatusBadge = p.wasNewContact
     ? `<span style="display:inline-block;background:#FEF3C7;color:#92400E;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600;letter-spacing:0.3px;">NEW PROSPECT</span>`
@@ -403,7 +404,7 @@ function buildMeetingBookedEmailHtml(
              .map((w) => {
                const title = escapeHtml(w.title || "Untitled work item")
                const titleHtml = w.id
-                 ? `<a href="${APP_URL}/work-items/${encodeURIComponent(w.id)}" style="color:#2563EB;text-decoration:none;">${title}</a>`
+                 ? `<a href="${APP_URL()}/work-items/${encodeURIComponent(w.id)}" style="color:#2563EB;text-decoration:none;">${title}</a>`
                  : title
                const meta = [w.workType, w.status, w.dueDate ? `due ${formatDate(w.dueDate)}` : null, w.assigneeName]
                  .filter(Boolean)
@@ -429,7 +430,7 @@ function buildMeetingBookedEmailHtml(
            ${context.activeProposals
              .map((pr) => {
                const valueLabel = `${money(pr.totalValue)}${pr.recurringTotal > 0 ? ` · ${money(pr.recurringTotal)}/${escapeHtml(pr.recurringFrequency || "yr")}` : ""}`
-               const href = pr.signedUrl || `${APP_URL}/sales/proposals`
+               const href = pr.signedUrl || `${APP_URL()}/sales/proposals`
                return `<div style="padding:8px 10px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:5px;margin-bottom:6px;">
                     <p style="margin:0;font-size:13px;color:#111827;font-weight:600;"><a href="${escapeHtml(href)}" style="color:#2563EB;text-decoration:none;">${valueLabel}</a></p>
                     <p style="margin:2px 0 0;font-size:12px;color:#6B7280;">${escapeHtml(pr.status || "—")}</p>
@@ -539,7 +540,7 @@ function buildMeetingBookedEmailHtml(
           <tr>
             <td style="background:#F9FAFB;padding:16px 32px;border-top:1px solid #E5E7EB;">
               <p style="margin:0;font-size:12px;color:#9CA3AF;text-align:center;">
-                Sent by ALFRED Ai &middot; <a href="${APP_URL}/settings/notifications" style="color:#6B7280;">Manage email preferences</a>
+                Sent by ALFRED Ai &middot; <a href="${APP_URL()}/settings/notifications" style="color:#6B7280;">Manage email preferences</a>
               </p>
             </td>
           </tr>

@@ -10,6 +10,7 @@ import {
 import { sendEmail } from "@/lib/email"
 import { enrichIntakeSubmission } from "@/lib/jotform/enrich"
 import { researchProspectQuestions } from "@/lib/jotform/research-questions"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * POST /api/public/contact
@@ -327,7 +328,7 @@ function buildContactEmailHtml(p: {
     accent: "#C97B3F",
   } as const
 
-  const hubBase = process.env.NEXT_PUBLIC_APP_URL ?? "https://hub.motta.cpa"
+  const hubBase = firmConfigSync().hubUrl
   const hubLink = p.hubContactId
     ? `${hubBase}/clients/${p.hubContactId}`
     : `${hubBase}/admin/website-contacts`

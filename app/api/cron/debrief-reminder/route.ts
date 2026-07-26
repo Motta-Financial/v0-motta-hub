@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { buildDebriefRequestHtml, sendCategoryEmail } from "@/lib/email"
+import { firmConfigSync } from "@/lib/firm-settings"
 import {
   buildDebriefPrefillUrl,
   meetingTypeLabel,
@@ -25,7 +26,7 @@ import {
  * "meeting_debrief" category are skipped automatically by sendCategoryEmail.
  */
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+const APP_URL = () => firmConfigSync().hubUrl
 // How far back to look for newly-ended meetings. An hourly cron only needs ~1h
 // but we use a buffer so a delayed Calendly/Zoom sync doesn't drop a meeting.
 const LOOKBACK_HOURS = 3
@@ -235,7 +236,7 @@ async function emailRecipients(
       continue
     }
 
-    const debriefUrl = buildDebriefPrefillUrl(APP_URL, {
+    const debriefUrl = buildDebriefPrefillUrl(APP_URL(), {
       source: args.source,
       meetingRowId: args.meetingRowId,
       meetingDate,

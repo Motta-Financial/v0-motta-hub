@@ -31,6 +31,7 @@ import { linkReferral } from "@/lib/referrals/link-referral"
 import { createWorkItem } from "@/lib/karbon/create-work-item"
 import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
 import { enrichIntakeSubmission } from "@/lib/jotform/enrich"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 interface CreateProspectBody {
   // Always required — the teammate filing the form.
@@ -858,7 +859,7 @@ export async function POST(req: NextRequest) {
           .map((tm: any) => tm.email as string)
 
         if (recipientEmails.length > 0) {
-          const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+          const appUrl = firmConfigSync().hubUrl
           const prospectUrl = `${appUrl}/prospects/${inserted.id}`
 
           // Stitch a single "City, ST ZIP" string from the parts so
@@ -901,7 +902,7 @@ export async function POST(req: NextRequest) {
               ? {
                   name: referralInfo.name,
                   contactUrl: isUuid(body.referred_by_contact_id)
-                    ? `${process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"}/contacts/${body.referred_by_contact_id}`
+                    ? `${firmConfigSync().hubUrl}/contacts/${body.referred_by_contact_id}`
                     : null,
                   matched: referralInfo.matched,
                 }

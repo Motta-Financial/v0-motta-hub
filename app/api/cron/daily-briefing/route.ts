@@ -6,6 +6,7 @@ import { fetchNewsCategory, type NewsItem } from "@/lib/news-feed"
 import { getRemindersForRange } from "@/lib/team-reminders"
 import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * ALFRED Ai's weekday morning briefing.
@@ -44,7 +45,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url)
     const previewTo = url.searchParams.get("previewTo")
     const supabase = createAdminClient()
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+    const appUrl = firmConfigSync().hubUrl
     const hubUrl = appUrl.startsWith("http") ? appUrl : `https://${appUrl}`
 
 /* ──────────────────────────────────────────────────────────────────

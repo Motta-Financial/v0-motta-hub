@@ -25,6 +25,7 @@
  */
 
 import { getKarbonCredentials, karbonFetch, type KarbonApiConfig } from "@/lib/karbon-api"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -314,10 +315,7 @@ function buildNoteBody(
 // ── Public API ───────────────────────────────────────────────────────
 
 function defaultHubUrlFor(submissionId: string): string {
-  const siteUrl =
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    "https://hub.motta.cpa"
+  const siteUrl = firmConfigSync().hubUrl
   // Mirrors components/intake/intake-list.tsx's deep-link convention.
   return `${siteUrl}/sales/intake?submission=${submissionId}`
 }

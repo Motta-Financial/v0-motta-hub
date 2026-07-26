@@ -7,6 +7,7 @@ import {
   sendEmail,
 } from "@/lib/email"
 import { postDebriefNoteToKarbon } from "@/lib/karbon/post-debrief-note"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 const KARBON_TENANT_BASE = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
@@ -296,7 +297,7 @@ export async function POST(request: NextRequest) {
 async function createDebriefNotifications(debrief: any, authorName: string, body: any) {
   try {
     const supabase = createAdminClient()
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+    const siteUrl = firmConfigSync().hubUrl
     const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
     // Resolve client name for messages/subject. Order of preference:

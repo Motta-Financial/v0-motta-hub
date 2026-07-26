@@ -26,29 +26,20 @@
  * out of the allowlist while still allowing the website team's
  * branch previews to call the production Hub during QA.
  *
- * Add new permanent origins to ALLOWED_HOSTS, not by hand-editing
- * the predicate.
+ * Add new permanent origins to the firm.cors_allowed_hosts setting
+ * (firm_settings table / FIRM_CORS_ALLOWED_HOSTS env), not by
+ * hand-editing the predicate.
  */
 
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
+import { firmConfigSync } from "@/lib/firm-settings"
 
-const ALLOWED_HOSTS = new Set<string>([
-  "motta.cpa",
-  "www.motta.cpa",
-  "hub.motta.cpa",
-  // Legacy WordPress site — keep until DNS cutover so the existing
-  // Contact / Intake forms on www.mottafinancial.com continue to
-  // submit to the new Hub endpoints during the transition window.
-  "www.mottafinancial.com",
-  "mottafinancial.com",
-])
-
-const ALLOWED_PREVIEW_PREFIXES = [
-  "newmottawebsite",
-  "motta-",
-  "v0-motta-hub",
-]
+// Allowed hosts + preview prefixes now come from firm_settings
+// (firm.cors_allowed_hosts / firm.cors_preview_prefixes) via
+// lib/firm-settings.ts, falling back to env then Motta defaults.
+// The legacy WordPress hosts (www.mottafinancial.com) stay in the
+// seeded defaults until DNS cutover.
 
 export function isAllowedOrigin(origin: string | null | undefined): boolean {
   if (!origin) return false
@@ -59,10 +50,11 @@ export function isAllowedOrigin(origin: string | null | undefined): boolean {
     return false
   }
 
+  const config = firmConfigSync()
   const host = url.hostname.toLowerCase()
 
   // Exact-match production / staging hosts.
-  if (ALLOWED_HOSTS.has(host)) return true
+  if (config.corsAllowedHosts.some((h) => h.toLowerCase() === host)) return true
 
   // Local dev (any port). Both repos run on Next dev servers, and
   // the website team frequently uses 3001/3002 to run alongside the
@@ -71,7 +63,7 @@ export function isAllowedOrigin(origin: string | null | undefined): boolean {
 
   // Vercel preview deployments scoped to our two projects.
   if (host.endsWith(".vercel.app")) {
-    return ALLOWED_PREVIEW_PREFIXES.some((p) => host.startsWith(p))
+    return config.corsPreviewPrefixes.some((p) => host.startsWith(p))
   }
 
   return false

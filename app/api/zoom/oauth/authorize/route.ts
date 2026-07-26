@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * Per-user OAuth scopes the Hub asks Zoom for.
@@ -52,7 +53,7 @@ export async function GET(request: Request) {
   }
 
   const clientId = process.env.ZOOM_CLIENT_ID
-  const redirectUri = process.env.ZOOM_REDIRECT_URI || "https://hub.motta.cpa/api/zoom/oauth/callback"
+  const redirectUri = process.env.ZOOM_REDIRECT_URI || `${firmConfigSync().hubUrl}/api/zoom/oauth/callback`
 
   if (!clientId) {
     return NextResponse.json({ error: "Zoom client ID not configured" }, { status: 500 })

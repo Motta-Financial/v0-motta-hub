@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * Zoom OAuth callback.
@@ -27,26 +28,17 @@ import { createAdminClient, createClient } from "@/lib/supabase/server"
  * (e.g. a thrown env-var-missing error) get redirected, not 500'd.
  */
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url)
+  const { searchParams } = new URL(request.url)
   const code = searchParams.get("code")
   const state = searchParams.get("state")
   const oauthError = searchParams.get("error")
 
-  // Resolve the redirect base URL for the post-OAuth landing page.
-  //   1. Prefer APP_BASE_URL (hub.motta.cpa). NEXT_PUBLIC_APP_URL in this
-  //      project points at the MARKETING site (motta.cpa), which is a
-  //      separate Vercel project with no /meetings/zoom page — landing a
-  //      freshly-connected user there is the bug this route kept hitting.
-  //      Mirror the ProConnect callback, which already prefers APP_BASE_URL.
-  //   2. Prepend https:// when a value is missing its scheme, otherwise
-  //      NextResponse.redirect() throws ERR_INVALID_URL (it requires
-  //      absolute URLs).
-  //   3. Strip any trailing slash so the `${baseUrl}/meetings/zoom`
-  //      template can't produce a double slash.
-  const rawBase =
-    process.env.APP_BASE_URL?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim() || origin
-  const withScheme = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`
-  const baseUrl = withScheme.replace(/\/+$/, "")
+  // Post-OAuth landing base URL: firm.hub_url via lib/firm-settings
+  // (already scheme-normalized, no trailing slash). NEXT_PUBLIC_APP_URL
+  // is deliberately not consulted — in this project's production env it
+  // points at the MARKETING site (motta.cpa), which has no
+  // /meetings/zoom page; landing there was a recurring bug here.
+  const baseUrl = firmConfigSync().hubUrl
 
   const fail = (reason: string, log?: unknown) => {
     // Always log the failure (even without extra context) so we can see

@@ -1,22 +1,28 @@
 /**
  * Resolves the public URL Karbon should POST webhooks to.
  *
- * Resolution order (UPDATED for the hub.motta.cpa migration):
+ * Resolution order:
  *   1. KARBON_WEBHOOK_TARGET_URL — explicit override (set this in production)
- *   2. NEXT_PUBLIC_APP_URL / APP_BASE_URL — canonical Hub URL
- *      (https://hub.motta.cpa). This is preferred over the auto-set
- *      VERCEL_PROJECT_PRODUCTION_URL because the .vercel.app domain is
- *      not the user-facing surface — we want Karbon delivering to the
- *      branded subdomain.
+ *   2. firm.hub_url via lib/firm-settings (DB row → FIRM_HUB_URL /
+ *      APP_BASE_URL env → https://hub.motta.cpa default). Preferred over
+ *      the auto-set VERCEL_PROJECT_PRODUCTION_URL because the .vercel.app
+ *      domain is not the user-facing surface — we want Karbon delivering
+ *      to the branded subdomain.
  *   3. https://${VERCEL_PROJECT_PRODUCTION_URL} — stable Vercel production URL
  *   4. https://${VERCEL_URL} — current deployment (preview); not recommended for prod
  */
+import { firmConfigSync } from "@/lib/firm-settings"
 export function resolveWebhookTargetUrl(): string {
   const explicit = process.env.KARBON_WEBHOOK_TARGET_URL
   if (explicit) return ensureWebhookPath(explicit)
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL
-  if (appUrl) return ensureWebhookPath(appUrl)
+  // firm.hub_url (DB) -> FIRM_HUB_URL / APP_BASE_URL env -> Motta default.
+  // NEXT_PUBLIC_APP_URL is deliberately NOT consulted -- in this project's
+  // production env it points at the marketing site. firmConfigSync always
+  // resolves, so the VERCEL_* fallbacks below are effectively dead code
+  // kept as a safety net.
+  const hubUrl = firmConfigSync().hubUrl
+  if (hubUrl) return ensureWebhookPath(hubUrl)
 
   const prodUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
   if (prodUrl) return ensureWebhookPath(`https://${prodUrl}`)

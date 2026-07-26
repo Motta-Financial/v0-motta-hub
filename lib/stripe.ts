@@ -1,5 +1,6 @@
 import "server-only"
 import Stripe from "stripe"
+import { firmDefaults } from "@/lib/firm-settings"
 
 /**
  * Server-only Stripe client for Hub-initiated payments.
@@ -57,5 +58,5 @@ export const stripe = new Stripe(secretKey, {
   // Pinned to the version bundled with stripe-node 22.x. Bump deliberately
   // following the Stripe upgrade skill when the library is upgraded.
   apiVersion: "2026-05-27.dahlia",
-  appInfo: { name: "ALFRED Hub", url: "https://hub.motta.cpa" },
+  appInfo: { name: "ALFRED Hub", url: firmDefaults().hubUrl },
 })
