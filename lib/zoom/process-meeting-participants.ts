@@ -114,6 +114,7 @@ export async function processOneMeeting(
     start_time?: string | null
     host_email?: string | null
     team_member_id?: string | null
+    alfred_triage_at?: string | null
   },
   result: ProcessResult,
 ): Promise<void> {
@@ -145,19 +146,27 @@ export async function processOneMeeting(
           .maybeSingle()
         bridgedFromCalendlyEventId = mm?.calendly_event_id ?? null
       }
-      const triage = await runAlfredZoomTriage(supabase, {
-        zoomMeetingId: meeting.id,
-        zoomMeetingNumericId: meeting.zoom_meeting_id ?? null,
-        topic: meeting.topic ?? null,
-        agenda: meeting.agenda ?? null,
-        startTime: meeting.start_time ?? null,
-        hostEmail: meeting.host_email ?? null,
-        hostTeamMemberId: meeting.team_member_id ?? null,
-        participants: [],
-        bridgedFromCalendlyEventId,
-      })
-      if (triage.outcome === "tagged" || triage.outcome === "tagged_review") {
-        result.alfredTagged += 1
+      // Already triaged on a previous sweep? Don't burn another model
+      // call — this path re-runs hourly for as long as the participant
+      // fetch keeps failing (e.g. missing S2S scope), and re-triaging
+      // the same meeting without new evidence produced the 26k-row
+      // zoom_alfred_triage_log churn. The full-participant path below
+      // still re-triages once participants finally arrive.
+      if (!meeting.alfred_triage_at) {
+        const triage = await runAlfredZoomTriage(supabase, {
+          zoomMeetingId: meeting.id,
+          zoomMeetingNumericId: meeting.zoom_meeting_id ?? null,
+          topic: meeting.topic ?? null,
+          agenda: meeting.agenda ?? null,
+          startTime: meeting.start_time ?? null,
+          hostEmail: meeting.host_email ?? null,
+          hostTeamMemberId: meeting.team_member_id ?? null,
+          participants: [],
+          bridgedFromCalendlyEventId,
+        })
+        if (triage.outcome === "tagged" || triage.outcome === "tagged_review") {
+          result.alfredTagged += 1
+        }
       }
     } catch (inner) {
       console.warn("[v0] [zoom participants] bridge/ALFRED fallback failed:", inner)
@@ -354,7 +363,7 @@ export async function processRecentZoomParticipants(
   const { data: meetings, error } = await supabase
     .from("zoom_meetings")
     .select(
-      "id, zoom_uuid, zoom_meeting_id, start_time, topic, agenda, host_email, team_member_id",
+      "id, zoom_uuid, zoom_meeting_id, start_time, topic, agenda, host_email, team_member_id, alfred_triage_at",
     )
     .eq("zoom_connection_id", conn.id)
     .is("participants_processed_at", null)

@@ -199,6 +199,23 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 204, headers: corsHeaders })
   }
 
+  // ── AUTH GUARD (2026-07-26) ──────────────────────────────────────
+  // This function mutates live OAuth/sync state and was previously
+  // callable by ANYONE (verify_jwt off + CORS *). The pg_cron job that
+  // used to invoke it has been unscheduled (the Vercel app now owns
+  // this work); any remaining manual/ops invocation must present the
+  // service-role key.
+  {
+    const authHeader = req.headers.get("authorization") ?? ""
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    if (!serviceKey || authHeader !== `Bearer ${serviceKey}`) {
+      return new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: corsHeaders,
+      })
+    }
+  }
+
   let supabase: SupabaseClient
   let syncLogId: string | null = null
 
