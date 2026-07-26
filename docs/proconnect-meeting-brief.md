@@ -57,8 +57,12 @@ built the UI for.
   your custom statuses; all facets computed in a single query.
 - **Form 1040 viewer** — built and deployed, mapping series/prefix/code/
   suffix cells to 1040 line numbers, with TY2025 OBBBA constants
-  (standard deduction 15,750 / 31,500 / 23,625; CTC 2,200). **It renders
-  empty because Export returns 403.**
+  (standard deduction 15,750 / 31,500 / 23,625; CTC 2,200). The form's
+  line structure and constants are seeded; **the code→line map is empty
+  because we've never been able to Export a return to discover it.**
+  Unblocking Export is necessary but not sufficient — we then have to
+  observe which series/codes populate and seed the map (see §5). This is
+  precisely why the catalog ask matters.
 - **Import pipeline** — dryRun-first enforced in code (a commit is
   refused unless a clean dryRun ran in the same session), leadership-role
   gated, with a PII-redacted audit log keyed on `intuit-tid`.
