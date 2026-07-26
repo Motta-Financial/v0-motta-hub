@@ -81,10 +81,22 @@ this branch to `main` will not by itself go live; it needs a promote.
 ## What was silently wrong today
 
 PostgREST caps every response at 1,000 rows regardless of `.limit()`.
-Live counts at audit time: `work_items` 3,699 · `ignition_proposal_services`
-2,537 · `proconnect_clients` 2,253 · `ignition_payments` 1,713 ·
-`contacts` 1,409. Everything that fetched a whole table and aggregated
-in JS was already reporting wrong numbers:
+Verified live counts: `work_items` 3,699 · `karbon_timesheets` 2,850 ·
+`ignition_proposal_services` 2,537 · `proconnect_clients` 2,253 ·
+`client_mapping` 1,965 · `ignition_payments` 1,713 · `contacts` 1,409 ·
+`ignition_proposals` 969 · `proconnect_engagements` 908 ·
+`tax_return_links` 823. Everything that fetched a whole table and
+aggregated in JS was already reporting wrong numbers:
+
+> **Counting caveat (learned the hard way):** Supabase `list_tables` and
+> `pg_stat_user_tables.n_live_tup` report *planner estimates*, which on
+> this project are badly stale — several tables that report 0 rows
+> actually hold thousands (`karbon_timesheets` 2,850, `client_mapping`
+> 1,965, `tax_return_links` 823, `jotform_intake_submissions` 240).
+> Always confirm with `count(*)` before concluding a table is empty or a
+> pipeline is dead. An earlier revision of this document repeated those
+> estimates and wrongly described the Karbon timesheet sync as never
+> having worked.
 
 - **Tax relationship scanner** saw only ~45% of ProConnect clients
   (and would have read at most 1,000 of ~5,000 field cells per return).
