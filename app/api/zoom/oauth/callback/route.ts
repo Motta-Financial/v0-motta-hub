@@ -36,9 +36,9 @@ export async function GET(request: Request) {
 
   // Post-OAuth landing base URL: firm.hub_url via lib/firm-settings
   // (already scheme-normalized, no trailing slash). NEXT_PUBLIC_APP_URL
-  // is deliberately not consulted — in this project's production env it
-  // points at the MARKETING site (motta.cpa), which has no
-  // /meetings/zoom page; landing there was a recurring bug here.
+  // is deliberately not consulted — it has historically been pointed at
+  // the MARKETING site (motta.cpa), which has no /meetings/zoom page;
+  // landing there was a recurring bug here.
   const baseUrl = firmConfigSync().hubUrl
 
   const fail = (reason: string, log?: unknown) => {

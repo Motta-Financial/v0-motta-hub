@@ -17,8 +17,8 @@ export function resolveWebhookTargetUrl(): string {
   if (explicit) return ensureWebhookPath(explicit)
 
   // firm.hub_url (DB) -> FIRM_HUB_URL / APP_BASE_URL env -> Motta default.
-  // NEXT_PUBLIC_APP_URL is deliberately NOT consulted -- in this project's
-  // production env it points at the marketing site. firmConfigSync always
+  // NEXT_PUBLIC_APP_URL is deliberately NOT consulted -- it has
+  // historically been pointed at the marketing site. firmConfigSync always
   // resolves, so the VERCEL_* fallbacks below are effectively dead code
   // kept as a safety net.
   const hubUrl = firmConfigSync().hubUrl

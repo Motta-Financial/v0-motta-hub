@@ -75,11 +75,14 @@ export function firmDefaults(): FirmConfig {
   return {
     name: process.env.FIRM_NAME || "Motta Financial",
     shortName: process.env.FIRM_SHORT_NAME || "Motta",
-    // Deliberately does NOT consult NEXT_PUBLIC_APP_URL: in this
-    // project's production env that variable points at the MARKETING
-    // site (motta.cpa, sometimes as a bare hostname), not the Hub.
-    // Several OAuth callbacks (ProConnect, Zoom) were bitten by that
-    // before this module existed — see lib/proconnect/oauth.ts.
+    // Deliberately does NOT consult NEXT_PUBLIC_APP_URL. That variable
+    // currently holds the Hub URL, but it has historically been pointed
+    // at the MARKETING site (motta.cpa, sometimes as a bare hostname),
+    // which 404s every Hub route — it silently broke the Karbon sync for
+    // weeks (see app/api/karbon/sync/route.ts) and bit the ProConnect and
+    // Zoom OAuth callbacks. It is also NEXT_PUBLIC_ (inlined into client
+    // bundles at build time) and has no Preview value, so it is the wrong
+    // source of truth for server-side URLs regardless of today's value.
     hubUrl: normalizeUrl(process.env.FIRM_HUB_URL || process.env.APP_BASE_URL || "https://hub.motta.cpa"),
     publicSiteUrl: normalizeUrl(process.env.FIRM_PUBLIC_SITE_URL || "https://motta.cpa"),
     internalEmailDomains: envList("FIRM_INTERNAL_EMAIL_DOMAINS") || ["motta.cpa", "mottafinancial.com"],

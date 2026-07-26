@@ -11,12 +11,12 @@ in the same pass (71 fixes). This document is the durable record.
 
 ## ⚠️ Actions required (cannot be done from code)
 
-1. **Confirm `APP_BASE_URL=https://hub.motta.cpa`** on the `mottahub`
-   Vercel project (production + preview). Hub-URL resolution now
-   deliberately ignores `NEXT_PUBLIC_APP_URL`, which points at the
-   marketing site (see “wrong-host bug” and “Vercel topology” below).
-   `FIRM_HUB_URL` is an optional alias — not needed while
-   `APP_BASE_URL` is set and the `firm.hub_url` row exists.
+1. ~~Confirm `APP_BASE_URL`~~ — **verified 2026-07-26: already correct.**
+   `APP_BASE_URL=https://hub.motta.cpa` is set on Production, Preview,
+   and Development. `FIRM_HUB_URL` is an optional alias that is *not*
+   set and does *not* need to be — `APP_BASE_URL` is the env fallback
+   and the `firm.hub_url` DB row takes precedence over both. **No env
+   var action is required.**
 2. **Consider rotating the Supabase service-role key.** It was embedded
    in plaintext in a pg_cron job command (`proconnect_token_refresh`,
    now unscheduled), i.e. visible to anything that could read
@@ -41,13 +41,38 @@ This GitHub repo is connected to **two** Vercel projects:
 
 Two consequences worth knowing:
 
-- `NEXT_PUBLIC_APP_URL` resolving to the marketing domain is exactly why
-  the wrong-host bug existed: the Hub and the marketing site are
-  different Vercel projects with different route tables, so a Hub
-  deep-link sent to motta.cpa 404s.
+- The Hub and the marketing site are different Vercel projects with
+  different route tables, so a Hub deep-link sent to motta.cpa 404s.
+  That is what made `NEXT_PUBLIC_APP_URL` dangerous as a Hub-URL source
+  (see the correction below).
 - `v0-motta-hub` produces a failed deployment on every push to this
   repo. It's harmless (no traffic) but it makes real build failures hard
   to spot — worth either deleting the project or giving it the env vars.
+
+### Correction: the wrong-host hazard was latent, not active
+
+An earlier revision of this document stated that `NEXT_PUBLIC_APP_URL`
+points at the marketing site *in production*. **That was wrong as a
+statement of current fact** — on `mottahub` it is set to
+`https://hub.motta.cpa` (Production + Development; no Preview value).
+So the ~15 call sites that read `NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"`
+were resolving to the correct host, and no live traffic was misrouted.
+
+The hazard was real *historically*, and severe when it fired —
+`app/api/karbon/sync/route.ts` documents the incident: the variable was
+pointed at `https://motta.cpa`, every internal fan-out call 404'd, and
+the Karbon drift/full sync silently broke for weeks (work items,
+contacts, and orgs went stale). That is why the defensive
+"never use `NEXT_PUBLIC_APP_URL`" comments are scattered through the
+OAuth and webhook routes.
+
+Routing Hub-URL resolution through `firm_settings` is therefore a
+**durability fix, not an outage fix**: `NEXT_PUBLIC_APP_URL` is a
+plausible thing for someone to point at the firm's marketing domain, it
+is `NEXT_PUBLIC_` (inlined into client bundles at build time), and it
+has no Preview value — so it should not be the source of truth for
+server-side OAuth redirects and webhook registration regardless of what
+it happens to hold today.
 
 Production on `mottahub` is currently a **manually promoted deployment
 from the `debrief-management-tool` branch**, not `main` — so merging
@@ -139,11 +164,14 @@ All are now fed by `lib/supabase/fetch-all.ts` (`fetchAllPaged` +
   From/deep-links, internal-domain matcher, ProConnect/Zoom OAuth
   redirects, Karbon webhook target, Calendly webhook/OAuth registration,
   password-reset/invite URLs, notification links.
-- **Wrong-host bug fixed en route:** ~15 sites resolved the Hub base URL
-  as `NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"`, but that env var
-  points at the **marketing site** in production. Most critically,
-  `getAppBaseUrl()` (Calendly webhook + Calendly/Ignition OAuth
-  registration) preferred it. Hub-URL resolution now excludes it.
+- **Wrong-host dependency removed:** ~15 sites resolved the Hub base URL
+  as `NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"` — including
+  `getAppBaseUrl()`, which backs Calendly webhook registration and
+  Calendly/Ignition OAuth callbacks. That variable currently holds the
+  correct Hub URL, so nothing was actively misrouted; it has previously
+  been pointed at the marketing domain and caused a multi-week silent
+  Karbon sync outage. Hub-URL resolution now excludes it entirely. See
+  “Correction” under Vercel topology.
 
 ### Remaining (inventoried, not yet migrated)
 

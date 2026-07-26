@@ -101,9 +101,10 @@ export function getCalendlyOAuthConfig(): {
  *
  * Now resolved via lib/firm-settings (firm.hub_url row → FIRM_HUB_URL /
  * APP_BASE_URL env → default). The old chain here preferred
- * NEXT_PUBLIC_APP_URL, which in this project's production env points at
- * the MARKETING site (motta.cpa, sometimes as a bare hostname) — the
- * wrong host to register Calendly webhooks / OAuth callbacks against.
+ * NEXT_PUBLIC_APP_URL, which has historically been pointed at the
+ * MARKETING site (motta.cpa, sometimes as a bare hostname) — the wrong
+ * host to register Calendly webhooks / OAuth callbacks against, and a
+ * value this code should not depend on either way.
  * firm-settings normalizes scheme + trailing slash, so callers can
  * append paths cleanly.
  */

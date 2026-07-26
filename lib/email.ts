@@ -363,7 +363,7 @@ export function buildDebriefEmailHtml({
   debriefUrl: string
   logoUrl?: string
 }) {
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_BASE_URL || "https://hub.motta.cpa"
+  const siteUrl = APP_URL()
   const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
 
   // Helper to render a Karbon deep link
@@ -771,10 +771,7 @@ export function buildProspectEmailHtml({
   prospectUrl: string
   logoUrl?: string
 }) {
-  const siteUrl =
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.APP_BASE_URL ||
-    "https://hub.motta.cpa"
+  const siteUrl = APP_URL()
   const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
   const today = new Date().toLocaleDateString("en-US", {
     month: "long",
