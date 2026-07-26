@@ -11,19 +11,47 @@ in the same pass (71 fixes). This document is the durable record.
 
 ## ⚠️ Actions required (cannot be done from code)
 
-1. **Rotate the Airtable personal access token.** A live PAT was
-   committed in `app/api/airtable/tables/route.ts` (now removed, reads
-   `AIRTABLE_API_KEY`) — but the old token remains in git history and
-   must be revoked in Airtable. Set `AIRTABLE_API_KEY` (and optionally
-   `AIRTABLE_BASE_ID`) in Vercel env.
+1. **Confirm `APP_BASE_URL=https://hub.motta.cpa`** on the `mottahub`
+   Vercel project (production + preview). Hub-URL resolution now
+   deliberately ignores `NEXT_PUBLIC_APP_URL`, which points at the
+   marketing site (see “wrong-host bug” and “Vercel topology” below).
+   `FIRM_HUB_URL` is an optional alias — not needed while
+   `APP_BASE_URL` is set and the `firm.hub_url` row exists.
 2. **Consider rotating the Supabase service-role key.** It was embedded
    in plaintext in a pg_cron job command (`proconnect_token_refresh`,
    now unscheduled), i.e. visible to anything that could read
    `cron.job`. Exposure is limited (reading cron.job already requires
    elevated DB access) — flagging for a decision, not an emergency.
-3. **Set `FIRM_HUB_URL` (or keep `APP_BASE_URL`) in Vercel.** Hub-URL
-   resolution now deliberately ignores `NEXT_PUBLIC_APP_URL`, which in
-   production points at the marketing site (see “wrong-host bug” below).
+3. **Airtable — no action, deliberately.** Airtable has been sunsetted
+   at the firm. The integration code is retained (future licensees may
+   use Airtable) and both routes now read `AIRTABLE_API_KEY` from env,
+   so the feature is inert until a key is configured. The PAT that was
+   previously committed in source is still in git history: if the
+   Airtable base is ever reactivated, revoke that token first.
+
+## Vercel topology (verified 2026-07-26)
+
+This GitHub repo is connected to **two** Vercel projects:
+
+| Project | Domains | State |
+| --- | --- | --- |
+| `mottahub` | **hub.motta.cpa** + previews | The live Hub. Every branch push builds green. |
+| `v0-motta-hub` | `*.vercel.app` only | **Every build fails** — no Stripe (and per earlier notes no `SUPABASE_URL`) env vars. Nothing points at it. |
+| `mottawebsite` | motta.cpa, www.motta.cpa, mottafinancial.com, www.mottafinancial.com | Marketing site — a *separate* codebase. |
+
+Two consequences worth knowing:
+
+- `NEXT_PUBLIC_APP_URL` resolving to the marketing domain is exactly why
+  the wrong-host bug existed: the Hub and the marketing site are
+  different Vercel projects with different route tables, so a Hub
+  deep-link sent to motta.cpa 404s.
+- `v0-motta-hub` produces a failed deployment on every push to this
+  repo. It's harmless (no traffic) but it makes real build failures hard
+  to spot — worth either deleting the project or giving it the env vars.
+
+Production on `mottahub` is currently a **manually promoted deployment
+from the `debrief-management-tool` branch**, not `main` — so merging
+this branch to `main` will not by itself go live; it needs a promote.
 
 ## What was silently wrong today
 

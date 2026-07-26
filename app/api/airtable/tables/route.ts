@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server"
 
-// SECURITY: a live Airtable PAT was previously hardcoded here (and thus
-// in git history) — it must be treated as compromised and rotated in
-// Airtable. Both airtable routes now read AIRTABLE_API_KEY from env.
+// Airtable was sunsetted at Motta (2026-07). The integration is kept
+// intact because licensee firms may use Airtable — it stays inert until
+// AIRTABLE_API_KEY is configured, and the route returns a clear
+// "not configured" error rather than failing obscurely.
+//
+// SECURITY: a live PAT was previously hardcoded here, so it lives on in
+// git history. Revoke that token before ever reactivating this base.
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || "app29FvStmjP1Vyb2"
 
 export async function GET() {
