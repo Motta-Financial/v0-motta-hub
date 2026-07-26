@@ -1,8 +1,20 @@
 import { NextResponse } from "next/server"
-import { createAdminClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
 
 export async function POST(request: Request) {
   try {
+    // Middleware exempts the whole /api/zoom/oauth/* subtree from
+    // session auth (the OAuth callback must be reachable without a
+    // cookie), but THIS endpoint returns a live Zoom access token for
+    // any connection_id — so it enforces its own session check.
+    const authClient = await createClient()
+    const {
+      data: { user },
+    } = await authClient.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
     const supabaseAdmin = createAdminClient()
     const { connection_id } = await request.json()
 

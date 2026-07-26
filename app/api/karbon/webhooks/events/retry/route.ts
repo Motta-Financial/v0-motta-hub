@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
 import { processWebhookEvent } from "@/lib/karbon/process-webhook-event"
+import { requireAdmin } from "@/lib/auth/require-admin"
 
 /**
  * Manually retry a failed (or any) webhook event.
@@ -13,6 +14,9 @@ import { processWebhookEvent } from "@/lib/karbon/process-webhook-event"
  * perma_key), so retrying a successful event is harmless.
  */
 export async function POST(request: NextRequest) {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   const supabase = tryCreateAdminClient()
   if (!supabase) {
     return NextResponse.json({ error: "Supabase admin client unavailable" }, { status: 500 })

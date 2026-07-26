@@ -1,14 +1,24 @@
 import { NextResponse } from "next/server"
 
-const AIRTABLE_BASE_ID = "app29FvStmjP1Vyb2"
-const AIRTABLE_API_TOKEN = "patCB0rdkee77UrfY.f624f9f65c56661e6a0b39976d54c22ae3e45df87c5a6941db71cb8c358d3c25"
+// SECURITY: a live Airtable PAT was previously hardcoded here (and thus
+// in git history) — it must be treated as compromised and rotated in
+// Airtable. Both airtable routes now read AIRTABLE_API_KEY from env.
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || "app29FvStmjP1Vyb2"
 
 export async function GET() {
   try {
+    const apiToken = process.env.AIRTABLE_API_KEY
+    if (!apiToken) {
+      return NextResponse.json(
+        { error: "Airtable is not configured", details: "Set AIRTABLE_API_KEY in environment variables" },
+        { status: 500 },
+      )
+    }
+
     // Fetch base schema to get all tables
     const response = await fetch(`https://api.airtable.com/v0/meta/bases/${AIRTABLE_BASE_ID}/tables`, {
       headers: {
-        Authorization: `Bearer ${AIRTABLE_API_TOKEN}`,
+        Authorization: `Bearer ${apiToken}`,
       },
     })
 
