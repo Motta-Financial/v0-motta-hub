@@ -19,7 +19,7 @@ import {
   buildTableCatalog,
   isAllowedTable,
 } from "@/lib/alfred/allowed-tables"
-import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
+import { getAlfredServiceAccount, ALFRED_EMAIL } from "@/lib/alfred/service-account"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
@@ -887,14 +887,14 @@ Use this to answer questions about clients, work items, team members, finances, 
 function buildIdentityPreamble(currentUser: CurrentUser | null): string {
   if (!currentUser) {
     return `You operate under two identities:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — UNKNOWN. No team member identity was provided with this turn.
 
 Because the requesting user is unknown, do NOT answer "my work items" / "my deadlines" / "my clients" style questions as if you knew who is asking. Tell the user you couldn't resolve their identity and answer firm-wide instead. Do NOT call getMyWorkItems or getMyUpcomingDeadlines in this state.`
   }
 
   return `You operate under two identities at once:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — ${currentUser.fullName ?? currentUser.email} (${currentUser.role ?? "no role"}, ${currentUser.department ?? "no department"}), team_members.id ${currentUser.teamMemberId}, Karbon user key ${currentUser.karbonUserKey ?? "none"}.
 
 When you create or send anything externally visible, the sender/author is ALFRED, but you ALWAYS include "on behalf of ${currentUser.fullName ?? currentUser.email}" in the body and record ${currentUser.teamMemberId} as on_behalf_of_id in activity_log.
