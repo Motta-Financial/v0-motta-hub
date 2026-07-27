@@ -37,143 +37,52 @@ export async function GET(req: Request) {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    // STAT CARD QUERIES — each uses count: 'exact', head: true
+    // STAT CARD QUERIES — one round trip via the tax_return_facets RPC
+    // (scripts/351). Previously ~19 separate count queries per request,
+    // and the status strip fetched every matching row to tally in JS —
+    // silently under-counting past PostgREST's 1,000-row cap.
     // ══════════════════════════════════════════════════════════════════
 
-    // Build base filter for stats (applies form and year filters)
-    const buildStatsQuery = () => {
-      let q = supabase
-        .from("proconnect_engagements")
-        .select("*", { count: "exact", head: true })
-
-      if (formTypes !== null) {
-        q = q.in("form_type", formTypes)
-      }
-      if (taxYear) {
-        q = q.eq("tax_year", Number(taxYear))
-      }
-      return q
+    type Facets = {
+      total: number
+      efiled: number
+      by_form: Record<string, number>
+      by_year: Record<string, number>
+      by_status: Array<{ name: string | null; color: string | null; count: number }>
+      years: number[]
     }
-
-    // Total count
-    const totalCountPromise = buildStatsQuery()
-
-    // E-filed count — filter where raw_json->>'customStatus' = 'E-Filed'
-    let efiledQuery = supabase
-      .from("proconnect_engagements")
-      .select("*", { count: "exact", head: true })
-      .eq("raw_json->>customStatus", "E-Filed")
-
-    if (formTypes !== null) {
-      efiledQuery = efiledQuery.in("form_type", formTypes)
+    const { data: facetsData, error: facetsErr } = await supabase.rpc("tax_return_facets", {
+      p_form_types: formTypes,
+      p_tax_year: taxYear ? Number(taxYear) : null,
+    })
+    if (facetsErr) {
+      return NextResponse.json({ error: facetsErr.message }, { status: 500 })
     }
-    if (taxYear) {
-      efiledQuery = efiledQuery.eq("tax_year", Number(taxYear))
-    }
+    const facets = facetsData as Facets
 
-    const efiledCountPromise = efiledQuery
+    const totalCount = facets.total ?? 0
+    const efiledCount = facets.efiled ?? 0
 
-    // Count by form type — run individual counts for display
-    const formCountsPromise = Promise.all(
-      ALL_FORM_TYPES.map(async (formType) => {
-        let q = supabase
-          .from("proconnect_engagements")
-          .select("*", { count: "exact", head: true })
-          .eq("form_type", formType)
-
-        if (taxYear) {
-          q = q.eq("tax_year", Number(taxYear))
-        }
-
-        const { count } = await q
-        return { form: formType, count: count ?? 0 }
-      }),
-    )
-
-    // Get distinct years for filter chips AND for the byYear card.
-    // IMPORTANT: This query must NOT filter by taxYear — it should always
-    // return ALL years with returns (optionally filtered by formTypes).
-    // We fetch up to 10,000 rows (just the tax_year column) and dedupe
-    // client-side. This ensures we capture all distinct years even if
-    // most rows are from recent years.
-    let yearsQuery = supabase
-      .from("proconnect_engagements")
-      .select("tax_year")
-      .limit(10000)
-
-    if (formTypes !== null) {
-      yearsQuery = yearsQuery.in("form_type", formTypes)
-    }
-
-    // Fetch tax_year values and dedupe client-side
-    const yearsPromise = yearsQuery.order("tax_year", { ascending: false })
-
-    // Status breakdown — fetch distinct status values for the filtered set.
-    // We use proconnect_engagements_enriched because user_defined_status_name
-    // lives there (joined in from proconnect_profiles). We pull ALL matching
-    // rows for the status group-by rather than a paginated slice so the strip
-    // counts are always correct regardless of current page.
-    const buildStatusQuery = () => {
-      let q = supabase
-        .from("proconnect_engagements_enriched")
-        .select("user_defined_status_name, user_defined_status_color")
-
-      if (formTypes !== null) q = q.in("form_type", formTypes)
-      if (taxYear) q = q.eq("tax_year", Number(taxYear))
-      return q
-    }
-    const statusBreakdownPromise = buildStatusQuery()
-
-    // Run all stat queries in parallel
-    const [totalRes, efiledRes, formCounts, yearsRes, statusRes] = await Promise.all([
-      totalCountPromise,
-      efiledCountPromise,
-      formCountsPromise,
-      yearsPromise,
-      statusBreakdownPromise,
-    ])
-
-    const totalCount = totalRes.count ?? 0
-    const efiledCount = efiledRes.count ?? 0
-
-    // Build byForm map
+    // byForm map — only forms in our known list, only non-zero (matches
+    // the previous per-form count behavior)
     const byForm: Record<string, { count: number }> = {}
-    for (const fc of formCounts) {
-      if (fc.count > 0) {
-        byForm[fc.form] = { count: fc.count }
+    for (const formType of ALL_FORM_TYPES) {
+      const count = facets.by_form?.[formType] ?? 0
+      if (count > 0) byForm[formType] = { count }
+    }
+
+    // byStatus map { statusName: { count, color } }
+    const byStatus: Record<string, { count: number; color: string | null }> = {}
+    for (const row of facets.by_status ?? []) {
+      const key = row.name || "(no status)"
+      byStatus[key] = {
+        count: (byStatus[key]?.count ?? 0) + row.count,
+        color: byStatus[key]?.color ?? row.color ?? null,
       }
     }
 
-    // Build byStatus map { statusName: { count, color } }
-    const byStatus: Record<string, { count: number; color: string | null }> = {}
-    for (const row of statusRes.data || []) {
-      const key = row.user_defined_status_name || "(no status)"
-      if (!byStatus[key]) byStatus[key] = { count: 0, color: row.user_defined_status_color ?? null }
-      byStatus[key].count++
-    }
-
-    // Get unique years for filter chips
-    const uniqueYears = [
-      ...new Set((yearsRes.data || []).map((r) => r.tax_year).filter(Boolean)),
-    ] as number[]
-
-    // Count by year (for chart)
-    const byYear: Record<string, number> = {}
-    await Promise.all(
-      uniqueYears.slice(0, 10).map(async (year) => {
-        let q = supabase
-          .from("proconnect_engagements")
-          .select("*", { count: "exact", head: true })
-          .eq("tax_year", year)
-
-        if (formTypes !== null) {
-          q = q.in("form_type", formTypes)
-        }
-
-        const { count } = await q
-        byYear[String(year)] = count ?? 0
-      }),
-    )
+    const uniqueYears = facets.years ?? []
+    const byYear: Record<string, number> = facets.by_year ?? {}
 
     // ══════════════════════════════════════════════════════════════════
     // PAGINATED TABLE DATA — uses .range()

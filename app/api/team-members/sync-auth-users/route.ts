@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js"
 import { NextResponse } from "next/server"
+import { requireAdmin } from "@/lib/auth/require-admin"
 
 function createAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
@@ -21,6 +22,9 @@ function createAdminClient() {
  * GET: Discover Supabase Auth users who don't have a team_members record yet
  */
 export async function GET() {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   try {
     const supabase = createAdminClient()
 
@@ -104,6 +108,9 @@ export async function GET() {
  * Body: { auth_users_to_add: [{auth_id, email, full_name, role?, department?}], team_members_to_link: [{team_member_id, auth_id}] }
  */
 export async function POST(request: Request) {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   try {
     const supabase = createAdminClient()
     const body = await request.json()

@@ -16,6 +16,7 @@
 
 import { createAdminClient } from "@/lib/supabase/server"
 import { getKarbonCredentials, karbonFetch, type KarbonApiConfig } from "@/lib/karbon-api"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 const KARBON_TENANT_BASE = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
@@ -423,10 +424,7 @@ export async function postDebriefNoteToKarbon(
     return { ok: false, skipped: "no_author_email" }
   }
 
-  const siteUrl =
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    "https://hub.motta.cpa"
+  const siteUrl = firmConfigSync().hubUrl
   const hubUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
   // Subject line uses the work item name as the primary identifier, matching

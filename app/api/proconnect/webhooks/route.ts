@@ -204,9 +204,17 @@ async function processTaxReturnEvent(
           )
         }
       }
+      // Capture Intuit's own response body alongside our classification.
+      // `scope_missing` is OUR label for an unattributed 403 (one whose
+      // errorCode is neither RETURN_LOCKED nor ACCESS_DENIED) — when
+      // raising a provisioning ticket, Intuit needs THEIR errorCode and
+      // the intuit-tid, not our inference. Truncated to 500 chars.
+      // PII-safe: Phase 1 error bodies carry {errorCode, errorMessage}
+      // only, and Intuit never echoes a failing SSN/EIN/TIN.
+      const upstream = result.error.body ? ` upstream=${result.error.body.slice(0, 500)}` : ""
       return {
         success: false,
-        error: `export failed: ${result.error.kind} ${result.error.status}${result.intuitTid ? ` (intuit-tid ${result.intuitTid})` : ""}`,
+        error: `export failed: ${result.error.kind} ${result.error.status}${result.intuitTid ? ` (intuit-tid ${result.intuitTid})` : ""}${upstream}`,
       }
     }
     await persistReturnSnapshot(sb, clientId, entity.id, result.data)

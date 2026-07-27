@@ -19,7 +19,8 @@ import {
   buildTableCatalog,
   isAllowedTable,
 } from "@/lib/alfred/allowed-tables"
-import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
+import { getAlfredServiceAccount, ALFRED_EMAIL } from "@/lib/alfred/service-account"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
@@ -270,17 +271,22 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ teamMemberId, includeCompleted = false }) => {
       try {
         const supabase = createAdminClient()
-        let query = supabase.from("work_items").select("assignee_name, status, due_date, title")
+        // Page through every matching row — PostgREST caps a single
+        // response at 1,000 rows, which would silently truncate the
+        // workload counts once active work items cross that. Select
+        // only the columns the grouping below reads.
+        const data = await fetchAllPaged<{
+          assignee_name: string | null
+          due_date: string | null
+        }>(() => {
+          let query = supabase.from("work_items").select("assignee_name, due_date")
 
-        if (!includeCompleted) {
-          query = query.not("status", "in", '("Completed","Cancelled")')
-        }
+          if (!includeCompleted) {
+            query = query.not("status", "in", '("Completed","Cancelled")')
+          }
 
-        const { data, error } = await query
-
-        if (error) {
-          return { success: false, error: error.message }
-        }
+          return query
+        })
 
         // Group by assignee
         const workload: Record<string, { total: number; overdue: number; upcoming: number }> = {}
@@ -512,16 +518,25 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ period = "month" }) => {
       try {
         const supabase = createAdminClient()
-        // Get invoice totals
-        const { data: invoices } = await supabase
-          .from("invoices")
-          .select("total_amount, amount_paid, status, invoice_date")
+        // Get invoice totals. Paged: PostgREST caps a single response
+        // at 1,000 rows, which would silently understate the totals
+        // once invoices pass that — and select only the columns the
+        // reduces below read.
+        const invoices = await fetchAllPaged<{
+          total_amount: number | null
+          amount_paid: number | null
+        }>(() => supabase.from("invoices").select("total_amount, amount_paid"))
 
-        // Get recurring revenue
-        const { data: recurring } = await supabase
-          .from("recurring_revenue")
-          .select("monthly_amount, annual_amount, is_active")
-          .eq("is_active", true)
+        // Get recurring revenue (paged for the same reason)
+        const recurring = await fetchAllPaged<{
+          monthly_amount: number | null
+          annual_amount: number | null
+        }>(() =>
+          supabase
+            .from("recurring_revenue")
+            .select("monthly_amount, annual_amount")
+            .eq("is_active", true),
+        )
 
         const totalInvoiced = invoices?.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) || 0
         const totalPaid = invoices?.reduce((sum, inv) => sum + (inv.amount_paid || 0), 0) || 0
@@ -887,14 +902,14 @@ Use this to answer questions about clients, work items, team members, finances, 
 function buildIdentityPreamble(currentUser: CurrentUser | null): string {
   if (!currentUser) {
     return `You operate under two identities:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — UNKNOWN. No team member identity was provided with this turn.
 
 Because the requesting user is unknown, do NOT answer "my work items" / "my deadlines" / "my clients" style questions as if you knew who is asking. Tell the user you couldn't resolve their identity and answer firm-wide instead. Do NOT call getMyWorkItems or getMyUpcomingDeadlines in this state.`
   }
 
   return `You operate under two identities at once:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — ${currentUser.fullName ?? currentUser.email} (${currentUser.role ?? "no role"}, ${currentUser.department ?? "no department"}), team_members.id ${currentUser.teamMemberId}, Karbon user key ${currentUser.karbonUserKey ?? "none"}.
 
 When you create or send anything externally visible, the sender/author is ALFRED, but you ALWAYS include "on behalf of ${currentUser.fullName ?? currentUser.email}" in the body and record ${currentUser.teamMemberId} as on_behalf_of_id in activity_log.

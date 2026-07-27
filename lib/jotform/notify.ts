@@ -25,11 +25,9 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { sendCategoryEmail } from "@/lib/email"
+import { firmConfigSync } from "@/lib/firm-settings"
 
-const APP_URL =
-  process.env.NEXT_PUBLIC_APP_URL ||
-  process.env.APP_BASE_URL ||
-  "https://hub.motta.cpa"
+const APP_URL = () => firmConfigSync().hubUrl
 
 // Brand palette — mirrors lib/email.ts so the firm-wide intake email
 // matches the Tommy Recap / Debrief / Daily Briefing wrappers in
@@ -173,7 +171,7 @@ function confidencePill(c?: string | null): string {
 }
 
 export function buildIntakeNotificationHtml(ctx: IntakeNotificationContext): string {
-  const inboxUrl = `${APP_URL}/sales/intake?search=${encodeURIComponent(ctx.jotform_submission_id)}`
+  const inboxUrl = `${APP_URL()}/sales/intake?search=${encodeURIComponent(ctx.jotform_submission_id)}`
   const submitterLine = ctx.submitter_full_name ?? ctx.business_name ?? "an anonymous prospect"
   const businessLine = ctx.business_name && ctx.submitter_full_name ? ctx.business_name : null
   const receivedAt = ctx.jotform_created_at

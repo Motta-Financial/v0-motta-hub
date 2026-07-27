@@ -8,7 +8,7 @@
  * ----------------
  * The page wants to show a count of attached work items per project. Rather
  * than running N+1 queries we (a) pull the projects in one query, then
- * (b) issue ONE additional query against `work_items` that's filtered by the
+ * (b) issue batched, paged queries against `work_items` filtered by the
  * union of all the projects' clients, and count matches in JavaScript by
  * applying each project's `work_template_pattern` / `work_type_pattern`.
  * This is fast and keeps the API "rules-based" so newly-synced Karbon items
@@ -16,6 +16,7 @@
  */
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { fetchAllPaged, chunk } from "@/lib/supabase/fetch-all"
 
 export const dynamic = "force-dynamic"
 
@@ -116,19 +117,31 @@ export async function GET(request: Request) {
       }
     }
     const allClientIds = [...orgIds, ...contactIds]
-    let workItems: any[] = []
+    const workItems: any[] = []
     if (allClientIds.length) {
-      const inList = allClientIds.map((id) => `"${id}"`).join(",")
-      const { data: wi, error: wiErr } = await supabase
-        .from("work_items")
-        .select(
-          "id, karbon_work_item_key, title, work_type, work_template_name, status, primary_status, secondary_status, due_date, organization_id, contact_id, completed_date, deleted_in_karbon_at, assignee_id, assignee_name",
+      // Chunk the id list (long .in() lists blow up the request URL) and
+      // page each chunk — PostgREST caps any single response at 1,000 rows
+      // regardless of .limit(), so a single .limit(5000) request would
+      // silently truncate the per-project counts. Dedupe by id since a
+      // work item can match on org id in one chunk and contact id in another.
+      const seenIds = new Set<string>()
+      for (const ids of chunk(allClientIds)) {
+        const inList = ids.map((id) => `"${id}"`).join(",")
+        const wi = await fetchAllPaged<any>(() =>
+          supabase
+            .from("work_items")
+            .select(
+              "id, karbon_work_item_key, title, work_type, work_template_name, status, primary_status, secondary_status, due_date, organization_id, contact_id, completed_date, deleted_in_karbon_at, assignee_id, assignee_name",
+            )
+            .or(`organization_id.in.(${inList}),contact_id.in.(${inList})`)
+            .is("deleted_in_karbon_at", null),
         )
-        .or(`organization_id.in.(${inList}),contact_id.in.(${inList})`)
-        .is("deleted_in_karbon_at", null)
-        .limit(5000)
-      if (wiErr) throw wiErr
-      workItems = wi || []
+        for (const w of wi) {
+          if (seenIds.has(w.id)) continue
+          seenIds.add(w.id)
+          workItems.push(w)
+        }
+      }
     }
 
     // Group work items by client id for fast lookup.

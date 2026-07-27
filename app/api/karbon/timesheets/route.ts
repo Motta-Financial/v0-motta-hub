@@ -109,7 +109,15 @@ export async function GET(request: NextRequest) {
       expand: ["TimeEntries"],
     }
 
-    // Get last sync timestamp for incremental sync
+    // Incremental sync: re-pull a trailing window of recent weeks.
+    //
+    // karbon_modified_at stores the parent week's EndDate (see the mapper above),
+    // so filtering `StartDate gt <max karbon_modified_at>` would permanently miss
+    // entries added mid-week — a week first synced on Wednesday has EndDate=Sunday,
+    // and its StartDate never moves past that, so Thu/Fri entries are excluded
+    // forever. Instead, re-pull everything that started in the last few weeks and
+    // rely on the upsert (keyed on karbon_timesheet_key) being idempotent.
+    // If the table is empty (first run), skip the filter and pull everything.
     let lastSyncTimestamp: string | null = null
     if (incrementalSync && importToSupabase) {
       const supabase = getSupabaseClient()
@@ -123,8 +131,12 @@ export async function GET(request: NextRequest) {
           .maybeSingle()
 
         if (lastSync?.karbon_modified_at) {
-          lastSyncTimestamp = lastSync.karbon_modified_at
-          filters.push(`StartDate gt ${lastSyncTimestamp}`)
+          const RESYNC_WINDOW_DAYS = 21
+          const windowStart = new Date(Date.now() - RESYNC_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .split("T")[0]
+          lastSyncTimestamp = windowStart
+          filters.push(`StartDate ge ${windowStart}`)
         }
       }
     }

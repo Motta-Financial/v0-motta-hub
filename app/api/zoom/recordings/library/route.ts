@@ -82,7 +82,13 @@ export async function GET(req: NextRequest) {
       admin.from("zoom_meetings").select("id, zoom_meeting_id").in("zoom_meeting_id", numericIds),
       admin
         .from("zoom_transcripts")
-        .select("zoom_meeting_id, status, text_content")
+        // Only the id — filtering on status/text_content server-side means
+        // row presence == "has a parsed transcript", without pulling the
+        // full transcript bodies over the wire just to compute a boolean.
+        .select("zoom_meeting_id")
+        .eq("status", "parsed")
+        .not("text_content", "is", null)
+        .neq("text_content", "")
         .in("zoom_meeting_id", numericIds),
     ])
 
@@ -90,7 +96,7 @@ export async function GET(req: NextRequest) {
       if (m.zoom_meeting_id != null && m.id) meetingUuidByNumeric.set(m.zoom_meeting_id, m.id)
     }
     for (const t of transcriptsRes.data ?? []) {
-      if (t.zoom_meeting_id != null && t.status === "parsed" && t.text_content) {
+      if (t.zoom_meeting_id != null) {
         transcriptByNumeric.set(t.zoom_meeting_id, true)
       }
     }

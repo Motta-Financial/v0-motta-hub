@@ -10,10 +10,11 @@
  *   App URLs > Launch URL: https://hub.motta.cpa/api/proconnect/oauth/launch
  */
 import { NextRequest, NextResponse } from "next/server"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 export async function GET(_request: NextRequest) {
   // The /tax dashboard lives on the Hub host (hub.motta.cpa), not the
   // marketing site (NEXT_PUBLIC_APP_URL = motta.cpa), so use APP_BASE_URL.
-  const baseUrl = process.env.APP_BASE_URL || "https://hub.motta.cpa"
+  const baseUrl = firmConfigSync().hubUrl
   return NextResponse.redirect(new URL("/tax/settings", baseUrl))
 }

@@ -13,6 +13,7 @@
  */
 
 import { createClient } from "@supabase/supabase-js"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -311,6 +312,6 @@ export function getRedirectUri(): string {
   const explicit = process.env.PROCONNECT_REDIRECT_URI
   if (explicit) return explicit
 
-  const hubBase = process.env.APP_BASE_URL || "https://hub.motta.cpa"
+  const hubBase = firmConfigSync().hubUrl
   return `${hubBase.replace(/\/$/, "")}/api/proconnect/oauth/callback`
 }

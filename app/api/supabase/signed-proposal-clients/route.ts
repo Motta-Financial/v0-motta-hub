@@ -17,6 +17,7 @@
  */
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 export const revalidate = 60
 
@@ -29,20 +30,29 @@ export async function GET() {
     // Ignition syncs and the legacy HubSpot import) and additionally
     // honor `accepted_at` / `completed_at` so that any historical row
     // missing the status string still counts.
-    const { data, error } = await supabase
-      .from("ignition_proposals")
-      .select("contact_id, organization_id, status, accepted_at, completed_at, revoked_at, archived_at, lost_at")
-      .limit(20000)
-
-    if (error) {
-      console.error("[signed-proposal-clients] error:", error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
+    //
+    // PostgREST caps any single response at 1,000 rows regardless of
+    // .limit(), so page with fetchAllPaged — otherwise the isProspect
+    // classification silently breaks once proposals cross 1,000.
+    const data = await fetchAllPaged<{
+      contact_id: string | null
+      organization_id: string | null
+      status: string | null
+      accepted_at: string | null
+      completed_at: string | null
+      revoked_at: string | null
+      archived_at: string | null
+      lost_at: string | null
+    }>(() =>
+      supabase
+        .from("ignition_proposals")
+        .select("contact_id, organization_id, status, accepted_at, completed_at, revoked_at, archived_at, lost_at"),
+    )
 
     const contactIds = new Set<string>()
     const organizationIds = new Set<string>()
 
-    for (const row of data || []) {
+    for (const row of data) {
       // Skip terminated proposals — a revoked/archived/lost row
       // never proves an active client, even if it was once accepted.
       if (row.revoked_at || row.archived_at || row.lost_at) continue

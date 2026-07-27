@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 /**
  * Calendly meeting-type color map.
@@ -37,21 +38,24 @@ export async function GET() {
   try {
     const supabase = createAdminClient()
 
-    // Three small queries in parallel — none big enough to warrant a view
-    // and the result needs to be merged client-side anyway. Defaults are
-    // computed by picking the first non-null Calendly color per name.
-    const [typesRes, overridesRes, eventsRes] = await Promise.all([
+    // Three queries in parallel — the result needs to be merged
+    // client-side anyway. Defaults are computed by picking the first
+    // non-null Calendly color per name. The events read is paged:
+    // PostgREST caps every response at 1,000 rows, so an un-ranged
+    // select would silently undercount once the table crosses that.
+    const [typesRes, overridesRes, eventRows] = await Promise.all([
       supabase
         .from("calendly_event_types")
         .select("name, color, active")
         .eq("active", true),
       supabase.from("calendly_event_type_colors").select("event_type_name, color"),
-      supabase.from("calendly_events").select("event_type_name").not("event_type_name", "is", null),
+      fetchAllPaged<{ event_type_name: string | null }>(() =>
+        supabase.from("calendly_events").select("event_type_name").not("event_type_name", "is", null),
+      ),
     ])
 
-    if (typesRes.error || overridesRes.error || eventsRes.error) {
-      const msg =
-        typesRes.error?.message || overridesRes.error?.message || eventsRes.error?.message
+    if (typesRes.error || overridesRes.error) {
+      const msg = typesRes.error?.message || overridesRes.error?.message
       console.error("[event-type-colors] query failed:", msg)
       return NextResponse.json({ error: msg }, { status: 500 })
     }
@@ -73,7 +77,7 @@ export async function GET() {
 
     // Usage counts across the events table — drives sort order in the UI.
     const counts = new Map<string, number>()
-    for (const e of eventsRes.data || []) {
+    for (const e of eventRows) {
       const n = e.event_type_name
       if (!n) continue
       counts.set(n, (counts.get(n) ?? 0) + 1)

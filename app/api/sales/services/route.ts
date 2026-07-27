@@ -6,6 +6,7 @@ import {
   type CanonicalService,
 } from "@/lib/sales/service-catalog"
 import { classifyService, type ServiceLine } from "@/lib/sales/service-line-classifier"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 /**
  * Sales > Services catalog endpoint.
@@ -25,8 +26,10 @@ import { classifyService, type ServiceLine } from "@/lib/sales/service-line-clas
  *     accurately reflect how many of each service we sold, not how many
  *     ways someone named it.
  *
- * Volumes are tiny (~170 catalog rows, ~440 line items) so we aggregate
- * client-side after a single round-trip per table.
+ * The catalog is tiny (~170 rows) but the line-item and proposal tables
+ * are past PostgREST's 1,000-row response cap (~2.5k line items after the
+ * sync fan-out backfill), so those two reads page with fetchAllPaged
+ * before we aggregate client-side.
  */
 
 export const dynamic = "force-dynamic"
@@ -49,18 +52,24 @@ export async function GET(req: Request) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   )
 
-  const [servicesRes, lineItemsRes, proposalsRes] = await Promise.all([
+  const [servicesRes, lineItems, proposalRows] = await Promise.all([
     supabase
       .from("ignition_services")
       .select(
         "ignition_service_id, name, description, category, billing_type, default_price, currency, is_active, created_at, updated_at",
       ),
-    supabase
-      .from("ignition_proposal_services")
-      .select(
-        "ignition_service_id, service_name, proposal_id, quantity, unit_price, total_amount, currency, billing_frequency, status",
-      ),
-    supabase.from("ignition_proposals").select("proposal_id, status").is("archived_at", null),
+    // Both tables exceed (or will imminently exceed) PostgREST's 1,000-row
+    // cap, so page through them — an unbounded select silently truncates.
+    fetchAllPaged<any>(() =>
+      supabase
+        .from("ignition_proposal_services")
+        .select(
+          "ignition_service_id, service_name, proposal_id, quantity, unit_price, total_amount, currency, billing_frequency, status",
+        ),
+    ),
+    fetchAllPaged<{ proposal_id: string; status: string | null }>(() =>
+      supabase.from("ignition_proposals").select("proposal_id, status").is("archived_at", null),
+    ),
   ])
 
   if (servicesRes.error) {
@@ -68,7 +77,7 @@ export async function GET(req: Request) {
   }
 
   const proposalStatusById = new Map<string, string | null>()
-  for (const p of proposalsRes.data || []) {
+  for (const p of proposalRows) {
     proposalStatusById.set(p.proposal_id, p.status)
   }
   const isAccepted = (s: string | null | undefined) =>
@@ -115,7 +124,7 @@ export async function GET(req: Request) {
   // reuse the result without re-resolving.
   const canonicalForLineItem: Array<string | null> = []
 
-  for (const li of lineItemsRes.data || []) {
+  for (const li of lineItems) {
     // ── Catalog-keyed aggregation ─────────────────────────────────────
     const catalogKey =
       li.ignition_service_id || `name:${(li.service_name || "").toLowerCase()}`
@@ -520,7 +529,7 @@ export async function GET(req: Request) {
     canonicalCovered: canonicalRows.filter((r) => r.isCanonical).length,
     totalRevenue: catalogRows.reduce((sum, s) => sum + s.totalRevenue, 0),
     acceptedRevenue: catalogRows.reduce((sum, s) => sum + s.acceptedRevenue, 0),
-    totalProposalLines: lineItemsRes.data?.length || 0,
+    totalProposalLines: lineItems.length,
     duplicateGroups: countDuplicateGroups(canonicalRows),
   }
 

@@ -93,6 +93,21 @@ const MAX_PER_CATEGORY = 3
 
 // ─── Entry point ─────────────────────────────────────────────────────
 
+/**
+ * Stamp zoom_meetings.alfred_triage_at. Called on EVERY terminal triage
+ * outcome (tagged, no_match, skipped_*) — previously only the model
+ * path stamped it, so no-candidate meetings were re-triaged by every
+ * hourly sweep forever (26k+ zoom_alfred_triage_log rows against ~200
+ * meetings, each a wasted candidate-build + log write, and a model
+ * call whenever candidates existed but scored below the floor).
+ */
+async function stampTriagedAt(supabase: SupabaseClient, zoomMeetingId: string): Promise<void> {
+  await supabase
+    .from("zoom_meetings")
+    .update({ alfred_triage_at: new Date().toISOString() })
+    .eq("id", zoomMeetingId)
+}
+
 export async function runAlfredZoomTriage(
   supabase: SupabaseClient,
   input: AlfredZoomTriageInput,
@@ -126,6 +141,7 @@ export async function runAlfredZoomTriage(
           null,
           Date.now() - startedAt,
         )
+        await stampTriagedAt(supabase, input.zoomMeetingId)
         return result
       }
     }
@@ -147,6 +163,7 @@ export async function runAlfredZoomTriage(
         reason: "No plausible candidates within Hub.",
       }
       await writeTriageLog(supabase, input, result, candidates, null, null, Date.now() - startedAt)
+      await stampTriagedAt(supabase, input.zoomMeetingId)
       return result
     }
 
@@ -171,6 +188,7 @@ export async function runAlfredZoomTriage(
           "Deterministic participant matches cover the room; no work-item or org candidates worth tagging.",
       }
       await writeTriageLog(supabase, input, result, candidates, null, null, Date.now() - startedAt)
+      await stampTriagedAt(supabase, input.zoomMeetingId)
       return result
     }
 
@@ -192,10 +210,7 @@ export async function runAlfredZoomTriage(
     )
 
     // Persist the triage timestamp so the sweep can skip already-seen meetings.
-    await supabase
-      .from("zoom_meetings")
-      .update({ alfred_triage_at: new Date().toISOString() })
-      .eq("id", input.zoomMeetingId)
+    await stampTriagedAt(supabase, input.zoomMeetingId)
 
     return result
   } catch (err) {

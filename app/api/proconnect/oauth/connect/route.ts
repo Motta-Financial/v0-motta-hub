@@ -20,13 +20,14 @@ import { type NextRequest, NextResponse } from "next/server"
 import { getRedirectUri } from "@/lib/proconnect/oauth"
 import { mintState } from "@/lib/proconnect/oauth-state"
 import { requireAdmin } from "@/lib/auth/require-admin"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 const AUTHORIZE_URL = "https://appcenter.intuit.com/connect/oauth2"
 const SCOPE = "com.intuit.proconnect.taxreturns openid profile email"
 const RETURN_TO = "/tax/settings"
 
 export async function GET(request: NextRequest) {
-  const baseUrl = process.env.APP_BASE_URL || "https://hub.motta.cpa"
+  const baseUrl = firmConfigSync().hubUrl
 
   // Gate to admin-tier team members. Anyone else is redirected back to the
   // settings page with an error — we never start the Intuit handshake for them.

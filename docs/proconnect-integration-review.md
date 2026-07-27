@@ -14,7 +14,7 @@
 | Vercel | `alfred` → `alfred.motta.cpa` | ALFRED frontend. Healthy. |
 | Supabase | `Motta Hub` (`gylupzxitoebhqjnvzuw`) | Production DB + 20 edge functions (many are one-off investigation tools). |
 | Supabase | `ALFREDAi` (`bywhzvvyqmsjhaqgcrlk`) | Separate project, not referenced by this repo's ProConnect code. |
-| Intuit | Realm `9130356180193146`, scope `com.intuit.proconnect.taxreturns` | OAuth token healthy — auto-refreshing hourly, `last_refresh_error` null. |
+| Intuit | Realm redacted (public repo), scope `com.intuit.proconnect.taxreturns` | OAuth token healthy — auto-refreshing hourly, `last_refresh_error` null. |
 
 Data snapshot at review time: 2,062 `proconnect_clients`, 901 `proconnect_engagements`, 21 custom statuses, 4,959 webhook events.
 
