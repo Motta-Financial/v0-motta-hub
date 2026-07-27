@@ -174,7 +174,7 @@ export async function fetchClient(
 
 /**
  * Fetch engagements for a client and tax year
- * GET /v2/engagements?source=ITO&period={year}&oiiClientId={clientId}
+ * GET /v2/engagements?source=ITO&period={year}&oiiClientId={clientId}&include-efiles=true
  */
 export async function fetchEngagements(
   oiiClientId: string,
@@ -188,6 +188,9 @@ export async function fetchEngagements(
         source: "ITO",
         period: taxYear.toString(),
         oiiClientId,
+        // e-file status (taxFiling.filings[].filingStatuses[]) is omitted
+        // unless this is set — it defaults to false. Confirmed by Intuit.
+        "include-efiles": "true",
       },
     }
   )
@@ -208,7 +211,7 @@ export async function fetchEngagements(
 
 /**
  * Fetch ALL engagements for a tax year in a single call.
- * GET /v2/engagements?source=ITO&period={year}
+ * GET /v2/engagements?source=ITO&period={year}&include-efiles=true
  *
  * The engagement service returns every engagement for the firm's realm
  * when oiiClientId is omitted, which makes a full-firm sync ~1 request
@@ -225,6 +228,9 @@ export async function fetchAllEngagementsForYear(
       params: {
         source: "ITO",
         period: taxYear.toString(),
+        // e-file status (taxFiling.filings[].filingStatuses[]) is omitted
+        // unless this is set — it defaults to false. Confirmed by Intuit.
+        "include-efiles": "true",
       },
     }
   )
