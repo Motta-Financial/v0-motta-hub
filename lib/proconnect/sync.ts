@@ -368,7 +368,7 @@ async function syncClientYear(
           return_type: returnType,
           form_type: formType,
           status: (eng.status as string) || null,
-          efile_status: (eng.efileStatus as string) || null,
+          efile_status: getLatestEfileStatus(engagement as RawEngagement),
           work_status: (eng.workStatus as string) || null,
           raw_json: engagement,
           synced_at: new Date().toISOString(),
