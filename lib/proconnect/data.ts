@@ -340,7 +340,7 @@ export async function exportReturnData(
   returnId: string
 ): Promise<Result<ReturnExport>> {
   return authedRequest<ReturnExport>(
-    `/v2/clients/${encodeURIComponent(clientId)}/returns/${encodeURIComponent(returnId)}/data`,
+        `/v2/clients/oii-client/${encodeURIComponent(clientId)}/returns/${encodeURIComponent(returnId)}/data`,,
     { method: "GET" }
   )
 }
