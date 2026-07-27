@@ -637,7 +637,7 @@ interface RawEngagement {
   modifiedDate?: string
   taxFiling?: {
     filings?: Array<{
-      filingStatuses?: Array<{ status?: string; date?: string }>
+      filingStatuses?: Array<{ status?: string; statusUpdateTimestamp?: string }>
     }>
   }
 }
@@ -647,12 +647,14 @@ interface RawEngagement {
  * top-level `efileStatus` field. Pick the most recent status by date.
  */
 function getLatestEfileStatus(eng: RawEngagement): string | null {
-  let latest: { status?: string; date?: string } | null = null
+  let latest: { status?: string; statusUpdateTimestamp?: string } | null = null
   let latestDate = new Date(0)
+  let lastSeen: { status?: string } | null = null
   for (const filing of eng.taxFiling?.filings || []) {
     for (const s of filing.filingStatuses || []) {
-      if (s.date) {
-        const d = new Date(s.date)
+      lastSeen = s
+      if (s.statusUpdateTimestamp) {
+        const d = new Date(s.statusUpdateTimestamp)
         if (d > latestDate) {
           latestDate = d
           latest = s
@@ -660,7 +662,7 @@ function getLatestEfileStatus(eng: RawEngagement): string | null {
       }
     }
   }
-  return latest?.status ?? null
+  return (latest ?? lastSeen)?.status ?? null
 }
 
 function mapEngagementRow(raw: unknown, fallbackYear: number) {
