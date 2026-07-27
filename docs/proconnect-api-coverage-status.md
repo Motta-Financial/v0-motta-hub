@@ -180,6 +180,55 @@ SALT phase-down (including its $10,000 floor), the 1099-R routing, the
 medical AGI floor, standard-vs-itemized in both directions, and every
 fail-closed path. All pass.
 
+### 5c. Client profile ↔ intake alignment
+
+The Hub already knows who the taxpayer is, so the 1040 header is *read
+from the client profile*, never re-keyed. `lib/tax/intake/profile.ts` is
+the single declared correspondence between the two vocabularies, and the
+intake page shows each field with its source and whether it is on file.
+The profile stays the source of truth — a preparer who finds a wrong SSN
+fixes the client record, so next year's return inherits the correction.
+
+**Mapped to `contacts`:** first/middle/last/suffix, SSN, date of birth,
+occupation, address, city, state, ZIP, email, phone, driver's licence.
+
+**No column exists — gaps in the Hub's model, not in one client's record:**
+
+| Field | Consequence |
+|---|---|
+| **Spouse** (name, SSN, DOB) | No household model. `tax_client_relationships` links people to *organisations* (ownership), not to each other. A joint return cannot be assembled from the profile. |
+| **Dependents** | No dependents table. One contact is typed `Client's Dependent` — a label, not a link. Blocks the OBBBA $2,200 CTC and the $500 ODC. |
+| Direct deposit (routing/account) | Lines 35b–35d. Refunds would have to go by cheque. |
+| IRS Identity Protection PIN | Required to e-file for any taxpayer issued one. |
+| Presidential campaign fund | Cosmetic. |
+
+Filing status is intentionally *not* on the profile: it lives on
+`tax_input_sets.filing_status`, per return, because it changes year to year.
+
+**Coverage across the 937 contacts typed `Client*`** — the reason this
+matters more than the mapping does:
+
+| Field | On file |
+|---|---|
+| First / last name | 99.6% / 99.5% |
+| Email | 90.3% |
+| SSN | **31.3%** |
+| State / city / address / ZIP | **13.2% / 12.3% / 11.5% / 11.3%** |
+| Date of birth | **6.2%** |
+| Occupation | **0%** |
+| Driver's licence | **0%** |
+
+`GET /api/tax/intake/profile-coverage?clientsOnly=1` returns this live, so
+it is answerable in November rather than discovered in March. Two entries
+are worth calling out: **date of birth at 6.2%** drives OBBBA §63(f)'s
+additional senior deduction, which has *no ProConnect input field* —
+ProConnect derives it from DOB, so a missing DOB silently costs the client
+the deduction. **Occupation at 0%** is asked for in the 1040 signature
+block.
+
+A set whose profile is missing a required field is reported as not
+ready to import, regardless of how complete the income side is.
+
 ### ⚠️ Important sequencing correction
 
 The Form 1040 viewer is built and deployed, and I previously described it

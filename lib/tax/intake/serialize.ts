@@ -53,6 +53,8 @@ export interface IntakeSet {
   taxYear: number
   returnType: string
   filingStatus: string | null
+  /** The Hub client this return is for — the taxpayer identity source. */
+  contactId?: string | null
   proconnectClientId: string | null
   proconnectReturnId: string | null
   documents: IntakeDocument[]

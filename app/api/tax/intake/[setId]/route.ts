@@ -15,6 +15,7 @@ import {
 import { serializeToImportBatches } from "@/lib/tax/intake/serialize"
 import { computeForm1040Preview } from "@/lib/tax/intake/compute"
 import { validateBatches } from "@/lib/proconnect/catalog"
+import { loadClientProfile } from "@/lib/tax/intake/profile"
 
 /**
  * One intake set: the gathered documents, the computed 1040 preview, and
@@ -78,6 +79,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ setId: string 
     // preview look complete.
     preview.outOfScope.push(...computeKeyDrift(defs))
 
+    // The taxpayer's identity comes from the client profile, not from
+    // re-keying it here. Values are masked before they leave the server.
+    const profile = set.contactId ? await loadClientProfile(admin, set.contactId) : null
+
     // Decorate documents with their field defs so the UI can render forms
     // without a second round trip.
     const documents = set.documents.map((d) => ({
@@ -109,9 +114,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ setId: string 
         taxYear: set.taxYear,
         returnType: set.returnType,
         filingStatus: set.filingStatus,
+        contactId: set.contactId,
         proconnectClientId: set.proconnectClientId,
         proconnectReturnId: set.proconnectReturnId,
       },
+      profile,
       documents,
       preview,
       importPlan: {
@@ -132,7 +139,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ setId: string 
           !serialized.problems.some((p) => p.severity === "blocking") &&
           // An unloaded catalog means nothing was checked against Intuit's
           // rules. That is not "ready", it is "unverified".
-          validation.ok,
+          validation.ok &&
+          // A return with no SSN or date of birth on file cannot be filed,
+          // however complete the income side is.
+          (profile?.blocking.length ?? 0) === 0,
       },
     })
   } catch (e) {

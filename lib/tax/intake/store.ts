@@ -68,7 +68,9 @@ export async function loadIntakeSet(
 ): Promise<IntakeSet | null> {
   const { data: setRow, error: setErr } = await sb
     .from("tax_input_sets")
-    .select("id, tax_year, return_type, filing_status, proconnect_client_id, proconnect_return_id")
+    .select(
+      "id, tax_year, return_type, filing_status, contact_id, proconnect_client_id, proconnect_return_id",
+    )
     .eq("id", inputSetId)
     .maybeSingle()
   if (setErr) throw setErr
@@ -122,6 +124,7 @@ export async function loadIntakeSet(
     taxYear: Number(s.tax_year),
     returnType: s.return_type as string,
     filingStatus: (s.filing_status as string | null) ?? null,
+    contactId: (s.contact_id as string | null) ?? null,
     proconnectClientId: (s.proconnect_client_id as string | null) ?? null,
     proconnectReturnId: (s.proconnect_return_id as string | null) ?? null,
     documents,

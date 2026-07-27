@@ -55,6 +55,18 @@ interface ImportEntry {
   tsj?: string
 }
 
+interface ProfileFieldState {
+  key: string
+  label: string
+  contactColumn: string | null
+  necessity: "required" | "expected" | "optional"
+  sensitive: boolean
+  note?: string
+  display: string | null
+  present: boolean
+  unmodelled: boolean
+}
+
 interface IntakeResponse {
   availableDocTypes: Array<{ docType: string; fieldCount: number }>
   set: {
@@ -62,9 +74,18 @@ interface IntakeResponse {
     taxYear: number
     returnType: string
     filingStatus: string | null
+    contactId: string | null
     proconnectClientId: string | null
     proconnectReturnId: string | null
   }
+  profile: {
+    contactId: string
+    displayName: string
+    fields: ProfileFieldState[]
+    blocking: ProfileFieldState[]
+    warnings: ProfileFieldState[]
+    coverage: { present: number; applicable: number; unmodelled: number }
+  } | null
   documents: DocumentDto[]
   preview: {
     lines: Array<{ lineCode: string; label: string; value: number | null; unavailable?: string }>
@@ -288,6 +309,109 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_400px]">
         {/* ── Documents ── */}
         <div className="space-y-4">
+          {/* Taxpayer identity comes from the client profile — it is shown,
+              not re-keyed. A preparer who spots an error fixes the client
+              record, so next year's return inherits the correction. */}
+          {data.profile && (
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-base">
+                  Taxpayer — from client profile
+                  <Badge
+                    variant={data.profile.blocking.length > 0 ? "destructive" : "outline"}
+                    className="ml-2 text-xs"
+                  >
+                    {data.profile.coverage.present}/{data.profile.coverage.applicable} on file
+                  </Badge>
+                </CardTitle>
+                <Button size="sm" variant="outline" asChild>
+                  <a href={`/clients/${data.profile.contactId}`}>Edit profile</a>
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm font-medium">{data.profile.displayName}</p>
+
+                <div className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
+                  {data.profile.fields
+                    .filter((f) => !f.unmodelled)
+                    .map((f) => (
+                      <div key={f.key} className="flex items-baseline justify-between gap-3 text-sm">
+                        <span className="text-muted-foreground">{f.label}</span>
+                        {f.present ? (
+                          <span className="font-mono text-xs">{f.display}</span>
+                        ) : (
+                          <span
+                            className={`text-xs ${
+                              f.necessity === "required"
+                                ? "font-medium text-destructive"
+                                : f.necessity === "expected"
+                                  ? "text-amber-600"
+                                  : "text-muted-foreground"
+                            }`}
+                            title={f.note}
+                          >
+                            {f.necessity === "required" ? "missing — required" : "missing"}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                </div>
+
+                {(data.profile.blocking.length > 0 || data.profile.warnings.length > 0) && (
+                  <>
+                    <Separator />
+                    <ul className="space-y-1 text-xs">
+                      {data.profile.blocking.map((f) => (
+                        <li key={f.key} className="text-destructive">
+                          • <strong>{f.label}</strong> is required to file
+                          {f.note ? ` — ${f.note}` : "."}
+                        </li>
+                      ))}
+                      {data.profile.warnings.map((f) => (
+                        <li key={f.key} className="text-amber-600">
+                          • {f.label} is not on file{f.note ? ` — ${f.note}` : "."}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+
+                {/* Not this client's missing data — fields the Hub has no
+                    column for. Chasing the client cannot fix these. */}
+                {data.profile.fields.some((f) => f.unmodelled) && (
+                  <>
+                    <Separator />
+                    <p className="text-xs font-medium text-muted-foreground">
+                      Not modelled in the client profile
+                    </p>
+                    <ul className="space-y-1 text-xs text-muted-foreground">
+                      {data.profile.fields
+                        .filter((f) => f.unmodelled)
+                        .map((f) => (
+                          <li key={f.key}>
+                            • <strong>{f.label}</strong>
+                            {f.necessity === "required" && (
+                              <span className="text-destructive"> (required to file)</span>
+                            )}
+                            {f.note ? ` — ${f.note}` : ""}
+                          </li>
+                        ))}
+                    </ul>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {!data.profile && (
+            <Card>
+              <CardContent className="pt-6 text-sm text-muted-foreground">
+                This intake set is not linked to a client profile, so the taxpayer&apos;s name, SSN,
+                date of birth and address cannot be filled from the Hub. Link a client to the set.
+              </CardContent>
+            </Card>
+          )}
+
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-lg font-medium">Source documents</h2>
             <div className="flex flex-wrap gap-2">
