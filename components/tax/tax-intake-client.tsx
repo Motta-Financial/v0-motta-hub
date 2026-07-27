@@ -56,6 +56,7 @@ interface ImportEntry {
 }
 
 interface IntakeResponse {
+  availableDocTypes: Array<{ docType: string; fieldCount: number }>
   set: {
     id: string
     taxYear: number
@@ -67,6 +68,11 @@ interface IntakeResponse {
   documents: DocumentDto[]
   preview: {
     lines: Array<{ lineCode: string; label: string; value: number | null; unavailable?: string }>
+    scheduleA?: {
+      lines: Array<{ lineCode: string; label: string; value: number }>
+      total: number
+      itemizingWins: boolean
+    }
     outOfScope: string[]
     notes: string[]
   }
@@ -74,6 +80,13 @@ interface IntakeResponse {
     batches: Array<{ seriesId: string; agency: string; entries: ImportEntry[] }>
     entryCount: number
     problems: Array<{ severity: string; docType: string; instanceIndex: number; fieldKey: string | null; message: string }>
+    validation: {
+      catalogAvailable: boolean
+      ok: boolean
+      problems: Array<{ severity: string; apiErrorCode?: string; message: string }>
+      unknownCodes: Array<{ seriesId: string; codeId: string }>
+      sensitiveCodes: Array<{ seriesId: string; codeId: string }>
+    }
     blocked: boolean
     prefixAssumed: boolean
     readyToImport: boolean
@@ -82,6 +95,28 @@ interface IntakeResponse {
 
 const money = (n: number | null) =>
   n === null ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
+
+/**
+ * Display names and ordering for gathered document types.
+ *
+ * The set of types the Hub can actually accept comes from the API
+ * (`availableDocTypes`, derived from tax_input_field_defs) — this only
+ * supplies the labels. A type seeded in the database but missing here still
+ * renders, under its raw key, rather than disappearing from the UI.
+ */
+const DOC_TYPE_META: Record<string, { label: string; singular: string; order: number }> = {
+  w2: { label: "W-2", singular: "W-2", order: 10 },
+  "1099int": { label: "1099-INT", singular: "1099-INT", order: 20 },
+  "1099div": { label: "1099-DIV", singular: "1099-DIV", order: 30 },
+  "1099r": { label: "1099-R", singular: "1099-R", order: 40 },
+  scha: { label: "Schedule A", singular: "Schedule A", order: 50 },
+}
+
+const metaFor = (docType: string) =>
+  DOC_TYPE_META[docType] ?? { label: docType, singular: docType, order: 999 }
+
+/** Fields the preparer never types — they are derived from the document. */
+const DERIVED_FIELDS = new Set(["spouse_w2"])
 
 export function TaxIntakeClient({ setId }: { setId: string }) {
   const [data, setData] = useState<IntakeResponse | null>(null)
@@ -204,7 +239,18 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
 
   if (!data) return null
 
-  const w2s = data.documents.filter((d) => d.docType === "w2")
+  // Group by type so repeated documents sit together and the ProConnect
+  // prefix sequence (p0, p1, p2…) reads in order.
+  const grouped = [...data.availableDocTypes]
+    .sort((a, b) => metaFor(a.docType).order - metaFor(b.docType).order)
+    .map((t) => ({
+      ...t,
+      meta: metaFor(t.docType),
+      docs: data.documents
+        .filter((d) => d.docType === t.docType)
+        .sort((a, b) => a.instanceIndex - b.instanceIndex),
+    }))
+  const hasAnyDocument = data.documents.length > 0
 
   return (
     <div className="space-y-6 p-6">
@@ -242,101 +288,119 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_400px]">
         {/* ── Documents ── */}
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-lg font-medium">Source documents</h2>
-            <Button size="sm" onClick={() => void addDocument("w2")} disabled={saving === "add"}>
-              {saving === "add" ? "Adding…" : "Add W-2"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              {grouped.map((g) => (
+                <Button
+                  key={g.docType}
+                  size="sm"
+                  variant={g.docs.length > 0 ? "outline" : "default"}
+                  onClick={() => void addDocument(g.docType)}
+                  disabled={saving === "add"}
+                >
+                  Add {g.meta.singular}
+                </Button>
+              ))}
+            </div>
           </div>
 
-          {w2s.length === 0 && (
+          {!hasAnyDocument && (
             <Card>
               <CardContent className="pt-6 text-sm text-muted-foreground">
-                No documents yet. Add a W-2 to begin.
+                No documents yet. Add a W-2, 1099, or Schedule A to begin.
               </CardContent>
             </Card>
           )}
 
-          {w2s.map((doc) => (
-            <Card key={doc.id}>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0">
-                <CardTitle className="text-base">
-                  W-2 #{doc.instanceIndex + 1}
-                  <Badge variant="outline" className="ml-2 font-mono text-xs">
-                    prefix {doc.prefixId}
-                  </Badge>
-                  <Badge variant="secondary" className="ml-2 text-xs">
-                    {doc.taxpayerSpouse === "S" ? "Spouse" : "Taxpayer"}
-                  </Badge>
-                </CardTitle>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void saveDocument(doc)}
-                    disabled={saving === doc.id}
-                  >
-                    {saving === doc.id ? "Saving…" : "Save"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void removeDocument(doc.id)}
-                    disabled={saving === doc.id}
-                  >
-                    Remove
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="grid gap-4 sm:grid-cols-2">
-                {doc.fields
-                  // spouse_w2 is derived from the document, not typed.
-                  .filter((f) => f.fieldKey !== "spouse_w2")
-                  .map((f) => (
-                    <div key={f.fieldKey} className="space-y-1.5">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <Label htmlFor={`${doc.id}-${f.fieldKey}`} className="text-sm">
-                          {f.label}
-                          {f.required && <span className="ml-0.5 text-destructive">*</span>}
-                        </Label>
-                        <span
-                          className="font-mono text-[10px] text-muted-foreground"
-                          title={
-                            f.confidence === "high"
-                              ? "Mapping confirmed from Intuit's field description"
-                              : "Mapping not fully confirmed — verify before importing"
-                          }
-                        >
-                          {f.target}
-                          {f.confidence !== "high" && (
-                            <span className="ml-1 text-amber-600">({f.confidence})</span>
-                          )}
-                        </span>
-                      </div>
-                      {f.dataType === "checkbox" ? (
-                        <div className="flex h-9 items-center">
-                          <Checkbox
-                            id={`${doc.id}-${f.fieldKey}`}
-                            checked={currentValue(doc, f) === "1"}
-                            onCheckedChange={(c) => setDraft(doc.id, f.fieldKey, c ? "1" : "0")}
-                          />
+          {grouped.flatMap((g) =>
+            g.docs.map((doc) => (
+              <Card key={doc.id}>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0">
+                  <CardTitle className="text-base">
+                    {g.meta.singular}
+                    {/* Schedule A is a single form per return, so numbering
+                        it would imply a second one is expected. */}
+                    {g.docType !== "scha" && ` #${doc.instanceIndex + 1}`}
+                    <Badge variant="outline" className="ml-2 font-mono text-xs">
+                      prefix {doc.prefixId}
+                    </Badge>
+                    {g.docType !== "scha" && (
+                      <Badge variant="secondary" className="ml-2 text-xs">
+                        {doc.taxpayerSpouse === "S" ? "Spouse" : "Taxpayer"}
+                      </Badge>
+                    )}
+                  </CardTitle>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void saveDocument(doc)}
+                      disabled={saving === doc.id}
+                    >
+                      {saving === doc.id ? "Saving…" : "Save"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void removeDocument(doc.id)}
+                      disabled={saving === doc.id}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="grid gap-4 sm:grid-cols-2">
+                  {doc.fields
+                    .filter((f) => !DERIVED_FIELDS.has(f.fieldKey))
+                    .map((f) => (
+                      <div key={f.fieldKey} className="space-y-1.5">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <Label htmlFor={`${doc.id}-${f.fieldKey}`} className="text-sm">
+                            {f.label}
+                            {f.required && <span className="ml-0.5 text-destructive">*</span>}
+                          </Label>
+                          <span
+                            className="font-mono text-[10px] text-muted-foreground"
+                            title={
+                              f.confidence === "high"
+                                ? "Mapping confirmed from Intuit's field description"
+                                : "Mapping not fully confirmed — verify before importing"
+                            }
+                          >
+                            {f.target}
+                            {f.confidence !== "high" && (
+                              <span className="ml-1 text-amber-600">({f.confidence})</span>
+                            )}
+                          </span>
                         </div>
-                      ) : (
-                        <Input
-                          id={`${doc.id}-${f.fieldKey}`}
-                          value={currentValue(doc, f)}
-                          inputMode={
-                            f.dataType === "currency" || f.dataType === "integer" ? "decimal" : "text"
-                          }
-                          placeholder={f.dataType === "currency" ? "0.00" : ""}
-                          onChange={(e) => setDraft(doc.id, f.fieldKey, e.target.value)}
-                        />
-                      )}
-                    </div>
-                  ))}
-              </CardContent>
-            </Card>
-          ))}
+                        {f.dataType === "checkbox" ? (
+                          <div className="flex h-9 items-center">
+                            <Checkbox
+                              id={`${doc.id}-${f.fieldKey}`}
+                              checked={currentValue(doc, f) === "1"}
+                              onCheckedChange={(c) => setDraft(doc.id, f.fieldKey, c ? "1" : "0")}
+                            />
+                          </div>
+                        ) : (
+                          <Input
+                            id={`${doc.id}-${f.fieldKey}`}
+                            value={currentValue(doc, f)}
+                            inputMode={
+                              f.dataType === "currency" || f.dataType === "integer"
+                                ? "decimal"
+                                : "text"
+                            }
+                            placeholder={f.dataType === "currency" ? "0.00" : ""}
+                            onChange={(e) => setDraft(doc.id, f.fieldKey, e.target.value)}
+                          />
+                        )}
+                      </div>
+                    ))}
+                </CardContent>
+              </Card>
+            )),
+          )}
         </div>
 
         {/* ── Preview + import plan ── */}
@@ -382,6 +446,39 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
               )}
             </CardContent>
           </Card>
+
+          {data.preview.scheduleA && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">
+                  Schedule A
+                  <Badge
+                    variant={data.preview.scheduleA.itemizingWins ? "default" : "secondary"}
+                    className="ml-2 text-xs"
+                  >
+                    {data.preview.scheduleA.itemizingWins
+                      ? "itemizing wins"
+                      : "standard deduction wins"}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1">
+                {data.preview.scheduleA.lines.map((l) => (
+                  <div
+                    key={l.lineCode}
+                    className={`flex items-baseline justify-between gap-3 text-sm ${
+                      l.lineCode === "A17" ? "border-t pt-1 font-medium" : ""
+                    }`}
+                  >
+                    <span className={l.lineCode === "A17" ? "" : "text-muted-foreground"}>
+                      <span className="font-mono text-xs">{l.lineCode}</span> {l.label}
+                    </span>
+                    <span className="font-mono tabular-nums">{money(l.value)}</span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>
@@ -432,6 +529,48 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
                   ))}
                 </ul>
               )}
+
+              <Separator />
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium">
+                  Catalog pre-validation
+                  <Badge
+                    variant={
+                      !data.importPlan.validation.catalogAvailable
+                        ? "secondary"
+                        : data.importPlan.validation.ok
+                          ? "outline"
+                          : "destructive"
+                    }
+                    className="ml-2 text-xs"
+                  >
+                    {!data.importPlan.validation.catalogAvailable
+                      ? "catalog not loaded"
+                      : data.importPlan.validation.ok
+                        ? "passes Intuit field rules"
+                        : "rule violations"}
+                  </Badge>
+                </p>
+                {data.importPlan.validation.problems.length > 0 && (
+                  <ul className="space-y-1 text-xs">
+                    {data.importPlan.validation.problems.map((p, i) => (
+                      <li
+                        key={i}
+                        className={p.severity === "blocking" ? "text-destructive" : "text-amber-600"}
+                      >
+                        • {p.apiErrorCode && <span className="font-mono">{p.apiErrorCode}: </span>}
+                        {p.message}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {data.importPlan.validation.sensitiveCodes.length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {data.importPlan.validation.sensitiveCodes.length} of these codes hold PII per
+                    Intuit&apos;s catalog. Their values are never logged.
+                  </p>
+                )}
+              </div>
 
               <Separator />
               <p className="text-xs text-muted-foreground">

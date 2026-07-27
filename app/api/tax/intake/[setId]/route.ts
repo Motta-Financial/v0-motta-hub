@@ -5,10 +5,16 @@ import {
   loadFieldDefs,
   loadForm1040Constants,
   w2sFromIntakeSet,
+  int1099sFromIntakeSet,
+  div1099sFromIntakeSet,
+  r1099sFromIntakeSet,
+  scheduleAFromIntakeSet,
+  computeKeyDrift,
   filingStatusOf,
 } from "@/lib/tax/intake/store"
 import { serializeToImportBatches } from "@/lib/tax/intake/serialize"
 import { computeForm1040Preview } from "@/lib/tax/intake/compute"
+import { validateBatches } from "@/lib/proconnect/catalog"
 
 /**
  * One intake set: the gathered documents, the computed 1040 preview, and
@@ -44,12 +50,33 @@ export async function GET(_req: Request, ctx: { params: Promise<{ setId: string 
     // What would be written to ProConnect.
     const serialized = serializeToImportBatches(set, defs)
 
+    // Check it against Intuit's own field rules before anyone gets the
+    // chance to send it. This runs ahead of — never instead of — the
+    // mandatory dryRun, which catches return-state rules the catalog
+    // cannot express.
+    const validation = await validateBatches(
+      admin,
+      { taxYear: set.taxYear, returnType: set.returnType },
+      serialized.batches,
+    )
+
     // What the return looks like, for review.
     const constants = await loadForm1040Constants(admin, set.taxYear)
     const preview = computeForm1040Preview(
-      { filingStatus: filingStatusOf(set), w2s: w2sFromIntakeSet(set) },
+      {
+        filingStatus: filingStatusOf(set),
+        w2s: w2sFromIntakeSet(set),
+        int1099s: int1099sFromIntakeSet(set),
+        div1099s: div1099sFromIntakeSet(set),
+        r1099s: r1099sFromIntakeSet(set),
+        scheduleA: scheduleAFromIntakeSet(set),
+      },
       constants,
     )
+    // If a field def was renamed out from under the calculator, that income
+    // would vanish silently. Surface it as out-of-scope rather than let the
+    // preview look complete.
+    preview.outOfScope.push(...computeKeyDrift(defs))
 
     // Decorate documents with their field defs so the UI can render forms
     // without a second round trip.
@@ -72,6 +99,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ setId: string 
     }))
 
     return NextResponse.json({
+      // Only types with seeded field defs can be added — anything else has
+      // no ProConnect address and the POST route refuses it.
+      availableDocTypes: [...defs.entries()]
+        .filter(([, list]) => list.length > 0)
+        .map(([docType, list]) => ({ docType, fieldCount: list.length })),
       set: {
         id: set.id,
         taxYear: set.taxYear,
@@ -86,7 +118,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ setId: string 
         batches: serialized.batches,
         entryCount: serialized.entryCount,
         problems: serialized.problems,
-        blocked: serialized.problems.some((p) => p.severity === "blocking"),
+        validation,
+        blocked:
+          serialized.problems.some((p) => p.severity === "blocking") ||
+          validation.problems.some((p) => p.severity === "blocking"),
         // Surfaced so the UI can state it plainly: p{n} for repeated
         // documents is inferred from the field model, not confirmed by a
         // real Export. See scripts/361.
@@ -94,7 +129,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ setId: string 
         readyToImport:
           !!set.proconnectClientId &&
           !!set.proconnectReturnId &&
-          !serialized.problems.some((p) => p.severity === "blocking"),
+          !serialized.problems.some((p) => p.severity === "blocking") &&
+          // An unloaded catalog means nothing was checked against Intuit's
+          // rules. That is not "ready", it is "unverified".
+          validation.ok,
       },
     })
   } catch (e) {

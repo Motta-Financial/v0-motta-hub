@@ -9,7 +9,15 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { IntakeFieldDef, IntakeSet, IntakeDocument } from "./serialize"
-import type { Form1040Constants, FilingStatus } from "./compute"
+import type {
+  Form1040Constants,
+  FilingStatus,
+  W2Input,
+  Int1099Input,
+  Div1099Input,
+  R1099Input,
+  ScheduleAInput,
+} from "./compute"
 
 /** Field definitions for a document type, ordered for form rendering. */
 export async function loadFieldDefs(
@@ -159,21 +167,197 @@ export async function loadForm1040Constants(
       mfs: brackets("tax_brackets_mfs"),
       hoh: brackets("tax_brackets_hoh"),
     },
+    // Schedule A. Gated independently of the brackets — see migration 362.
+    itemizedVerified: m.get("itemized_constants_verified") === true,
+    medicalAgiFloorPct: num("medical_agi_floor_pct", 0.075),
+    saltCap: num("salt_cap"),
+    saltCapMfs: num("salt_cap_mfs"),
+    saltPhaseoutStart: num("salt_phaseout_start"),
+    saltPhaseoutStartMfs: num("salt_phaseout_start_mfs"),
+    saltPhaseoutRate: num("salt_phaseout_rate"),
+    saltPhaseoutFloor: num("salt_phaseout_floor"),
+    saltPhaseoutFloorMfs: num("salt_phaseout_floor_mfs"),
+    charitableMileageRate: num("charitable_mileage_rate", 0.14),
   }
 }
 
-/** Flatten W-2 documents into the shape the compute engine consumes. */
-export function w2sFromIntakeSet(set: IntakeSet) {
-  const numOf = (d: IntakeDocument, key: string) => d.values[key]?.num ?? null
-  return set.documents
-    .filter((d) => d.docType === "w2")
-    .map((d) => ({
-      box1Wages: numOf(d, "box1_wages"),
-      box2FedWithheld: numOf(d, "box2_fed_withheld"),
-      obbbaQualifiedTips: numOf(d, "obbba_qualified_tips"),
-      obbbaQualifiedOvertime: numOf(d, "obbba_qualified_overtime"),
-      statutoryEmployee: d.values["box13_statutory_employee"]?.num === 1,
-    }))
+const numOf = (d: IntakeDocument, key: string) => d.values[key]?.num ?? null
+const boolOf = (d: IntakeDocument, key: string) => d.values[key]?.num === 1
+const textOf = (d: IntakeDocument, key: string) => d.values[key]?.text ?? null
+
+function docsOfType(set: IntakeSet, docType: string): IntakeDocument[] {
+  return set.documents.filter((d) => d.docType === docType)
+}
+
+/**
+ * Flatten gathered documents into the shapes the compute engine consumes.
+ *
+ * These are the ONLY place field_key strings are coupled to the calculator.
+ * A key here that no longer exists in tax_input_field_defs silently reads as
+ * null, so `assertComputeKeysExist` below is run at request time to catch
+ * drift rather than quietly under-reporting income.
+ */
+export function w2sFromIntakeSet(set: IntakeSet): W2Input[] {
+  return docsOfType(set, "w2").map((d) => ({
+    box1Wages: numOf(d, "box1_wages"),
+    box2FedWithheld: numOf(d, "box2_fed_withheld"),
+    obbbaQualifiedTips: numOf(d, "obbba_qualified_tips"),
+    obbbaQualifiedOvertime: numOf(d, "obbba_qualified_overtime"),
+    statutoryEmployee: boolOf(d, "box13_statutory_employee"),
+  }))
+}
+
+export function int1099sFromIntakeSet(set: IntakeSet): Int1099Input[] {
+  return docsOfType(set, "1099int").map((d) => ({
+    interestBanks: numOf(d, "interest_banks"),
+    interestUsBonds: numOf(d, "interest_us_bonds"),
+    interestMuniTotal: numOf(d, "interest_muni_total"),
+    interestMuniInstate: numOf(d, "interest_muni_instate"),
+    oid: numOf(d, "oid"),
+    fedWithheld: numOf(d, "fed_withheld"),
+    earlyWithdrawalPenalty: numOf(d, "early_withdrawal_penalty"),
+    accruedInterest: numOf(d, "accrued_interest"),
+    nomineeInterest: numOf(d, "nominee_interest"),
+  }))
+}
+
+export function div1099sFromIntakeSet(set: IntakeSet): Div1099Input[] {
+  return docsOfType(set, "1099div").map((d) => ({
+    box1aOrdinary: numOf(d, "box1a_ordinary"),
+    box1bQualified: numOf(d, "box1b_qualified"),
+    box2aCapGain: numOf(d, "box2a_capgain"),
+    box3Nondividend: numOf(d, "box3_nondividend"),
+    box4FedWithheld: numOf(d, "box4_fed_withheld"),
+    box5Sec199a: numOf(d, "box5_sec199a"),
+  }))
+}
+
+export function r1099sFromIntakeSet(set: IntakeSet): R1099Input[] {
+  return docsOfType(set, "1099r").map((d) => ({
+    // The line-4 vs line-5 discriminator. See scripts/361.
+    iraSepSimple: boolOf(d, "ira_sep_simple"),
+    box1Gross: numOf(d, "box1_gross"),
+    box2aTaxable: numOf(d, "box2a_taxable"),
+    box2bNotDetermined: boolOf(d, "box2b_not_determined"),
+    box4FedWithheld: numOf(d, "box4_fed_withheld"),
+    distCode1: textOf(d, "box7_dist_code1"),
+  }))
+}
+
+export function scheduleAFromIntakeSet(set: IntakeSet): ScheduleAInput[] {
+  return docsOfType(set, "scha").map((d) => ({
+    medPrescriptions: numOf(d, "med_prescriptions"),
+    medDoctors: numOf(d, "med_doctors"),
+    medHospitals: numOf(d, "med_hospitals"),
+    medInsurance: numOf(d, "med_insurance"),
+    medReimbursement: numOf(d, "med_reimbursement"),
+    medOther: numOf(d, "med_other"),
+    taxStateIncome: numOf(d, "tax_state_income"),
+    taxSales: numOf(d, "tax_sales"),
+    taxRealestateResidence: numOf(d, "tax_realestate_residence"),
+    taxRealestateInvestment: numOf(d, "tax_realestate_investment"),
+    taxPersonalProperty: numOf(d, "tax_personal_property"),
+    intMortgage1098: numOf(d, "int_mortgage_1098"),
+    intMortgageNo1098: numOf(d, "int_mortgage_no1098"),
+    intPointsNo1098: numOf(d, "int_points_no1098"),
+    intInvestment: numOf(d, "int_investment"),
+    charityCash: numOf(d, "charity_cash"),
+    charityNoncash50: numOf(d, "charity_noncash_50"),
+    charityNoncash30: numOf(d, "charity_noncash_30"),
+    charityMiles: numOf(d, "charity_miles"),
+    otherItemized: numOf(d, "other_itemized"),
+  }))
+}
+
+/**
+ * Every field_key the flatteners above read, by document type.
+ *
+ * The flatteners read by string, so a renamed or dropped field def would
+ * make income silently vanish from the preview rather than error. This list
+ * is checked against the loaded defs on every preview request.
+ */
+const COMPUTE_KEYS: Record<string, string[]> = {
+  w2: [
+    "box1_wages",
+    "box2_fed_withheld",
+    "obbba_qualified_tips",
+    "obbba_qualified_overtime",
+    "box13_statutory_employee",
+  ],
+  "1099int": [
+    "interest_banks",
+    "interest_us_bonds",
+    "interest_muni_total",
+    "interest_muni_instate",
+    "oid",
+    "fed_withheld",
+    "early_withdrawal_penalty",
+    "accrued_interest",
+    "nominee_interest",
+  ],
+  "1099div": [
+    "box1a_ordinary",
+    "box1b_qualified",
+    "box2a_capgain",
+    "box3_nondividend",
+    "box4_fed_withheld",
+    "box5_sec199a",
+  ],
+  "1099r": [
+    "ira_sep_simple",
+    "box1_gross",
+    "box2a_taxable",
+    "box2b_not_determined",
+    "box4_fed_withheld",
+    "box7_dist_code1",
+  ],
+  scha: [
+    "med_prescriptions",
+    "med_doctors",
+    "med_hospitals",
+    "med_insurance",
+    "med_reimbursement",
+    "med_other",
+    "tax_state_income",
+    "tax_sales",
+    "tax_realestate_residence",
+    "tax_realestate_investment",
+    "tax_personal_property",
+    "int_mortgage_1098",
+    "int_mortgage_no1098",
+    "int_points_no1098",
+    "int_investment",
+    "charity_cash",
+    "charity_noncash_50",
+    "charity_noncash_30",
+    "charity_miles",
+    "other_itemized",
+  ],
+}
+
+/**
+ * Returns a human-readable problem for each field key the calculator reads
+ * that no longer has a definition. Empty means the flatteners and the
+ * field defs agree.
+ */
+export function computeKeyDrift(defs: Map<string, IntakeFieldDef[]>): string[] {
+  const problems: string[] = []
+  for (const [docType, keys] of Object.entries(COMPUTE_KEYS)) {
+    const defined = defs.get(docType)
+    // A type with no defs at all is not drift — it just isn't seeded for
+    // this tax year, and documents of that type cannot be created.
+    if (!defined?.length) continue
+    const have = new Set(defined.map((d) => d.fieldKey))
+    for (const k of keys) {
+      if (!have.has(k)) {
+        problems.push(
+          `The 1040 calculator reads ${docType}.${k}, but no field definition exists for it. ` +
+            "That amount would be silently omitted from the preview.",
+        )
+      }
+    }
+  }
+  return problems
 }
 
 export function filingStatusOf(set: IntakeSet): FilingStatus {

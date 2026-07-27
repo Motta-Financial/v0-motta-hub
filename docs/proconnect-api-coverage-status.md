@@ -107,8 +107,8 @@ explicitly rather than rounded up to "done."
 | Layer | Scope | Status |
 |---|---|---|
 | **A — Plumbing** | Connect, sync clients/engagements/statuses, webhooks, Export/Import wiring, rate limiting, audit logging | ✅ **Complete** (Export blocked externally) |
-| **B — Catalog** | code ↔ tax-concept dictionary + per-code rules | 🔴 **Not started — 0 rows.** Doubly blocked: Intuit hasn't shared the catalog, *and* our empirical bootstrap (Export a reference return, record which codes populate) requires Export to work. |
-| **C — Intelligence** | Read W-2/1099/K-1 → map to codes → dryRun → import | ❌ Not started; depends on B |
+| **B — Catalog** | code ↔ tax-concept dictionary + per-code rules | 🟡 **Unblocked and modelled; load pending.** Steve Wheelis sent the IND 2025 IVCS/FRF extract — 67,810 codes. Schema, RFC-4180 loader and constraint parser are built and dry-run verified (100% of constraint strings parsed, 612 distinct forms, 13 tokens, zero unrecognised clauses). The table is still at 0 rows because the load runs out-of-band with the service-role key. |
+| **C — Intelligence** | Gather W-2/1099/Schedule A in the Hub → map to codes → dryRun → import | 🟡 **Five document types live.** See §5b. |
 
 ### The four-level address is fully modelled
 
@@ -118,13 +118,75 @@ defines (`val`, `desc`, `src`, `tsj`, `scope`, `cityAbbrev`, `source`,
 `import_source`), and `flattenSeriesMap()` / `getSeriesVersion()` handle
 the nested map and per-series version stamps.
 
+### 5b. The intake pipeline — gather in the Hub, import into ProConnect
+
+This is the end goal working end to end, minus the final API call:
+a preparer keys source documents into the Hub, the Hub computes the 1040
+face and simultaneously builds the exact Import payload those documents
+produce, and both are shown side by side before anything is sent.
+
+**Five document types are live** (79 field definitions, TY2025 IND):
+
+| Type | Series | Fields | Notes |
+|---|---|---|---|
+| W-2 | `s11` | 23 | Includes the OBBBA §224 tips and §225 overtime fields |
+| 1099-INT | `s12` | 11 | In-state muni is a *subset* of total muni, not a substitute — the engine warns when only the subset is entered |
+| 1099-DIV | `s13` | 11 | Qualified dividends trigger the preferential-rate gate |
+| 1099-R | `s14` | 13 | Carries the line-4-vs-line-5 discriminator |
+| Schedule A | `s400` | 21 | Drives the standard-vs-itemized comparison on line 12 |
+
+**Repeated documents** become ProConnect prefixes: three W-2s are
+`p0`/`p1`/`p2` against the same `s11` codes. Verified against live rows —
+two W-2s and two 1099-Rs serialize to distinct prefixes with no code
+collision. ⚠️ The `p{n}` convention is *inferred from the field model, not
+confirmed by a real Export*, and every batch carries a `prefixAssumed`
+flag saying so.
+
+**The 1099-R discriminator works as designed.** `s14/c2` (box 7
+IRA/SEP/SIMPLE) is what separates line 4 from line 5 — the gross and
+taxable codes are identical for both. An IRA distribution routes to
+4a/4b, a pension to 5a/5b, from the same `s14/c3` and `s14/c4`. In the
+serialized payload the checkbox is emitted as `"1"` when set and **omitted
+entirely** when not; sending `"0"` would write an explicit zero, which is
+not the same as leaving a ProConnect checkbox blank.
+
+**Pre-validation before any call to Intuit.** `lib/proconnect/catalog.ts`
+checks each entry against the catalog's own `fieldRules` and pre-empts the
+three Import error classes we can see locally — `SUB_FIELD_NOT_ALLOWED`,
+`FIELD_RULE_VIOLATION`, `CATALOG_SERIES_NOT_FOUND`. It runs *ahead of*, never
+instead of, the mandatory dryRun, which still catches return-state rules
+the catalog cannot express (`RETURN_LOCKED`). With the catalog unloaded it
+reports `catalogAvailable: false` and refuses to certify the batch, rather
+than returning a meaningless all-clear.
+
+**Everything computable fails closed.** Two independent gates in
+`form_1040_constants`, both currently `false`:
+
+- `tax_brackets_verified` — line 16 is reported unavailable until the
+  TY2025 brackets are checked against Rev. Proc. 2024-40.
+- `itemized_constants_verified` — whenever a Schedule A is present,
+  line 12 (and everything below it) is unavailable until the SALT cap,
+  medical floor and charitable mileage rate are checked against the IRS
+  Schedule A instructions and P.L. 119-21 §70120.
+
+A third gate is structural rather than a flag: when qualified dividends or
+capital gain distributions are present, line 16 is left blank because the
+Qualified Dividends and Capital Gain Tax Worksheet is not implemented.
+Taxing preferential income at ordinary rates would overstate the tax, and
+a plausible wrong number is worse than a blank.
+
+The calculator carries 53 assertions covering bracket boundaries, the
+SALT phase-down (including its $10,000 floor), the 1099-R routing, the
+medical AGI floor, standard-vs-itemized in both directions, and every
+fail-closed path. All pass.
+
 ### ⚠️ Important sequencing correction
 
 The Form 1040 viewer is built and deployed, and I previously described it
 as "empty because Export returns 403." That is the proximate cause but
 not the whole dependency. The renderer reads
-`form_1040_proconnect_map`, **which has 0 rows** — and by design returns
-`null` for any unmapped line. So the real chain is:
+`form_1040_proconnect_map`, which by design returns `null` for any
+unmapped line. So the real chain is:
 
 1. Intuit provisions Export → 403 clears
 2. Export a reference return → observe which series/codes populate
@@ -138,8 +200,22 @@ meeting: unblocking Export is necessary but not by itself sufficient, which
 is exactly why the catalog ask matters.
 
 For reference, `form_1040_lines` (72 rows, the form's line structure) and
-`form_1040_constants` (14 rows, TY2025 OBBBA amounts) **are** seeded — the
-viewer knows the form's shape, just not where the values live.
+`form_1040_constants` (TY2025 OBBBA amounts, plus the itemized-deduction
+constants added in migration 362) **are** seeded — the viewer knows the
+form's shape, just not where most values live.
+
+**`form_1040_proconnect_map` is now seeded for all 72 lines** (migration
+363), but only 5 carry an address. That is deliberate. A line gets one only
+when exactly one high-confidence field carries the line's own value *and*
+that field's code is not shared with another line. Everything else records
+*why* it is unmapped: pure arithmetic, a tax-table lookup, a multi-code
+rollup, or — the interesting case — discriminator-routed. Lines 4a and 5a
+are both `s14/c3`; mapping either one would be correct for half of
+returns, which is worse than leaving it blank. All 5 addresses are
+`inferred`, none `confirmed`; nothing here has been checked against a real
+Export. Migration 363 embeds no Intuit data — it *derives* the mapping in
+SQL from `form_1040_line_inputs`, so the file is safe in a public repo and
+still reproduces the seed exactly.
 
 ---
 
@@ -157,7 +233,11 @@ viewer knows the form's shape, just not where the values live.
 | — | `proconnect_return_field_cells` | ⏳ 0 — awaiting Export |
 | — | `proconnect_export_raw` | ⏳ 0 — awaiting Export |
 | `proconnect_import_log` | `proconnect_import_jobs` + `proconnect_import_entry_results` | ⏳ 0 — split into two tables; shape is correct |
-| **`proconnect_field_catalog`** | — | 🔴 **Does not exist.** Layer B has no home yet. |
+| **`proconnect_field_catalog`** | same | 🟡 **Exists** (migration 358). 0 rows — the 67,810-code load runs out-of-band. |
+| — | `form_1040_line_inputs` | ✅ 74 rows / 42 lines — which ProConnect fields *feed* each 1040 line (migration 360) |
+| — | `form_1040_proconnect_map` | ✅ 72 rows; 5 addressed, 67 unmapped-with-a-reason (migration 363) |
+| — | `tax_input_sets` / `_documents` / `_values` | ✅ Schema live (migration 361). Service-role-only by RLS — these hold real taxpayer figures. |
+| — | `tax_input_field_defs` | ✅ 79 defs across 5 document types. Rows load out-of-band: they embed Intuit catalog addresses. |
 
 ---
 
