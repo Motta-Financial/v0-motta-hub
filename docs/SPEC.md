@@ -301,7 +301,8 @@ Views: `work_items_enriched`, `projects_enriched`, `deals_enriched`.
 | `tax_return_links` | 823 | Return↔Hub-client links. |
 | `tax_returns` | — | Hub-native return records. |
 | `tax_client_relationships`, `tax_client_relationship_signals` | — | Inferred household/entity relationships. |
-| `tax_input_sets`, `tax_input_values`, `tax_input_field_defs` (79), `tax_input_documents` | — | Structured 1040 intake. |
+| `tax_input_sets`, `tax_input_values`, `tax_input_field_defs` (79), `tax_input_documents` | — | Structured 1040 intake (document-driven). |
+| `form_1040_line_entries` | — | Directly-entered 1040 line values, scoped to an intake set. Computed lines are never stored. |
 | `form_1040_lines` (72), `form_1040_line_inputs` (72), `form_1040_proconnect_map` (72), `form_1040_constants` | — | The 1040 engine schema. |
 | `tax_proconnect_client_link_log` | 198 | Auto-link audit. |
 
@@ -603,6 +604,28 @@ from inputs and constants. `renderForm1040()` produces the preview;
 `ComposedSeries`/`ImportEntry` structures ready for
 `lib/proconnect/data.ts#importSeries` — the seam where the 1040 engine meets
 ProConnect.
+
+### Two entry paths
+
+Both write into one `tax_input_sets` row, and neither calls Intuit.
+
+| Path | Surface | For |
+|---|---|---|
+| **Document-driven** | `/tax/intake/[setId]` | Anything that arrives on a form — W-2, 1099-INT/DIV/R, Schedule A. Values are keyed per document and the return is derived from them by `lib/tax/intake/compute.ts`. |
+| **Direct line entry** | `/tax/intake/[setId]/1040` | Lines with no document behind them — Schedule 1 totals, estimated payments, a prior-year overpayment applied forward. Values are keyed straight onto 1040 lines. |
+
+Direct entry is evaluated by `lib/tax/intake/direct-lines.ts`, which is
+**pure** — no Supabase client, no env, no I/O — so the browser and the API
+route run the same code. Computed lines recalculate as the preparer types
+and are recomputed server-side on save; they are never persisted, so a
+stored value cannot drift from its operands. `scripts/verify-1040-direct-entry.ts`
+pins the arithmetic (59 assertions, `npx tsx`).
+
+Three classes of line are refused by direct entry: computed lines, the
+`fs_*` filing-status booleans (filing status has one home,
+`tax_input_sets.filing_status`), and `ssn`/`ein` lines — identifiers are
+read from the client profile and masked, never re-keyed into a second
+store.
 
 ### Verification gates
 

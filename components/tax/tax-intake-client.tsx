@@ -1,6 +1,8 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import Link from "next/link"
+import { FileText } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -301,6 +303,15 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
               <SelectItem value="qss">Qualifying surviving spouse</SelectItem>
             </SelectContent>
           </Select>
+          {/* Direct entry covers the lines no source document produces —
+              Schedule 1 totals, estimated payments, a prior-year
+              overpayment applied forward. Same intake set, same store. */}
+          <Link href={`/tax/intake/${setId}/1040`}>
+            <Button variant="outline" size="sm">
+              <FileText className="h-4 w-4 mr-1.5" />
+              Enter 1040 lines
+            </Button>
+          </Link>
         </div>
       </div>
 

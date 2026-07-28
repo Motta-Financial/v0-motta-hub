@@ -170,7 +170,34 @@ before relying on one.
 | `/api/tax/intake` | GET, POST | session | Intake sets |
 | `/api/tax/intake/[setId]` | GET, PATCH | session | One set + values |
 | `/api/tax/intake/[setId]/documents` | POST, PUT, DELETE | session | Attached documents |
+| `/api/tax/intake/[setId]/lines` | GET, PUT | session | Direct 1040 line entry (see below) |
 | `/api/tax/intake/profile-coverage` | GET | session | 1040 header-field coverage report |
+
+#### Direct line entry
+
+`GET` returns the seeded line schema, saved entries, the evaluated form
+(computed lines derived, not stored), cross-line warnings, and the
+verification-gate state. `PUT` upserts entered values and returns the
+re-evaluated form.
+
+```
+PUT  { entries: { "1a": 120000, "10": "3,000" }, filingStatus?: "mfj" }
+→    { saved, rejected[], filingStatus, entries, evaluated, warnings[], savedAt }
+```
+
+Three classes of line are refused, each reported in `rejected[]` rather
+than silently dropped:
+
+- **Computed lines** (`1z`, `9`, `11`, `15`, `24`, `33`, `34`, `37`, …) —
+  derived on every read from `form_1040_lines.computation`. Storing one
+  would let it drift from its operands.
+- **`fs_*` filing-status lines** — filing status lives on
+  `tax_input_sets.filing_status`; use the `filingStatus` field.
+- **`ssn` / `ein` lines** — identifiers are read from the client profile and
+  masked, never re-keyed into a second store.
+
+Values are parsed leniently: `"$1,234.56"` and `"(500)"` (a negative, as it
+appears on most tax documents) are both accepted.
 
 ### 6.3 Form 1040
 
