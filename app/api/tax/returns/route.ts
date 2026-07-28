@@ -129,6 +129,9 @@ export async function GET(req: Request) {
         return_type: eng.return_type,
         status: eng.status,
         efile_status: eng.efile_status,
+        // The scalar alone can't say WHICH filing was rejected — see
+        // EfileBadge in components/tax/tax-shared.tsx.
+        efile_latest: eng.efile_latest ?? null,
         work_status: eng.work_status,
         preparer: eng.preparer_name || null,
         preparer_profile_id: eng.assignee_profile_id,

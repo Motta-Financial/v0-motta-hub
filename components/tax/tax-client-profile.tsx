@@ -61,6 +61,7 @@ import {
   EfileBadge,
   fmtMoney,
   fmtNumber,
+  type EfileLatestBadge,
 } from "@/components/tax/tax-shared"
 import { cn } from "@/lib/utils"
 import { SensitiveValue } from "@/components/security/sensitive-value"
@@ -97,6 +98,7 @@ type TaxProfileResponse = {
     engagement_name: string | null
     engagement_state: string | null
     efile_status: string | null
+    efile_latest: EfileLatestBadge | null
     work_status: string | null
     custom_status_name: string | null
     custom_status_color: string | null
@@ -681,7 +683,7 @@ function ReturnCard({
               <span className="font-medium">
                 {engagement.return_type || "Unknown"} — TY {engagement.tax_year}
               </span>
-              <EfileBadge status={engagement.efile_status} />
+              <EfileBadge status={engagement.efile_status} latest={engagement.efile_latest} />
             </div>
 
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
