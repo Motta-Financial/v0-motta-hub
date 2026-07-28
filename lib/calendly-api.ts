@@ -27,12 +27,8 @@ const CALENDLY_AUTH_BASE = "https://auth.calendly.com"
 export const CALENDLY_REQUESTED_SCOPES = [
   // Scheduling
   "availability:read",
-  "availability:write",
   "event_types:read",
-  "event_types:write",
-  "locations:read",
   "routing_forms:read",
-  "shares:write",
   "scheduled_events:read",
   "scheduled_events:write",
   "scheduling_links:write",
@@ -43,8 +39,6 @@ export const CALENDLY_REQUESTED_SCOPES = [
   "users:read",
   // Security & compliance
   "activity_log:read",
-  "data_compliance:write",
-  "outgoing_communications:read",
   // Webhooks
   "webhooks:read",
   "webhooks:write",
