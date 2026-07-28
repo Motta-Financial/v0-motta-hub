@@ -108,6 +108,8 @@ export async function GET(
         engagement_name: eng.engagement_name,
         engagement_state: eng.engagement_state,
         efile_status: eng.efile_status,
+        // Which filing the status belongs to — see EfileBadge.
+        efile_latest: eng.efile_latest ?? null,
         work_status: eng.work_status,
         preparer_name: eng.preparer_name,
         preparer_email: eng.preparer_email,
