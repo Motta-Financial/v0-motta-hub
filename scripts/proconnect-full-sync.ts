@@ -450,7 +450,6 @@ async function syncEngagements(supabase: SupabaseClient): Promise<void> {
           const formType = (eng.type as string) || (eng.formType as string) || null
           const returnType = formType
           const status = (eng.status as string) || null
-          const efileStatus = (eng.efileStatus as string) || null
           const workStatus = (eng.workStatus as string) || null
           const engagementState = (eng.state as string) || (eng.engagementState as string) || null
           const engagementName = (eng.name as string) || (eng.engagementName as string) || null
@@ -478,7 +477,10 @@ async function syncEngagements(supabase: SupabaseClient): Promise<void> {
               return_type: returnType,
               form_type: formType,
               status,
-              efile_status: efileStatus,
+              // No efile_status: it isn't on the engagement list payload at
+              // all (there is no top-level `efileStatus` field, and
+              // taxFiling.filings[] comes back empty from the list endpoint).
+              // Writing it here would blank out the hydrated value.
               work_status: workStatus,
               engagement_state: engagementState,
               engagement_name: engagementName,

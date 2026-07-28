@@ -188,8 +188,9 @@ export async function fetchEngagements(
         source: "ITO",
         period: taxYear.toString(),
         oiiClientId,
-        // e-file status (taxFiling.filings[].filingStatuses[]) is omitted
-        // unless this is set — it defaults to false. Confirmed by Intuit.
+        // No-op on the list endpoints — see fetchEngagement below. Kept
+        // because it costs nothing and would start working if Intuit ever
+        // honours it here.
         "include-efiles": "true",
       },
     }
@@ -228,8 +229,8 @@ export async function fetchAllEngagementsForYear(
       params: {
         source: "ITO",
         period: taxYear.toString(),
-        // e-file status (taxFiling.filings[].filingStatuses[]) is omitted
-        // unless this is set — it defaults to false. Confirmed by Intuit.
+        // No-op here — see fetchEngagement below. Kept for the same reason
+        // as in fetchEngagements.
         "include-efiles": "true",
       },
     }
@@ -246,6 +247,56 @@ export async function fetchAllEngagementsForYear(
     data: Array.isArray(engagements) ? engagements : [engagements],
     error: null,
   }
+}
+
+/**
+ * Fetch ONE engagement by id.
+ * GET /v2/engagements/{engagementId}?source=ITO&include-efiles=true
+ *
+ * This is the only endpoint that returns e-file status. The bulk list
+ * endpoints above emit `taxFiling` with an empty `filings` array on every
+ * engagement — 908 of 908 in our realm — regardless of `include-efiles`.
+ * The single GET returns the real per-jurisdiction `filings[]`, each with
+ * its own `filingStatuses[]` history (confirmed against a live engagement
+ * that reported 2 filings, 2026-07-28).
+ *
+ * The cost of that is one request per engagement instead of one per tax
+ * year, against a ~4 req/s throttle. Callers must therefore scope what
+ * they hydrate — see hydrateStaleEfileStatuses in ./sync.ts. Do not put
+ * this in a loop over every engagement inside a request handler.
+ *
+ * `include-efiles=true` is not required here — a raw curl with `source=ITO`
+ * alone returned `filings: 2` on engagement 229f3018 (2026-07-27). It is
+ * passed anyway: harmless, and it keeps both engagement calls honest about
+ * what they are asking for.
+ */
+export async function fetchEngagement(
+  engagementId: string
+): Promise<ApiResponse<unknown>> {
+  const response = await apiRequest<Record<string, unknown>>(
+    ENGAGEMENT_SERVICE_URL,
+    `/v2/engagements/${encodeURIComponent(engagementId)}`,
+    {
+      params: {
+        source: "ITO",
+        "include-efiles": "true",
+      },
+    }
+  )
+
+  if (!response.ok || !response.data) {
+    return { ...response, data: null }
+  }
+
+  // Unwrap { engagement: {...} } if the service wraps it; the list
+  // endpoints wrap their results, so assume this one might too.
+  const data = response.data
+  const engagement =
+    data.engagement && typeof data.engagement === "object"
+      ? data.engagement
+      : data
+
+  return { ok: true, status: response.status, data: engagement, error: null }
 }
 
 /**
