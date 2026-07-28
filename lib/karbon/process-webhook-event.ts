@@ -84,14 +84,15 @@ async function dispatch(event: WebhookEventRow): Promise<UpsertResult> {
   // the record so we can't refetch.
   // -------------------------------------------------------------------------
   if (actionType === "Deleted") {
-    if (resourceType === "Contact") {
+    if (resourceType === "Contact" || resourceType === "Organization" || resourceType === "ClientGroup") {
       // Try all three contact-like tables
       const r1 = await softDeleteByKey("contacts", "karbon_contact_key", key)
       const r2 = await softDeleteByKey("organizations", "karbon_organization_key", key)
       const r3 = await softDeleteByKey("client_groups", "karbon_client_group_key", key)
       return r1.ok ? r1 : r2.ok ? r2 : r3
     }
-    if (resourceType === "Work") return softDeleteByKey("work_items", "karbon_work_item_key", key)
+    if (resourceType === "Work" || resourceType === "WorkItem")
+      return softDeleteByKey("work_items", "karbon_work_item_key", key)
     if (resourceType === "Note" || resourceType === "NoteComment")
       return softDeleteByKey("karbon_notes", "karbon_note_key", key)
     return { ok: true, action: "no-op", error: `No soft-delete path for ${resourceType}` }
@@ -102,11 +103,17 @@ async function dispatch(event: WebhookEventRow): Promise<UpsertResult> {
   // -------------------------------------------------------------------------
   switch (resourceType) {
     case "Contact":
-      // Karbon's "Contact" webhook fires for Contacts, Organizations, and
-      // ClientGroups — the dispatcher tries each in turn.
+    case "Organization":
+    case "ClientGroup":
+      // Karbon's contact-family webhooks fire for Contacts, Organizations, and
+      // ClientGroups. Live payloads carry the specific type name (we've seen
+      // "Organization" and "ClientGroup" on the wire, not just "Contact"), and
+      // the upsert helper tries each table in turn regardless.
       return upsertContactLikeByKey(key)
 
     case "Work":
+    case "WorkItem":
+      // The docs say "Work" but live payloads send "WorkItem" — accept both.
       return upsertWorkItemByKey(key)
 
     case "Note":
@@ -145,6 +152,10 @@ async function dispatch(event: WebhookEventRow): Promise<UpsertResult> {
     }
 
     default:
-      return { ok: true, action: "skipped", error: `Unknown resource type: ${resourceType}` }
+      // ok:false so the event lands in processing_status='failed' and is
+      // visible on the dashboard / picked up by "Retry failed". Previously this
+      // returned ok:true, which marked dropped events as "succeeded" — that hid
+      // months of WorkItem events being silently discarded.
+      return { ok: false, action: "skipped", error: `Unknown resource type: ${resourceType}` }
   }
 }

@@ -64,6 +64,7 @@ function resourceTypeToWebhookType(resourceType: string): string | null {
     case "ClientGroup":
       return "Contact"
     case "Work":
+    case "WorkItem": // live payloads send "WorkItem"; docs say "Work"
       return "Work"
     case "Note":
     case "NoteComment":
