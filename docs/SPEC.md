@@ -503,6 +503,16 @@ all require an admin.
 - `syncSingleClient()`, `refreshClientYearEngagements()`,
   `prefetchClientList()`, `deleteClient()` — targeted operations used by
   webhook handlers.
+- `hydrateEngagementEfile()` / `hydrateStaleEfileStatuses()` — e-file status,
+  which is the one field the bulk endpoints cannot supply. The engagement
+  list returns `taxFiling.filings: []` on every row regardless of
+  `include-efiles=true`; only `GET /v2/engagements/{id}` carries filings. So
+  it costs one call per engagement and is scoped accordingly: webhooks
+  hydrate the engagement that changed, and the nightly sync drains a queue
+  of stale rows (never hydrated, or modified in PTO since `efile_synced_at`)
+  bounded by `PROCONNECT_EFILE_HYDRATE_MAX` and `_BUDGET_MS`. Correspondingly,
+  no list-derived upsert may write `efile_status` — that would blank the
+  hydrated value nightly.
 - `getSyncStats()` — what `/api/tax/proconnect-status` reports.
 
 `PROCONNECT_SYNC_BUDGET_MS` bounds a sync run so it fits inside a Vercel
@@ -514,7 +524,18 @@ fanning out to a queue.
 `/api/proconnect/webhooks` handles `Client`, `TaxReturn`, and
 `TaxReturnWorkStatus` events, verified by HMAC-SHA256 `intuit-signature`.
 Every payload is logged raw to `proconnect_webhook_events` (5,415 rows)
-before processing. E-file status is derived from `statusUpdateTimestamp`.
+before processing.
+
+`TaxReturn` and `TaxReturnWorkStatus` events both re-read the engagement's
+e-file status from the single-engagement GET — the only near-real-time path
+for it, since the list endpoint the nightly sync uses carries no filings.
+Filings nest (`children[]` holds extensions) and each filing's status history
+is append-only and unordered, so the status is chosen as: the highest-ranked
+filing that has any status at all (own federal return > extension > state),
+then that filing's latest entry by `statusUpdateTimestamp`. The chosen entry
+is stored whole in `efile_latest` alongside the `efile_status` scalar, because
+an `ACK_REJECTED` on an EXTENSION is not a rejected return and the scalar
+alone cannot say which it was.
 
 ### 6.4 The field model — Export and Import
 

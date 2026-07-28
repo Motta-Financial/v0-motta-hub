@@ -70,6 +70,59 @@ const fetcher = async (url: string) => {
   return r.json()
 }
 
+/** proconnect_engagements.efile_latest — see lib/proconnect/sync.EfileLatest. */
+type EfileLatestRow = {
+  status?: string | null
+  userMessage?: string | null
+  filingType?: string | null
+  filingLevel?: string | null
+  jurisdiction?: string | null
+  statusUpdateTimestamp?: string | null
+  errorCodes?: string[] | null
+}
+
+/**
+ * E-file state for the header line.
+ *
+ * Shows Intuit's own `userMessage` ("Rejected") over the raw code
+ * ("ACK_REJECTED") when we have it, and — this is the part that matters —
+ * names the filing the status belongs to whenever it isn't the return's own
+ * regular filing. A rejected EXTENSION rendered as a bare "Rejected" on a
+ * 1120 row reads as a rejected return, which is a materially different fact
+ * for the preparer looking at this page.
+ */
+function EfileSummary({
+  status,
+  latest,
+}: {
+  status: string | null
+  latest: EfileLatestRow | null | undefined
+}) {
+  const code = latest?.status || status
+  if (!code) return null
+
+  const label = latest?.userMessage || code
+  const isState = latest?.filingLevel === "flState"
+  // Name the filing type whenever it isn't the plain return — EXTENSION and
+  // AMENDED both appear in live data, and both change what the status means.
+  const kind =
+    latest?.filingType && latest.filingType !== "REGULAR"
+      ? latest.filingType.toLowerCase()
+      : null
+  const scope = [isState ? latest?.jurisdiction || "state" : "federal", kind]
+    .filter(Boolean)
+    .join(" ")
+  const codes = latest?.errorCodes?.length ? ` · ${latest.errorCodes.join(", ")}` : ""
+
+  return (
+    <span>
+      E-file: {label}
+      {latest ? ` (${scope})` : ""}
+      {codes}
+    </span>
+  )
+}
+
 export default function ReturnDataPage({
   params,
 }: {
@@ -189,9 +242,10 @@ export default function ReturnDataPage({
                   <span>Preparer: {eng.preparer_name}</span>
                 )}
                 {typeof eng.status === "string" && eng.status && <span>Status: {eng.status}</span>}
-                {typeof eng.efile_status === "string" && eng.efile_status && (
-                  <span>E-file: {eng.efile_status}</span>
-                )}
+                <EfileSummary
+                  status={typeof eng.efile_status === "string" ? eng.efile_status : null}
+                  latest={eng.efile_latest as EfileLatestRow | null | undefined}
+                />
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">

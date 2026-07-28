@@ -45,11 +45,11 @@ explicitly rather than rounded up to "done."
 | Operation | Documented | Built | Notes |
 |---|---|---|---|
 | `GET /v2/engagements?source=ITO&period=…` | ✅ | ✅ **Live** | 908 returns; `period` correctly treated as **tax** year |
-| `GET /v2/engagements/{engagementId}` (single) | ✅ | ❌ **Not built** | We only use the list form. Not currently a gap — the list satisfies every use case. |
+| `GET /v2/engagements/{engagementId}` (single) | ✅ | ✅ **Live** | Built 2026-07-28 for e-file status, which the list form does not carry. One call per engagement, so scoped: webhooks hydrate the engagement that changed, the nightly sync drains a capped queue of stale ones. |
 | `GET /v1/custom-status?source=ITO` | ✅ | ✅ **Live** | 40-status catalog; 15 in active use |
 | `lockInfo.locked` pre-check before Import | ✅ | ✅ **Built** | Read from the engagement payload; 622 of 908 currently locked |
-| `taxFiling.filings[]` → e-file status | ✅ | ⚠️ **Built, no data** | Parser exists. Key present on all 908 engagements, **non-empty on zero**. Open question for Intuit. |
-| `esignature.envelopes[]` | ✅ | ⚠️ **Built, no data** | Same: present on all 908, populated on none. |
+| `taxFiling.filings[]` → e-file status | ✅ | ✅ **Live** | **Was never an Intuit gap.** Empty on the LIST endpoint (908 of 908, `include-efiles=true` is a no-op there); populated on the single-engagement GET. Corrected 2026-07-28 — see below. |
+| `esignature.envelopes[]` | ✅ | ⚠️ **Built, no data** | Present on all 908 list rows, populated on none. Worth re-testing against the single-engagement GET before calling this an Intuit gap — that assumption was wrong for `taxFiling`. |
 
 ### Data Service — Create / Export / Import
 
@@ -360,8 +360,16 @@ uniqueness · tax dashboard · dryRun-gated, PII-redacted Import pipeline.
 
 **Blocked by Intuit:** Export 403 on every call (provisioning) · the IVCS/FRF
 catalog (Layer B, and therefore Layer C) · `TaxReturnWorkStatus` webhooks
-never delivered · `taxFiling.filings[]` always empty · Data Service base URL
-unconfirmed.
+never delivered · Data Service base URL unconfirmed.
+
+**No longer blocked:** `taxFiling.filings[]` was on that list on the strength
+of "the key is present on all 908 engagements and empty on every one." It is
+empty on the *list* endpoint only; `GET /v2/engagements/{engagementId}`
+returns real filings. Attributing it to Intuit cost months of waiting on a
+change that was ours to make — worth remembering the next time a payload is
+present-but-empty. The one other item resting on that same inference is
+`esignature.envelopes[]`; re-test it against the single GET before treating
+it as blocked.
 
 **Our own open items, in priority order:**
 
