@@ -1,30 +1,60 @@
-# Image Analysis
+# Motta Hub
 
-*Automatically synced with your [v0.app](https://v0.app) deployments*
+The internal operating system for Motta Financial — client master data, work
+management, revenue, meetings, tax production, and ALFRED (the firm's AI
+assistant).
 
-[![Deployed on Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/motta/v0-image-analysis)
-[![Built with v0](https://img.shields.io/badge/Built%20with-v0.app-black?style=for-the-badge)](https://v0.app/chat/projects/5GhM3Spo8MK)
+Production: **[hub.motta.cpa](https://hub.motta.cpa)**
 
-## Overview
+## Documentation
 
-This repository will stay in sync with your deployed chats on [v0.app](https://v0.app).
-Any changes you make to your deployed app will be automatically pushed to this repository from [v0.app](https://v0.app).
+| Document | What's in it |
+|---|---|
+| **[docs/SPEC.md](docs/SPEC.md)** | Platform specification — architecture, trust model, data model, integrations, ProConnect and 1040 subsystems, configuration, known gaps. **Start here.** |
+| **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** | All 299 endpoints, grouped by domain, with auth class and purpose. |
+| [docs/public-api.md](docs/public-api.md) | The contract between the Hub and the motta.cpa marketing site. |
+| [docs/alfred-integration-guide.md](docs/alfred-integration-guide.md) | ALFRED integration guide. |
+| [docs/proconnect-api-coverage-status.md](docs/proconnect-api-coverage-status.md) | ProConnect Open API coverage. |
+| [docs/karbon-api-alignment.md](docs/karbon-api-alignment.md) | Karbon field alignment notes. |
+| [docs/platform-efficiency-audit.md](docs/platform-efficiency-audit.md) | Efficiency and scalability audit. |
+
+## Stack
+
+Next.js 15 (App Router) · React 19 · TypeScript · Supabase Postgres 17 ·
+Tailwind 4 · Vercel · Vercel AI Gateway
+
+## Local development
+
+```bash
+npm install
+vercel env pull          # populates .env.local, incl. VERCEL_OIDC_TOKEN for the AI Gateway
+npm run dev
+```
+
+Before pushing:
+
+```bash
+npx tsc --noEmit
+npm run build
+```
+
+There is **no CI** and no ESLint configuration — a local `next build` is the
+only gate. See [SPEC.md §2](docs/SPEC.md#deployment).
 
 ## Deployment
 
-Your project is live at:
+Pushes to `main` auto-deploy to production via the Vercel project
+`mottahub`. A second Vercel project, `v0-motta-hub`, is stale and missing
+environment variables — **every** deployment on it reports ERROR regardless
+of the commit. Ignore it.
 
-**[https://vercel.com/motta/v0-image-analysis](https://vercel.com/motta/v0-image-analysis)**
+## Database changes
 
-## Build your app
+Migrations are numbered SQL files in `scripts/` (`scripts/NNN-description.sql`),
+applied in order via the Supabase API rather than the Supabase CLI. The
+`supabase/migrations/` directory is not the source of truth.
 
-Continue building your app on:
+---
 
-**[https://v0.app/chat/projects/5GhM3Spo8MK](https://v0.app/chat/projects/5GhM3Spo8MK)**
-
-## How It Works
-
-1. Create and modify your project using [v0.app](https://v0.app)
-2. Deploy your chats from the v0 interface
-3. Changes are automatically pushed to this repository
-4. Vercel deploys the latest version from this repository
+*This repository was originally scaffolded by [v0.app](https://v0.app) and
+may still receive automated pushes from v0 deployments.*
