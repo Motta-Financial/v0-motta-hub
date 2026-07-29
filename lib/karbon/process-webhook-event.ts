@@ -10,6 +10,7 @@
  *   - the admin UI's "retry" button
  */
 import { tryCreateAdminClient } from "@/lib/supabase/server"
+import { getKarbonCredentials, karbonFetch } from "@/lib/karbon-api"
 import {
   upsertContactLikeByKey,
   upsertWorkItemByKey,
@@ -80,10 +81,31 @@ async function dispatch(event: WebhookEventRow): Promise<UpsertResult> {
   const { resource_type: resourceType, action_type: actionType, resource_perma_key: key } = event
 
   // -------------------------------------------------------------------------
-  // Deletions: soft-delete the row and stop. Karbon may have already removed
-  // the record so we can't refetch.
+  // Deletions: confirm with Karbon (a GET returning 404) before soft-deleting.
+  // Webhook payloads are just key + metadata, so a forged or stale Deleted
+  // event would otherwise soft-delete live rows without any Karbon round-trip.
   // -------------------------------------------------------------------------
   if (actionType === "Deleted") {
+    const endpoints = deletedVerificationEndpoints(resourceType, key)
+    if (endpoints.length > 0) {
+      const verdict = await confirmGoneInKarbon(endpoints)
+      if (verdict === "exists") {
+        return {
+          ok: false,
+          action: "skipped",
+          error: `Deleted event for ${resourceType} ${key}, but the entity still exists in Karbon — refusing soft-delete`,
+        }
+      }
+      if (verdict === "unknown") {
+        // Couldn't reach Karbon (or creds missing) — fail the event so the
+        // replay cron retries instead of deleting on an unverified claim.
+        return {
+          ok: false,
+          action: "skipped",
+          error: `Could not verify deletion of ${resourceType} ${key} against Karbon — will retry`,
+        }
+      }
+    }
     if (resourceType === "Contact" || resourceType === "Organization" || resourceType === "ClientGroup") {
       // Try all three contact-like tables
       const r1 = await softDeleteByKey("contacts", "karbon_contact_key", key)
@@ -158,4 +180,40 @@ async function dispatch(event: WebhookEventRow): Promise<UpsertResult> {
       // months of WorkItem events being silently discarded.
       return { ok: false, action: "skipped", error: `Unknown resource type: ${resourceType}` }
   }
+}
+
+/**
+ * Karbon GET endpoints that must ALL 404 before we trust a Deleted event.
+ * Contact-family webhooks don't say which of the three kinds the key is, so
+ * all three endpoints are checked.
+ */
+function deletedVerificationEndpoints(resourceType: string, key: string): string[] {
+  switch (resourceType) {
+    case "Contact":
+    case "Organization":
+    case "ClientGroup":
+      return [`/Contacts/${key}`, `/Organizations/${key}`, `/ClientGroups/${key}`]
+    case "Work":
+    case "WorkItem":
+      return [`/WorkItems/${key}`]
+    case "Note":
+    case "NoteComment":
+      return [`/Notes/${key}`]
+    default:
+      return []
+  }
+}
+
+async function confirmGoneInKarbon(endpoints: string[]): Promise<"gone" | "exists" | "unknown"> {
+  const creds = getKarbonCredentials()
+  if (!creds) return "unknown"
+
+  let sawTransientError = false
+  for (const endpoint of endpoints) {
+    const { data, error } = await karbonFetch<any>(endpoint, creds)
+    if (data) return "exists"
+    // karbonFetch formats errors as "<status>: <statusText> — <body>"
+    if (error && !error.startsWith("404")) sawTransientError = true
+  }
+  return sawTransientError ? "unknown" : "gone"
 }
