@@ -27,6 +27,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { waitUntil } from "@vercel/functions"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
+import { requireAdmin } from "@/lib/auth/require-admin"
 import { processWebhookEvent } from "@/lib/karbon/process-webhook-event"
 
 export const runtime = "nodejs"
@@ -196,9 +197,13 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Health/info endpoint — current subs + most recent events.
+ * Health/info endpoint — current subs + most recent events. Admin-only:
+ * exposes resource perma keys, processing errors, and subscription state.
  */
 export async function GET() {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   const db = tryCreateAdminClient()
   if (!db) return NextResponse.json({ error: "Supabase not configured" }, { status: 500 })
 
