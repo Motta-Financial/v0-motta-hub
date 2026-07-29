@@ -15,7 +15,9 @@
  *   }
  *
  * Goals:
- *   1. Verify signature (when KARBON_WEBHOOK_SIGNING_KEY is set).
+ *   1. Verify the `Signature` header (hex HMAC-SHA256 of the raw body with
+ *      KARBON_WEBHOOK_SIGNING_KEY). In production the key is required —
+ *      unverifiable events are rejected outright.
  *   2. Idempotently insert the event into karbon_webhook_events.
  *   3. Return 200 in <1s — never 5xx (Karbon cancels subs after 10 failures).
  *   4. Process asynchronously via waitUntil so the row updates eventually drive
@@ -90,11 +92,14 @@ export async function POST(request: NextRequest) {
   // 1. Read raw body (needed for HMAC)
   const rawBody = await request.text()
 
-  // 2. Verify signature if a key is configured
+  // 2. Verify signature. Karbon signs deliveries when the subscription was
+  // created with a SigningKey: the `Signature` header carries a hex-encoded
+  // HMAC-SHA256 of the raw payload (per the Karbon developer docs, Aug 2024).
   const signingKey = process.env.KARBON_WEBHOOK_SIGNING_KEY
   let signatureValid: boolean | null = null
   if (signingKey) {
     const headerSig =
+      request.headers.get("signature") ||
       request.headers.get("x-karbon-signature") ||
       request.headers.get("x-karbon-signature-256") ||
       request.headers.get("karbon-signature")
@@ -103,6 +108,14 @@ export async function POST(request: NextRequest) {
       console.warn("[karbon-webhook] Invalid signature — rejecting")
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 })
     }
+  } else if (process.env.VERCEL_ENV === "production") {
+    // Fail closed: without a signing key anyone can forge events (including
+    // Deleted events that soft-delete rows). Production must have the key set
+    // AND the Karbon subscriptions registered with the same SigningKey.
+    console.error(
+      "[karbon-webhook] KARBON_WEBHOOK_SIGNING_KEY is not set in production — rejecting unverifiable event",
+    )
+    return NextResponse.json({ error: "Webhook signing not configured" }, { status: 401 })
   }
 
   // 3. Parse payload
