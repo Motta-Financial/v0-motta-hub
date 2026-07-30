@@ -123,6 +123,10 @@ export async function GET(
     exportedAt: snapshot.exported_at,
     lineCount: schema.lines.length,
     mappedLineCount: schema.mappings.length,
+    // Lines the renderer derives from mapped inputs (sums, AGI, etc.) —
+    // they populate without a mapping of their own, so raw
+    // mapped/lineCount badly understates real coverage.
+    computedLineCount: schema.lines.filter((l) => l.isComputed).length,
     lines: form1040,
   })
 }
