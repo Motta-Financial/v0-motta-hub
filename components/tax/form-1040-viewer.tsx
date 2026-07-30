@@ -56,6 +56,7 @@ type Form1040Response = {
   exportedAt: string | null
   lineCount: number
   mappedLineCount: number
+  computedLineCount?: number
   lines: Record<string, LineValue>
 }
 
@@ -287,8 +288,13 @@ export function Form1040Viewer({
                       {data.clientName}
                     </span>
                   )}
-                  <Badge variant="outline" className="text-xs">
-                    {data.mappedLineCount} of {data.lineCount} lines mapped
+                  <Badge
+                    variant="outline"
+                    className="text-xs"
+                    title="Remaining lines are amounts Intuit calculates (tax, credits) that the ProConnect API does not export yet — they come from the filed return."
+                  >
+                    {data.mappedLineCount + (data.computedLineCount ?? 0)} of {data.lineCount} lines populate
+                    ({data.mappedLineCount} from ProConnect + {data.computedLineCount ?? 0} computed)
                   </Badge>
                 </div>
               </div>
@@ -438,7 +444,7 @@ export function Form1040Viewer({
               <span>Exported: {new Date(data.exportedAt).toLocaleString()}</span>
             )}
             <span>
-              Source: ProConnect Phase 1 API ({data.mappedLineCount} mapped lines)
+              Source: ProConnect Phase 1 API — {data.mappedLineCount} mapped input lines; Intuit-calculated amounts (tax, credits) are not available via the API yet
             </span>
           </div>
         </footer>
