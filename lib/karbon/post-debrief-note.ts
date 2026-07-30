@@ -457,7 +457,9 @@ export async function postDebriefNoteToKarbon(
     payload.TodoDate = debrief.debrief_date
   }
 
-  const { data, error } = await karbonFetch<{ NoteKey?: string }>(
+  // Karbon's POST /v3/Notes 201 response returns the key as `Id` (per the
+  // official OpenAPI spec and the live GET shape — see mappers/note.ts).
+  const { data, error } = await karbonFetch<{ Id?: string; NoteKey?: string }>(
     "/Notes",
     credentials,
     { method: "POST", body: payload },
@@ -470,7 +472,7 @@ export async function postDebriefNoteToKarbon(
 
   return {
     ok: true,
-    noteKey: (data as any)?.NoteKey,
+    noteKey: data?.Id ?? data?.NoteKey,
     attachedTimelines: timelines.length,
   }
 }

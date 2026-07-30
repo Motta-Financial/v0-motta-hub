@@ -386,7 +386,9 @@ export async function postIntakeNoteToKarbon(
     payload.IsPinned = true
   }
 
-  let { data, error } = await karbonFetch<{ NoteKey?: string }>(
+  // Karbon's POST /v3/Notes 201 response returns the key as `Id` (per the
+  // official OpenAPI spec and the live GET shape — see mappers/note.ts).
+  let { data, error } = await karbonFetch<{ Id?: string; NoteKey?: string }>(
     "/Notes",
     credentials,
     { method: "POST", body: payload },
@@ -397,7 +399,7 @@ export async function postIntakeNoteToKarbon(
   if (error && context.pinned) {
     console.warn("[karbon-intake-note] POST /Notes with IsPinned failed — retrying without pin.")
     delete payload.IsPinned
-    ;({ data, error } = await karbonFetch<{ NoteKey?: string }>(
+    ;({ data, error } = await karbonFetch<{ Id?: string; NoteKey?: string }>(
       "/Notes",
       credentials,
       { method: "POST", body: payload },
@@ -408,5 +410,5 @@ export async function postIntakeNoteToKarbon(
     console.error("[karbon-intake-note] POST /Notes failed:", error)
     return { ok: false, error }
   }
-  return { ok: true, noteKey: (data as any)?.NoteKey }
+  return { ok: true, noteKey: data?.Id ?? data?.NoteKey }
 }
