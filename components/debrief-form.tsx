@@ -36,6 +36,7 @@ import {
   Paperclip,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { pickOrgDisplayName } from "@/lib/karbon/org-display-name"
 import { MentionTextarea } from "@/components/mentions/mention-textarea"
 
 // Types
@@ -323,7 +324,14 @@ export function DebriefForm() {
       })
 
       const orgClients: Client[] = (orgsData.organizations || []).map((o: any) => {
-        const orgName = o.name || o.full_name || o.trading_name || o.legal_name || o.primary_email || "Unknown Organization"
+        // pickOrgDisplayName skips the "Organization <KarbonKey>" placeholder
+        // that older sync runs wrote into organizations.name, so a row like
+        // { name: "Organization 257GlGDFgSHf", full_name: "ProConnect Tax" }
+        // displays its real name.
+        const orgName =
+          pickOrgDisplayName(o.name, o.full_name, o.trading_name, o.legal_name) ||
+          o.primary_email ||
+          "Unknown Organization"
         return {
           id: o.id,
           name: orgName,
@@ -493,11 +501,9 @@ export function DebriefForm() {
 
   /**
    * Build a Client object representing the work item's owning contact or
-   * organization. Returns null when the work item isn't yet linked to a
-   * client in our enriched view (rare — usually means Karbon hadn't synced
-   * the client when the work item was last pulled). The caller decides
-   * what to do with a null result; here we just leave the primary contact
-   * untouched.
+   * organization. Returns null only when the work item carries no client
+   * info at all. The caller decides what to do with a null result; here we
+   * just leave the primary contact untouched.
    */
   const deriveWorkItemPrimaryContact = (workItem: WorkItem): Client | null => {
     // Karbon's `client_type` is "Organization" or "Contact" (capitalized).
@@ -510,7 +516,13 @@ export function DebriefForm() {
       (workItem.client_type || "").toLowerCase().startsWith("org") ||
       !!workItem.organization_id
     if (isOrg && workItem.organization_id) {
-      const name = workItem.org_name || workItem.client_name || "Organization"
+      // org_name is organizations.name, which for rows written by older
+      // sync runs holds the "Organization <KarbonKey>" placeholder;
+      // client_name is Karbon's ClientName snapshot on the work item and
+      // is the reliable human-readable fallback.
+      const name =
+        pickOrgDisplayName(workItem.org_name, workItem.client_name) ||
+        "Organization"
       return {
         id: workItem.organization_id,
         name,
@@ -528,6 +540,20 @@ export function DebriefForm() {
         full_name: name,
         type: "contact",
         karbon_key: workItem.karbon_client_key || "",
+      }
+    }
+    // Client known to Karbon but not yet synced into our contacts/
+    // organizations tables (no local UUID). Still surface the name from
+    // the work item so the form and the Karbon note read like a client,
+    // not a raw key. id stays "" — the POST route knows an id-less
+    // primary can't be FK-linked but still uses name + karbon_key.
+    if (workItem.client_name && workItem.karbon_client_key) {
+      return {
+        id: "",
+        name: workItem.client_name,
+        full_name: workItem.client_name,
+        type: isOrg ? "organization" : "contact",
+        karbon_key: workItem.karbon_client_key,
       }
     }
     return null
