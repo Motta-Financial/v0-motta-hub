@@ -24,7 +24,7 @@ import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
-import { ALFRED_CHAT_MODEL, isClaudeModel, type ClaudeModelId } from "@/lib/ai/models"
+import { ALFRED_CHAT_MODEL, isGatewayTextModel, type GatewayTextModelId } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 // Shape of the requesting user, sent from the client transport body.
@@ -1037,17 +1037,18 @@ export async function POST(req: Request) {
     conversationId?: string | null
     audience?: Audience
     // Optional per-request model override sent by the alfred-chat
-    // client's model picker. Validated below via isClaudeModel() so
+    // client's model picker. Validated below via isGatewayTextModel() so
     // a malicious client can't ask for an arbitrary provider/model.
     model?: string | null
   } = await req.json()
 
   // Resolve the per-request model override. We accept it only if it
-  // round-trips through the Claude allowlist; anything else (unknown
-  // string, OpenAI/Google id, etc.) silently falls through to
-  // aiConfig.model below. Logging the requested-vs-resolved pair so
-  // we can spot clients shipping stale ids after a model bump.
-  const overrideModel: ClaudeModelId | null = isClaudeModel(requestedModel)
+  // round-trips through the approved AI Gateway text-model allowlist;
+  // anything else (unknown string, image model, unsupported provider,
+  // etc.) silently falls through to aiConfig.model below. Logging the
+  // requested-vs-resolved pair so we can spot clients shipping stale ids
+  // after a model bump.
+  const overrideModel: GatewayTextModelId | null = isGatewayTextModel(requestedModel)
     ? requestedModel
     : null
   if (requestedModel && !overrideModel) {
@@ -1355,7 +1356,7 @@ export async function POST(req: Request) {
 
       const result = streamText({
         // Resolution order: per-request override (validated against
-        // CLAUDE_MODELS) > admin-panel override > ALFRED_CHAT_MODEL.
+        // ALFRED_CHAT_MODELS) > admin-panel override > ALFRED_CHAT_MODEL.
         model: effectiveModel,
         system: baseSystemPrompt,
         messages: modelMessages,
