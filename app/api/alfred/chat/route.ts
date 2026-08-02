@@ -47,6 +47,19 @@ interface CurrentUser {
 export const maxDuration = 60
 
 /**
+ * Extended-thinking budget for the alfred-chat Deep-think toggle.
+ *
+ * Anthropic's contract: `max_tokens` must be STRICTLY GREATER than
+ * `thinking.budget_tokens`, and the thinking tokens are consumed out of
+ * `max_tokens` — they are not additive. So the ceiling has to leave room for
+ * both the reasoning and the visible answer, otherwise a long think starves
+ * the reply. 8k think + 8k answer is a sane default for a chat surface that
+ * also has to finish inside `maxDuration`.
+ */
+const THINKING_BUDGET_TOKENS = 8_000
+const THINKING_MAX_OUTPUT_TOKENS = 16_000
+
+/**
  * Escape user-supplied text before splicing it into a PostgREST `.or()`
  * ilike filter. PostgREST uses `,` to separate filter clauses, `.` to
  * separate operator/value, and `%` for SQL wildcards. A raw `,` from a
@@ -1411,11 +1424,18 @@ export async function POST(req: Request) {
         abortSignal: req.signal,
         // Only present when Deep think is on AND the model supports it, so
         // the default path is byte-for-byte what it was before this change.
+        //
+        // maxOutputTokens MUST be raised alongside the thinking budget:
+        // Anthropic requires max_tokens > thinking.budget_tokens, and the
+        // budget is *drawn from* max_tokens rather than added on top. Left
+        // unset, max_tokens falls back to a provider default at or below the
+        // budget and every thinking-enabled turn 400s.
         ...(thinkingEnabled
           ? {
+              maxOutputTokens: THINKING_MAX_OUTPUT_TOKENS,
               providerOptions: {
                 anthropic: {
-                  thinking: { type: "enabled", budgetTokens: 8000 },
+                  thinking: { type: "enabled", budgetTokens: THINKING_BUDGET_TOKENS },
                 },
               },
             }
