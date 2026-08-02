@@ -26,6 +26,7 @@ import {
   FormBadge,
   EfileBadge,
   fmtNumber,
+  type EfileLatestBadge,
 } from "./tax-shared"
 
 type BusinessReturn = {
@@ -35,6 +36,7 @@ type BusinessReturn = {
   tax_year: number | null
   form: string
   efile_status: string | null
+  efile_latest: EfileLatestBadge | null
   preparer: string | null
   user_defined_status_name: string | null
   user_defined_status_color: string | null
@@ -241,7 +243,7 @@ export function TaxBusinessClient() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <EfileBadge status={r.efile_status} />
+                        <EfileBadge status={r.efile_status} latest={r.efile_latest} />
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {r.preparer || "—"}

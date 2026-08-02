@@ -1,35 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getKarbonCredentials, karbonFetchAll, karbonFetch } from "@/lib/karbon-api"
+import { getKarbonCredentials, karbonFetch } from "@/lib/karbon-api"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
+import { mapKarbonNoteToSupabase } from "@/lib/karbon/mappers/note"
 
 function getSupabaseClient() {
   return tryCreateAdminClient()
-}
-
-function mapKarbonNoteToSupabase(note: any) {
-  return {
-    karbon_note_key: note.NoteKey,
-    subject: note.Subject || null,
-    body: note.Body || null,
-    note_type: note.NoteType || null,
-    is_pinned: note.IsPinned || false,
-    author_key: note.AuthorKey || null,
-    author_name: note.AuthorName || null,
-    assignee_email: note.AssigneeEmailAddress || null,
-    due_date: note.DueDate ? note.DueDate.split("T")[0] : null,
-    todo_date: note.TodoDate ? note.TodoDate.split("T")[0] : null,
-    timelines: note.Timelines || null,
-    comments: note.Comments || null,
-    karbon_work_item_key: note.WorkItemKey || null,
-    work_item_title: note.WorkItemTitle || null,
-    karbon_contact_key: note.ContactKey || null,
-    contact_name: note.ContactName || null,
-    karbon_url: note.NoteKey ? `https://app2.karbonhq.com/4mTyp9lLRWTC#/notes/${note.NoteKey}` : null,
-    karbon_created_at: note.CreatedDate || null,
-    karbon_modified_at: note.LastModifiedDateTime || null,
-    last_synced_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }
 }
 
 /**
@@ -111,7 +86,7 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.json({
         note: note ? {
-          NoteKey: note.NoteKey,
+          NoteKey: note.Id || note.NoteKey, // GET /Notes/{key} returns the key as "Id"
           Subject: note.Subject,
           Body: note.Body,
           NoteType: note.NoteType,

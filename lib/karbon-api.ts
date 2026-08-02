@@ -99,7 +99,11 @@ export async function karbonFetch<T>(
     if (!response.ok) {
       const errorText = await response.text()
       console.error(`[Karbon API] Error ${response.status}:`, errorText)
-      return { data: null, error: `${response.status}: ${response.statusText}` }
+      // Include a truncated body so callers that persist the error (e.g.
+      // prospect_submissions.karbon_push_error) capture Karbon's actual
+      // validation message, not just the bare status code.
+      const detail = errorText ? ` — ${errorText.slice(0, 300)}` : ""
+      return { data: null, error: `${response.status}: ${response.statusText}${detail}` }
     }
 
     const data = await response.json()

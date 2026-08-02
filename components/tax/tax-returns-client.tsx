@@ -39,6 +39,7 @@ import {
   EfileBadge,
   fmtNumber,
   EmptyChartFallback,
+  type EfileLatestBadge,
 } from "./tax-shared"
 
 const FORM_OPTIONS = ["all", "1040", "1041", "1065", "1120", "1120S", "990", "709"] as const
@@ -55,6 +56,7 @@ type UnifiedReturn = {
   tax_year: number | null
   form: string
   efile_status: string | null
+  efile_latest: EfileLatestBadge | null
   preparer: string | null
   user_defined_status_name: string | null
   user_defined_status_color: string | null
@@ -458,7 +460,7 @@ export function TaxReturnsClient() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <EfileBadge status={r.efile_status} />
+                        <EfileBadge status={r.efile_status} latest={r.efile_latest} />
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {r.preparer || "—"}

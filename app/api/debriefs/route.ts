@@ -7,6 +7,8 @@ import {
   sendEmail,
 } from "@/lib/email"
 import { postDebriefNoteToKarbon } from "@/lib/karbon/post-debrief-note"
+import { isPlaceholderOrgName, pickOrgDisplayName } from "@/lib/karbon/org-display-name"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 const KARBON_TENANT_BASE = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
@@ -132,6 +134,16 @@ export async function POST(request: NextRequest) {
         contactId = primaryContact.id
       }
       karbonClientKey = primaryContact.karbon_key || null
+    } else if (primaryContact?.karbon_key || primaryContact?.name) {
+      // Primary known to Karbon but not synced locally (the form sends
+      // id: "" in that case). No FK to set, but keep the Karbon key so the
+      // note still links to the client's timeline, and don't fall through
+      // to the related-clients loop — that would tag the debrief to a
+      // different client than the one the user saw as primary.
+      karbonClientKey = primaryContact.karbon_key || null
+      if (primaryContact.type === "organization") {
+        organizationName = pickOrgDisplayName(primaryContact.name)
+      }
     } else {
       for (const client of relatedClients) {
         if (client.type === "contact" && !contactId) {
@@ -158,12 +170,48 @@ export async function POST(request: NextRequest) {
     if (organizationId) {
       const { data: org } = await supabase
         .from("organizations")
-        .select("name, karbon_organization_key")
+        .select("name, full_name, trading_name, legal_name, karbon_organization_key")
         .eq("id", organizationId)
         .single()
       if (org) {
-        organizationName = org.name
+        // organizations.name can hold the "Organization <KarbonKey>"
+        // placeholder from older sync runs — prefer the first real name.
+        organizationName =
+          pickOrgDisplayName(org.name, org.full_name, org.trading_name, org.legal_name) ||
+          org.name
         karbonClientKey = karbonClientKey || org.karbon_organization_key
+      }
+    }
+
+    // Repair the client-supplied primary name before it's persisted to the
+    // action_items JSONB, rendered into notification emails, and pushed into
+    // the Karbon note — all three read body.primary_contact.name verbatim.
+    if (
+      primaryContact?.type === "organization" &&
+      organizationName &&
+      isPlaceholderOrgName(primaryContact.name)
+    ) {
+      primaryContact.name = organizationName
+    }
+
+    // Same repair for organization entries in related_clients (one batch
+    // lookup, only when at least one name is a placeholder).
+    const placeholderOrgClients = relatedClients.filter(
+      (c: any) => c?.type === "organization" && c?.id && isPlaceholderOrgName(c?.name),
+    )
+    if (placeholderOrgClients.length > 0) {
+      const { data: orgs } = await supabase
+        .from("organizations")
+        .select("id, name, full_name, trading_name, legal_name")
+        .in(
+          "id",
+          placeholderOrgClients.map((c: any) => c.id),
+        )
+      for (const client of placeholderOrgClients) {
+        const org = (orgs || []).find((o: any) => o.id === client.id)
+        const resolved =
+          org && pickOrgDisplayName(org.name, org.full_name, org.trading_name, org.legal_name)
+        if (resolved) client.name = resolved
       }
     }
 
@@ -296,7 +344,7 @@ export async function POST(request: NextRequest) {
 async function createDebriefNotifications(debrief: any, authorName: string, body: any) {
   try {
     const supabase = createAdminClient()
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+    const siteUrl = firmConfigSync().hubUrl
     const debriefUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
     // Resolve client name for messages/subject. Order of preference:

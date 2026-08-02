@@ -64,11 +64,68 @@ export async function upsertContactByKey(key: string): Promise<UpsertResult> {
 
   const db = getDb()
   const row = mapKarbonContactToSupabase(data)
+
+  // Idempotency guard: if no Hub row already carries this karbon_contact_key but
+  // a row with the SAME email exists with a null key (e.g. created from a
+  // meeting/intake before it was linked to Karbon), adopt the key onto that row
+  // instead of inserting a duplicate. Mirrors the team_members pattern below.
+  const adopted = await adoptKeyOntoExistingRow({
+    db,
+    table: "contacts",
+    keyColumn: "karbon_contact_key",
+    keyValue: row.karbon_contact_key,
+    email: row.primary_email,
+    row,
+  })
+  if (adopted) return adopted
+
   const { error: upErr } = await db
     .from("contacts")
     .upsert(row, { onConflict: "karbon_contact_key", ignoreDuplicates: false })
   if (upErr) return err(upErr.message)
   return { ok: true, action: "upserted", table: "contacts" }
+}
+
+/**
+ * Shared dedupe helper for the contact/organization sync path.
+ *
+ * Returns an UpsertResult if it handled the write by adopting the Karbon key
+ * onto an existing email-matched row that had no key yet; returns null if the
+ * caller should fall through to its normal key-based upsert (no email-match
+ * collision, or the key already exists on a row).
+ */
+async function adoptKeyOntoExistingRow(args: {
+  db: ReturnType<typeof getDb>
+  table: "contacts" | "organizations"
+  keyColumn: "karbon_contact_key" | "karbon_organization_key"
+  keyValue: string | null | undefined
+  email: string | null | undefined
+  row: Record<string, any>
+}): Promise<UpsertResult | null> {
+  const { db, table, keyColumn, keyValue, email, row } = args
+  const cleanEmail = email?.trim().toLowerCase()
+  if (!keyValue || !cleanEmail) return null
+
+  // Already on a row? Let the normal upsert update it.
+  const { data: byKey } = await db.from(table).select("id").eq(keyColumn, keyValue).maybeSingle()
+  if (byKey) return null
+
+  // Look for an unlinked row with the same email to adopt the key onto.
+  const { data: byEmail } = await db
+    .from(table)
+    .select("id, " + keyColumn)
+    .ilike("primary_email", cleanEmail)
+    .is(keyColumn, null)
+    .limit(1)
+    .maybeSingle()
+  if (!byEmail) return null
+
+  const { error: upErr } = await db.from(table).update(row).eq("id", (byEmail as any).id)
+  if (upErr) return err(upErr.message)
+  console.log(
+    `[upsert] Adopted ${keyColumn}=${keyValue} onto existing ${table} row ${(byEmail as any).id} (email match ${cleanEmail}) instead of inserting a duplicate`,
+  )
+  return { ok: true, action: "upserted", table }
 }
 
 export async function upsertOrganizationByKey(key: string): Promise<UpsertResult> {
@@ -81,6 +138,19 @@ export async function upsertOrganizationByKey(key: string): Promise<UpsertResult
 
   const db = getDb()
   const row = mapKarbonOrganizationToSupabase(data)
+
+  // Same email-based idempotency guard as contacts: adopt the key onto an
+  // unlinked email-matched org rather than inserting a duplicate.
+  const adopted = await adoptKeyOntoExistingRow({
+    db,
+    table: "organizations",
+    keyColumn: "karbon_organization_key",
+    keyValue: row.karbon_organization_key,
+    email: row.primary_email,
+    row,
+  })
+  if (adopted) return adopted
+
   const { error: upErr } = await db
     .from("organizations")
     .upsert(row, { onConflict: "karbon_organization_key", ignoreDuplicates: false })

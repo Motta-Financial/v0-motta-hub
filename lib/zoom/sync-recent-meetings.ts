@@ -82,6 +82,33 @@ function toZoomDateParam(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
+/**
+ * Collapse rows that share a `zoom_meeting_id`, keeping the most recent
+ * occurrence by `start_time`. Recurring meetings come back from Zoom's
+ * list endpoints as one entry PER OCCURRENCE with the same meeting id,
+ * and `zoom_meetings` is keyed on `zoom_meeting_id` — feeding duplicates
+ * into a single upsert batch fails with Postgres's "ON CONFLICT DO
+ * UPDATE command cannot affect row a second time" (this broke the
+ * hourly sweep for every host with recurring meetings from May 12 to
+ * July 10, 2026).
+ */
+function dedupeByMeetingId<
+  T extends { zoom_meeting_id: unknown; start_time?: string | null },
+>(rows: T[]): T[] {
+  const byId = new Map<string, T>()
+  for (const row of rows) {
+    const key = String(row.zoom_meeting_id)
+    const existing = byId.get(key)
+    if (
+      !existing ||
+      (row.start_time ?? "") >= (existing.start_time ?? "")
+    ) {
+      byId.set(key, row)
+    }
+  }
+  return Array.from(byId.values())
+}
+
 export async function syncRecentZoomData(
   opts: SyncRecentZoomDataOptions,
 ): Promise<SyncRecentZoomDataResult> {
@@ -160,7 +187,7 @@ export async function syncRecentZoomData(
           }
           const meetings = data.meetings ?? []
           if (meetings.length > 0) {
-            const rows = meetings.map((m) => ({
+            const rows = dedupeByMeetingId(meetings.map((m) => ({
               zoom_meeting_id: m.id,
               zoom_uuid: m.uuid,
               zoom_host_id: m.host_id,
@@ -182,7 +209,7 @@ export async function syncRecentZoomData(
               zoom_connection_id: conn.id,
               raw_data: m,
               synced_at: new Date().toISOString(),
-            }))
+            })))
             const { error } = await supabase
               .from("zoom_meetings")
               .upsert(rows, { onConflict: "zoom_meeting_id" })
@@ -252,7 +279,9 @@ export async function syncRecentZoomData(
             // the tag-counts view + the todo sweep can see it even
             // when Zoom's `meetings?type=previous_meetings` somehow
             // missed it (instant meetings, breakout rooms, etc).
-            const meetingRows = recs.map((rec) => ({
+            // Recurring meetings appear once per recorded occurrence
+            // with the same rec.id — dedupe before the keyed upsert.
+            const meetingRows = dedupeByMeetingId(recs.map((rec) => ({
               zoom_meeting_id: rec.id,
               zoom_uuid: rec.uuid,
               topic: rec.topic,
@@ -264,7 +293,7 @@ export async function syncRecentZoomData(
               status: "ended",
               raw_data: rec,
               synced_at: new Date().toISOString(),
-            }))
+            })))
             await supabase
               .from("zoom_meetings")
               .upsert(meetingRows, {

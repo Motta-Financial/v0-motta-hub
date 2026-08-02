@@ -29,12 +29,17 @@ import { createClient } from "@supabase/supabase-js"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import {
   syncSingleClient,
+  prefetchClientList,
+  refreshClientYearEngagements,
+  hydrateEngagementEfile,
   deleteClient,
 } from "@/lib/proconnect/sync"
-import { exportReturnData, flattenSeriesMap } from "@/lib/proconnect/data"
+import { exportReturnData } from "@/lib/proconnect/data"
+import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
 import { scanRelationships } from "@/lib/tax/relationships/scanner"
 
-const SUPABASE_URL = process.env.SUPABASE_URL!
+const SUPABASE_URL = (process.env.SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL)!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
 interface WebhookEntity {
@@ -99,7 +104,7 @@ async function logWebhookEvent(
  */
 async function updateWebhookEvent(
   eventId: string,
-  status: "processed" | "failed",
+  status: "processed" | "failed" | "skipped",
   error?: string
 ): Promise<void> {
   const supabase = getSupabaseAdmin()
@@ -115,17 +120,64 @@ async function updateWebhookEvent(
 }
 
 /**
- * Process a Client event
+ * Process a Client event.
+ *
+ * ProConnect has no single-client GET, so Create/Update events resolve
+ * against the full /v1/clients list. `sharedClientList` is fetched at
+ * most once per webhook delivery (Intuit batches many entities into one
+ * POST) — fetching it per-entity is what produced the 429 storms.
  */
 async function processClientEvent(
-  entity: WebhookEntity
-): Promise<{ success: boolean; error?: string }> {
+  entity: WebhookEntity,
+  sharedClientList: unknown[] | null
+): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
   if (entity.operation === "Delete") {
     return deleteClient(entity.id)
   }
 
   // Create or Update - fetch fresh data
-  return syncSingleClient(entity.id)
+  return syncSingleClient(entity.id, sharedClientList)
+}
+
+/**
+ * Re-read one engagement's e-file status from the single-engagement GET.
+ *
+ * Always non-fatal. A failure here costs at most one webhook's worth of
+ * freshness: the engagement stays in the stale set (efile_synced_at is only
+ * stamped on success) and the nightly hydration pass retries it. Failing the
+ * webhook instead would make Intuit redeliver the whole batch, re-running the
+ * export and relationship scan alongside it.
+ *
+ * missingRow is expected, not an error — a Create event can beat the
+ * engagement list sync that creates the row.
+ */
+async function refreshEfileStatus(engagementId: string): Promise<void> {
+  try {
+    const result = await hydrateEngagementEfile(engagementId)
+    if (result.ok) {
+      console.log(
+        `[ProConnect Webhook] e-file status for ${engagementId}: ${result.status ?? "(no filings)"}`
+      )
+    } else if (result.missingRow) {
+      console.log(
+        `[ProConnect Webhook] e-file hydrate skipped for ${engagementId}: engagement row not synced yet`
+      )
+    } else if (result.notFound) {
+      // Normal on a Delete event, and on an Update that races a deletion.
+      console.log(
+        `[ProConnect Webhook] e-file hydrate skipped for ${engagementId}: no longer in ProConnect`
+      )
+    } else {
+      console.warn(
+        `[ProConnect Webhook] e-file hydrate failed for ${engagementId}: ${result.error}`
+      )
+    }
+  } catch (err) {
+    console.warn(
+      "[ProConnect Webhook] e-file hydrate threw (non-fatal):",
+      err instanceof Error ? err.message : err
+    )
+  }
 }
 
 /**
@@ -171,74 +223,52 @@ async function processTaxReturnEvent(
     return { success: true }
   }
 
-  // Create / Update: refresh the snapshot. Errors here shouldn't fail
-  // the webhook (Intuit will retry the whole thing) — log and move on.
+  // Create / Update: pull e-file status first. This is the only path that
+  // gets it in near-real time — the nightly sync's list endpoint carries no
+  // filings, so its hydration step is a capped catch-up queue. During filing
+  // season the acceptance/rejection a preparer is waiting on arrives here.
+  // Deliberately ahead of the export below: an export failure returns early,
+  // and e-file status shouldn't be collateral damage of a 403 on a different
+  // service.
+  await refreshEfileStatus(entity.id)
+
+  // Refresh the snapshot. Export failures must not
+  // 4xx/5xx the webhook response (Intuit would retry the whole batch),
+  // but they DO mark the event row failed — the old warn-and-return-
+  // success pattern hid months of scope_missing 403s behind "processed"
+  // statuses and left every Phase 1 table empty with no signal anywhere.
   try {
     const result = await exportReturnData(clientId, entity.id)
     if (!result.ok) {
       console.warn(
         `[ProConnect Webhook] TaxReturn ${entity.id} export failed: ${result.error.kind} ${result.error.status}`
       )
-      return { success: true } // soft-fail; nightly sync will retry
-    }
-    const exp = result.data
-    const flatCells = flattenSeriesMap(exp.data)
-
-    const { data: snap, error: snapErr } = await sb
-      .from("proconnect_return_snapshots")
-      .upsert(
-        {
-          return_id: entity.id,
-          proconnect_client_id: clientId,
-          return_name: exp.name ?? null,
-          client_name: exp.clientName ?? null,
-          tax_year: exp.year ?? null,
-          return_type: exp.type ?? null,
-          version: exp.version ?? null,
-          series_versions: exp.seriesVersion ?? [],
-          efile_items: exp.efileItems ?? [],
-          agencies: exp.agency ?? [],
-          firm_id: exp.id_firm ?? null,
-          proconnect_created_by: exp.createdBy ?? null,
-          proconnect_created_time: exp.createdTime
-            ? new Date(exp.createdTime).toISOString()
-            : null,
-          raw_data: exp.data ?? null,
-          exported_at: new Date().toISOString(),
-          deleted_at: null,
-        },
-        { onConflict: "proconnect_client_id,return_id" }
-      )
-      .select("id")
-      .single()
-    if (snapErr) {
-      return { success: false, error: `snapshot upsert failed: ${snapErr.message}` }
-    }
-    const snapshotId = snap.id as string
-
-    await sb.from("proconnect_return_field_cells").delete().eq("return_id", entity.id)
-    if (flatCells.length > 0) {
-      const rows = flatCells.map((c) => ({
-        snapshot_id: snapshotId,
-        return_id: entity.id,
-        series_id: c.seriesId,
-        prefix_id: c.prefixId,
-        code_id: c.codeId,
-        suffix_id: c.suffixId,
-        val: c.cell.val ?? null,
-        description: c.cell.desc ?? null,
-        src: c.cell.src ?? null,
-        tsj: c.cell.tsj ?? null,
-        scope: c.cell.scope ?? null,
-        source: c.cell.source ?? null,
-        city_abbrev: c.cell.cityAbbrev ?? null,
-        import_source: c.cell.importSource ?? null,
-        raw_cell: c.cell,
-      }))
-      for (let i = 0; i < rows.length; i += 1000) {
-        await sb.from("proconnect_return_field_cells").insert(rows.slice(i, i + 1000))
+      // Config-shaped failures (missing scope / app not allow-listed)
+      // additionally raise a throttled email — they never self-heal.
+      if (result.error.kind === "scope_missing" || result.error.kind === "access_denied") {
+        try {
+          await maybeSendPhase1ExportAlert(sb, result.error.kind, result.error.status)
+        } catch (alertErr) {
+          console.error(
+            "[ProConnect Webhook] phase1 export alert failed:",
+            alertErr instanceof Error ? alertErr.message : alertErr
+          )
+        }
+      }
+      // Capture Intuit's own response body alongside our classification.
+      // `scope_missing` is OUR label for an unattributed 403 (one whose
+      // errorCode is neither RETURN_LOCKED nor ACCESS_DENIED) — when
+      // raising a provisioning ticket, Intuit needs THEIR errorCode and
+      // the intuit-tid, not our inference. Truncated to 500 chars.
+      // PII-safe: Phase 1 error bodies carry {errorCode, errorMessage}
+      // only, and Intuit never echoes a failing SSN/EIN/TIN.
+      const upstream = result.error.body ? ` upstream=${result.error.body.slice(0, 500)}` : ""
+      return {
+        success: false,
+        error: `export failed: ${result.error.kind} ${result.error.status}${result.intuitTid ? ` (intuit-tid ${result.intuitTid})` : ""}${upstream}`,
       }
     }
+    await persistReturnSnapshot(sb, clientId, entity.id, result.data)
     // Re-scan relationships against the freshly imported snapshot so
     // newly visible K-1 issuers / Schedule-E payers / business owners
     // surface in the review queue without waiting for the next cron.
@@ -260,15 +290,119 @@ async function processTaxReturnEvent(
 }
 
 /**
- * Process a TaxReturnWorkStatus event
- * Similar to TaxReturn - log and rely on nightly sync
+ * Email a throttled alert when Phase 1 return-data exports are blocked
+ * by a configuration problem (missing scope / app not allow-listed by
+ * Intuit). Deduped to ~once per day via the integration_alerts table —
+ * same pattern as the Karbon auth alert in the karbon-sync cron.
+ */
+const PHASE1_ALERT_KEY = "proconnect_phase1_export"
+const PHASE1_ALERT_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000
+const PHASE1_ALERT_RECIPIENTS = ["team@motta.co"]
+
+async function maybeSendPhase1ExportAlert(
+  sb: ReturnType<typeof getSupabaseAdmin>,
+  kind: string,
+  status: number
+): Promise<void> {
+  const { data: prior } = await sb
+    .from("integration_alerts")
+    .select("last_alert_at")
+    .eq("integration", PHASE1_ALERT_KEY)
+    .maybeSingle()
+
+  if (
+    prior?.last_alert_at &&
+    Date.now() - new Date(prior.last_alert_at).getTime() < PHASE1_ALERT_MIN_INTERVAL_MS
+  ) {
+    return
+  }
+
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) {
+    console.error(
+      "[ProConnect Webhook] Phase 1 exports are blocked but RESEND_API_KEY is unset — cannot alert"
+    )
+    return
+  }
+
+  const { Resend } = await import("resend")
+  const resend = new Resend(apiKey)
+  await resend.emails.send({
+    from: process.env.RESEND_FROM_EMAIL || "noreply@motta.co",
+    to: PHASE1_ALERT_RECIPIENTS,
+    subject: "[Motta Hub] ProConnect return-data exports are blocked",
+    html: `
+      <h2>ProConnect Phase 1 export is failing (${kind}, HTTP ${status})</h2>
+      <p>Tax-return webhooks are arriving, but every attempt to export the
+      return's field data from <code>api.intuit.com</code> is rejected. Until
+      this is resolved, <code>proconnect_return_snapshots</code> stays stale/empty
+      and the return-data viewer and import (write-back) features cannot work.</p>
+      <h3>Most likely cause</h3>
+      <p><strong>${kind === "scope_missing" ? "The app is not allow-listed for the Phase 1 data endpoints." : "The token's firm does not have access to this return."}</strong>
+      The OAuth token already carries <code>com.intuit.proconnect.taxreturns</code>, so a
+      ${kind === "scope_missing" ? "403 here usually means Intuit must enable the export/import endpoints for the app — contact the Intuit ProConnect API partner team (realm 9130356180193146), then re-run the OAuth consent from /tax/settings." : "review of the client/return ownership is needed."}</p>
+      <p>Details: docs/proconnect-integration-review.md · This alert repeats at most once per day while the failure persists.</p>
+    `,
+  })
+
+  await sb.from("integration_alerts").upsert(
+    {
+      integration: PHASE1_ALERT_KEY,
+      last_alert_at: new Date().toISOString(),
+      last_alert_reason: `Phase 1 export ${kind} (HTTP ${status})`,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "integration" }
+  )
+  console.log("[ProConnect Webhook] Phase 1 export alert sent to", PHASE1_ALERT_RECIPIENTS.join(", "))
+}
+
+/**
+ * Process a TaxReturnWorkStatus event.
+ *
+ * The entity id maps to the return/engagement UUID (same id space as
+ * TaxReturn events). Refresh that client+year's engagements — one API
+ * call — so the new work status shows in the Hub immediately instead
+ * of waiting for the nightly sync. If we can't resolve the engagement
+ * yet, soft-succeed: the nightly sync will pick it up.
  */
 async function processTaxReturnWorkStatusEvent(
   entity: WebhookEntity
 ): Promise<{ success: boolean; error?: string }> {
-  console.log(
-    `[ProConnect Webhook] TaxReturnWorkStatus ${entity.operation}: ${entity.id} - will sync on next full sync`
+  const sb = getSupabaseAdmin()
+  const { data: eng, error: engErr } = await sb
+    .from("proconnect_engagements")
+    .select("proconnect_client_id, tax_year")
+    .eq("engagement_id", entity.id)
+    .maybeSingle()
+
+  if (engErr) {
+    return { success: false, error: `engagement lookup failed: ${engErr.message}` }
+  }
+  if (!eng?.proconnect_client_id || !eng.tax_year) {
+    console.log(
+      `[ProConnect Webhook] TaxReturnWorkStatus ${entity.id} not yet in proconnect_engagements; nightly sync will pick it up`
+    )
+    return { success: true }
+  }
+
+  const result = await refreshClientYearEngagements(
+    eng.proconnect_client_id as string,
+    eng.tax_year as number
   )
+  if (!result.success) {
+    // Soft-fail: the status change isn't lost, the nightly sync covers it.
+    console.warn(
+      `[ProConnect Webhook] work-status refresh failed for ${entity.id}: ${result.error}`
+    )
+  }
+
+  // The refresh above uses the engagement LIST endpoint, which has no
+  // filings — so it can't move e-file status even though a work-status
+  // change ("E-filed", "Accepted") is often exactly when it moved. One
+  // extra call for the engagement that actually changed.
+  await refreshEfileStatus(entity.id)
+
   return { success: true }
 }
 
@@ -278,16 +412,17 @@ async function processTaxReturnWorkStatusEvent(
 async function processEntity(
   entity: WebhookEntity,
   realmId: string,
-  payload: unknown
+  payload: unknown,
+  sharedClientList: unknown[] | null
 ): Promise<void> {
   const eventId = await logWebhookEvent(entity, realmId, payload, "pending")
 
   try {
-    let result: { success: boolean; error?: string }
+    let result: { success: boolean; skipped?: boolean; error?: string }
 
     switch (entity.name) {
       case "Client":
-        result = await processClientEvent(entity)
+        result = await processClientEvent(entity, sharedClientList)
         break
       case "TaxReturn":
         result = await processTaxReturnEvent(entity)
@@ -299,7 +434,12 @@ async function processEntity(
         result = { success: false, error: `Unknown entity type: ${entity.name}` }
     }
 
-    if (result.success) {
+    // skipped = received but intentionally not applied (e.g. an event for a
+    // client/return that's no longer in ProConnect). Not a fault — kept
+    // distinct from "failed" so the status panel doesn't cry wolf.
+    if (result.skipped) {
+      await updateWebhookEvent(eventId, "skipped", result.error)
+    } else if (result.success) {
       await updateWebhookEvent(eventId, "processed")
     } else {
       await updateWebhookEvent(eventId, "failed", result.error)
@@ -371,6 +511,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Fetch the client list at most once per delivery — Client
+    // Create/Update events resolve against it (no single-client GET),
+    // and per-entity fetches are what rate-limited us in the past.
+    const needsClientList = payload.eventNotifications.some((n) =>
+      (n.dataChangeEvent?.entities || []).some(
+        (e) => e.name === "Client" && e.operation !== "Delete"
+      )
+    )
+    const sharedClientList = needsClientList ? await prefetchClientList() : null
+
     // Process each notification
     const results: Array<{ entity: string; success: boolean; error?: string }> = []
 
@@ -379,7 +529,7 @@ export async function POST(request: NextRequest) {
       const entities = notification.dataChangeEvent?.entities || []
 
       for (const entity of entities) {
-        await processEntity(entity, realmId, payload)
+        await processEntity(entity, realmId, payload, sharedClientList)
         results.push({
           entity: `${entity.name}:${entity.id}`,
           success: true,

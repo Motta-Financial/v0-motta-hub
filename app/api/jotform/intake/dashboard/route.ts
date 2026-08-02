@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 /**
  * GET /api/jotform/intake/dashboard — server-computed aggregates for
  * the Intake Dashboard view at /sales/intake/dashboard.
  *
  * We deliberately keep this endpoint dedicated rather than reusing
- * `/api/jotform/intake` because the dashboard needs many more rows
- * (we pull up to 5 000 to compute true monthly inflow), but only a
- * handful of columns. Returning the raw rows would balloon the
+ * `/api/jotform/intake` because the dashboard needs every row (we
+ * page through the whole table to compute true monthly inflow), but
+ * only a handful of columns. Returning the raw rows would balloon the
  * response into 5–20 MB of `raw_answers` blobs; the aggregator
  * returns ~3 KB of JSON regardless of inbox size.
  *
@@ -30,10 +31,27 @@ export async function GET() {
   try {
     const supabase = createAdminClient()
 
-    const { data, error } = await supabase
-      .from("jotform_intake_submissions")
-      .select(
-        `
+    // Paged in 1,000-row windows — PostgREST caps every response at
+    // 1,000 rows regardless of .limit(), so a single capped select
+    // would silently skew the totals/funnel/inflow chart once the
+    // inbox passes 1,000 submissions.
+    const rows = await fetchAllPaged<{
+      jotform_created_at: string | null
+      lead_status: string | null
+      service_focus: string | null
+      submitter_state: string | null
+      business_state: string | null
+      services_requested: string[] | string | null
+      referral_source: string | null
+      preferred_team_member_id: string | null
+      contact_id: string | null
+      organization_id: string | null
+      karbon_work_item_key: string | null
+    }>(() =>
+      supabase
+        .from("jotform_intake_submissions")
+        .select(
+          `
         jotform_created_at,
         lead_status,
         service_focus,
@@ -46,12 +64,8 @@ export async function GET() {
         organization_id,
         karbon_work_item_key
         `,
-      )
-      .order("jotform_created_at", { ascending: false, nullsFirst: false })
-      .limit(5000)
-
-    if (error) throw error
-    const rows = data ?? []
+        ),
+    )
 
     // ─── totals ─────────────────────────────────────────────────
     const totals = {

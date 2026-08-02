@@ -108,6 +108,15 @@ type WebsiteIntakePayload = {
   referral_source?: string
   preferred_team_member?: string
 
+  // Website intake (motta.cpa native form) — three questions added
+  // 2026. Synthesized under slugs behindFilings / pendingNotices /
+  // currentCpa / switchReason, which the parser maps to the matching
+  // columns on jotform_intake_submissions.
+  behind_on_filings?: string
+  pending_tax_notices?: string
+  current_cpa_status?: string
+  cpa_switch_reason?: string
+
   // Tracking — passed straight through to raw_answers for analytics.
   utm_source?: string
   utm_medium?: string
@@ -213,6 +222,13 @@ function synthesizeJotformSubmission(
   put("isThere", asString(payload.additional_notes))
   put("whoSent", asString(payload.referral_source))
   put("lastlyTo53", asString(payload.preferred_team_member))
+
+  // Website intake fields (motta.cpa native form). Slugs must match
+  // the findByName() calls in lib/jotform/parse.ts exactly.
+  put("behindFilings", asString(payload.behind_on_filings))
+  put("pendingNotices", asString(payload.pending_tax_notices))
+  put("currentCpa", asString(payload.current_cpa_status))
+  put("switchReason", asString(payload.cpa_switch_reason))
 
   // Tracking — preserved verbatim, parser ignores them but they
   // survive in `raw_answers` for analytics.

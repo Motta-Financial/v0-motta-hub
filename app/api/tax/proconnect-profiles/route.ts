@@ -7,6 +7,7 @@ import {
   type TeamMemberLite,
 } from "@/lib/tax/proconnect-profile-match"
 import { loadKarbonSuggestions } from "@/lib/tax/proconnect-karbon-suggester"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -44,15 +45,23 @@ export async function GET() {
       .order("full_name"),
   ])
 
-  // Engagement attribution counts (so operator sees which IDs are highest-leverage)
-  const { data: counts } = await supabase
-    .from("proconnect_engagements")
-    .select("assignee_profile_id")
-    .not("assignee_profile_id", "is", null)
+  // Engagement attribution counts (so operator sees which IDs are highest-leverage).
+  // Paged — a bare select caps at 1,000 rows and would silently undercount.
+  let counts: Array<{ assignee_profile_id: string }> = []
+  try {
+    counts = await fetchAllPaged<{ assignee_profile_id: string }>(() =>
+      supabase
+        .from("proconnect_engagements")
+        .select("assignee_profile_id")
+        .not("assignee_profile_id", "is", null),
+    )
+  } catch {
+    // Degrade like the old unchecked select: attribution counts render as 0.
+  }
 
   const countByProfile: Record<string, number> = {}
-  for (const row of counts || []) {
-    const id = (row as { assignee_profile_id: string }).assignee_profile_id
+  for (const row of counts) {
+    const id = row.assignee_profile_id
     countByProfile[id] = (countByProfile[id] || 0) + 1
   }
 

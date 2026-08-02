@@ -33,8 +33,9 @@ const corsHeaders = {
 
 const PROCONNECT_CUSTOM_STATUS_URL =
   "https://engagement.accountant.intuit.com/v1/custom-status?source=ITO"
-const REFRESH_TOKEN_FUNCTION_URL =
-  "https://gylupzxitoebhqjnvzuw.supabase.co/functions/v1/proconnect-refresh-token"
+// Built from the auto-injected SUPABASE_URL so the function is portable
+// across Supabase projects (was previously a hardcoded project URL).
+const REFRESH_TOKEN_FUNCTION_URL = `${Deno.env.get("SUPABASE_URL")}/functions/v1/proconnect-refresh-token`
 
 // Token is considered expired if it expires within 5 minutes
 const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000
@@ -91,6 +92,23 @@ Deno.serve(async (req: Request) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders })
+  }
+
+  // ── AUTH GUARD (2026-07-26) ──────────────────────────────────────
+  // This function mutates live OAuth/sync state and was previously
+  // callable by ANYONE (verify_jwt off + CORS *). The pg_cron job that
+  // used to invoke it has been unscheduled (the Vercel app now owns
+  // this work); any remaining manual/ops invocation must present the
+  // service-role key.
+  {
+    const authHeader = req.headers.get("authorization") ?? ""
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    if (!serviceKey || authHeader !== `Bearer ${serviceKey}`) {
+      return new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: corsHeaders,
+      })
+    }
   }
 
   let supabase: SupabaseClient

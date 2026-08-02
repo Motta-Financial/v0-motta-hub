@@ -33,9 +33,25 @@ if (!PROCONNECT_CLIENT_ID || !PROCONNECT_CLIENT_SECRET) {
 // Tax years to sync
 const TAX_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 
-// Parallel processing settings
-const PARALLEL_CLIENTS = 5
-const PARALLEL_ENGAGEMENTS = 3
+// Rate limiting: ProConnect enforces a confirmed ~5 TPS limit per realm and
+// returns 429 above it. Clients (and each client's tax years) are processed
+// sequentially, and every request reserves the next slot before it fires, so
+// the whole run stays at or below ~4 req/s regardless of concurrency.
+const MIN_REQUEST_INTERVAL_MS = 250 // 1000ms / 250ms = 4 requests/second
+const MAX_RETRIES = 4
+const RETRY_BASE_MS = 800 // exponential backoff: 800, 1600, 3200
+
+let nextRequestSlot = 0
+
+async function acquireRateLimitSlot(): Promise<void> {
+  const now = Date.now()
+  const slot = Math.max(now, nextRequestSlot)
+  nextRequestSlot = slot + MIN_REQUEST_INTERVAL_MS
+  const wait = slot - now
+  if (wait > 0) {
+    await new Promise((resolve) => setTimeout(resolve, wait))
+  }
+}
 
 // API base URLs
 const CLIENT_SERVICE_BASE = "https://public.api.intuit.com/tax/v2"
@@ -156,18 +172,44 @@ async function fetchWithAuth(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const accessToken = await getAccessToken(supabase)
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const accessToken = await getAccessToken(supabase)
 
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...options.headers,
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
-  })
+    // Throttle to ~4 req/s before every request (retries included) so a full
+    // import can never burst past ProConnect's rate limit.
+    await acquireRateLimitSlot()
 
-  return response
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        ...options.headers,
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+    })
+
+    // Retry 429 (rate limit) and 5xx with exponential backoff, honouring
+    // Retry-After when present. Everything else (incl. 404) is returned as-is.
+    if (
+      (response.status === 429 || response.status >= 500) &&
+      attempt < MAX_RETRIES - 1
+    ) {
+      const retryAfter = response.headers.get("retry-after")
+      const backoff = retryAfter
+        ? Number.parseInt(retryAfter, 10) * 1000
+        : RETRY_BASE_MS * Math.pow(2, attempt)
+      console.log(
+        `[API] ${response.status} on ${url.slice(-60)} — retry ${attempt + 1}/${MAX_RETRIES - 1} in ${backoff}ms`
+      )
+      await new Promise((resolve) => setTimeout(resolve, backoff))
+      continue
+    }
+
+    return response
+  }
+
+  // Unreachable: the final attempt always returns above.
+  throw new Error(`fetchWithAuth: exhausted retries for ${url}`)
 }
 
 async function fetchClients(supabase: SupabaseClient): Promise<unknown[]> {
@@ -386,99 +428,99 @@ async function syncEngagements(supabase: SupabaseClient): Promise<void> {
 
   const profileIds = new Set<string>()
 
-  // Process clients in batches
-  for (let i = 0; i < clients.length; i += PARALLEL_CLIENTS) {
-    const batch = clients.slice(i, i + PARALLEL_CLIENTS)
+  // Process clients one at a time. Rate limiting (acquireRateLimitSlot in
+  // fetchWithAuth) caps the whole run at ~4 req/s, so there is no client-level
+  // concurrency here — that fan-out is what burst past ProConnect's 429 limit.
+  for (let i = 0; i < clients.length; i++) {
+    const clientId = clients[i].proconnect_client_id
+    if (!clientId) continue
 
-    await Promise.all(
-      batch.map(async (client) => {
-        const clientId = client.proconnect_client_id
-        if (!clientId) return
+    // Process all tax years for this client, one at a time
+    for (const year of TAX_YEARS) {
+      try {
+        const engagements = await fetchEngagements(supabase, clientId, year)
 
-        // Process all tax years for this client
-        for (const year of TAX_YEARS) {
-          try {
-            const engagements = await fetchEngagements(supabase, clientId, year)
+        for (const engagement of engagements) {
+          const eng = engagement as Record<string, unknown>
 
-            for (const engagement of engagements) {
-              const eng = engagement as Record<string, unknown>
+          const engagementId = (eng.id as string) || (eng.engagementId as string)
+          if (!engagementId) continue
 
-              const engagementId = (eng.id as string) || (eng.engagementId as string)
-              if (!engagementId) continue
+          // Extract fields
+          const formType = (eng.type as string) || (eng.formType as string) || null
+          const returnType = formType
+          const status = (eng.status as string) || null
+          const workStatus = (eng.workStatus as string) || null
+          const engagementState = (eng.state as string) || (eng.engagementState as string) || null
+          const engagementName = (eng.name as string) || (eng.engagementName as string) || null
+          const userDefinedStatusId = (eng.userDefinedStatusId as string) || (eng.customStatusId as string) || null
 
-              // Extract fields
-              const formType = (eng.type as string) || (eng.formType as string) || null
-              const returnType = formType
-              const status = (eng.status as string) || null
-              const efileStatus = (eng.efileStatus as string) || null
-              const workStatus = (eng.workStatus as string) || null
-              const engagementState = (eng.state as string) || (eng.engagementState as string) || null
-              const engagementName = (eng.name as string) || (eng.engagementName as string) || null
-              const userDefinedStatusId = (eng.userDefinedStatusId as string) || (eng.customStatusId as string) || null
+          // Extract profile IDs for discovery
+          const assigneeProfileId = (eng.assigneeProfileId as string) || (eng.assignee?.profileId as string) || null
+          const createdByProfileId = (eng.createdByProfileId as string) || (eng.createdBy?.profileId as string) || null
+          const modifiedByProfileId = (eng.modifiedByProfileId as string) || (eng.modifiedBy?.profileId as string) || null
+          const assigneeAuthId = (eng.assigneeAuthId as string) || (eng.assignee?.authId as string) || null
 
-              // Extract profile IDs for discovery
-              const assigneeProfileId = (eng.assigneeProfileId as string) || (eng.assignee?.profileId as string) || null
-              const createdByProfileId = (eng.createdByProfileId as string) || (eng.createdBy?.profileId as string) || null
-              const modifiedByProfileId = (eng.modifiedByProfileId as string) || (eng.modifiedBy?.profileId as string) || null
-              const assigneeAuthId = (eng.assigneeAuthId as string) || (eng.assignee?.authId as string) || null
+          if (assigneeProfileId) profileIds.add(assigneeProfileId)
+          if (createdByProfileId) profileIds.add(createdByProfileId)
+          if (modifiedByProfileId) profileIds.add(modifiedByProfileId)
 
-              if (assigneeProfileId) profileIds.add(assigneeProfileId)
-              if (createdByProfileId) profileIds.add(createdByProfileId)
-              if (modifiedByProfileId) profileIds.add(modifiedByProfileId)
+          // Timestamps
+          const proconnectCreatedAt = (eng.createdTime as string) || (eng.createdAt as string) || null
+          const proconnectModifiedAt = (eng.modifiedTime as string) || (eng.modifiedAt as string) || (eng.updatedAt as string) || null
 
-              // Timestamps
-              const proconnectCreatedAt = (eng.createdTime as string) || (eng.createdAt as string) || null
-              const proconnectModifiedAt = (eng.modifiedTime as string) || (eng.modifiedAt as string) || (eng.updatedAt as string) || null
+          const { error: upsertError } = await supabase.from("proconnect_engagements").upsert(
+            {
+              engagement_id: engagementId,
+              proconnect_client_id: clientId,
+              tax_year: year,
+              return_type: returnType,
+              form_type: formType,
+              status,
+              // No efile_status: it isn't on the engagement list payload at
+              // all (there is no top-level `efileStatus` field, and
+              // taxFiling.filings[] comes back empty from the list endpoint).
+              // Writing it here would blank out the hydrated value.
+              work_status: workStatus,
+              engagement_state: engagementState,
+              engagement_name: engagementName,
+              user_defined_status_id: userDefinedStatusId,
+              assignee_profile_id: assigneeProfileId,
+              assignee_auth_id: assigneeAuthId,
+              created_by_profile_id: createdByProfileId,
+              modified_by_profile_id: modifiedByProfileId,
+              proconnect_created_at: proconnectCreatedAt,
+              proconnect_modified_at: proconnectModifiedAt,
+              raw_json: engagement,
+              synced_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "engagement_id" }
+          )
 
-              const { error: upsertError } = await supabase.from("proconnect_engagements").upsert(
-                {
-                  engagement_id: engagementId,
-                  proconnect_client_id: clientId,
-                  tax_year: year,
-                  return_type: returnType,
-                  form_type: formType,
-                  status,
-                  efile_status: efileStatus,
-                  work_status: workStatus,
-                  engagement_state: engagementState,
-                  engagement_name: engagementName,
-                  user_defined_status_id: userDefinedStatusId,
-                  assignee_profile_id: assigneeProfileId,
-                  assignee_auth_id: assigneeAuthId,
-                  created_by_profile_id: createdByProfileId,
-                  modified_by_profile_id: modifiedByProfileId,
-                  proconnect_created_at: proconnectCreatedAt,
-                  proconnect_modified_at: proconnectModifiedAt,
-                  raw_json: engagement,
-                  synced_at: new Date().toISOString(),
-                  updated_at: new Date().toISOString(),
-                },
-                { onConflict: "engagement_id" }
-              )
-
-              if (upsertError) {
-                stats.errors.push(`Engagement ${engagementId}: ${upsertError.message}`)
-              } else {
-                stats.engagementsSynced++
-                stats.engagementsTotal++
-              }
-            }
-          } catch (err) {
-            // 404 is expected for clients with no returns in that year
-            const msg = err instanceof Error ? err.message : "Unknown"
-            if (!msg.includes("404")) {
-              stats.errors.push(`${clientId}/${year}: ${msg}`)
-            }
+          if (upsertError) {
+            stats.errors.push(`Engagement ${engagementId}: ${upsertError.message}`)
+          } else {
+            stats.engagementsSynced++
+            stats.engagementsTotal++
           }
         }
-      })
-    )
+      } catch (err) {
+        // 404 is expected for clients with no returns in that year
+        const msg = err instanceof Error ? err.message : "Unknown"
+        if (!msg.includes("404")) {
+          stats.errors.push(`${clientId}/${year}: ${msg}`)
+        }
+      }
+    }
 
     // Progress
-    const processed = Math.min(i + PARALLEL_CLIENTS, clients.length)
-    console.log(
-      `[Engagements] ${processed}/${clients.length} clients, ${stats.engagementsSynced} engagements`
-    )
+    const processed = i + 1
+    if (processed % 20 === 0 || processed === clients.length) {
+      console.log(
+        `[Engagements] ${processed}/${clients.length} clients, ${stats.engagementsSynced} engagements`
+      )
+    }
   }
 
   // Discover new profile IDs

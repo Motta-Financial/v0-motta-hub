@@ -40,14 +40,29 @@ const CLIENT_SERVICE_URL = "https://client.accountant.intuit.com"
 const ENGAGEMENT_SERVICE_URL = "https://engagement.accountant.intuit.com"
 
 const TAX_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
-const PARALLEL_CLIENTS = 3 // Reduced from 5 to avoid 429s when multiplied by TAX_YEARS
 const REFRESH_BUFFER_SECONDS = 300
 
-// Rate-limit handling: ProConnect returns 429 when we exceed ~10 req/sec sustained.
-// Each client requires TAX_YEARS.length serial calls (engagement.accountant.intuit.com),
-// so PARALLEL_CLIENTS=3 keeps the steady-state at ~3 req/sec which leaves headroom.
+// Rate limiting: ProConnect enforces a confirmed ~5 TPS limit per realm and
+// returns 429 above it. Clients (and each client's tax years) are processed
+// sequentially, and every request reserves the next slot before it fires (see
+// acquireRateLimitSlot), so the whole run stays at or below ~4 req/s regardless
+// of concurrency. pcFetch additionally retries 429/5xx with exponential
+// backoff, honouring Retry-After.
+const MIN_REQUEST_INTERVAL_MS = 250 // 1000ms / 250ms = 4 requests/second
 const MAX_RETRIES = 5
 const RETRY_BASE_MS = 600 // exponential: 600, 1200, 2400, 4800, 9600 = ~18s max wait
+
+let nextRequestSlot = 0
+
+async function acquireRateLimitSlot(): Promise<void> {
+  const now = Date.now()
+  const slot = Math.max(now, nextRequestSlot)
+  nextRequestSlot = slot + MIN_REQUEST_INTERVAL_MS
+  const wait = slot - now
+  if (wait > 0) {
+    await new Promise((resolve) => setTimeout(resolve, wait))
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Supabase Admin
@@ -165,6 +180,10 @@ async function pcFetch(
   attempt = 1
 ): Promise<{ ok: boolean; status: number; data: any; error: string | null }> {
   try {
+    // Throttle to ~4 req/s before every request (retries included) so the
+    // import can never burst past ProConnect's rate limit.
+    await acquireRateLimitSlot()
+
     const response = await fetch(url, {
       method: "GET",
       headers: {
@@ -409,32 +428,28 @@ async function syncEngagements(
     }
   }
 
-  console.log(`[Edge] Processing engagements for ${clients.length} clients (parallel ${PARALLEL_CLIENTS})`)
+  console.log(`[Edge] Processing engagements for ${clients.length} clients (sequential, ~4 req/s)`)
 
   let count = 0
   const errors: string[] = []
   const startTime = Date.now()
 
-  // Process in parallel batches - no timeout pressure here
-  for (let i = 0; i < clients.length; i += PARALLEL_CLIENTS) {
-    const batch = clients
-      .slice(i, i + PARALLEL_CLIENTS)
-      .map((c) => c.proconnect_client_id)
-      .filter(Boolean) as string[]
+  // Process clients one at a time. The global rate limiter (acquireRateLimitSlot
+  // in pcFetch) caps the run at ~4 req/s, so there is no client-level
+  // concurrency here — that fan-out is what burst past ProConnect's 429 limit.
+  for (let i = 0; i < clients.length; i++) {
+    const clientId = clients[i].proconnect_client_id
+    if (!clientId) continue
 
-    const results = await Promise.all(
-      batch.map((id) => syncClientEngagements(supabase, accessToken, id))
-    )
+    const result = await syncClientEngagements(supabase, accessToken, clientId as string)
+    count += result.count
+    errors.push(...result.errors)
 
-    for (const result of results) {
-      count += result.count
-      errors.push(...result.errors)
-    }
-
-    if ((i + PARALLEL_CLIENTS) % 30 === 0 || i + PARALLEL_CLIENTS >= clients.length) {
+    const processed = i + 1
+    if (processed % 30 === 0 || processed === clients.length) {
       const elapsed = Math.round((Date.now() - startTime) / 1000)
       console.log(
-        `[Edge] Progress: ${Math.min(i + PARALLEL_CLIENTS, clients.length)}/${clients.length} clients, ${count} engagements, ${elapsed}s elapsed`
+        `[Edge] Progress: ${processed}/${clients.length} clients, ${count} engagements, ${elapsed}s elapsed`
       )
     }
   }

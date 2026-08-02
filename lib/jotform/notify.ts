@@ -25,11 +25,9 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { sendCategoryEmail } from "@/lib/email"
+import { firmConfigSync } from "@/lib/firm-settings"
 
-const APP_URL =
-  process.env.NEXT_PUBLIC_APP_URL ||
-  process.env.APP_BASE_URL ||
-  "https://hub.motta.cpa"
+const APP_URL = () => firmConfigSync().hubUrl
 
 // Brand palette — mirrors lib/email.ts so the firm-wide intake email
 // matches the Tommy Recap / Debrief / Daily Briefing wrappers in
@@ -64,6 +62,10 @@ export interface IntakeNotificationContext {
   business_revenue_range: string | null
   questions_or_concerns: string | null
   additional_notes: string | null
+  behind_on_filings: string | null
+  pending_tax_notices: string | null
+  current_cpa_status: string | null
+  cpa_switch_reason: string | null
   preferred_team_member: string | null
   /** Filled in once `resolvePreferredTeamMember` runs. */
   assigned_to_id: string | null
@@ -169,7 +171,7 @@ function confidencePill(c?: string | null): string {
 }
 
 export function buildIntakeNotificationHtml(ctx: IntakeNotificationContext): string {
-  const inboxUrl = `${APP_URL}/sales/intake?search=${encodeURIComponent(ctx.jotform_submission_id)}`
+  const inboxUrl = `${APP_URL()}/sales/intake?search=${encodeURIComponent(ctx.jotform_submission_id)}`
   const submitterLine = ctx.submitter_full_name ?? ctx.business_name ?? "an anonymous prospect"
   const businessLine = ctx.business_name && ctx.submitter_full_name ? ctx.business_name : null
   const receivedAt = ctx.jotform_created_at
@@ -209,6 +211,10 @@ export function buildIntakeNotificationHtml(ctx: IntakeNotificationContext): str
     row("Requested services", pillList(ctx.services_requested)),
     row("Entity types", pillList(ctx.entity_types)),
     row("Revenue range", escapeHtml(ctx.business_revenue_range)),
+    row("Behind on filings", escapeHtml(ctx.behind_on_filings)),
+    row("Pending IRS/state notices", escapeHtml(ctx.pending_tax_notices)),
+    row("Works with a CPA/bookkeeper", escapeHtml(ctx.current_cpa_status)),
+    row("Reason for switching", escapeHtml(ctx.cpa_switch_reason)),
   ].join("")
 
   const assignmentNote = ctx.preferred_team_member

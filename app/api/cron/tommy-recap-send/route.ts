@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/server"
 import { buildTommyRecapHtml, sendCategoryEmail } from "@/lib/email"
 import { composeWeeklyRecap, type TopThreeEntry } from "@/lib/tommy-awards/weekly-recap"
 import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 // ── STAGE 4 of 4: SEND ────────────────────────────────────────────────
 // Emails the firm the Friday Tommy recap at 12:00 PM Eastern, with the
@@ -152,7 +153,7 @@ export async function GET(request: Request) {
     const podiumPdfUrl = (recap.podium_pdf_url as string | null) ?? null
 
     // Build the email HTML with the podium image embedded.
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+    const appUrl = firmConfigSync().hubUrl
     const html = buildTommyRecapHtml({
       weekLabel,
       aiSummary: (recap.ai_summary as string) ?? "",

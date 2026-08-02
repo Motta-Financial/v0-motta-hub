@@ -85,12 +85,14 @@ export async function POST(request: Request) {
 
     if (eligible.length > 0) {
       if (force) {
-        // Bypass per-user preferences entirely.
-        const { sendEmail } = await import("@/lib/email")
-        const results = await Promise.all(
-          eligible.map((m) => sendEmail({ to: m.email!, subject, html }).then((r) => r.success)),
+        // Bypass per-user preferences entirely. Send every announcement in a
+        // single Resend batch call, individually addressed (recipients don't
+        // see each other's addresses).
+        const { sendBatchEmail } = await import("@/lib/email")
+        const result = await sendBatchEmail(
+          eligible.map((m) => ({ to: m.email!, subject, html })),
         )
-        sent = results.filter(Boolean).length
+        sent = result.sent
         skipped = eligible.length - sent
       } else {
         const result = await sendCategoryEmail({

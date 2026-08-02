@@ -153,7 +153,8 @@ export async function middleware(request: NextRequest) {
 
   // ProConnect Tax (Intuit) POSTs real-time webhook notifications for
   // Client, TaxReturn, and TaxReturnWorkStatus events. The route handler
-  // will verify payloads once Intuit documents their signing mechanism.
+  // verifies each payload's HMAC-SHA256 `intuit-signature` against
+  // PROCONNECT_WEBHOOK_VERIFIER_TOKEN.
   const isProConnectWebhook = pathname === "/api/proconnect/webhooks"
 
   // ProConnect sync endpoint - uses CRON_SECRET Bearer auth in the handler
@@ -194,6 +195,13 @@ export async function middleware(request: NextRequest) {
   // not the rest of the OAuth surface (authorize/refresh/disconnect still
   // require a logged-in team member).
   const isCalendlyOAuthCallback = pathname === "/api/calendly/oauth/callback"
+
+  // Intuit sends the user back to /api/proconnect/oauth/callback after consent
+  // on appcenter.intuit.com — that cross-domain redirect won't carry our Hub
+  // session cookie, so exempt ONLY the callback. Identity/CSRF is enforced
+  // inside the handler via the HMAC-signed `state`. /connect, /disconnect, and
+  // /launch are deliberately NOT exempt — they require a logged-in admin.
+  const isProconnectOAuthCallback = pathname === "/api/proconnect/oauth/callback"
 
   // Allow internal server-to-server calls (e.g. cron -> /api/karbon/sync -> /api/karbon/contacts)
   // These pass a shared secret so middleware doesn't block the sync chain.
@@ -254,6 +262,7 @@ export async function middleware(request: NextRequest) {
     isHubMeetingsSync ||
     isCron ||
     isCalendlyOAuthCallback ||
+    isProconnectOAuthCallback ||
     isInternalCall ||
     isAlfredDataCall ||
     isAlfredHealthCheck ||

@@ -36,8 +36,9 @@ const corsHeaders = {
 
 const PROCONNECT_ENGAGEMENTS_URL =
   "https://engagement.accountant.intuit.com/v2/engagements"
-const REFRESH_TOKEN_FUNCTION_URL =
-  "https://gylupzxitoebhqjnvzuw.supabase.co/functions/v1/proconnect-refresh-token"
+// Built from the auto-injected SUPABASE_URL so the function is portable
+// across Supabase projects (was previously a hardcoded project URL).
+const REFRESH_TOKEN_FUNCTION_URL = `${Deno.env.get("SUPABASE_URL")}/functions/v1/proconnect-refresh-token`
 
 const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000
 const MAX_RETRIES = 5
@@ -93,7 +94,6 @@ interface MappedEngagement {
   status: string | null
   work_status: string | null
   user_defined_status_id: string | null
-  efile_status: string | null
   assignee_profile_id: string | null
   assignee_auth_id: string | null
   created_by_profile_id: string | null
@@ -119,26 +119,6 @@ interface SyncResponse {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function getLatestEfileStatus(eng: ProConnectEngagement): string | null {
-  const filings = eng.taxFiling?.filings || []
-  let latest: { status?: string; date?: string } | null = null
-  let latestDate = new Date(0)
-
-  for (const filing of filings) {
-    for (const s of filing.filingStatuses || []) {
-      if (s.date) {
-        const d = new Date(s.date)
-        if (d > latestDate) {
-          latestDate = d
-          latest = s
-        }
-      }
-    }
-  }
-
-  return latest?.status ?? null
-}
-
 function mapEngagementToRow(eng: ProConnectEngagement): MappedEngagement {
   if (!eng.type) {
     console.warn("[v0] Engagement missing type:", eng.engagementId)
@@ -156,7 +136,10 @@ function mapEngagementToRow(eng: ProConnectEngagement): MappedEngagement {
     status: eng.status ?? null,
     work_status: eng.workStatus ?? null,
     user_defined_status_id: eng.userDefinedStatus ?? null,
-    efile_status: getLatestEfileStatus(eng),
+    // No efile_status: this function reads the engagement LIST endpoint,
+    // whose taxFiling.filings[] is empty on every engagement. Writing it
+    // from here would erase what the e-file hydrator (lib/proconnect/sync.ts
+    // → hydrateEngagementEfile, fed by GET /v2/engagements/{id}) stored.
     assignee_profile_id: eng.assignee?.profileId ?? null,
     assignee_auth_id: eng.assignee?.authId ?? null,
     created_by_profile_id: eng.createdBy?.profileId ?? null,
@@ -275,6 +258,24 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders })
   }
+
+  // ── AUTH GUARD (2026-07-26) ──────────────────────────────────────
+  // This function mutates live OAuth/sync state and was previously
+  // callable by ANYONE (verify_jwt off + CORS *). The pg_cron job that
+  // used to invoke it has been unscheduled (the Vercel app now owns
+  // this work); any remaining manual/ops invocation must present the
+  // service-role key.
+  {
+    const authHeader = req.headers.get("authorization") ?? ""
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    if (!serviceKey || authHeader !== `Bearer ${serviceKey}`) {
+      return new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: corsHeaders,
+      })
+    }
+  }
+
 
   if (req.method !== "POST") {
     return new Response(

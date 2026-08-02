@@ -1,5 +1,7 @@
+import crypto from "crypto"
 import { NextResponse } from "next/server"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * Zoom OAuth callback.
@@ -7,7 +9,7 @@ import { createAdminClient, createClient } from "@/lib/supabase/server"
  * Two install paths land here:
  *
  *  1. **In-Hub "Connect Zoom" button** -> /api/zoom/oauth/authorize
- *     builds a base64'd `state` JSON containing { team_member_id }
+ *     builds an HMAC-signed base64 `state` containing { team_member_id }
  *     and redirects to Zoom. Zoom redirects back to this route with
  *     `code` + `state`. We exchange the code, look up the user via
  *     /v2/users/me, and upsert into `zoom_connections` keyed on
@@ -27,26 +29,17 @@ import { createAdminClient, createClient } from "@/lib/supabase/server"
  * (e.g. a thrown env-var-missing error) get redirected, not 500'd.
  */
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url)
+  const { searchParams } = new URL(request.url)
   const code = searchParams.get("code")
   const state = searchParams.get("state")
   const oauthError = searchParams.get("error")
 
-  // Resolve the redirect base URL for the post-OAuth landing page.
-  //   1. Prefer APP_BASE_URL (hub.motta.cpa). NEXT_PUBLIC_APP_URL in this
-  //      project points at the MARKETING site (motta.cpa), which is a
-  //      separate Vercel project with no /meetings/zoom page — landing a
-  //      freshly-connected user there is the bug this route kept hitting.
-  //      Mirror the ProConnect callback, which already prefers APP_BASE_URL.
-  //   2. Prepend https:// when a value is missing its scheme, otherwise
-  //      NextResponse.redirect() throws ERR_INVALID_URL (it requires
-  //      absolute URLs).
-  //   3. Strip any trailing slash so the `${baseUrl}/meetings/zoom`
-  //      template can't produce a double slash.
-  const rawBase =
-    process.env.APP_BASE_URL?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim() || origin
-  const withScheme = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`
-  const baseUrl = withScheme.replace(/\/+$/, "")
+  // Post-OAuth landing base URL: firm.hub_url via lib/firm-settings
+  // (already scheme-normalized, no trailing slash). NEXT_PUBLIC_APP_URL
+  // is deliberately not consulted — it has historically been pointed at
+  // the MARKETING site (motta.cpa), which has no /meetings/zoom page;
+  // landing there was a recurring bug here.
+  const baseUrl = firmConfigSync().hubUrl
 
   const fail = (reason: string, log?: unknown) => {
     // Always log the failure (even without extra context) so we can see
@@ -71,13 +64,28 @@ export async function GET(request: Request) {
     let teamMemberId: string | null = null
 
     if (state) {
+      // State minted by /authorize is `<base64 payload>.<hmac-sha256 hex>`
+      // signed with ZOOM_CLIENT_SECRET. Verify the signature before
+      // trusting the embedded team_member_id -- an unsigned or forged
+      // state must not be able to point the token upsert at an
+      // arbitrary team member's row. Invalid/legacy unsigned states are
+      // rejected outright rather than falling back to the session.
+      const stateSecret = process.env.ZOOM_CLIENT_SECRET
+      const [statePayload, stateSig] = state.split(".")
+      if (!stateSecret || !statePayload || !stateSig) {
+        return fail("invalid_state")
+      }
+      const expectedSig = crypto.createHmac("sha256", stateSecret).update(statePayload).digest("hex")
+      const sigBuf = Buffer.from(stateSig)
+      const expectedBuf = Buffer.from(expectedSig)
+      if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+        return fail("invalid_state")
+      }
       try {
-        const decoded = JSON.parse(Buffer.from(state, "base64").toString("utf8"))
+        const decoded = JSON.parse(Buffer.from(statePayload, "base64").toString("utf8"))
         teamMemberId = decoded?.team_member_id ?? null
       } catch (err) {
-        console.error("[Zoom OAuth] Failed to decode state:", err)
-        // Fall through to session lookup -- a malformed state should
-        // not be fatal if we can identify the user another way.
+        return fail("invalid_state", err)
       }
     }
 

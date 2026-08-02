@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
 import { processWebhookEvent } from "@/lib/karbon/process-webhook-event"
+import { requireAdmin } from "@/lib/auth/require-admin"
 
 /**
  * Manually retry a failed (or any) webhook event.
@@ -13,6 +14,9 @@ import { processWebhookEvent } from "@/lib/karbon/process-webhook-event"
  * perma_key), so retrying a successful event is harmless.
  */
 export async function POST(request: NextRequest) {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   const supabase = tryCreateAdminClient()
   if (!supabase) {
     return NextResponse.json({ error: "Supabase admin client unavailable" }, { status: 500 })
@@ -35,7 +39,7 @@ export async function POST(request: NextRequest) {
   if (Array.isArray(body.event_ids) && body.event_ids.length > 0) {
     eventsQuery = eventsQuery.in("id", body.event_ids)
   } else if (body.all_failed) {
-    eventsQuery = eventsQuery.eq("status", "failed")
+    eventsQuery = eventsQuery.eq("processing_status", "failed")
   } else {
     return NextResponse.json(
       { error: "Provide either { event_ids: [...] } or { all_failed: true }" },
@@ -54,7 +58,7 @@ export async function POST(request: NextRequest) {
   // Reset to pending so the processor will re-enter the work
   await supabase
     .from("karbon_webhook_events")
-    .update({ status: "pending", error_message: null })
+    .update({ processing_status: "pending", processing_error: null })
     .in(
       "id",
       events.map((e) => e.id),

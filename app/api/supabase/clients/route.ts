@@ -12,10 +12,14 @@
  *  - search: case-insensitive substring filter applied to contact and
  *            organization names + email
  *  - limit:  per-collection cap (default 5000, more than enough for Motta's
- *            current ~1.2k contacts and ~650 organizations)
+ *            current ~1.2k contacts and ~650 organizations). Fetched in
+ *            1,000-row pages because PostgREST caps any single response at
+ *            1,000 rows regardless of .limit().
  */
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+
+const PAGE_SIZE = 1000
 
 export async function GET(request: Request) {
   const supabase = createAdminClient()
@@ -26,30 +30,53 @@ export async function GET(request: Request) {
     const limit = Math.min(Number.parseInt(searchParams.get("limit") || "5000"), 10_000)
 
     // Contacts
-    let contactsQuery = supabase
-      .from("contacts")
-      .select("id, full_name, primary_email")
-      .eq("status", "Active")
-      .order("full_name", { ascending: true })
-      .limit(limit)
+    const buildContactsQuery = (from: number, to: number) => {
+      let q = supabase
+        .from("contacts")
+        .select("id, full_name, primary_email")
+        .eq("status", "Active")
+        .order("full_name", { ascending: true })
+        .range(from, to)
 
-    if (search) {
-      contactsQuery = contactsQuery.or(
-        `full_name.ilike.%${search}%,first_name.ilike.%${search}%,last_name.ilike.%${search}%,preferred_name.ilike.%${search}%,primary_email.ilike.%${search}%`,
-      )
+      if (search) {
+        q = q.or(
+          `full_name.ilike.%${search}%,first_name.ilike.%${search}%,last_name.ilike.%${search}%,preferred_name.ilike.%${search}%,primary_email.ilike.%${search}%`,
+        )
+      }
+      return q
     }
 
     // Organizations
-    let orgsQuery = supabase
-      .from("organizations")
-      .select("id, name, full_name, primary_email")
-      .order("name", { ascending: true })
-      .limit(limit)
+    const buildOrgsQuery = (from: number, to: number) => {
+      let q = supabase
+        .from("organizations")
+        .select("id, name, full_name, primary_email")
+        .order("name", { ascending: true })
+        .range(from, to)
 
-    if (search) {
-      orgsQuery = orgsQuery.or(
-        `name.ilike.%${search}%,full_name.ilike.%${search}%,trading_name.ilike.%${search}%,legal_name.ilike.%${search}%,primary_email.ilike.%${search}%`,
-      )
+      if (search) {
+        q = q.or(
+          `name.ilike.%${search}%,full_name.ilike.%${search}%,trading_name.ilike.%${search}%,legal_name.ilike.%${search}%,primary_email.ilike.%${search}%`,
+        )
+      }
+      return q
+    }
+
+    // Page through in 1,000-row chunks until the requested limit (or a short
+    // page) is reached — same pattern as /api/supabase/contacts.
+    const fetchPaged = async (buildQuery: (from: number, to: number) => any) => {
+      const collected: any[] = []
+      let from = 0
+      while (collected.length < limit) {
+        const to = Math.min(from + PAGE_SIZE - 1, limit - 1)
+        const { data, error } = await buildQuery(from, to)
+        if (error) return { data: collected, error }
+        if (!data || data.length === 0) break
+        collected.push(...data)
+        if (data.length < PAGE_SIZE) break
+        from += PAGE_SIZE
+      }
+      return { data: collected, error: null }
     }
 
     // Open work items (used by the same picker)
@@ -62,8 +89,8 @@ export async function GET(request: Request) {
       .limit(500)
 
     const [contactsRes, orgsRes, workItemsRes] = await Promise.all([
-      contactsQuery,
-      orgsQuery,
+      fetchPaged(buildContactsQuery),
+      fetchPaged(buildOrgsQuery),
       workItemsQuery,
     ])
 

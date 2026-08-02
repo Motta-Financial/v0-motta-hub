@@ -100,7 +100,12 @@ function mapKarbonOrganizationToSupabase(org: any) {
   // ============================================
   return {
     karbon_organization_key: org.OrganizationKey,
-    name: org.OrganizationName || org.Name || `Organization ${org.OrganizationKey}`,
+    // Karbon's /Organizations payloads populate FullName (not
+    // OrganizationName), so FullName must be in the chain before the key
+    // placeholder — otherwise every imported org gets persisted as
+    // "Organization <key>" and that string leaks into every UI that reads
+    // organizations.name. Mirrors lib/karbon/mappers/organization.ts.
+    name: org.OrganizationName || org.Name || org.FullName || `Organization ${org.OrganizationKey}`,
     full_name: org.FullName || org.OrganizationName || org.Name || null,
     legal_name: org.LegalName || null,
     trading_name: org.TradingName || null,

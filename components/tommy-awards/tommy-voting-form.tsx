@@ -107,9 +107,9 @@ export function TommyVotingForm() {
     const supabase = createClient()
 
     try {
-      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
+      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski, Matthew Pereira, Mark Dwyer
       // Ganesh Vasan and Thameem JA vote together as "P24" (formerly "G&T")
-      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
+      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski", "Matthew Pereira", "Mark Dwyer"]
       const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
       
       const { data: members, error: membersError } = await supabase

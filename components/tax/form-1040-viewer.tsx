@@ -56,6 +56,7 @@ type Form1040Response = {
   exportedAt: string | null
   lineCount: number
   mappedLineCount: number
+  computedLineCount?: number
   lines: Record<string, LineValue>
 }
 
@@ -119,8 +120,12 @@ export function Form1040Viewer({
             ? (errObj as { kind?: string }).kind
             : undefined
         if (kind === "scope_missing") {
+          // The stored token already carries the taxreturns scope — a 403
+          // here means Intuit hasn't allow-listed the app for the Phase 1
+          // data endpoints. Re-consenting does NOT fix this; don't send
+          // admins on that loop.
           setExportError(
-            "ProConnect hasn't granted this firm the tax-return data scope yet. An admin needs to re-consent before returns can be exported.",
+            "Intuit is rejecting return-data exports for this firm. The app isn't allow-listed for the ProConnect data endpoints yet — this needs a request to the Intuit ProConnect API team (then re-consent from Tax Settings). See the Phase 1 status on /tax/settings.",
           )
         } else if (typeof errObj === "string") {
           setExportError(errObj)
@@ -283,8 +288,13 @@ export function Form1040Viewer({
                       {data.clientName}
                     </span>
                   )}
-                  <Badge variant="outline" className="text-xs">
-                    {data.mappedLineCount} of {data.lineCount} lines mapped
+                  <Badge
+                    variant="outline"
+                    className="text-xs"
+                    title="Remaining lines are amounts Intuit calculates (tax, credits) that the ProConnect API does not export yet — they come from the filed return."
+                  >
+                    {data.mappedLineCount + (data.computedLineCount ?? 0)} of {data.lineCount} lines populate
+                    ({data.mappedLineCount} from ProConnect + {data.computedLineCount ?? 0} computed)
                   </Badge>
                 </div>
               </div>
@@ -434,7 +444,7 @@ export function Form1040Viewer({
               <span>Exported: {new Date(data.exportedAt).toLocaleString()}</span>
             )}
             <span>
-              Source: ProConnect Phase 1 API ({data.mappedLineCount} mapped lines)
+              Source: ProConnect Phase 1 API — {data.mappedLineCount} mapped input lines; Intuit-calculated amounts (tax, credits) are not available via the API yet
             </span>
           </div>
         </footer>

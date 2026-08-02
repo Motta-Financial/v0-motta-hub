@@ -19,11 +19,12 @@ import {
   buildTableCatalog,
   isAllowedTable,
 } from "@/lib/alfred/allowed-tables"
-import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
+import { getAlfredServiceAccount, ALFRED_EMAIL } from "@/lib/alfred/service-account"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
-import { ALFRED_CHAT_MODEL } from "@/lib/ai/models"
+import { ALFRED_CHAT_MODEL, isClaudeModel, type ClaudeModelId } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 // Shape of the requesting user, sent from the client transport body.
@@ -270,17 +271,22 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ teamMemberId, includeCompleted = false }) => {
       try {
         const supabase = createAdminClient()
-        let query = supabase.from("work_items").select("assignee_name, status, due_date, title")
+        // Page through every matching row — PostgREST caps a single
+        // response at 1,000 rows, which would silently truncate the
+        // workload counts once active work items cross that. Select
+        // only the columns the grouping below reads.
+        const data = await fetchAllPaged<{
+          assignee_name: string | null
+          due_date: string | null
+        }>(() => {
+          let query = supabase.from("work_items").select("assignee_name, due_date")
 
-        if (!includeCompleted) {
-          query = query.not("status", "in", '("Completed","Cancelled")')
-        }
+          if (!includeCompleted) {
+            query = query.not("status", "in", '("Completed","Cancelled")')
+          }
 
-        const { data, error } = await query
-
-        if (error) {
-          return { success: false, error: error.message }
-        }
+          return query
+        })
 
         // Group by assignee
         const workload: Record<string, { total: number; overdue: number; upcoming: number }> = {}
@@ -512,16 +518,25 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ period = "month" }) => {
       try {
         const supabase = createAdminClient()
-        // Get invoice totals
-        const { data: invoices } = await supabase
-          .from("invoices")
-          .select("total_amount, amount_paid, status, invoice_date")
+        // Get invoice totals. Paged: PostgREST caps a single response
+        // at 1,000 rows, which would silently understate the totals
+        // once invoices pass that — and select only the columns the
+        // reduces below read.
+        const invoices = await fetchAllPaged<{
+          total_amount: number | null
+          amount_paid: number | null
+        }>(() => supabase.from("invoices").select("total_amount, amount_paid"))
 
-        // Get recurring revenue
-        const { data: recurring } = await supabase
-          .from("recurring_revenue")
-          .select("monthly_amount, annual_amount, is_active")
-          .eq("is_active", true)
+        // Get recurring revenue (paged for the same reason)
+        const recurring = await fetchAllPaged<{
+          monthly_amount: number | null
+          annual_amount: number | null
+        }>(() =>
+          supabase
+            .from("recurring_revenue")
+            .select("monthly_amount, annual_amount")
+            .eq("is_active", true),
+        )
 
         const totalInvoiced = invoices?.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) || 0
         const totalPaid = invoices?.reduce((sum, inv) => sum + (inv.amount_paid || 0), 0) || 0
@@ -887,14 +902,14 @@ Use this to answer questions about clients, work items, team members, finances, 
 function buildIdentityPreamble(currentUser: CurrentUser | null): string {
   if (!currentUser) {
     return `You operate under two identities:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — UNKNOWN. No team member identity was provided with this turn.
 
 Because the requesting user is unknown, do NOT answer "my work items" / "my deadlines" / "my clients" style questions as if you knew who is asking. Tell the user you couldn't resolve their identity and answer firm-wide instead. Do NOT call getMyWorkItems or getMyUpcomingDeadlines in this state.`
   }
 
   return `You operate under two identities at once:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — ${currentUser.fullName ?? currentUser.email} (${currentUser.role ?? "no role"}, ${currentUser.department ?? "no department"}), team_members.id ${currentUser.teamMemberId}, Karbon user key ${currentUser.karbonUserKey ?? "none"}.
 
 When you create or send anything externally visible, the sender/author is ALFRED, but you ALWAYS include "on behalf of ${currentUser.fullName ?? currentUser.email}" in the body and record ${currentUser.teamMemberId} as on_behalf_of_id in activity_log.
@@ -1014,13 +1029,33 @@ export async function POST(req: Request) {
     messages,
     conversationId: incomingConversationId = null,
     audience = "staff",
+    model: requestedModel = null,
   }: {
     messages: UIMessage[]
     // currentUser is intentionally NOT typed/read here -- it is an
     // untrusted hint only and is silently discarded.
     conversationId?: string | null
     audience?: Audience
+    // Optional per-request model override sent by the alfred-chat
+    // client's model picker. Validated below via isClaudeModel() so
+    // a malicious client can't ask for an arbitrary provider/model.
+    model?: string | null
   } = await req.json()
+
+  // Resolve the per-request model override. We accept it only if it
+  // round-trips through the Claude allowlist; anything else (unknown
+  // string, OpenAI/Google id, etc.) silently falls through to
+  // aiConfig.model below. Logging the requested-vs-resolved pair so
+  // we can spot clients shipping stale ids after a model bump.
+  const overrideModel: ClaudeModelId | null = isClaudeModel(requestedModel)
+    ? requestedModel
+    : null
+  if (requestedModel && !overrideModel) {
+    console.warn(
+      `[alfred] rejected per-request model override: ${requestedModel}. ` +
+        `Falling back to aiConfig default.`,
+    )
+  }
 
   // Build the audience policy (staff today, client deliberately
   // throws). Doing this BEFORE we touch the model lets the route fail
@@ -1307,6 +1342,10 @@ export async function POST(req: Request) {
       // Fetch AI config for model + prompt overrides from the admin panel.
       // Falls back to hardcoded defaults if the DB isn't available.
       const aiConfig = await getAIConfig("alfred_chat")
+      // Per-request model override (validated above) wins over the
+      // admin-panel default. This is what the alfred-chat dropdown
+      // drives; if it's null we use whatever aiConfig resolves to.
+      const effectiveModel = overrideModel ?? aiConfig.model
       const startTime = Date.now()
 
       // Build the system prompt, using the admin override if set
@@ -1315,9 +1354,9 @@ export async function POST(req: Request) {
         : `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`
 
       const result = streamText({
-        // Model can be overridden from the admin panel; falls back to
-        // ALFRED_CHAT_MODEL from lib/ai/models.ts if no override is set.
-        model: aiConfig.model,
+        // Resolution order: per-request override (validated against
+        // CLAUDE_MODELS) > admin-panel override > ALFRED_CHAT_MODEL.
+        model: effectiveModel,
         system: baseSystemPrompt,
         messages: modelMessages,
         tools: filteredTools,
@@ -1330,7 +1369,7 @@ export async function POST(req: Request) {
           // AI SDK 6 uses inputTokens/outputTokens; we map to our DB schema names
           logAIUsage({
             useCase: "alfred_chat",
-            model: aiConfig.model,
+            model: effectiveModel,
             promptTokens: usage?.inputTokens,
             completionTokens: usage?.outputTokens,
             totalTokens: usage?.totalTokens,

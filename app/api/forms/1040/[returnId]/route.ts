@@ -10,6 +10,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import {
   loadSchema,
   renderForm1040,
@@ -62,16 +63,37 @@ export async function GET(
   // 2. Fetch the flat field cells. We read every leaf field (not just
   //    `val`) so the renderer can resolve mappings whose cell_field points
   //    at desc / src / tsj / scope (e.g. text or T/S/J-keyed lines).
-  const { data: cellRows, error: cellErr } = await sb
-    .from("proconnect_return_field_cells")
-    .select("series_id, prefix_id, code_id, suffix_id, val, description, src, tsj, scope, source, city_abbrev")
-    .eq("return_id", returnId)
-
-  if (cellErr) {
-    return NextResponse.json({ error: cellErr.message }, { status: 500 })
+  //    Paged — returns hold up to ~5k cells while PostgREST caps each
+  //    response at 1,000 rows.
+  type CellRow = {
+    series_id: string
+    prefix_id: string
+    code_id: string
+    suffix_id: string
+    val: string | null
+    description: string | null
+    src: string | null
+    tsj: string | null
+    scope: string | null
+    source: string | null
+    city_abbrev: string | null
+  }
+  let cellRows: CellRow[]
+  try {
+    cellRows = await fetchAllPaged<CellRow>(() =>
+      sb
+        .from("proconnect_return_field_cells")
+        .select("series_id, prefix_id, code_id, suffix_id, val, description, src, tsj, scope, source, city_abbrev")
+        .eq("return_id", returnId),
+    )
+  } catch (err) {
+    return NextResponse.json(
+      { error: (err as { message?: string })?.message ?? "cells fetch failed" },
+      { status: 500 },
+    )
   }
 
-  const cells: FieldCell[] = (cellRows ?? []).map((r) => ({
+  const cells: FieldCell[] = cellRows.map((r) => ({
     seriesId: r.series_id,
     prefixId: r.prefix_id,
     codeId: r.code_id,
@@ -101,6 +123,10 @@ export async function GET(
     exportedAt: snapshot.exported_at,
     lineCount: schema.lines.length,
     mappedLineCount: schema.mappings.length,
+    // Lines the renderer derives from mapped inputs (sums, AGI, etc.) —
+    // they populate without a mapping of their own, so raw
+    // mapped/lineCount badly understates real coverage.
+    computedLineCount: schema.lines.filter((l) => l.isComputed).length,
     lines: form1040,
   })
 }
