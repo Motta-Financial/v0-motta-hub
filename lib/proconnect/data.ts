@@ -26,6 +26,7 @@
  */
 
 import { getAccessToken, getRealmId } from "./oauth"
+import { acquireRateLimitSlot, newIntuitTid } from "./rate-limit"
 
 const TAX_RETURNS_BASE_URL =
   process.env.PROCONNECT_TAX_RETURNS_BASE_URL || "https://protaxdata.api.intuit.com"
@@ -216,6 +217,13 @@ async function fetchWithRetry(
 
   let res: Response
   try {
+    // Throttle before EVERY attempt, including retries. This path previously
+    // had backoff but no limiter, while client.ts had a limiter but no
+    // backoff — so the write path (Export/Import) could burst past Intuit's
+    // ~5 TPS cap. Both now share one counter (lib/proconnect/rate-limit.ts).
+    // Placing this inside the retry recursion means a backoff storm is
+    // rate-limited too, not just the first attempt.
+    await acquireRateLimitSlot()
     res = await fetch(url, init)
   } catch (err) {
     // Network / DNS / TLS — don't retry indefinitely; one retry only.
@@ -278,7 +286,7 @@ async function authedRequest<T>(
     intuit_realmid: realmId,
     // Generate a fresh `intuit-tid` per request so the server can
     // correlate logs back to a specific call. Doc strongly recommends.
-    "intuit-tid": cryptoRandomTid(),
+    "intuit-tid": newIntuitTid(),
   }
   if (init.body !== undefined) headers["Content-Type"] = "application/json"
 
@@ -324,13 +332,6 @@ async function authedRequest<T>(
     intuitTid: result.tid,
     error: classify(result.status, result.body),
   }
-}
-
-/** RFC 4122-style 8-char request id. */
-function cryptoRandomTid(): string {
-  const bytes = new Uint8Array(8)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
 }
 
 // ---------------------------------------------------------------------------
