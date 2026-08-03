@@ -183,6 +183,14 @@ function classify(status: number, body: string): ProconnectApiError {
     // §A.7: export uses `403 RETURN_LOCKED` (import uses 423).
     if (upstreamCode === "RETURN_LOCKED") return { kind: "locked", status: 403, body }
     if (upstreamCode === "ACCESS_DENIED") return { kind: "access_denied", status: 403, body }
+    // Gateway-level rejection. Observed on 100% of Import attempts (verified
+    // 2026-08-03) while Export succeeds on the same token — i.e. the app/token
+    // is not entitled to the Import operation, which per Phase 1 §2.1 requires
+    // the firm's PRIMARY ADMIN token. Classified as scope_missing so the UI
+    // surfaces the re-consent path rather than a generic failure.
+    if (upstreamCode === "AuthorizationFailed") {
+      return { kind: "scope_missing", status: 403, body }
+    }
     // Default: treat unattributed 403 as scope-missing (consent flow).
     return { kind: "scope_missing", status: 403, body }
   }
@@ -197,8 +205,21 @@ function classify(status: number, body: string): ProconnectApiError {
 function parseUpstreamErrorCode(body: string): string | null {
   if (!body) return null
   try {
-    const parsed = JSON.parse(body) as { errorCode?: string }
-    return typeof parsed.errorCode === "string" ? parsed.errorCode : null
+    // Two distinct error shapes reach us:
+    //   1. The ProConnect service, per the Phase 1 spec:
+    //        { "errorCode": "RETURN_LOCKED", "errorMessage": "..." }
+    //   2. The Intuit API *gateway*, which rejects before the request ever
+    //      reaches ProConnect and uses a different envelope entirely:
+    //        { "code": "AuthorizationFailed", "type": "INPUT", "message": null }
+    //      Verified live 2026-08-03: every Import call returns exactly this,
+    //      with or without the `oii-client/` path segment, while Export on the
+    //      same token returns 200. Reading only `errorCode` classified these as
+    //      an unattributed 403 and lost the one diagnostic string that explains
+    //      what happened.
+    const parsed = JSON.parse(body) as { errorCode?: string; code?: string }
+    if (typeof parsed.errorCode === "string") return parsed.errorCode
+    if (typeof parsed.code === "string") return parsed.code
+    return null
   } catch {
     return null
   }

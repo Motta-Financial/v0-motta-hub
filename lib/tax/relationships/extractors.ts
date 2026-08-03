@@ -35,8 +35,8 @@ import { digitsOnly, last4, nameSimilarity, normalizeName, tinExact } from "./id
  * one (relationship_id, signal[]) row group.
  */
 export type RawSignal = {
-  individual_proconnect_client_id: string
-  business_proconnect_client_id: string
+  person_client_id: string
+  org_client_id: string
   relationship_type: RelationshipType
   direction: RelationshipDirection
   signal_source: SignalSource
@@ -244,8 +244,8 @@ export function extractFromIndividualReturn(
         for (const peer of index.byEin.get(ein)!) {
           if (peer.proconnect_client_id === individualClientId) continue
           out.push({
-            individual_proconnect_client_id: individualClientId,
-            business_proconnect_client_id: peer.proconnect_client_id,
+            person_client_id: individualClientId,
+            org_client_id: peer.proconnect_client_id,
             relationship_type: isScheduleE ? "k1_issuer" : "schedule_c_owner",
             direction: "individual_to_business",
             signal_source: isScheduleE ? "schedule_e" : "schedule_c",
@@ -274,8 +274,8 @@ export function extractFromIndividualReturn(
       if (exactBusinesses.length > 0) {
         for (const peer of exactBusinesses) {
           out.push({
-            individual_proconnect_client_id: individualClientId,
-            business_proconnect_client_id: peer.proconnect_client_id,
+            person_client_id: individualClientId,
+            org_client_id: peer.proconnect_client_id,
             relationship_type: isScheduleE ? "k1_issuer" : "schedule_c_owner",
             direction: "individual_to_business",
             signal_source: isScheduleE ? "schedule_e" : "schedule_c",
@@ -304,8 +304,8 @@ export function extractFromIndividualReturn(
       }
       if (bestPeer && bestScore >= 0.75) {
         out.push({
-          individual_proconnect_client_id: individualClientId,
-          business_proconnect_client_id: bestPeer.proconnect_client_id,
+          person_client_id: individualClientId,
+          org_client_id: bestPeer.proconnect_client_id,
           relationship_type: isScheduleE ? "k1_issuer" : "schedule_c_owner",
           direction: "individual_to_business",
           signal_source: isScheduleE ? "schedule_e" : "schedule_c",
@@ -356,8 +356,8 @@ export function extractFromBusinessReturn(
         for (const peer of index.bySsn.get(ssn)!) {
           if (peer.proconnect_client_id === businessClientId) continue
           out.push({
-            individual_proconnect_client_id: peer.proconnect_client_id,
-            business_proconnect_client_id: businessClientId,
+            person_client_id: peer.proconnect_client_id,
+            org_client_id: businessClientId,
             relationship_type: "owner",
             direction: "business_to_individual",
             signal_source: "business_owners",
@@ -381,8 +381,8 @@ export function extractFromBusinessReturn(
           // Only emit when unambiguous to avoid pairing every John Smith.
           const peer = matches[0]
           out.push({
-            individual_proconnect_client_id: peer.proconnect_client_id,
-            business_proconnect_client_id: businessClientId,
+            person_client_id: peer.proconnect_client_id,
+            org_client_id: businessClientId,
             relationship_type: "owner",
             direction: "business_to_individual",
             signal_source: "business_owners",
@@ -407,8 +407,8 @@ export function extractFromBusinessReturn(
       if (exact.length > 0) {
         for (const peer of exact) {
           out.push({
-            individual_proconnect_client_id: peer.proconnect_client_id,
-            business_proconnect_client_id: businessClientId,
+            person_client_id: peer.proconnect_client_id,
+            org_client_id: businessClientId,
             relationship_type: "owner",
             direction: "business_to_individual",
             signal_source: "business_owners",
@@ -435,8 +435,8 @@ export function extractFromBusinessReturn(
       }
       if (best && bestScore >= 0.8) {
         out.push({
-          individual_proconnect_client_id: best.proconnect_client_id,
-          business_proconnect_client_id: businessClientId,
+          person_client_id: best.proconnect_client_id,
+          org_client_id: businessClientId,
           relationship_type: "owner",
           direction: "business_to_individual",
           signal_source: "business_owners",
@@ -506,8 +506,8 @@ export function extractFromHubFallback(
         ? "owner"
         : "related"
     out.push({
-      individual_proconnect_client_id: ind.proconnect_client_id,
-      business_proconnect_client_id: biz.proconnect_client_id,
+      person_client_id: ind.proconnect_client_id,
+      org_client_id: biz.proconnect_client_id,
       relationship_type: relType,
       direction: "individual_to_business",
       signal_source: "hub_contact_organizations",
@@ -560,8 +560,8 @@ export function extractFromHubFallback(
           ? "owner"
           : "officer"
     out.push({
-      individual_proconnect_client_id: matched.proconnect_client_id,
-      business_proconnect_client_id: biz.proconnect_client_id,
+      person_client_id: matched.proconnect_client_id,
+      org_client_id: biz.proconnect_client_id,
       relationship_type: relType,
       direction: "business_to_individual",
       signal_source:

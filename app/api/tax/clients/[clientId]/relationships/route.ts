@@ -21,7 +21,7 @@ export async function GET(
       .from("tax_client_relationships_enriched")
       .select("*")
       .or(
-        `individual_proconnect_client_id.eq.${clientId},business_proconnect_client_id.eq.${clientId}`,
+        `person_client_id.eq.${clientId},org_client_id.eq.${clientId}`,
       )
       .neq("status", "rejected")
       .order("confidence", { ascending: false })
@@ -33,10 +33,10 @@ export async function GET(
     return NextResponse.json({
       ok: true,
       as_individual: rows.filter(
-        (r) => r.individual_proconnect_client_id === clientId,
+        (r) => r.person_client_id === clientId,
       ),
       as_business: rows.filter(
-        (r) => r.business_proconnect_client_id === clientId,
+        (r) => r.org_client_id === clientId,
       ),
     })
   } catch (err) {

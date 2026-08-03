@@ -44,10 +44,10 @@ type RelationshipRow = {
   confidence: number
   relationship_type: string
   direction: string
-  individual_proconnect_client_id: string
-  business_proconnect_client_id: string
-  individual_display_name: string | null
-  business_display_name: string | null
+  person_client_id: string
+  org_client_id: string
+  person_display_name: string | null
+  org_display_name: string | null
   individual_tax_id_last4: string | null
   business_tax_id_last4: string | null
   source_engagement_id: string | null
@@ -147,8 +147,8 @@ export function RelationshipsClient() {
     const needle = search.toLowerCase()
     return rows.filter((r) =>
       [
-        r.individual_display_name,
-        r.business_display_name,
+        r.person_display_name,
+        r.org_display_name,
         r.relationship_type,
         ...(r.signal_sources ?? []),
       ]
@@ -297,10 +297,10 @@ export function RelationshipsClient() {
                       </TableCell>
                       <TableCell>
                         <Link
-                          href={`/tax/clients/${row.individual_proconnect_client_id}`}
+                          href={`/tax/clients/${row.person_client_id}`}
                           className="font-medium text-foreground hover:underline"
                         >
-                          {row.individual_display_name ?? row.individual_proconnect_client_id}
+                          {row.person_display_name ?? row.person_client_id}
                         </Link>
                         {row.individual_tax_id_last4 ? (
                           <div className="text-xs leading-relaxed text-muted-foreground">
@@ -310,10 +310,10 @@ export function RelationshipsClient() {
                       </TableCell>
                       <TableCell>
                         <Link
-                          href={`/tax/clients/${row.business_proconnect_client_id}`}
+                          href={`/tax/clients/${row.org_client_id}`}
                           className="font-medium text-foreground hover:underline"
                         >
-                          {row.business_display_name ?? row.business_proconnect_client_id}
+                          {row.org_display_name ?? row.org_client_id}
                         </Link>
                         {row.business_tax_id_last4 ? (
                           <div className="text-xs leading-relaxed text-muted-foreground">
@@ -366,7 +366,7 @@ export function RelationshipsClient() {
                           ) : null}
                           <Button asChild size="sm" variant="ghost">
                             <Link
-                              href={`/tax/clients/${row.individual_proconnect_client_id}`}
+                              href={`/tax/clients/${row.person_client_id}`}
                               aria-label="Open individual"
                             >
                               <ExternalLink className="h-3.5 w-3.5" />

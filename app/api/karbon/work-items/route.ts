@@ -215,6 +215,21 @@ async function linkWorkItemsToClients(supabase: any) {
   return results
 }
 
+/**
+ * Canonicalise a Karbon PrimaryStatus value to the SPACED form used by $filter.
+ *
+ * Karbon accepts either form in request bodies and returns the no-space form
+ * from some endpoints, but `$filter` matches only the spaced form and returns
+ * an empty result set — not an error — for anything else. Accepts any casing
+ * and either spelling; passes through unrecognised values untouched so a new
+ * Karbon status isn't silently swallowed by this helper.
+ */
+function normalizeKarbonPrimaryStatus(input: string): string {
+  const canonical = ["Planned", "Ready To Start", "In Progress", "Waiting", "Completed"]
+  const squashed = input.replace(/[\s_-]+/g, "").toLowerCase()
+  return canonical.find((c) => c.replace(/\s+/g, "").toLowerCase() === squashed) ?? input
+}
+
 export async function GET(request: NextRequest) {
   const credentials = getKarbonCredentials()
 
@@ -272,10 +287,19 @@ export async function GET(request: NextRequest) {
     }
 
     if (status) {
-      const statuses = status.split(",").map((s) => s.trim())
+      // Karbon's $filter matches PrimaryStatus ONLY in its spaced form
+      // ("In Progress", "Ready To Start"). The no-space form is not rejected —
+      // it silently returns zero rows, which is the worst possible failure mode
+      // for a filter. POST/PUT bodies accept either form, and GET /WorkItems/{key}
+      // *returns* the no-space form, so a value round-tripped out of one call and
+      // back into a filter would quietly match nothing. Normalise defensively.
+      const statuses = status
+        .split(",")
+        .map((s) => normalizeKarbonPrimaryStatus(s.trim()))
+        .filter(Boolean)
       if (statuses.length === 1) {
         filters.push(`PrimaryStatus eq '${statuses[0]}'`)
-      } else {
+      } else if (statuses.length > 1) {
         const statusFilters = statuses.map((s) => `PrimaryStatus eq '${s}'`).join(" or ")
         filters.push(`(${statusFilters})`)
       }

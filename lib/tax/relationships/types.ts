@@ -72,8 +72,8 @@ export const SIGNAL_WEIGHTS: Record<SignalKind, number> = {
 
 export type RelationshipRow = {
   id: string
-  individual_proconnect_client_id: string
-  business_proconnect_client_id: string
+  person_client_id: string
+  org_client_id: string
   relationship_type: RelationshipType
   status: RelationshipStatus
   confidence: number
