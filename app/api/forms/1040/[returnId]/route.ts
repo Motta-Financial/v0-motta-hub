@@ -133,6 +133,9 @@ export async function GET(
     // they populate without a mapping of their own, so raw
     // mapped/lineCount badly understates real coverage.
     computedLineCount: schema.lines.filter((l) => l.isComputed).length,
+    // Lines the estimator filled on THIS return (varies: no SS benefits
+    // means no 6b estimate, no CTC kids means no 19).
+    estimatedLineCount: Object.values(form1040).filter((v) => v.source === "estimated").length,
     lines: form1040,
   })
 }

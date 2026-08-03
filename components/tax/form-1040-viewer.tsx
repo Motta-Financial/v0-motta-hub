@@ -57,6 +57,7 @@ type Form1040Response = {
   lineCount: number
   mappedLineCount: number
   computedLineCount?: number
+  estimatedLineCount?: number
   lines: Record<string, LineValue>
 }
 
@@ -293,8 +294,9 @@ export function Form1040Viewer({
                     className="text-xs"
                     title="Remaining lines are amounts Intuit calculates (tax, credits) that the ProConnect API does not export yet — they come from the filed return."
                   >
-                    {data.mappedLineCount + (data.computedLineCount ?? 0)} of {data.lineCount} lines populate
-                    ({data.mappedLineCount} from ProConnect + {data.computedLineCount ?? 0} computed)
+                    {data.mappedLineCount + (data.computedLineCount ?? 0) + (data.estimatedLineCount ?? 0)} of {data.lineCount} lines populate
+                    ({data.mappedLineCount} from ProConnect + {data.computedLineCount ?? 0} computed
+                    {(data.estimatedLineCount ?? 0) > 0 ? ` + ${data.estimatedLineCount} estimated` : ""})
                   </Badge>
                 </div>
               </div>
