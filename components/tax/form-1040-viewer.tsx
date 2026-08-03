@@ -44,7 +44,7 @@ type LineValue = {
     scheduleRef: string | null
     notes: string | null
   }
-  source: "proconnect" | "computed" | "input"
+  source: "proconnect" | "computed" | "input" | "estimated"
 }
 
 type Form1040Response = {
@@ -57,6 +57,7 @@ type Form1040Response = {
   lineCount: number
   mappedLineCount: number
   computedLineCount?: number
+  estimatedLineCount?: number
   lines: Record<string, LineValue>
 }
 
@@ -293,8 +294,9 @@ export function Form1040Viewer({
                     className="text-xs"
                     title="Remaining lines are amounts Intuit calculates (tax, credits) that the ProConnect API does not export yet — they come from the filed return."
                   >
-                    {data.mappedLineCount + (data.computedLineCount ?? 0)} of {data.lineCount} lines populate
-                    ({data.mappedLineCount} from ProConnect + {data.computedLineCount ?? 0} computed)
+                    {data.mappedLineCount + (data.computedLineCount ?? 0) + (data.estimatedLineCount ?? 0)} of {data.lineCount} lines populate
+                    ({data.mappedLineCount} from ProConnect + {data.computedLineCount ?? 0} computed
+                    {(data.estimatedLineCount ?? 0) > 0 ? ` + ${data.estimatedLineCount} estimated` : ""})
                   </Badge>
                 </div>
               </div>
@@ -444,7 +446,7 @@ export function Form1040Viewer({
               <span>Exported: {new Date(data.exportedAt).toLocaleString()}</span>
             )}
             <span>
-              Source: ProConnect Phase 1 API — {data.mappedLineCount} mapped input lines; Intuit-calculated amounts (tax, credits) are not available via the API yet
+              Source: ProConnect Phase 1 API — {data.mappedLineCount} mapped input lines. Amber “estimated” values are Hub-calculated from IRS worksheets, not from Intuit — verify against the filed return.
             </span>
           </div>
         </footer>
@@ -536,6 +538,15 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
           {line.isComputed && (
             <Badge variant="outline" className="text-[10px] px-1.5 py-0">
               computed
+            </Badge>
+          )}
+          {source === "estimated" && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 border-amber-300 bg-amber-50 text-amber-700"
+              title="Hub-calculated estimate (standard deduction / taxable SS / tax / CTC) — Intuit does not export calculated amounts. Verify against the filed return."
+            >
+              estimated
             </Badge>
           )}
           {line.scheduleRef && (

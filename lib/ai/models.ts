@@ -155,6 +155,16 @@ export interface ClaudeModelOption {
   description: string
   /** Recommended best-fit task. */
   bestFor: string
+  /**
+   * Extended ("deep") thinking support. The alfred-chat client mirrors these
+   * flags to decide whether to enable its Deep-think toggle; this catalog is
+   * the source of truth. If the two ever drift the worst case is a control
+   * that renders but no-ops, because the chat route re-checks the flag
+   * server-side before enabling thinking.
+   */
+  supportsThinking: boolean
+  /** Image input support (reserved for the attachment work). */
+  supportsVision: boolean
 }
 
 /** Ordered list for UI pickers. Order matters — first entry is the
@@ -165,20 +175,44 @@ export const CLAUDE_MODELS: ClaudeModelOption[] = [
     label: "Claude Sonnet 4.6",
     description: "Balanced reasoning + speed. The general default.",
     bestFor: "Chat, drafting, most agentic workflows",
+    supportsThinking: true,
+    supportsVision: true,
   },
   {
     id: CLAUDE_OPUS,
     label: "Claude Opus 4.7",
     description: "Anthropic's flagship — deepest reasoning, slowest, priciest.",
     bestFor: "Complex analysis, long-context synthesis, hard tool-use",
+    supportsThinking: true,
+    supportsVision: true,
   },
   {
     id: CLAUDE_HAIKU,
     label: "Claude Haiku 4.5",
     description: "Fastest + cheapest. Drops some reasoning depth.",
     bestFor: "High-volume classification, quick summarization, ALFRED tool-calls",
+    supportsThinking: true,
+    supportsVision: true,
   },
 ]
+
+/**
+ * Capability lookup for a resolved model id.
+ *
+ * Returns `null` for anything not in `CLAUDE_MODELS` — including the OpenAI
+ * ids above, which are used by non-chat workloads and have no Anthropic
+ * thinking option. Callers must treat `null` as "no extended features".
+ */
+export function getClaudeModelCapabilities(
+  id: unknown,
+): { supportsThinking: boolean; supportsVision: boolean } | null {
+  const match = CLAUDE_MODELS.find((m) => m.id === id)
+  if (!match) return null
+  return {
+    supportsThinking: match.supportsThinking,
+    supportsVision: match.supportsVision,
+  }
+}
 
 /** Runtime guard for incoming request bodies. */
 export function isClaudeModel(id: unknown): id is ClaudeModelId {

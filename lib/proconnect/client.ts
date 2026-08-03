@@ -12,6 +12,7 @@
  */
 
 import { getAccessToken, getRealmId } from "./oauth"
+import { acquireRateLimitSlot, newIntuitTid } from "./rate-limit"
 
 const CLIENT_SERVICE_URL = "https://client.accountant.intuit.com"
 const ENGAGEMENT_SERVICE_URL = "https://engagement.accountant.intuit.com"
@@ -34,26 +35,10 @@ interface ApiResponse<T> {
 }
 
 // ─── Global rate limiter ──────────────────────────────────────────────────
-// ProConnect enforces a confirmed ~5 TPS limit per realm; bursting above it
-// returns 429. Every outbound request reserves the next time slot before it
-// fires, so the whole process stays at or below ~4 req/s no matter how many
-// callers run concurrently. This is the single choke point for all
-// ProConnect traffic (clients, engagements, custom statuses).
-const MIN_REQUEST_INTERVAL_MS = 250 // 1000ms / 250ms = 4 requests/second
-let nextRequestSlot = 0
-
-async function acquireRateLimitSlot(): Promise<void> {
-  const now = Date.now()
-  // Reserve a slot at least MIN_REQUEST_INTERVAL_MS after the previous one.
-  // Read-then-write is atomic here (JS is single-threaded and there is no
-  // await between them), so concurrent callers each get a distinct slot.
-  const slot = Math.max(now, nextRequestSlot)
-  nextRequestSlot = slot + MIN_REQUEST_INTERVAL_MS
-  const wait = slot - now
-  if (wait > 0) {
-    await new Promise((resolve) => setTimeout(resolve, wait))
-  }
-}
+// The limiter now lives in lib/proconnect/rate-limit.ts so that this module
+// and lib/proconnect/data.ts (Export/Import) share ONE counter. Keeping a
+// copy here would mean two independent 4 req/s pacers in the same process —
+// ~8 req/s combined, which breaches Intuit's ~5 TPS cap.
 
 /**
  * Make an authenticated request to a ProConnect API
@@ -83,6 +68,11 @@ async function apiRequest<T>(
     Accept: "application/json",
     "intuit_product": "ITO",
     "intuit_realmid": realmId,
+    // Client-generated correlation id. Intuit recommends sending one on
+    // every request and quoting it on support tickets; previously only the
+    // Export/Import path did. Cheap to add, and it makes the Client and
+    // Engagement calls traceable when Intuit asks for a tid.
+    "intuit-tid": newIntuitTid(),
   }
 
   if (body) {

@@ -24,7 +24,13 @@ import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
-import { ALFRED_CHAT_MODEL, isGatewayTextModel, type GatewayTextModelId } from "@/lib/ai/models"
+import { buildProjectContext } from "@/lib/alfred/project-context"
+import {
+  ALFRED_CHAT_MODEL,
+  getClaudeModelCapabilities,
+  isGatewayTextModel,
+  type GatewayTextModelId,
+} from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 // Shape of the requesting user, sent from the client transport body.
@@ -39,6 +45,19 @@ interface CurrentUser {
 }
 
 export const maxDuration = 60
+
+/**
+ * Extended-thinking budget for the alfred-chat Deep-think toggle.
+ *
+ * Anthropic's contract: `max_tokens` must be STRICTLY GREATER than
+ * `thinking.budget_tokens`, and the thinking tokens are consumed out of
+ * `max_tokens` — they are not additive. So the ceiling has to leave room for
+ * both the reasoning and the visible answer, otherwise a long think starves
+ * the reply. 8k think + 8k answer is a sane default for a chat surface that
+ * also has to finish inside `maxDuration`.
+ */
+const THINKING_BUDGET_TOKENS = 8_000
+const THINKING_MAX_OUTPUT_TOKENS = 16_000
 
 /**
  * Escape user-supplied text before splicing it into a PostgREST `.or()`
@@ -1030,6 +1049,7 @@ export async function POST(req: Request) {
     conversationId: incomingConversationId = null,
     audience = "staff",
     model: requestedModel = null,
+    think: requestedThink = false,
   }: {
     messages: UIMessage[]
     // currentUser is intentionally NOT typed/read here -- it is an
@@ -1040,6 +1060,10 @@ export async function POST(req: Request) {
     // client's model picker. Validated below via isGatewayTextModel() so
     // a malicious client can't ask for an arbitrary provider/model.
     model?: string | null
+    // Deep-think toggle from the alfred-chat composer. Honoured only when
+    // the *resolved* model advertises supportsThinking (see lib/ai/models.ts);
+    // otherwise silently ignored so an out-of-date client can't error the turn.
+    think?: boolean
   } = await req.json()
 
   // Resolve the per-request model override. We accept it only if it
@@ -1101,6 +1125,10 @@ export async function POST(req: Request) {
 
   let conversationId: string | null = incomingConversationId
   let conversationTitleAlreadySet = false
+  // Project the conversation is filed under, if any. Read from the row
+  // rather than the request body: the alfred-chat client sets project_id
+  // directly via its own RLS-scoped connection, and the body is untrusted.
+  let conversationProjectId: string | null = null
 
   if (currentUser) {
     if (conversationId) {
@@ -1108,13 +1136,14 @@ export async function POST(req: Request) {
       // If not, fall through and create a fresh one rather than 500ing.
       const { data: existing } = await adminAuthLookup
         .from("alfred_conversations")
-        .select("id, title, end_user_team_member_id")
+        .select("id, title, end_user_team_member_id, project_id")
         .eq("id", conversationId)
         .maybeSingle()
       if (!existing || existing.end_user_team_member_id !== currentUser.teamMemberId) {
         conversationId = null
       } else {
         conversationTitleAlreadySet = !!existing.title
+        conversationProjectId = existing.project_id ?? null
       }
     }
 
@@ -1349,22 +1378,69 @@ export async function POST(req: Request) {
       const effectiveModel = overrideModel ?? aiConfig.model
       const startTime = Date.now()
 
+      // ── Deep think ────────────────────────────────────────────────
+      // The alfred-chat composer ships `think: true` when its Deep-think
+      // pill is on. Until now the Hub ignored the field entirely, so the
+      // control was a no-op. Gate on the *resolved* model's capability
+      // rather than trusting the client: the picker and this catalog can
+      // drift, and an unsupported thinking option would fail the whole turn.
+      const capabilities = getClaudeModelCapabilities(effectiveModel)
+      const thinkingEnabled = requestedThink === true && capabilities?.supportsThinking === true
+      if (requestedThink && !thinkingEnabled) {
+        console.warn(
+          `[alfred] deep-think requested but not enabled for model ${effectiveModel} ` +
+            `(supportsThinking=${capabilities?.supportsThinking ?? "unknown"}). Proceeding without it.`,
+        )
+      }
+
       // Build the system prompt, using the admin override if set
       const baseSystemPrompt = aiConfig.systemPrompt
         ? aiConfig.systemPrompt
         : `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`
 
+      // ── Project context ───────────────────────────────────────────
+      // If this conversation is filed under an ALFRED Project, append the
+      // project's standing instructions and attached knowledge. Appended
+      // AFTER the base prompt so firm policy and the identity preamble
+      // still take precedence over user-authored project instructions.
+      // Returns null (and changes nothing) when there's no project, the
+      // caller isn't entitled to it, or it's empty.
+      const projectContext = currentUser
+        ? await buildProjectContext(supabase, conversationProjectId, currentUser.teamMemberId)
+        : null
+      const systemPrompt = projectContext
+        ? `${baseSystemPrompt}\n\n---\n\n${projectContext.promptFragment}`
+        : baseSystemPrompt
+
       const result = streamText({
         // Resolution order: per-request override (validated against
         // ALFRED_CHAT_MODELS) > admin-panel override > ALFRED_CHAT_MODEL.
         model: effectiveModel,
-        system: baseSystemPrompt,
+        system: systemPrompt,
         messages: modelMessages,
         tools: filteredTools,
         // 12 steps lets ALFRED chain webSearch → pick a result → browsePage →
         // reply, with a couple DB lookups in the same turn if needed.
         stopWhen: stepCountIs(12),
         abortSignal: req.signal,
+        // Only present when Deep think is on AND the model supports it, so
+        // the default path is byte-for-byte what it was before this change.
+        //
+        // maxOutputTokens MUST be raised alongside the thinking budget:
+        // Anthropic requires max_tokens > thinking.budget_tokens, and the
+        // budget is *drawn from* max_tokens rather than added on top. Left
+        // unset, max_tokens falls back to a provider default at or below the
+        // budget and every thinking-enabled turn 400s.
+        ...(thinkingEnabled
+          ? {
+              maxOutputTokens: THINKING_MAX_OUTPUT_TOKENS,
+              providerOptions: {
+                anthropic: {
+                  thinking: { type: "enabled", budgetTokens: THINKING_BUDGET_TOKENS },
+                },
+              },
+            }
+          : {}),
         onFinish: async ({ usage }) => {
           // Fire-and-forget usage logging for the admin stats dashboard
           // AI SDK 6 uses inputTokens/outputTokens; we map to our DB schema names

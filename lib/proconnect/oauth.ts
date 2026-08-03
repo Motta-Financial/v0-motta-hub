@@ -10,9 +10,18 @@
  * - PROCONNECT_CLIENT_SECRET
  * - PROCONNECT_REFRESH_TOKEN (initial seed, stored in DB after first use)
  * - PROCONNECT_REALM_ID
+ * - PROCONNECT_TOKEN_KEY (32-byte hex; encrypts tokens at rest. Optional but
+ *   strongly recommended — without it tokens are stored in plaintext. See
+ *   lib/proconnect/token-cipher.ts for the zero-downtime rollout behaviour.)
  */
 
 import { createClient } from "@supabase/supabase-js"
+import {
+  decryptToken,
+  encryptToken,
+  isEncrypted,
+  isTokenEncryptionConfigured,
+} from "./token-cipher"
 import { firmConfigSync } from "@/lib/firm-settings"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
@@ -99,10 +108,15 @@ async function storeTokens(tokens: TokenResponse): Promise<void> {
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
   const now = new Date().toISOString()
 
+  // Encrypt at rest. `encryptToken` is opportunistic: with
+  // PROCONNECT_TOKEN_KEY set it returns a `v1:` envelope, without it the
+  // value passes through unchanged (and logs loudly). Either way the read
+  // path handles both, so this row upgrades itself on the first refresh
+  // after the key lands in the environment. See lib/proconnect/token-cipher.ts.
   const payload = {
     is_singleton: true,
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
+    access_token: encryptToken(tokens.access_token),
+    refresh_token: encryptToken(tokens.refresh_token),
     token_type: tokens.token_type,
     expires_at: expiresAt,
     // Persist the *granted* scope so /tax/settings can detect when
@@ -126,8 +140,8 @@ async function storeTokens(tokens: TokenResponse): Promise<void> {
       const { error: updateError } = await supabase
         .from("proconnect_oauth_tokens")
         .update({
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
+          access_token: encryptToken(tokens.access_token),
+          refresh_token: encryptToken(tokens.refresh_token),
           token_type: tokens.token_type,
           expires_at: expiresAt,
           scope: tokens.scope ?? "com.intuit.proconnect.taxreturns",
@@ -181,7 +195,17 @@ async function getStoredTokens(): Promise<StoredToken | null> {
     throw new Error(`Failed to get tokens: ${error.message}`)
   }
 
-  return data
+  if (!data) return null
+
+  // Decrypt at the boundary so every caller downstream keeps working with
+  // plaintext tokens exactly as before. `decryptToken` passes legacy
+  // plaintext through untouched, so this is safe on a row written before
+  // encryption was enabled.
+  return {
+    ...data,
+    access_token: decryptToken(data.access_token),
+    refresh_token: decryptToken(data.refresh_token),
+  }
 }
 
 /**
@@ -264,7 +288,32 @@ export async function getTokenStatus(): Promise<{
   expiresAt: string | null
   isExpired: boolean
   needsRefresh: boolean
+  /** True when PROCONNECT_TOKEN_KEY is present and well-formed. */
+  encryptionConfigured: boolean
+  /**
+   * True when the row on disk actually carries the ciphertext envelope.
+   * Distinct from `encryptionConfigured`: right after the key is added this
+   * is still false until the next refresh rewrites the row.
+   */
+  atRestEncrypted: boolean
 }> {
+  const encryptionConfigured = isTokenEncryptionConfigured()
+
+  // Read the raw (still-encrypted) row separately so we can report what is
+  // physically on disk — getStoredTokens() decrypts and would always look
+  // like plaintext from here.
+  let atRestEncrypted = false
+  try {
+    const { data: raw } = await getSupabaseAdmin()
+      .from("proconnect_oauth_tokens")
+      .select("access_token")
+      .limit(1)
+      .single()
+    atRestEncrypted = isEncrypted(raw?.access_token)
+  } catch {
+    // Diagnostics only — never let this break the status call.
+  }
+
   const stored = await getStoredTokens()
 
   if (!stored) {
@@ -273,6 +322,8 @@ export async function getTokenStatus(): Promise<{
       expiresAt: null,
       isExpired: true,
       needsRefresh: true,
+      encryptionConfigured,
+      atRestEncrypted,
     }
   }
 
@@ -284,6 +335,8 @@ export async function getTokenStatus(): Promise<{
     expiresAt: stored.expires_at,
     isExpired: now >= expiryTime,
     needsRefresh: needsRefresh(stored.expires_at),
+    encryptionConfigured,
+    atRestEncrypted,
   }
 }
 
