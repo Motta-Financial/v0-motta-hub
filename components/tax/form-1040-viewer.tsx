@@ -44,7 +44,7 @@ type LineValue = {
     scheduleRef: string | null
     notes: string | null
   }
-  source: "proconnect" | "computed" | "input"
+  source: "proconnect" | "computed" | "input" | "estimated"
 }
 
 type Form1040Response = {
@@ -56,6 +56,8 @@ type Form1040Response = {
   exportedAt: string | null
   lineCount: number
   mappedLineCount: number
+  computedLineCount?: number
+  estimatedLineCount?: number
   lines: Record<string, LineValue>
 }
 
@@ -119,8 +121,12 @@ export function Form1040Viewer({
             ? (errObj as { kind?: string }).kind
             : undefined
         if (kind === "scope_missing") {
+          // The stored token already carries the taxreturns scope — a 403
+          // here means Intuit hasn't allow-listed the app for the Phase 1
+          // data endpoints. Re-consenting does NOT fix this; don't send
+          // admins on that loop.
           setExportError(
-            "ProConnect hasn't granted this firm the tax-return data scope yet. An admin needs to re-consent before returns can be exported.",
+            "Intuit is rejecting return-data exports for this firm. The app isn't allow-listed for the ProConnect data endpoints yet — this needs a request to the Intuit ProConnect API team (then re-consent from Tax Settings). See the Phase 1 status on /tax/settings.",
           )
         } else if (typeof errObj === "string") {
           setExportError(errObj)
@@ -283,8 +289,14 @@ export function Form1040Viewer({
                       {data.clientName}
                     </span>
                   )}
-                  <Badge variant="outline" className="text-xs">
-                    {data.mappedLineCount} of {data.lineCount} lines mapped
+                  <Badge
+                    variant="outline"
+                    className="text-xs"
+                    title="Remaining lines are amounts Intuit calculates (tax, credits) that the ProConnect API does not export yet — they come from the filed return."
+                  >
+                    {data.mappedLineCount + (data.computedLineCount ?? 0) + (data.estimatedLineCount ?? 0)} of {data.lineCount} lines populate
+                    ({data.mappedLineCount} from ProConnect + {data.computedLineCount ?? 0} computed
+                    {(data.estimatedLineCount ?? 0) > 0 ? ` + ${data.estimatedLineCount} estimated` : ""})
                   </Badge>
                 </div>
               </div>
@@ -434,7 +446,7 @@ export function Form1040Viewer({
               <span>Exported: {new Date(data.exportedAt).toLocaleString()}</span>
             )}
             <span>
-              Source: ProConnect Phase 1 API ({data.mappedLineCount} mapped lines)
+              Source: ProConnect Phase 1 API — {data.mappedLineCount} mapped input lines. Amber “estimated” values are Hub-calculated from IRS worksheets, not from Intuit — verify against the filed return.
             </span>
           </div>
         </footer>
@@ -526,6 +538,15 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
           {line.isComputed && (
             <Badge variant="outline" className="text-[10px] px-1.5 py-0">
               computed
+            </Badge>
+          )}
+          {source === "estimated" && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 border-amber-300 bg-amber-50 text-amber-700"
+              title="Hub-calculated estimate (standard deduction / taxable SS / tax / CTC) — Intuit does not export calculated amounts. Verify against the filed return."
+            >
+              estimated
             </Badge>
           )}
           {line.scheduleRef && (

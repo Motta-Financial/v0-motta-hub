@@ -1,7 +1,10 @@
 import { createAdminClient } from "@/lib/supabase/server"
+import { firmConfigSync } from "@/lib/firm-settings"
 
-const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "ALFRED Ai <Info@mottafinancial.com>"
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+// Resolved per-send (not at module init) so firm_settings edits apply
+// without a redeploy once the config cache warms.
+const FROM_EMAIL = () => firmConfigSync().fromEmail
+const APP_URL = () => firmConfigSync().hubUrl
 
 // All email categories users can opt in/out of.
 // Each `notification_type` value emitted via /api/notifications/send is mapped
@@ -118,7 +121,7 @@ export async function sendEmail({
 
   try {
     const { data, error } = await resend.emails.send({
-      from: FROM_EMAIL,
+      from: FROM_EMAIL(),
       to: Array.isArray(to) ? to : [to],
       subject,
       html,
@@ -182,7 +185,7 @@ export async function sendBatchEmail(
   for (let i = 0; i < messages.length; i += RESEND_BATCH_LIMIT) {
     const chunk = messages.slice(i, i + RESEND_BATCH_LIMIT)
     const payload = chunk.map((m) => ({
-      from: FROM_EMAIL,
+      from: FROM_EMAIL(),
       to: Array.isArray(m.to) ? m.to : [m.to],
       subject: m.subject,
       html: m.html,
@@ -360,7 +363,7 @@ export function buildDebriefEmailHtml({
   debriefUrl: string
   logoUrl?: string
 }) {
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_BASE_URL || "https://hub.motta.cpa"
+  const siteUrl = APP_URL()
   const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
 
   // Helper to render a Karbon deep link
@@ -768,10 +771,7 @@ export function buildProspectEmailHtml({
   prospectUrl: string
   logoUrl?: string
 }) {
-  const siteUrl =
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.APP_BASE_URL ||
-    "https://hub.motta.cpa"
+  const siteUrl = APP_URL()
   const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
   const today = new Date().toLocaleDateString("en-US", {
     month: "long",
@@ -1218,7 +1218,7 @@ export function buildNotificationEmailHtml(opts: {
   const greet = opts.recipientName ? `<p style="margin:0 0 16px;">Hi ${opts.recipientName},</p>` : ""
   const cta = opts.actionUrl
     ? `<div style="margin-top:24px;text-align:center;">
-        <a href="${opts.actionUrl.startsWith("http") ? opts.actionUrl : APP_URL + opts.actionUrl}"
+        <a href="${opts.actionUrl.startsWith("http") ? opts.actionUrl : APP_URL() + opts.actionUrl}"
            style="display:inline-block;background:#1a1a1a;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
           ${opts.actionLabel || "View in MOTTA HUB"}
         </a>
@@ -1481,7 +1481,7 @@ export function buildMeetingDigestHtml(opts: {
     ${upcomingHtml}
     ${recentHtml}
     <div style="margin-top:24px;text-align:center;">
-      <a href="${APP_URL}/calendar"
+      <a href="${APP_URL()}/calendar"
          style="display:inline-block;background:#1a1a1a;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
         Open Calendar
       </a>

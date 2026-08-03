@@ -9,6 +9,7 @@
  */
 import crypto from "crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 const CALENDLY_API_BASE = "https://api.calendly.com"
 const CALENDLY_AUTH_BASE = "https://auth.calendly.com"
@@ -26,12 +27,8 @@ const CALENDLY_AUTH_BASE = "https://auth.calendly.com"
 export const CALENDLY_REQUESTED_SCOPES = [
   // Scheduling
   "availability:read",
-  "availability:write",
   "event_types:read",
-  "event_types:write",
-  "locations:read",
   "routing_forms:read",
-  "shares:write",
   "scheduled_events:read",
   "scheduled_events:write",
   "scheduling_links:write",
@@ -42,8 +39,6 @@ export const CALENDLY_REQUESTED_SCOPES = [
   "users:read",
   // Security & compliance
   "activity_log:read",
-  "data_compliance:write",
-  "outgoing_communications:read",
   // Webhooks
   "webhooks:read",
   "webhooks:write",
@@ -96,23 +91,19 @@ export function getCalendlyOAuthConfig(): {
 }
 
 /**
- * Returns the canonical https:// base URL for this deployment.
+ * Returns the canonical https:// base URL for the Hub.
  *
- * Some env vars in this project are set as bare hostnames (e.g.
- * `NEXT_PUBLIC_APP_URL=motta.cpa`). Calendly's webhook API rejects any
- * callback URL that isn't a fully-qualified absolute URL with scheme,
- * so we normalize:
- *   - prepend `https://` if no scheme is present
- *   - strip trailing slashes so callers can append paths cleanly
+ * Now resolved via lib/firm-settings (firm.hub_url row → FIRM_HUB_URL /
+ * APP_BASE_URL env → default). The old chain here preferred
+ * NEXT_PUBLIC_APP_URL, which has historically been pointed at the
+ * MARKETING site (motta.cpa, sometimes as a bare hostname) — the wrong
+ * host to register Calendly webhooks / OAuth callbacks against, and a
+ * value this code should not depend on either way.
+ * firm-settings normalizes scheme + trailing slash, so callers can
+ * append paths cleanly.
  */
 export function getAppBaseUrl(): string {
-  const raw =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.APP_BASE_URL ||
-    process.env.AUTH0_BASE_URL ||
-    "https://hub.motta.cpa"
-  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
-  return withScheme.replace(/\/+$/, "")
+  return firmConfigSync().hubUrl
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

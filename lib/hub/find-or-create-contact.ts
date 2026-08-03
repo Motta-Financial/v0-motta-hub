@@ -31,6 +31,7 @@
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 import {
   deriveLegacyMottaClientId,
@@ -94,14 +95,13 @@ function getServiceClient(): SupabaseClient {
  * create a "Tommy Motta" contact every time a teammate joins their
  * own meeting.
  */
-const INTERNAL_DOMAINS = new Set(["motta.cpa", "mottafinancial.com"])
-
 export function isInternalEmail(email: string | null | undefined): boolean {
   if (!email) return false
   const lower = email.trim().toLowerCase()
   const at = lower.lastIndexOf("@")
   if (at < 0) return false
-  return INTERNAL_DOMAINS.has(lower.slice(at + 1))
+  const domain = lower.slice(at + 1)
+  return firmConfigSync().internalEmailDomains.some((d) => d.toLowerCase() === domain)
 }
 
 function splitFullName(

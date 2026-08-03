@@ -25,3 +25,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Intuit ProConnect field catalog (IVCS/FRF tax content) — partner-
+# confidential under the Open API partner agreement, and THIS REPO IS
+# PUBLIC. The catalog lives in Supabase only; never commit the source
+# extract. See scripts/358 for the schema and the loader.
+*allseriescodemappings*.csv
+ind2025-catalog.csv
+proconnect-catalog*.csv

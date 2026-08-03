@@ -16,6 +16,7 @@
 
 import { createAdminClient } from "@/lib/supabase/server"
 import { getKarbonCredentials, karbonFetch, type KarbonApiConfig } from "@/lib/karbon-api"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 const KARBON_TENANT_BASE = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
@@ -423,10 +424,7 @@ export async function postDebriefNoteToKarbon(
     return { ok: false, skipped: "no_author_email" }
   }
 
-  const siteUrl =
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    "https://hub.motta.cpa"
+  const siteUrl = firmConfigSync().hubUrl
   const hubUrl = `${siteUrl}/debriefs?id=${debrief.id}`
 
   // Subject line uses the work item name as the primary identifier, matching
@@ -459,7 +457,9 @@ export async function postDebriefNoteToKarbon(
     payload.TodoDate = debrief.debrief_date
   }
 
-  const { data, error } = await karbonFetch<{ NoteKey?: string }>(
+  // Karbon's POST /v3/Notes 201 response returns the key as `Id` (per the
+  // official OpenAPI spec and the live GET shape — see mappers/note.ts).
+  const { data, error } = await karbonFetch<{ Id?: string; NoteKey?: string }>(
     "/Notes",
     credentials,
     { method: "POST", body: payload },
@@ -472,7 +472,7 @@ export async function postDebriefNoteToKarbon(
 
   return {
     ok: true,
-    noteKey: (data as any)?.NoteKey,
+    noteKey: data?.Id ?? data?.NoteKey,
     attachedTimelines: timelines.length,
   }
 }

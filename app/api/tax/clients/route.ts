@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { chunk } from "@/lib/supabase/fetch-all"
 
 // ── ProConnect client roster with pagination ─────────────────────────
 // Stat cards use count queries (no data transfer, works past 1000 rows).
@@ -57,7 +58,9 @@ type ProconnectEngagement = {
   efile_status: string | null
   work_status: string | null
   assignee_profile_id: string | null
-  raw_json: Record<string, unknown> | null
+  // Projected JSON leaves — we never need the full raw_json blob here.
+  raw_type: string | null
+  raw_assignee: string | null
   synced_at: string | null
   updated_at: string | null
 }
@@ -210,47 +213,72 @@ export async function GET(request: NextRequest) {
     ).length
 
     // ── Filtered + paginated table data ──────────────────────────────
-    let query = supabase
-      .from("proconnect_clients")
-      .select(
-        "id, proconnect_client_id, proconnect_entity_id, top_level_entity_id, client_type, client_state, display_name, business_name, name_for_matching, first_name, last_name, email, phone, city, state, zip, tax_id, created_at, updated_at",
-        { count: "exact" },
-      )
-      .order("display_name", { ascending: true })
+    const TABLE_COLUMNS =
+      "id, proconnect_client_id, proconnect_entity_id, top_level_entity_id, client_type, client_state, display_name, business_name, name_for_matching, first_name, last_name, email, phone, city, state, zip, tax_id, created_at, updated_at"
 
-    if (typeFilter !== "all") {
-      query = query.eq("client_type", typeFilter)
-    }
-    if (stateFilter !== "all") {
-      query = query.eq("client_state", stateFilter)
-    }
-    if (withReturnsFilter) {
-      // Constrain the roster to ProConnect clients we actually have at
-      // least one engagement for. Without this filter the page also
-      // surfaces ProConnect records that aren't really our tax clients.
-      if (clientIdsWithReturns.length === 0) {
-        // No engagements at all — short-circuit so we don't pass an
-        // empty `in()` list (PostgREST treats `in.()` as a syntax err).
-        query = query.eq("proconnect_client_id", "__none__")
-      } else {
-        query = query.in("proconnect_client_id", clientIdsWithReturns)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const applyTableFilters = (q: any) => {
+      if (typeFilter !== "all") {
+        q = q.eq("client_type", typeFilter)
       }
-    }
-    if (search) {
-      query = query.or(
-        `display_name.ilike.%${search}%,email.ilike.%${search}%,proconnect_client_id.ilike.%${search}%,business_name.ilike.%${search}%,tax_id.ilike.%${search}%`,
-      )
+      if (stateFilter !== "all") {
+        q = q.eq("client_state", stateFilter)
+      }
+      if (search) {
+        q = q.or(
+          `display_name.ilike.%${search}%,email.ilike.%${search}%,proconnect_client_id.ilike.%${search}%,business_name.ilike.%${search}%,tax_id.ilike.%${search}%`,
+        )
+      }
+      return q
     }
 
     const from = (page - 1) * TABLE_PAGE_SIZE
     const to = from + TABLE_PAGE_SIZE - 1
-    query = query.range(from, to)
 
-    const clientsRes = await query
-    if (clientsRes.error) throw clientsRes.error
+    let clients: ProconnectClient[]
+    let filteredTotal: number
 
-    const clients = (clientsRes.data || []) as ProconnectClient[]
-    const filteredTotal = clientsRes.count ?? 0
+    if (withReturnsFilter) {
+      // Constrain the roster to ProConnect clients we actually have at
+      // least one engagement for. Without this filter the page also
+      // surfaces ProConnect records that aren't really our tax clients.
+      // A single .in() with every ID would blow up the request URL
+      // (PostgREST encodes the list into the query string), so fetch in
+      // chunks and sort + paginate in JS. An empty ID list simply yields
+      // zero chunks → an empty roster.
+      const chunkResults = await Promise.all(
+        chunk(clientIdsWithReturns).map((ids) =>
+          applyTableFilters(
+            supabase.from("proconnect_clients").select(TABLE_COLUMNS),
+          ).in("proconnect_client_id", ids),
+        ),
+      )
+      const matched: ProconnectClient[] = []
+      for (const res of chunkResults) {
+        if (res.error) throw res.error
+        matched.push(...((res.data || []) as ProconnectClient[]))
+      }
+      // Mirror the DB ordering: display_name ASC, NULLS LAST.
+      matched.sort((a, b) => {
+        if (!a.display_name) return b.display_name ? 1 : 0
+        if (!b.display_name) return -1
+        return a.display_name.localeCompare(b.display_name)
+      })
+      filteredTotal = matched.length
+      clients = matched.slice(from, from + TABLE_PAGE_SIZE)
+    } else {
+      const clientsRes = await applyTableFilters(
+        supabase
+          .from("proconnect_clients")
+          .select(TABLE_COLUMNS, { count: "exact" })
+          .order("display_name", { ascending: true }),
+      ).range(from, to)
+      if (clientsRes.error) throw clientsRes.error
+
+      clients = (clientsRes.data || []) as ProconnectClient[]
+      filteredTotal = clientsRes.count ?? 0
+    }
+
     const totalPages = Math.ceil(filteredTotal / TABLE_PAGE_SIZE)
 
     // ── Related data for the current page only (small set, capped) ───
@@ -273,7 +301,7 @@ export async function GET(request: NextRequest) {
         supabase
           .from("proconnect_engagements")
           .select(
-            "id, engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, work_status, assignee_profile_id, raw_json, synced_at, updated_at",
+            "id, engagement_id, proconnect_client_id, tax_year, return_type, form_type, status, efile_status, work_status, assignee_profile_id, raw_type:raw_json->>type, raw_assignee:raw_json->assignee->>profileId, synced_at, updated_at",
           )
           .in("proconnect_client_id", clientIds),
         supabase
@@ -336,17 +364,8 @@ export async function GET(request: NextRequest) {
 
       rollup.total += 1
 
-      const rawAssignee =
-        (eng.raw_json as Record<string, unknown> | null)?.assignee
-      const rawAssigneeProfileId =
-        rawAssignee && typeof rawAssignee === "object"
-          ? ((rawAssignee as Record<string, unknown>).profileId as
-              | string
-              | null
-              | undefined)
-          : null
       const preparerProfileId =
-        eng.assignee_profile_id || rawAssigneeProfileId || null
+        eng.assignee_profile_id || eng.raw_assignee || null
       const preparerName = preparerProfileId
         ? preparerMap.get(preparerProfileId) || null
         : null
@@ -362,10 +381,8 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      const rawJson = eng.raw_json as Record<string, unknown> | null
-      const formFromJson = (rawJson?.type as string) || null
       const formType =
-        formFromJson || eng.form_type || eng.return_type || "Unknown"
+        eng.raw_type || eng.form_type || eng.return_type || "Unknown"
       const existingForm = rollup.forms.find((f) => f.form === formType)
 
       if (existingForm) {

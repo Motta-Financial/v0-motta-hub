@@ -17,6 +17,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { getRedirectUri } from "@/lib/proconnect/oauth"
 import { verifyState } from "@/lib/proconnect/oauth-state"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 
@@ -30,7 +31,7 @@ export async function GET(request: NextRequest) {
 
   // The /tax dashboard lives on the Hub host, not the marketing site, so
   // post-OAuth UI redirects use APP_BASE_URL (hub.motta.cpa).
-  const baseUrl = process.env.APP_BASE_URL || "https://hub.motta.cpa"
+  const baseUrl = firmConfigSync().hubUrl
 
   // Verify the signed state BEFORE doing anything else. An invalid/expired
   // state means a CSRF attempt or a stale tab — bounce to settings.

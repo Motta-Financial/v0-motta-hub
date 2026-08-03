@@ -34,7 +34,17 @@ type WebhookEvent = {
   processing_error: string | null
 }
 
+type Phase1Status = {
+  status: "ok" | "blocked" | "inactive"
+  snapshotCount: number
+  lastSuccessfulExport: string | null
+  exportFailures7d: number
+  lastExportError: string | null
+  lastExportErrorAt: string | null
+}
+
 type ProconnectStatus = {
+  phase1?: Phase1Status
   connected: boolean
   realmId: string | null
   scope: string | null
@@ -290,6 +300,63 @@ export function ProconnectConnectionCard() {
 
             <Separator />
 
+            {/* ─── Phase 1 return-data export health ─── */}
+            {data.phase1 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <FileText className="size-4 text-muted-foreground" />
+                  Return data (Phase 1 export/import)
+                  {data.phase1.status === "ok" ? (
+                    <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 gap-1">
+                      <CheckCircle2 className="size-3" />
+                      Exports working
+                    </Badge>
+                  ) : data.phase1.status === "blocked" ? (
+                    <Badge variant="outline" className="border-destructive/40 bg-destructive/10 text-destructive gap-1">
+                      <AlertTriangle className="size-3" />
+                      Blocked by Intuit
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="border-muted-foreground/30 text-muted-foreground gap-1">
+                      No activity
+                    </Badge>
+                  )}
+                </div>
+                {data.phase1.status === "blocked" ? (
+                  <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                    <div className="space-y-1">
+                      <p className="font-medium">
+                        Return-data exports are being rejected by Intuit
+                        ({data.phase1.exportFailures7d} failures in the last 7 days).
+                      </p>
+                      <p className="text-xs opacity-90">
+                        The token has the <code>taxreturns</code> scope, so this usually
+                        means the app is not yet allow-listed for the Phase 1 data
+                        endpoints. Contact the Intuit ProConnect API partner team, then
+                        Reconnect / re-consent above.
+                      </p>
+                      {data.phase1.lastExportError && (
+                        <p className="text-xs opacity-75">
+                          Last error {timeAgo(data.phase1.lastExportErrorAt)}: {data.phase1.lastExportError}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {data.phase1.snapshotCount.toLocaleString()} return snapshot
+                    {data.phase1.snapshotCount === 1 ? "" : "s"} stored
+                    {data.phase1.lastSuccessfulExport
+                      ? ` · last export ${timeAgo(data.phase1.lastSuccessfulExport)}`
+                      : " · no exports yet — snapshots populate as TaxReturn webhooks arrive"}
+                  </p>
+                )}
+              </div>
+            )}
+
+            <Separator />
+
             {/* ─── Recent webhooks ─── */}
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium">
@@ -303,28 +370,40 @@ export function ProconnectConnectionCard() {
                 </p>
               ) : (
                 <ul className="divide-y rounded-md border">
-                  {data.recentWebhooks.map((ev) => (
-                    <li
-                      key={ev.id}
-                      className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-                    >
-                      <div className="flex min-w-0 items-center gap-2">
-                        <WebhookStatusDot status={ev.processing_status} />
-                        <span className="font-medium">{ev.event_type}</span>
-                        {ev.operation && (
-                          <Badge variant="secondary" className="text-xs">
-                            {ev.operation}
-                          </Badge>
+                  {data.recentWebhooks.map((ev) => {
+                    const failed =
+                      ev.processing_status === "failed" ||
+                      ev.processing_status === "error"
+                    return (
+                      <li key={ev.id} className="px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <WebhookStatusDot
+                              status={ev.processing_status}
+                              error={ev.processing_error}
+                            />
+                            <span className="font-medium">{ev.event_type}</span>
+                            {ev.operation && (
+                              <Badge variant="secondary" className="text-xs">
+                                {ev.operation}
+                              </Badge>
+                            )}
+                            <code className="truncate text-xs text-muted-foreground">
+                              {ev.entity_id}
+                            </code>
+                          </div>
+                          <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                            {timeAgo(ev.received_at)}
+                          </span>
+                        </div>
+                        {failed && ev.processing_error && (
+                          <p className="mt-1 pl-4 text-xs text-destructive">
+                            {ev.processing_error}
+                          </p>
                         )}
-                        <code className="truncate text-xs text-muted-foreground">
-                          {ev.entity_id}
-                        </code>
-                      </div>
-                      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                        {timeAgo(ev.received_at)}
-                      </span>
-                    </li>
-                  ))}
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
             </div>
@@ -383,17 +462,41 @@ function MetaRow({
   )
 }
 
-function WebhookStatusDot({ status }: { status: string | null }) {
-  const color =
-    status === "processed" || status === "success"
-      ? "bg-emerald-500"
-      : status === "error" || status === "failed"
-        ? "bg-destructive"
+function WebhookStatusDot({
+  status,
+  error,
+}: {
+  status: string | null
+  error?: string | null
+}) {
+  const isOk = status === "processed" || status === "success"
+  const isSkipped = status === "skipped"
+  const isFail = status === "error" || status === "failed"
+
+  // Both processed and skipped read as healthy green — skipped is drawn as a
+  // hollow (ringed) dot so it's distinguishable on close inspection without
+  // looking like a problem. Only genuine failures are red.
+  const color = isFail
+    ? "bg-destructive"
+    : isSkipped
+      ? "bg-transparent ring-1 ring-inset ring-emerald-500"
+      : isOk
+        ? "bg-emerald-500"
         : "bg-muted-foreground/40"
+
+  const label = isFail
+    ? `Failed: ${error ?? "unknown error"}`
+    : isSkipped
+      ? `Skipped: ${error ?? "not applied"}`
+      : isOk
+        ? "Processed successfully"
+        : status ?? "pending"
+
   return (
     <span
       className={`inline-block size-2 shrink-0 rounded-full ${color}`}
-      aria-label={status ?? "pending"}
+      title={label}
+      aria-label={label}
     />
   )
 }

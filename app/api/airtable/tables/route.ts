@@ -1,14 +1,28 @@
 import { NextResponse } from "next/server"
 
-const AIRTABLE_BASE_ID = "app29FvStmjP1Vyb2"
-const AIRTABLE_API_TOKEN = "patCB0rdkee77UrfY.f624f9f65c56661e6a0b39976d54c22ae3e45df87c5a6941db71cb8c358d3c25"
+// Airtable was sunsetted at Motta (2026-07). The integration is kept
+// intact because licensee firms may use Airtable — it stays inert until
+// AIRTABLE_API_KEY is configured, and the route returns a clear
+// "not configured" error rather than failing obscurely.
+//
+// SECURITY: a live PAT was previously hardcoded here, so it lives on in
+// git history. Revoke that token before ever reactivating this base.
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || "app29FvStmjP1Vyb2"
 
 export async function GET() {
   try {
+    const apiToken = process.env.AIRTABLE_API_KEY
+    if (!apiToken) {
+      return NextResponse.json(
+        { error: "Airtable is not configured", details: "Set AIRTABLE_API_KEY in environment variables" },
+        { status: 500 },
+      )
+    }
+
     // Fetch base schema to get all tables
     const response = await fetch(`https://api.airtable.com/v0/meta/bases/${AIRTABLE_BASE_ID}/tables`, {
       headers: {
-        Authorization: `Bearer ${AIRTABLE_API_TOKEN}`,
+        Authorization: `Bearer ${apiToken}`,
       },
     })
 

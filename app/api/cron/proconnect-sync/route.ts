@@ -10,6 +10,13 @@
  * the original reason for the Edge Function (per-client fan-out
  * timeouts) no longer applies.
  *
+ * The sync then hydrates e-file status, which is the one thing the bulk
+ * endpoints can't give us: it lives only on GET /v2/engagements/{id}, so
+ * it costs one call per engagement. That step is capped by count and wall
+ * clock (PROCONNECT_EFILE_HYDRATE_MAX / _BUDGET_MS) and resumes on the
+ * next run, so it can't push this invocation into the 300s limit.
+ * `efileStaleRemaining` in the response is how much is still queued.
+ *
  * Schedule: Nightly (configured in vercel.json)
  *
  * Environment variables:
@@ -152,6 +159,8 @@ async function runSync(syncType: "full" | "manual") {
     clients: result.clientsSynced,
     engagements: result.engagementsSynced,
     customStatuses: result.customStatusesSynced,
+    efileHydrated: result.efileHydrated,
+    efileStaleRemaining: result.efileStaleRemaining,
     errors: result.errors.length,
     duration: `${result.duration}ms`,
   })
@@ -204,6 +213,8 @@ export async function GET(request: NextRequest) {
       clientsSynced: result.clientsSynced,
       engagementsSynced: result.engagementsSynced,
       customStatusesSynced: result.customStatusesSynced,
+      efileHydrated: result.efileHydrated,
+      efileStaleRemaining: result.efileStaleRemaining,
       errorCount: result.errors.length,
       duration: result.duration,
     })
@@ -237,6 +248,8 @@ export async function POST(request: NextRequest) {
       clientsSynced: result.clientsSynced,
       engagementsSynced: result.engagementsSynced,
       customStatusesSynced: result.customStatusesSynced,
+      efileHydrated: result.efileHydrated,
+      efileStaleRemaining: result.efileStaleRemaining,
       errorCount: result.errors.length,
       errors: result.errors.slice(0, 20),
       duration: result.duration,

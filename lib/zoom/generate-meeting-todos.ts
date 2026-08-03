@@ -104,6 +104,14 @@ export async function generateZoomMeetingTodos(
     // Only sweep meetings that actually happened. Future meetings are
     // not "untagged" in any meaningful sense yet.
     .lte("start_time", new Date().toISOString())
+    // Bounded, deterministic batch: PostgREST silently caps every
+    // response at 1,000 rows, so without an explicit order + limit an
+    // arbitrary subset would be swept once the window exceeds that.
+    // Oldest first — meetings closest to aging out of the window get
+    // their todo before they expire; the recurring cron picks up the
+    // rest on subsequent runs (upsert dedup keeps this idempotent).
+    .order("start_time", { ascending: true })
+    .limit(500)
 
   if (teamMemberId) {
     query = query.eq("team_member_id", teamMemberId)

@@ -14,7 +14,7 @@
 | Vercel | `alfred` → `alfred.motta.cpa` | ALFRED frontend. Healthy. |
 | Supabase | `Motta Hub` (`gylupzxitoebhqjnvzuw`) | Production DB + 20 edge functions (many are one-off investigation tools). |
 | Supabase | `ALFREDAi` (`bywhzvvyqmsjhaqgcrlk`) | Separate project, not referenced by this repo's ProConnect code. |
-| Intuit | Realm `9130356180193146`, scope `com.intuit.proconnect.taxreturns` | OAuth token healthy — auto-refreshing hourly, `last_refresh_error` null. |
+| Intuit | Realm redacted (public repo), scope `com.intuit.proconnect.taxreturns` | OAuth token healthy — auto-refreshing hourly, `last_refresh_error` null. |
 
 Data snapshot at review time: 2,062 `proconnect_clients`, 901 `proconnect_engagements`, 21 custom statuses, 4,959 webhook events.
 
@@ -40,6 +40,8 @@ The `auto_link_proconnect_to_hub` DB trigger matched `client_type = 'BUSINESS'`,
 ### 2.5 `efile_status` extraction bug
 `lib/proconnect/sync.ts` read a top-level `eng.efileStatus` that doesn't exist; the real value lives in `taxFiling.filings[].filingStatuses[]` (only the `proconnect-sync-engagements` edge function extracted it correctly).
 
+> **Correction, 2026-07-28.** Fixing the *path* wasn't enough: the bulk list endpoint returns `filings: []` on every engagement, so the corrected parser still produced NULL for all 908 rows and we filed that as an Intuit data gap. It isn't one — `GET /v2/engagements/{engagementId}` returns the filings. E-file status is now hydrated per-engagement (webhooks + a capped nightly queue), and the list-path upserts no longer write `efile_status` at all, since doing so would erase the hydrated value nightly. The live payload also nests filings (`children[]`, where extensions live) and holds an unordered append-only status history, neither of which the original parser handled. See `scripts/366_proconnect_engagement_efile.sql`.
+
 ### 2.6 Broader platform noise (not ProConnect-specific)
 The duplicate `v0-motta-hub` Vercel project runs the same `vercel.json` crons **without env vars**, producing ~1,900 runtime errors/week (`ignition-sync`, `zoom-link-sweep`, `debrief-reminder`, `meeting-summary-ingest`, `daily-briefing`, `tommy-*`). These crons fail on the duplicate project daily; the same crons on `mottahub` are what actually run.
 
@@ -52,7 +54,7 @@ The duplicate `v0-motta-hub` Vercel project runs the same `vercel.json` crons **
 2. **Client webhooks fixed**: `syncSingleClient` now pulls the client list and filters by id (matching both `oiiClientId` and top-level `id.value`); the webhook route fetches the list **at most once per delivery**, eliminating the 429 storms. Client rows now also carry `client_type`, `client_state`, phone/address/tax-id fields (previously only the edge function wrote those).
 3. **TaxReturnWorkStatus webhooks implemented**: resolves the engagement, refreshes that client+year's engagements (one API call) so status changes appear immediately.
 4. **Org auto-link trigger fixed** (`scripts/348_fix_proconnect_org_autolink.sql`): accepts `'ORGANIZATION'` (and legacy `'BUSINESS'`). **Already applied to the live database** as migration `fix_proconnect_org_autolink`.
-5. **`efile_status` extracted correctly** from `taxFiling.filings[].filingStatuses[]` (latest by date) in the new bulk path.
+5. **`efile_status` extracted correctly** from `taxFiling.filings[].filingStatuses[]` (latest by date) in the new bulk path. *(Superseded — see the correction under 2.5. The bulk path cannot source e-file status at all.)*
 6. **ALFRED can now answer tax questions**: `lib/alfred/allowed-tables.ts` allow-lists `proconnect_engagements_enriched`, `proconnect_custom_statuses`, `proconnect_sync_logs`, and `tax_return_links_enriched` with accurate column hints (verified against the live schema). `proconnect_clients` is deliberately **excluded** — its `tax_id` column holds SSNs/EINs.
 7. **Env-var resilience**: ProConnect cron/webhook/sync code falls back to `NEXT_PUBLIC_SUPABASE_URL` when `SUPABASE_URL` is unset, and edge functions build the refresh URL from `SUPABASE_URL` instead of a hardcoded project ref.
 
@@ -70,7 +72,8 @@ The duplicate `v0-motta-hub` Vercel project runs the same `vercel.json` crons **
 |---|---|
 | OAuth (authorize / refresh / revoke), scope `com.intuit.proconnect.taxreturns` | ✅ Working (`/api/proconnect/oauth/*`, singleton token row) |
 | `GET /v1/clients` (Clients) | ✅ Nightly bulk sync + webhook resolution |
-| `GET /v2/engagements?period=` (Engagements) | ✅ Nightly per-year bulk sync (incl. e-file status) |
+| `GET /v2/engagements?period=` (Engagements) | ✅ Nightly per-year bulk sync (everything **except** e-file status) |
+| `GET /v2/engagements/{id}` (single engagement) | ✅ E-file status only — webhook-driven, plus a capped nightly catch-up queue |
 | `GET /v1/custom-status` | ✅ Nightly |
 | Webhooks: Client / TaxReturn / TaxReturnWorkStatus, HMAC via `intuit-signature` | ✅ All three handled (was: Client failing, WorkStatus dropped) |
 | Phase 1 return-data **export** (`GET /v2/clients/{c}/returns/{r}/data`) | ✅ API + snapshot tables + webhook-driven refresh (no UI yet) |

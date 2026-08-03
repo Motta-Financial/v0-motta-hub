@@ -202,34 +202,16 @@ export const HERO_PROFILES: HeroProfile[] = [
     ],
   },
   {
-    slug: "shinika-shelley",
-    name: "Shinika Shelley",
-    alias: "The Control Tower",
-    role: "Multi-Client Accounting. Financial Review. The Final Review.",
-    quote: "When the numbers get noisy, I bring the signal back.",
-    variant: "primary",
-    imageUrl:
-      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Shinika_Shelley.png",
-    appearance:
-      "Adult WOMAN — Black/African-American, long dark curly hair in a high half-up style, hoop earrings, red lipstick, poised commanding stance. Black tactical suit with white lotus chest emblem, olive-green cape. Signature: glowing multi-client dashboard and cash-flow analysis holograms orbiting her.",
-    aliases: [
-      "shinika shelley",
-      "the control tower",
-      "shinika.shelley@mottafinancial.com",
-      "shinika",
-    ],
-  },
-  {
     slug: "justin-bestel",
     name: "Justin Bestel",
     alias: "The Systems Strategist",
-    role: "Accounting Consulting. Financial Analysis. The Systems Reset.",
+    role: "Accounting Consultant. Forecasting Specialist. Process-Improvement Operator.",
     quote: "When the process breaks down, I build the system back stronger.",
     variant: "primary",
     imageUrl:
-      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Justin_Bestel.png",
+      "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Justin%20Bestel-1iKHkg9WHF5Tbc2AYVkSDW3yRQ9R7P.png",
     appearance:
-      "Adult man, Caucasian, short dark hair, warm confident smile, open welcoming stance. Black tactical suit with white lotus chest emblem, olive-green cape, gold belt. Signature: glowing cash-flow forecast, KPI dashboard, and systems-map (ERP/GL/AP/AR) holograms arrayed around him.",
+      "Adult man, Caucasian features, short dark hair, confident analytical stance. Black tactical suit with white lotus chest emblem, dark green armoured plating. Signature: glowing holographic KPI dashboard, Cash Flow Forecast panel, and Systems Map floating around him.",
     aliases: [
       "justin bestel",
       "the systems strategist",
@@ -254,6 +236,24 @@ export const HERO_PROFILES: HeroProfile[] = [
       "the fastest closer",
       "matthew.pereira@mottafinancial.com",
       "matt",
+    ],
+  },
+  {
+    slug: "shinika-shelley",
+    name: "Shinika Shelley",
+    alias: "The Control Tower",
+    role: "Fractional Accounting Professional. Multi-Client Accounting Strategist.",
+    quote: "When the numbers get noisy, I bring the signal back.",
+    variant: "amber",
+    imageUrl:
+      "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Shinika%20Shelley-CqA3jO4M572CQdwvJ8v7Q9mk3p0P8Y.png",
+    appearance:
+      "Adult WOMAN — feminine build, Black woman with long curly dark hair, confident controller stance. Black tactical suit with dark green cape and white lotus chest emblem, amber accents. Signature: glowing Financial Overview and Cash Flow Analysis holographic panels in her hands.",
+    aliases: [
+      "shinika shelley",
+      "the control tower",
+      "shinika.shelley@mottafinancial.com",
+      "shinika",
     ],
   },
   {

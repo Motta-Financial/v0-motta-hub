@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 /**
  * GET /api/team-members/tax-return-counts
@@ -63,19 +64,35 @@ export async function GET(request: Request) {
     })
   }
 
-  // 2. Pull engagement rows for the relevant profile IDs only. We page
-  //    via .in() rather than scanning the whole table.
-  let engagementQuery = supabase
-    .from("proconnect_engagements")
-    .select("assignee_profile_id, tax_year")
-    .in("assignee_profile_id", [...profileToTeammate.keys()])
-  if (year && Number.isFinite(year)) {
-    engagementQuery = engagementQuery.eq("tax_year", year)
-  }
-  const { data: engagements, error: engagementsError } = await engagementQuery
-  if (engagementsError) {
+  // 2. Pull engagement rows for the relevant profile IDs only, paged
+  //    in 1,000-row windows — PostgREST caps every response at 1,000
+  //    rows, and the firm crosses that within one busy season.
+  let engagements: Array<{ assignee_profile_id: string; tax_year: number | null }>
+  try {
+    engagements = await fetchAllPaged<{
+      assignee_profile_id: string
+      tax_year: number | null
+    }>(() => {
+      let engagementQuery = supabase
+        .from("proconnect_engagements")
+        .select("assignee_profile_id, tax_year")
+        .in("assignee_profile_id", [...profileToTeammate.keys()])
+      if (year && Number.isFinite(year)) {
+        engagementQuery = engagementQuery.eq("tax_year", year)
+      }
+      return engagementQuery
+    })
+  } catch (engagementsError) {
     console.error("[v0] tax-return-counts engagements error:", engagementsError)
-    return NextResponse.json({ error: engagementsError.message }, { status: 500 })
+    return NextResponse.json(
+      {
+        error:
+          engagementsError instanceof Error
+            ? engagementsError.message
+            : "Failed to load engagements",
+      },
+      { status: 500 },
+    )
   }
 
   // 3. Aggregate: total per teammate + breakdown by tax_year.

@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { type NextRequest, NextResponse } from "next/server"
 
 export async function GET(request: NextRequest) {
@@ -10,9 +11,12 @@ export async function GET(request: NextRequest) {
     const limit = Number.parseInt(searchParams.get("limit") || "100")
     const offset = Number.parseInt(searchParams.get("offset") || "0")
 
+    // Only the columns the payments dashboard actually renders — the row
+    // also carries a `raw_payload` jsonb mirror of `payload` (multi-KB per
+    // row) that nothing here reads, so select("*") doubled the response.
     let query = supabase
       .from("ignition_proposals")
-      .select("*")
+      .select("proposal_id, title, status, client_name, amount, currency, created_at, payload")
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1)
 
@@ -28,22 +32,37 @@ export async function GET(request: NextRequest) {
 
     if (error) throw error
 
-    // Get stats
-    const { data: statsData } = await supabase.from("ignition_proposals").select("status, amount")
+    // Get stats — page through every row (PostgREST caps a single response
+    // at 1,000 rows and the table is nearly there), selecting only the two
+    // columns the aggregation reads. Best-effort: a stats failure degrades
+    // to zeros instead of failing the proposal list, matching the old
+    // error-ignoring destructure.
+    let statsData: Array<{ status: string | null; amount: number | null }> = []
+    try {
+      statsData = await fetchAllPaged<{ status: string | null; amount: number | null }>(() =>
+        supabase.from("ignition_proposals").select("status, amount"),
+      )
+    } catch (statsError) {
+      console.error("Error fetching proposal stats:", statsError)
+    }
 
+    // Status values are the lowercase Ignition Reporting-API states the
+    // sync stores (lib/ignition/sync.ts writes `state` verbatim) — the old
+    // capitalized labels ("Accepted", "Awaiting acceptance") matched zero
+    // synced rows.
     const stats = {
-      total: statsData?.length || 0,
-      accepted: statsData?.filter((p) => p.status === "Accepted").length || 0,
-      pending: statsData?.filter((p) => p.status === "Awaiting acceptance").length || 0,
-      draft: statsData?.filter((p) => p.status === "Draft").length || 0,
-      lost: statsData?.filter((p) => p.status === "Lost").length || 0,
-      totalValue: statsData?.reduce((sum, p) => sum + (Number(p.amount) || 0), 0) || 0,
-      acceptedValue:
-        statsData?.filter((p) => p.status === "Accepted").reduce((sum, p) => sum + (Number(p.amount) || 0), 0) || 0,
-      pendingValue:
-        statsData
-          ?.filter((p) => p.status === "Awaiting acceptance")
-          .reduce((sum, p) => sum + (Number(p.amount) || 0), 0) || 0,
+      total: statsData.length,
+      accepted: statsData.filter((p) => p.status === "accepted").length,
+      pending: statsData.filter((p) => p.status === "awaiting_acceptance").length,
+      draft: statsData.filter((p) => p.status === "draft").length,
+      lost: statsData.filter((p) => p.status === "lost").length,
+      totalValue: statsData.reduce((sum, p) => sum + (Number(p.amount) || 0), 0),
+      acceptedValue: statsData
+        .filter((p) => p.status === "accepted")
+        .reduce((sum, p) => sum + (Number(p.amount) || 0), 0),
+      pendingValue: statsData
+        .filter((p) => p.status === "awaiting_acceptance")
+        .reduce((sum, p) => sum + (Number(p.amount) || 0), 0),
     }
 
     return NextResponse.json({ proposals: data, stats })

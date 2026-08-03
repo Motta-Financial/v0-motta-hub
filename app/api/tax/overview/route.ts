@@ -29,9 +29,23 @@ type EngagementRow = {
 }
 
 // ── Filing-state classifier ──────────────────────────────────────────
-// ProConnect doesn't populate the `efile_status` column reliably — it's
-// NULL on every one of our 892 current rows. The actual "is this return
-// filed?" signal lives in `raw_json->>'customStatus'`, the same field
+// This classifier was written when `efile_status` was NULL on all 892
+// rows — not because ProConnect lacked the data, but because we read it
+// from the engagement list endpoint, which never returns filings. As of
+// 2026-07-28 it IS populated, hydrated per-engagement from
+// GET /v2/engagements/{id} (see lib/proconnect/sync.hydrateEngagementEfile).
+//
+// This route still classifies on `raw_json->>'customStatus'` deliberately.
+// The two signals answer different questions: customStatus is what the
+// preparer set in PTO, efile_status is what the taxing agency said. They
+// will disagree (a return marked "E-Filed" whose federal filing came back
+// ACK_REJECTED is exactly the case a preparer needs to see), and
+// reconciling them is a real decision about what the dashboard's "filed"
+// count means — not a mechanical swap. Until that decision is made, this
+// keeps agreeing with /tax/returns.
+//
+// The actual "is this return filed?" signal used here lives in
+// `raw_json->>'customStatus'`, the same field
 // /tax/returns uses to compute its 426 e-filed count. We mirror that
 // taxonomy here so /tax (the parent dashboard) agrees with /tax/returns.
 //
@@ -123,8 +137,9 @@ export async function GET() {
     //   1. The enriched view — gives us prejoined preparer_name +
     //      custom-status name/color from `proconnect_custom_statuses`.
     //   2. The base `proconnect_engagements` table — only place that
-    //      exposes `raw_json->>'customStatus'`, which is the real
-    //      filing-state signal (efile_status is NULL on every row).
+    //      exposes `raw_json->>'customStatus'`, the filing-state signal
+    //      this route classifies on (see the classifier comment above for
+    //      why, now that efile_status is populated too).
     // We then merge by engagement_id so the dashboard rolls up the same
     // filed-count as /tax/returns.
     const [engagements, customStatusRows, clients, lastSyncRes] = await Promise.all([
@@ -198,9 +213,9 @@ export async function GET() {
 
       if (eng.tax_year === currentTaxYear) currentYearReturns++
 
-      // Prefer customStatus → it's the real signal. Fall back to
-      // efile_status only if customStatus is blank (it's NULL on the
-      // 227 rows that ProConnect hasn't categorised yet).
+      // customStatus is the signal here, deliberately — see the classifier
+      // comment at the top of this file. Blank customStatus counts as not
+      // filed (227 rows ProConnect hasn't categorised).
       const cs = customStatusByEngagement.get(eng.engagement_id) ?? null
       const filed = isFiledCustomStatus(cs)
       const eKey = filed ? "(filed)" : "(not filed)"

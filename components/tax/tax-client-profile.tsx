@@ -61,6 +61,7 @@ import {
   EfileBadge,
   fmtMoney,
   fmtNumber,
+  type EfileLatestBadge,
 } from "@/components/tax/tax-shared"
 import { cn } from "@/lib/utils"
 import { SensitiveValue } from "@/components/security/sensitive-value"
@@ -97,6 +98,7 @@ type TaxProfileResponse = {
     engagement_name: string | null
     engagement_state: string | null
     efile_status: string | null
+    efile_latest: EfileLatestBadge | null
     work_status: string | null
     custom_status_name: string | null
     custom_status_color: string | null
@@ -664,7 +666,10 @@ function ReturnCard({
   clientId: string
 }) {
   const handleView1040 = () => {
-    const url = `/tax/returns/${engagement.engagement_id}/1040?clientId=${clientId}`
+    // Land on the base return-data viewer: it degrades gracefully when
+    // no snapshot has been exported yet (the 1040 view 404s in that
+    // case) and links onward to the Form 1040 rendering for IND returns.
+    const url = `/tax/returns/${engagement.engagement_id}?clientId=${clientId}`
     window.open(url, "_blank", "noopener,noreferrer")
   }
 
@@ -678,7 +683,7 @@ function ReturnCard({
               <span className="font-medium">
                 {engagement.return_type || "Unknown"} — TY {engagement.tax_year}
               </span>
-              <EfileBadge status={engagement.efile_status} />
+              <EfileBadge status={engagement.efile_status} latest={engagement.efile_latest} />
             </div>
 
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">

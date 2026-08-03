@@ -1,25 +1,35 @@
 /**
  * ProConnect Tax-Return Data API (Phase 1)
  *
- * Wraps the two new endpoints introduced in the Phase 1 spec:
+ * Wraps the two Data Service endpoints:
  *
- *   GET  /v2/clients/{clientId}/returns/{returnId}/data
- *   POST /v2/clients/{clientId}/returns/{returnId}/import/series/{seriesId}
+ *   Export: GET  /v2/clients/oii-client/{clientOiiId}/returns/{returnId}/data
+ *   Import: POST /v2/clients/{clientId}/returns/{returnId}/import/series/{seriesId}
  *
- * These live on https://api.intuit.com (NOT on client.accountant or
- * engagement.accountant) and require the scope
- * `com.intuit.proconnect.taxreturns` which Intuit must explicitly
- * allow-list for our app. If our existing refresh token doesn't have
- * that scope, calls will return 401 — we surface that distinctly so
- * the dashboard can prompt re-consent rather than silently failing.
+ * These live on https://protaxdata.api.intuit.com (the Data Service host —
+ * NOT client.accountant, engagement.accountant, or the plain api.intuit.com
+ * gateway) and require the scope `com.intuit.proconnect.taxreturns`.
  *
- * Reference: ProConnect Open API Doc — Phase 1.
+ * IMPORTANT — the Export path has an `oii-client/` segment that the original
+ * Phase 1 doc OMITTED; Intuit's corrected V2 doc includes it. Calling the
+ * doc's path (`/v2/clients/{id}/returns/{id}/data`, no `oii-client/`) returned
+ * `403 insufficient_scope` / `AuthorizationFailed` on every call from launch
+ * through 2026-07-27. That LOOKED like a scope/allow-list gap but was really a
+ * wrong URL — realm 9130356180193146 was provisioned all along. Confirmed
+ * 2026-07-27: the `oii-client/` path returns 200 with a full series map.
+ * (Fix per Steve @ Intuit.) `clientId` and `clientOiiId` are the same id.
+ *
+ * NOTE the asymmetry — Import does NOT use `oii-client/`. Don't "tidy up" the
+ * two paths to match; the gateway routes them differently.
+ *
+ * Reference: ProConnect Open API Doc — Phase 1 (V2).
  */
 
 import { getAccessToken, getRealmId } from "./oauth"
+import { acquireRateLimitSlot, newIntuitTid } from "./rate-limit"
 
 const TAX_RETURNS_BASE_URL =
-  process.env.PROCONNECT_TAX_RETURNS_BASE_URL || "https://api.intuit.com"
+  process.env.PROCONNECT_TAX_RETURNS_BASE_URL || "https://protaxdata.api.intuit.com"
 
 // Spec caps a single import at 500 entries. We split anything larger.
 export const MAX_ENTRIES_PER_IMPORT = 500
@@ -207,6 +217,13 @@ async function fetchWithRetry(
 
   let res: Response
   try {
+    // Throttle before EVERY attempt, including retries. This path previously
+    // had backoff but no limiter, while client.ts had a limiter but no
+    // backoff — so the write path (Export/Import) could burst past Intuit's
+    // ~5 TPS cap. Both now share one counter (lib/proconnect/rate-limit.ts).
+    // Placing this inside the retry recursion means a backoff storm is
+    // rate-limited too, not just the first attempt.
+    await acquireRateLimitSlot()
     res = await fetch(url, init)
   } catch (err) {
     // Network / DNS / TLS — don't retry indefinitely; one retry only.
@@ -269,7 +286,7 @@ async function authedRequest<T>(
     intuit_realmid: realmId,
     // Generate a fresh `intuit-tid` per request so the server can
     // correlate logs back to a specific call. Doc strongly recommends.
-    "intuit-tid": cryptoRandomTid(),
+    "intuit-tid": newIntuitTid(),
   }
   if (init.body !== undefined) headers["Content-Type"] = "application/json"
 
@@ -317,13 +334,6 @@ async function authedRequest<T>(
   }
 }
 
-/** RFC 4122-style 8-char request id. */
-function cryptoRandomTid(): string {
-  const bytes = new Uint8Array(8)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -336,7 +346,7 @@ export async function exportReturnData(
   returnId: string
 ): Promise<Result<ReturnExport>> {
   return authedRequest<ReturnExport>(
-    `/v2/clients/${encodeURIComponent(clientId)}/returns/${encodeURIComponent(returnId)}/data`,
+    `/v2/clients/oii-client/${encodeURIComponent(clientId)}/returns/${encodeURIComponent(returnId)}/data`,
     { method: "GET" }
   )
 }

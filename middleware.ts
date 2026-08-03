@@ -153,7 +153,8 @@ export async function middleware(request: NextRequest) {
 
   // ProConnect Tax (Intuit) POSTs real-time webhook notifications for
   // Client, TaxReturn, and TaxReturnWorkStatus events. The route handler
-  // will verify payloads once Intuit documents their signing mechanism.
+  // verifies each payload's HMAC-SHA256 `intuit-signature` against
+  // PROCONNECT_WEBHOOK_VERIFIER_TOKEN.
   const isProConnectWebhook = pathname === "/api/proconnect/webhooks"
 
   // ProConnect sync endpoint - uses CRON_SECRET Bearer auth in the handler

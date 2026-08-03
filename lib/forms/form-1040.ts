@@ -40,6 +40,22 @@ function admin() {
 export const DEFAULT_RETURN_TYPE = "IND"
 
 /**
+ * Wildcard prefix_id for mappings that aggregate across every instance of
+ * a repeating input screen (e.g. all W-2s on s11, where p1/p2/p3 are the
+ * first/second/third W-2). The renderer sums the mapped cell_field over
+ * all prefixes for numeric lines. The composer NEVER emits this value —
+ * "*" is not a real ProConnect prefix and would be rejected (or worse,
+ * misrouted) by the Import API, and a per-line total cannot be written
+ * back to a single instance anyway.
+ */
+export const AGGREGATE_PREFIX = "*"
+
+/** True when a mapping aggregates across all prefix instances. */
+export function isAggregateMapping(m: ProConnectMapping): boolean {
+  return m.prefixId === AGGREGATE_PREFIX
+}
+
+/**
  * Phase 1 spec caps a single import-series call at 500 entries
  * (§B.5 `entries.length ≤ 500`, error `ENTRIES_LIMIT_EXCEEDED`). The
  * composer chunks any over-cap series into multiple batches.
@@ -136,7 +152,7 @@ export type Form1040Data = Record<
   {
     value: string | number | boolean | null
     line: Form1040Line
-    source: "proconnect" | "computed" | "input"
+    source: "proconnect" | "computed" | "input" | "estimated"
   }
 >
 
@@ -386,7 +402,20 @@ export async function renderForm1040(
 
   // (series,prefix,code,suffix) → mapping (carries cellField + lineCode)
   const reverseMap = new Map<string, ProConnectMapping>()
-  for (const m of mappings) reverseMap.set(cellKey(m), m)
+  // (series,code,suffix) → aggregate mappings (prefix_id = "*"): these
+  // match a cell at ANY prefix instance of a repeating screen.
+  const aggregateKey = (c: { seriesId: string; codeId: string; suffixId: string }) =>
+    `${c.seriesId}|${c.codeId}|${c.suffixId}`
+  const aggregateMap = new Map<string, ProConnectMapping[]>()
+  for (const m of mappings) {
+    if (isAggregateMapping(m)) {
+      const arr = aggregateMap.get(aggregateKey(m)) ?? []
+      arr.push(m)
+      aggregateMap.set(aggregateKey(m), arr)
+    } else {
+      reverseMap.set(cellKey(m), m)
+    }
+  }
 
   const lineByCode = new Map(lines.map((l) => [l.lineCode, l]))
 
@@ -407,6 +436,54 @@ export async function renderForm1040(
       value: coerceToLineType(raw, line.dataType),
       line,
       source: "proconnect",
+    }
+  }
+
+  // Aggregate mappings: fold every prefix instance into the line. Numeric
+  // lines sum across instances (three W-2s → one wages total); non-numeric
+  // lines take the lowest-numbered instance, so a stray "*" on a text line
+  // degrades to first-instance behavior instead of garbage.
+  if (aggregateMap.size > 0) {
+    const numericAcc = new Map<string, number>()
+    const firstInstance = new Map<string, { prefixNum: number; raw: string }>()
+    for (const cell of cells) {
+      const aggMappings = aggregateMap.get(aggregateKey(cell))
+      if (!aggMappings) continue
+      for (const mapping of aggMappings) {
+        const line = lineByCode.get(mapping.lineCode)
+        if (!line) continue
+        const raw = readCellField(cell, mapping.cellField)
+        if (raw === null || raw === "") continue
+        if (line.dataType === "currency" || line.dataType === "integer") {
+          const n = coerceToLineType(raw, line.dataType)
+          if (typeof n === "number") {
+            numericAcc.set(line.lineCode, (numericAcc.get(line.lineCode) ?? 0) + n)
+          }
+        } else {
+          const prefixNum = Number.parseInt(cell.prefixId.replace(/^p/, ""), 10)
+          const prev = firstInstance.get(line.lineCode)
+          if (!prev || (Number.isFinite(prefixNum) && prefixNum < prev.prefixNum)) {
+            firstInstance.set(line.lineCode, {
+              prefixNum: Number.isFinite(prefixNum) ? prefixNum : Number.MAX_SAFE_INTEGER,
+              raw,
+            })
+          }
+        }
+      }
+    }
+    for (const [lineCode, sum] of numericAcc) {
+      const line = lineByCode.get(lineCode)
+      if (!line) continue
+      data[lineCode] = { value: sum, line, source: "proconnect" }
+    }
+    for (const [lineCode, first] of firstInstance) {
+      const line = lineByCode.get(lineCode)
+      if (!line) continue
+      data[lineCode] = {
+        value: coerceToLineType(first.raw, line.dataType),
+        line,
+        source: "proconnect",
+      }
     }
   }
 
@@ -445,6 +522,12 @@ function buildEntry(
   mapping: ProConnectMapping,
   entry: Form1040Data[string],
 ): ImportEntry | null {
+  // Aggregate mappings ("*" prefix) are render-only: the value is a total
+  // across every instance of a repeating screen, and there is no single
+  // cell to write it to. Emitting "*" as a literal prefixId would corrupt
+  // the Import call.
+  if (isAggregateMapping(mapping)) return null
+
   const value = entry.value
   if (value === null || value === undefined) return null
 
@@ -502,9 +585,12 @@ export async function composeImportEntries(
 ): Promise<ComposedSeries[]> {
   const { mappings } = await loadSchema(taxYear, returnType)
 
-  // Group usable mappings by seriesId.
+  // Group usable mappings by seriesId. Aggregate ("*"-prefix) mappings are
+  // excluded up front — they describe a cross-instance total, not a
+  // writable cell (buildEntry also refuses them as a second guard).
   const bySeries = new Map<string, ProConnectMapping[]>()
   for (const m of mappings) {
+    if (isAggregateMapping(m)) continue
     const arr = bySeries.get(m.seriesId) ?? []
     arr.push(m)
     bySeries.set(m.seriesId, arr)

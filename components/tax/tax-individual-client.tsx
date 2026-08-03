@@ -28,6 +28,7 @@ import {
   fmtMoney,
   fmtMoneyCompact,
   fmtNumber,
+  type EfileLatestBadge,
 } from "./tax-shared"
 import { cn } from "@/lib/utils"
 
@@ -37,6 +38,7 @@ type IndividualReturn = {
   client_name: string | null
   tax_year: number | null
   efile_status: string | null
+  efile_latest: EfileLatestBadge | null
   preparer: string | null
   user_defined_status_name: string | null
   user_defined_status_color: string | null
@@ -231,7 +233,7 @@ export function TaxIndividualClient() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <EfileBadge status={r.efile_status} />
+                        <EfileBadge status={r.efile_status} latest={r.efile_latest} />
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {r.preparer || "—"}

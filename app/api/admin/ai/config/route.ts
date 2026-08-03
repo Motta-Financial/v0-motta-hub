@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { requireAdmin } from "@/lib/auth/require-admin"
 import { createAdminClient } from "@/lib/supabase/server"
 import { getAllAIConfigs, clearConfigCache, ALL_MODELS } from "@/lib/ai/config"
 
@@ -30,6 +31,9 @@ export async function GET() {
  * Body: { useCase, model?, systemPrompt?, isActive? }
  */
 export async function PATCH(request: Request) {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   try {
     const body = await request.json()
     const { useCase, model, systemPrompt, isActive } = body

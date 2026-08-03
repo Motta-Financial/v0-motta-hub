@@ -96,6 +96,11 @@ export async function POST(request: NextRequest) {
       clientsSynced: result.clientsSynced,
       engagementsSynced: result.engagementsSynced,
       customStatusesSynced: result.customStatusesSynced,
+      // Non-zero efileStaleRemaining means the capped e-file hydration step
+      // didn't drain its queue — POST again (or wait for the nightly cron) to
+      // continue. See lib/proconnect/sync.hydrateStaleEfileStatuses.
+      efileHydrated: result.efileHydrated,
+      efileStaleRemaining: result.efileStaleRemaining,
       errorCount: result.errors.length,
       errors: result.errors.slice(0, 20),
       duration: `${result.duration}ms`,
