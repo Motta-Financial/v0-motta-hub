@@ -63,6 +63,29 @@ function getKey(): Buffer | null {
   return Buffer.from(trimmed, "hex")
 }
 
+/**
+ * The unconfigured-key notice is emitted at most once per process, at WARN.
+ *
+ * It used to be a per-call `console.error`. That fired on every token refresh
+ * — at least hourly, plus once per webhook burst — which put a line reading
+ * "SECURITY … PLAINTEXT" into the error stream several times an hour. That is
+ * indistinguishable from a live incident when you're scanning logs, and it
+ * crowded out the real errors. The condition is a standing configuration gap,
+ * not a per-request failure, so it should be reported like one.
+ */
+let plaintextWarningEmitted = false
+
+function warnPlaintextOnce(): void {
+  if (plaintextWarningEmitted) return
+  plaintextWarningEmitted = true
+  console.warn(
+    "[proconnect] PROCONNECT_TOKEN_KEY is not set — OAuth tokens are stored in " +
+      "PLAINTEXT. Set a 32-byte hex key (openssl rand -hex 32) in the Vercel project " +
+      "env vars; the stored row re-encrypts itself on the next refresh. " +
+      "(This notice is logged once per process.)",
+  )
+}
+
 /** True when the stored value carries our ciphertext envelope. */
 export function isEncrypted(stored: string | null | undefined): boolean {
   return typeof stored === "string" && stored.startsWith(`${ENVELOPE_VERSION}:`)
@@ -101,11 +124,7 @@ export function encryptToken(plain: string): string {
   }
 
   if (!key) {
-    console.error(
-      "[proconnect] SECURITY: PROCONNECT_TOKEN_KEY is not set — OAuth tokens " +
-        "are being stored in PLAINTEXT. Set a 32-byte hex key in the Vercel " +
-        "project env vars; the stored row will re-encrypt itself on the next refresh.",
-    )
+    warnPlaintextOnce()
     return plain
   }
 

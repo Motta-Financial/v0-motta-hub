@@ -32,10 +32,10 @@ type Row = {
   status: "needs_review" | "confirmed" | "rejected"
   confidence: number
   relationship_type: string
-  individual_proconnect_client_id: string
-  business_proconnect_client_id: string
-  individual_display_name: string | null
-  business_display_name: string | null
+  person_client_id: string
+  org_client_id: string
+  person_display_name: string | null
+  org_display_name: string | null
   signal_count: number
   signal_sources: string[] | null
 }
@@ -90,12 +90,12 @@ function RelationshipRow({
   const other =
     perspective === "individual"
       ? {
-          name: row.business_display_name ?? row.business_proconnect_client_id,
-          id: row.business_proconnect_client_id,
+          name: row.org_display_name ?? row.org_client_id,
+          id: row.org_client_id,
         }
       : {
-          name: row.individual_display_name ?? row.individual_proconnect_client_id,
-          id: row.individual_proconnect_client_id,
+          name: row.person_display_name ?? row.person_client_id,
+          id: row.person_client_id,
         }
 
   async function review(action: "confirm" | "reject") {

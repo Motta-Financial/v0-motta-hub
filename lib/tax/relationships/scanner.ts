@@ -41,8 +41,8 @@ import {
 /* -------------------------------------------------------------------- */
 
 type ScoredGroup = {
-  individual_proconnect_client_id: string
-  business_proconnect_client_id: string
+  person_client_id: string
+  org_client_id: string
   relationship_type: RelationshipType
   direction: RelationshipDirection
   source_engagement_id: string | null
@@ -66,8 +66,8 @@ export function scoreSignals(signals: RawSignal[]): ScoredGroup[] {
   const groups = new Map<string, RawSignal[]>()
   for (const s of signals) {
     const key = [
-      s.individual_proconnect_client_id,
-      s.business_proconnect_client_id,
+      s.person_client_id,
+      s.org_client_id,
       s.relationship_type,
     ].join("|")
     const arr = groups.get(key) ?? []
@@ -94,8 +94,8 @@ export function scoreSignals(signals: RawSignal[]): ScoredGroup[] {
     if (confidence < REVIEW_THRESHOLD) continue // drop weak noise
 
     out.push({
-      individual_proconnect_client_id: head.individual_proconnect_client_id,
-      business_proconnect_client_id: head.business_proconnect_client_id,
+      person_client_id: head.person_client_id,
+      org_client_id: head.org_client_id,
       relationship_type: head.relationship_type,
       direction: head.direction,
       source_engagement_id: sourceEng,
@@ -124,12 +124,18 @@ async function upsertScoredGroup(
   admin: SupabaseClient,
   group: ScoredGroup,
 ): Promise<{ relationship_id: string; was_new: boolean } | null> {
+  // Keyed on (person_client_id, org_client_id) ONLY — that is exactly the
+  // `tax_client_relationships_unique` constraint (scripts/170). Including
+  // relationship_type here would look up a triple the DB cannot represent:
+  // a second type for the same person/org pair finds no row, falls to the
+  // INSERT branch, and dies on a 23505 unique violation. The schema's intent
+  // is one row per person↔org pair with relationship_type as an attribute,
+  // so re-classification updates the row rather than inserting a rival.
   const { data: existing, error: existingErr } = await admin
     .from("tax_client_relationships")
-    .select("id, status, confidence")
-    .eq("individual_proconnect_client_id", group.individual_proconnect_client_id)
-    .eq("business_proconnect_client_id", group.business_proconnect_client_id)
-    .eq("relationship_type", group.relationship_type)
+    .select("id, status, confidence, relationship_type")
+    .eq("person_client_id", group.person_client_id)
+    .eq("org_client_id", group.org_client_id)
     .maybeSingle()
 
   if (existingErr) {
@@ -142,14 +148,25 @@ async function upsertScoredGroup(
   if (!existing) {
     const { data: inserted, error: insertErr } = await admin
       .from("tax_client_relationships")
+      // NB: `direction` and `source_engagement_id` are deliberately NOT written
+      // here — neither is a column on tax_client_relationships (see scripts/170).
+      // `direction` is derivable from which side is the person, and
+      // `source_engagement_id` lives on tax_client_relationship_signals, which
+      // is where per-signal provenance belongs. Writing them produced a 42703.
       .insert({
-        individual_proconnect_client_id: group.individual_proconnect_client_id,
-        business_proconnect_client_id: group.business_proconnect_client_id,
+        person_client_id: group.person_client_id,
+        org_client_id: group.org_client_id,
         relationship_type: group.relationship_type,
         status: group.status,
         confidence: group.confidence,
-        direction: group.direction,
-        source_engagement_id: group.source_engagement_id,
+        // link_source is NOT NULL with a check constraint
+        // (auto | manual | alfred | hub_fallback) and has no default, so it
+        // must be supplied or the insert dies on 23502. Derived from the
+        // evidence: a group carried only by Hub links is a hub_fallback
+        // inference, anything with real return-data signals is 'auto'.
+        link_source: group.signals.every((s) => s.signal_kind === "hub_link")
+          ? "hub_fallback"
+          : "auto",
       })
       .select("id")
       .single()
@@ -164,7 +181,12 @@ async function upsertScoredGroup(
     const humanLocked = existing.status === "confirmed" || existing.status === "rejected"
     const update: Record<string, unknown> = {
       confidence: Math.max(existing.confidence ?? 0, group.confidence),
-      source_engagement_id: group.source_engagement_id,
+    }
+    // Because the lookup now keys on the person/org pair alone, a rescan can
+    // legitimately reclassify the pair (e.g. "unknown" → "owner"). Persist the
+    // newer classification; without this the first type ever seen would stick.
+    if (group.relationship_type && group.relationship_type !== existing.relationship_type) {
+      update.relationship_type = group.relationship_type
     }
     // Only auto-promote to "confirmed" when nothing has been reviewed
     // yet AND the new score crosses the threshold. Never demote.
@@ -181,16 +203,30 @@ async function upsertScoredGroup(
   }
 
   // Append signal rows.
+  // Mapped onto the ACTUAL tax_client_relationship_signals columns
+  // (scripts/170): relationship_id, person_client_id (NOT NULL), org_client_id,
+  // signal_type, matched_value, source_engagement_id, source_tax_year,
+  // confidence_contribution. The previous shape wrote signal_source /
+  // signal_kind / signal_value / confidence / source_return_id / raw — none of
+  // which exist — and omitted the NOT NULL person_client_id entirely.
   const signalRows = group.signals.map((s) => ({
     relationship_id: relationshipId,
-    signal_source: s.signal_source,
-    signal_kind: s.signal_kind,
-    signal_value: s.signal_value,
-    matched_value: s.matched_value,
-    confidence: SIGNAL_WEIGHTS[s.signal_kind] ?? 0.5,
-    source_return_id: s.source_return_id,
-    source_engagement_id: s.source_engagement_id,
-    raw: s.raw ?? {},
+    person_client_id: s.person_client_id,
+    org_client_id: s.org_client_id,
+    // The in-memory concept is `signal_kind`; the column is `signal_type`.
+    signal_type: s.signal_kind,
+    // Prefer the matched value, falling back to the raw extracted value so we
+    // keep *something* auditable rather than null.
+    matched_value: s.matched_value ?? s.signal_value,
+    confidence_contribution: SIGNAL_WEIGHTS[s.signal_kind] ?? 0.5,
+    // source_engagement_id is deliberately omitted. The column is a uuid FK to
+    // proconnect_engagements(id), but the scanner carries ProConnect's
+    // *engagement_id* text key (see the select at ~line 296). Both are
+    // uuid-shaped, so writing it would pass type checking and then fail at
+    // runtime with a 23503 FK violation — swapping one silent error for
+    // another. Restoring provenance means resolving that key to the internal
+    // uuid (join proconnect_engagements on engagement_id) before insert; left
+    // as a follow-up rather than guessed at here.
   }))
   if (signalRows.length > 0) {
     const { error: signalErr } = await admin

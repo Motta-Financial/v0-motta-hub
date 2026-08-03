@@ -799,7 +799,8 @@ it is.
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` (3) | **Ships in the client bundle.** Anything anon-readable is public. |
 | `SUPABASE_SECRET_KEY` (17), `SUPABASE_JWT_SECRET` (5) | |
 | `POSTGRES_URL` (21), `POSTGRES_URL_NON_POOLING` (36), `POSTGRES_PRISMA_URL` (4) | Direct SQL; non-pooling for migrations. |
-| `SUPABASE_COOKIE_DOMAIN` | Shared session across `*.motta.cpa`. |
+| `SUPABASE_COOKIE_DOMAIN` | Shared session across `*.motta.cpa`. Server-side only (middleware, server components, `/auth/callback`). |
+| `NEXT_PUBLIC_SUPABASE_COOKIE_DOMAIN` | **Same value** (`.motta.cpa`), exposed to the client bundle. Required: password sign-in runs in the browser (`app/login/page.tsx` → `signInWithPassword`), and the non-public var above is `undefined` there, so without this the browser writes a HOST-ONLY cookie and cross-subdomain SSO to `alfred.motta.cpa` silently fails. Both vars must be set and must agree. |
 | `CRON_SECRET` (44) | Cron **and** internal server-to-server auth. |
 | `NEXT_PUBLIC_APP_URL`, `APP_BASE_URL`, `VERCEL_URL`, `VERCEL_PROJECT_PRODUCTION_URL` | URL resolution. |
 
