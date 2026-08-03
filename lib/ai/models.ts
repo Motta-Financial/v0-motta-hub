@@ -29,7 +29,8 @@
  * - Reference a SPECIFIC MODEL (`CLAUDE_SONNET`, `OPENAI_GPT_5`) when
  *   you have a hard requirement on that exact model and don't want a
  *   role bump to silently move you.
- * - For the playground / model pickers, use `CLAUDE_MODELS`.
+ * - For ALFRED chat model pickers, use `ALFRED_CHAT_MODELS`.
+ * - For the Claude-only playground, use `CLAUDE_MODELS`.
  *
  * If you find yourself adding a raw `"openai/..."` or `"anthropic/..."`
  * string anywhere else in the repo, add it here first and import the
@@ -68,6 +69,18 @@ export const OPENAI_GPT_5_5_PRO = "openai/gpt-5.5-pro" as const
 /** Faster gpt-5.5 tier — drops some reasoning depth but ~3x faster.
  *  Good default when latency matters more than ceiling quality. */
 export const OPENAI_GPT_5_5 = "openai/gpt-5.5" as const
+
+export type OpenAITextModelId =
+  | typeof OPENAI_GPT_4O
+  | typeof OPENAI_GPT_5
+  | typeof OPENAI_GPT_5_MINI
+  | typeof OPENAI_GPT_5_5_PRO
+  | typeof OPENAI_GPT_5_5
+
+/** Text-generation models approved for ALFRED chat routing through
+ * Vercel AI Gateway. Excludes image models because ALFRED chat uses
+ * streamText/tool-use, not generateImage. */
+export type GatewayTextModelId = ClaudeModelId | OpenAITextModelId
 
 // ─── OpenAI image models ─────────────────────────────────────────────
 // Listed flagship → tier-down. Always reference the named role
@@ -206,5 +219,67 @@ export function isClaudeModel(id: unknown): id is ClaudeModelId {
   return (
     typeof id === "string" &&
     CLAUDE_MODELS.some((m) => m.id === id)
+  )
+}
+
+
+export interface GatewayTextModelOption {
+  id: GatewayTextModelId
+  /** Friendly name surfaced in pickers. */
+  label: string
+  /** Provider grouping for UI. */
+  provider: "Anthropic" | "OpenAI"
+  /** Short tagline for UI tooltips / option descriptions. */
+  description: string
+  /** Recommended best-fit task. */
+  bestFor: string
+}
+
+/** Ordered ALFRED chat picker allowlist. Every id here is an AI Gateway
+ * model id accepted by app/api/alfred/chat. */
+export const ALFRED_CHAT_MODELS: GatewayTextModelOption[] = [
+  ...CLAUDE_MODELS.map((m) => ({ ...m, provider: "Anthropic" as const })),
+  {
+    id: OPENAI_GPT_5_5_PRO,
+    label: "GPT-5.5 Pro",
+    provider: "OpenAI",
+    description: "OpenAI flagship reasoning tier — highest ceiling, slower.",
+    bestFor: "High-stakes drafting, complex reasoning, code synthesis",
+  },
+  {
+    id: OPENAI_GPT_5_5,
+    label: "GPT-5.5",
+    provider: "OpenAI",
+    description: "Fast GPT-5.5 tier with strong general reasoning.",
+    bestFor: "General chat when OpenAI behavior is preferred",
+  },
+  {
+    id: OPENAI_GPT_5,
+    label: "GPT-5",
+    provider: "OpenAI",
+    description: "OpenAI general reasoning model.",
+    bestFor: "Broad drafting, analysis, and tool-assisted chat",
+  },
+  {
+    id: OPENAI_GPT_5_MINI,
+    label: "GPT-5 Mini",
+    provider: "OpenAI",
+    description: "Lower-latency, lower-cost GPT-5 tier.",
+    bestFor: "Quick turns and high-volume chat",
+  },
+  {
+    id: OPENAI_GPT_4O,
+    label: "GPT-4o",
+    provider: "OpenAI",
+    description: "Legacy OpenAI multimodal chat model retained for compatibility.",
+    bestFor: "Compatibility with older OpenAI-tuned prompts",
+  },
+]
+
+/** Runtime guard for ALFRED chat model overrides. */
+export function isGatewayTextModel(id: unknown): id is GatewayTextModelId {
+  return (
+    typeof id === "string" &&
+    ALFRED_CHAT_MODELS.some((m) => m.id === id)
   )
 }

@@ -679,7 +679,7 @@ API key. On Vercel, `VERCEL_OIDC_TOKEN` authenticates; locally,
 `AI_GATEWAY_API_KEY` is the fallback.
 
 `lib/ai/models.ts` is the mandatory registry. Call sites reference a **named
-role**, never a raw model string:
+role** or the exported ALFRED chat allowlist, never a raw model string:
 
 | Role | Current binding |
 |---|---|
@@ -691,9 +691,11 @@ role**, never a raw model string:
 | `IMAGE_PROMPT_MODEL` | `openai/gpt-5.5-pro` |
 | `IMAGE_GENERATION_MODEL` | `openai/gpt-image-2` |
 
-Bumping a role rebinds every call site at once. Adding a raw
-`"anthropic/…"` or `"openai/…"` string anywhere else in the repo defeats the
-purpose of the file. Runtime overrides live in `ai_configurations`
+Bumping a role rebinds every call site at once. `ALFRED_CHAT_MODELS` is the
+only per-request chat model override allowlist; it accepts approved text models
+from Anthropic and OpenAI via the AI Gateway and deliberately excludes image
+models. Adding a raw `"anthropic/…"` or `"openai/…"` string anywhere else in the
+repo defeats the purpose of the file. Runtime overrides live in `ai_configurations`
 (`/api/admin/ai/config`); spend is logged to `ai_usage_log`
 (`/api/admin/ai/usage`).
 
