@@ -152,7 +152,7 @@ export type Form1040Data = Record<
   {
     value: string | number | boolean | null
     line: Form1040Line
-    source: "proconnect" | "computed" | "input"
+    source: "proconnect" | "computed" | "input" | "estimated"
   }
 >
 
