@@ -147,6 +147,30 @@ export const IMAGE_GENERATION_MODEL = OPENAI_GPT_IMAGE_2
 
 // ─── UI surfaces ─────────────────────────────────────────────────────
 
+export interface ClaudeModelCapabilities {
+  /** Whether the model supports extended ("adaptive") thinking. All
+   *  Claude 4.x models do; included as a flag so the UI can disable a
+   *  "Deep think" toggle if we ever add a non-thinking model to the
+   *  catalog. */
+  supportsThinking: boolean
+  /** Effort levels Anthropic accepts for this model. Opus 4.7 is the
+   *  only one supporting `xhigh`; everything else maxes out at `high`
+   *  / `max`. Empty array means the `effort` provider option is a
+   *  no-op for this model. */
+  effortLevels: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+  /** Whether the model accepts image / PDF parts as user input. All
+   *  Claude 4.x models do. */
+  supportsVision: boolean
+  /** Whether the model can drive Anthropic's hosted `web_search` and
+   *  `web_fetch` server tools. All Claude 4.x models can. */
+  supportsServerWebTools: boolean
+  /** Minimum prompt length in tokens before Anthropic will actually
+   *  cache it. Below this, `cacheControl` markers are ignored and the
+   *  request runs uncached. We currently never branch on this, but
+   *  expose it so the admin stats UI can explain misses. */
+  cacheMinTokens: number
+}
+
 export interface ClaudeModelOption {
   id: ClaudeModelId
   /** Friendly name surfaced in pickers. */
@@ -155,16 +179,10 @@ export interface ClaudeModelOption {
   description: string
   /** Recommended best-fit task. */
   bestFor: string
-  /**
-   * Extended ("deep") thinking support. The alfred-chat client mirrors these
-   * flags to decide whether to enable its Deep-think toggle; this catalog is
-   * the source of truth. If the two ever drift the worst case is a control
-   * that renders but no-ops, because the chat route re-checks the flag
-   * server-side before enabling thinking.
-   */
-  supportsThinking: boolean
-  /** Image input support (reserved for the attachment work). */
-  supportsVision: boolean
+  /** Provider-level capabilities. Used by the chat route to decide
+   *  what to plumb into `providerOptions.anthropic` and by the client
+   *  to enable / disable advanced UI controls per model. */
+  capabilities: ClaudeModelCapabilities
 }
 
 /** Ordered list for UI pickers. Order matters — first entry is the
@@ -175,42 +193,59 @@ export const CLAUDE_MODELS: ClaudeModelOption[] = [
     label: "Claude Sonnet 4.6",
     description: "Balanced reasoning + speed. The general default.",
     bestFor: "Chat, drafting, most agentic workflows",
-    supportsThinking: true,
-    supportsVision: true,
+    capabilities: {
+      supportsThinking: true,
+      effortLevels: ["low", "medium", "high", "max"],
+      supportsVision: true,
+      supportsServerWebTools: true,
+      cacheMinTokens: 1024,
+    },
   },
   {
     id: CLAUDE_OPUS,
     label: "Claude Opus 4.7",
     description: "Anthropic's flagship — deepest reasoning, slowest, priciest.",
     bestFor: "Complex analysis, long-context synthesis, hard tool-use",
-    supportsThinking: true,
-    supportsVision: true,
+    capabilities: {
+      supportsThinking: true,
+      effortLevels: ["low", "medium", "high", "xhigh", "max"],
+      supportsVision: true,
+      supportsServerWebTools: true,
+      cacheMinTokens: 1024,
+    },
   },
   {
     id: CLAUDE_HAIKU,
     label: "Claude Haiku 4.5",
     description: "Fastest + cheapest. Drops some reasoning depth.",
     bestFor: "High-volume classification, quick summarization, ALFRED tool-calls",
-    supportsThinking: true,
-    supportsVision: true,
+    capabilities: {
+      supportsThinking: true,
+      effortLevels: ["low", "medium", "high", "max"],
+      supportsVision: true,
+      supportsServerWebTools: true,
+      cacheMinTokens: 4096,
+    },
   },
 ]
 
 /**
- * Capability lookup for a resolved model id.
+ * Narrow capability view: {supportsThinking, supportsVision}.
  *
- * Returns `null` for anything not in `CLAUDE_MODELS` — including the OpenAI
- * ids above, which are used by non-chat workloads and have no Anthropic
- * thinking option. Callers must treat `null` as "no extended features".
+ * Reads through to the richer `capabilities` object rather than keeping a
+ * parallel set of flat fields, so there is one source of truth. Kept as a
+ * distinct export because this narrow contract is what the chat route's
+ * Deep-think gate and the alfred-chat client consume; callers wanting
+ * effortLevels / server-tool / cache detail should use getClaudeCapabilities().
  */
 export function getClaudeModelCapabilities(
   id: unknown,
 ): { supportsThinking: boolean; supportsVision: boolean } | null {
-  const match = CLAUDE_MODELS.find((m) => m.id === id)
-  if (!match) return null
+  const caps = CLAUDE_MODELS.find((m) => m.id === id)?.capabilities
+  if (!caps) return null
   return {
-    supportsThinking: match.supportsThinking,
-    supportsVision: match.supportsVision,
+    supportsThinking: caps.supportsThinking,
+    supportsVision: caps.supportsVision,
   }
 }
 
@@ -222,6 +257,23 @@ export function isClaudeModel(id: unknown): id is ClaudeModelId {
   )
 }
 
+/** Look up the capability bundle for a Claude model id. Returns
+ *  `undefined` if the id isn't in our catalog (e.g. an OpenAI model
+ *  string), which the chat route uses to decide whether to apply
+ *  Anthropic-specific provider options. */
+export function getClaudeCapabilities(
+  id: string,
+): ClaudeModelCapabilities | undefined {
+  return CLAUDE_MODELS.find((m) => m.id === id)?.capabilities
+}
+
+/** Cheap prefix check for "is this an Anthropic Gateway model id?".
+ *  Used by the chat route to gate `providerOptions.anthropic` and the
+ *  hosted web-search tool, both of which would no-op (or 400) if sent
+ *  to a non-Anthropic provider. */
+export function isAnthropicGatewayModel(id: string): boolean {
+  return id.startsWith("anthropic/")
+}
 
 export interface GatewayTextModelOption {
   id: GatewayTextModelId

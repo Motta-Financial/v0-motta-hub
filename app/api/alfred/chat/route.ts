@@ -24,10 +24,12 @@ import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
+import { anthropic } from "@ai-sdk/anthropic"
 import { buildProjectContext } from "@/lib/alfred/project-context"
 import {
   ALFRED_CHAT_MODEL,
-  getClaudeModelCapabilities,
+  getClaudeCapabilities,
+  isAnthropicGatewayModel,
   isGatewayTextModel,
   type GatewayTextModelId,
 } from "@/lib/ai/models"
@@ -46,18 +48,6 @@ interface CurrentUser {
 
 export const maxDuration = 60
 
-/**
- * Extended-thinking budget for the alfred-chat Deep-think toggle.
- *
- * Anthropic's contract: `max_tokens` must be STRICTLY GREATER than
- * `thinking.budget_tokens`, and the thinking tokens are consumed out of
- * `max_tokens` — they are not additive. So the ceiling has to leave room for
- * both the reasoning and the visible answer, otherwise a long think starves
- * the reply. 8k think + 8k answer is a sane default for a chat surface that
- * also has to finish inside `maxDuration`.
- */
-const THINKING_BUDGET_TOKENS = 8_000
-const THINKING_MAX_OUTPUT_TOKENS = 16_000
 
 /**
  * Escape user-supplied text before splicing it into a PostgREST `.or()`
@@ -1049,21 +1039,24 @@ export async function POST(req: Request) {
     conversationId: incomingConversationId = null,
     audience = "staff",
     model: requestedModel = null,
-    think: requestedThink = false,
+    think: requestedThink = null,
+    effort: requestedEffort = null,
   }: {
     messages: UIMessage[]
-    // currentUser is intentionally NOT typed/read here -- it is an
-    // untrusted hint only and is silently discarded.
     conversationId?: string | null
     audience?: Audience
     // Optional per-request model override sent by the alfred-chat
     // client's model picker. Validated below via isGatewayTextModel() so
     // a malicious client can't ask for an arbitrary provider/model.
     model?: string | null
-    // Deep-think toggle from the alfred-chat composer. Honoured only when
-    // the *resolved* model advertises supportsThinking (see lib/ai/models.ts);
-    // otherwise silently ignored so an out-of-date client can't error the turn.
-    think?: boolean
+    // Optional "Deep think" toggle from the client. Triggers Anthropic
+    // adaptive thinking when the resolved model supports it. Silently
+    // ignored on non-Anthropic models or models flagged as not
+    // supporting thinking in the catalog.
+    think?: boolean | null
+    // Optional thinking-effort hint. Constrained to the per-model
+    // effortLevels allowlist below.
+    effort?: "low" | "medium" | "high" | "xhigh" | "max" | null
   } = await req.json()
 
   // Resolve the per-request model override. We accept it only if it
@@ -1378,25 +1371,124 @@ export async function POST(req: Request) {
       const effectiveModel = overrideModel ?? aiConfig.model
       const startTime = Date.now()
 
-      // ── Deep think ────────────────────────────────────────────────
-      // The alfred-chat composer ships `think: true` when its Deep-think
-      // pill is on. Until now the Hub ignored the field entirely, so the
-      // control was a no-op. Gate on the *resolved* model's capability
-      // rather than trusting the client: the picker and this catalog can
-      // drift, and an unsupported thinking option would fail the whole turn.
-      const capabilities = getClaudeModelCapabilities(effectiveModel)
-      const thinkingEnabled = requestedThink === true && capabilities?.supportsThinking === true
-      if (requestedThink && !thinkingEnabled) {
-        console.warn(
-          `[alfred] deep-think requested but not enabled for model ${effectiveModel} ` +
-            `(supportsThinking=${capabilities?.supportsThinking ?? "unknown"}). Proceeding without it.`,
-        )
-      }
-
       // Build the system prompt, using the admin override if set
       const baseSystemPrompt = aiConfig.systemPrompt
         ? aiConfig.systemPrompt
         : `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`
+
+      // ── Anthropic native capabilities ────────────────────────────
+      // We branch off the resolved model id rather than the user's
+      // request because the admin panel can pin ALFRED to a specific
+      // model. getClaudeCapabilities returns undefined for non-
+      // Anthropic ids (e.g. an OpenAI fallback in aiConfig.model), in
+      // which case we skip the whole block and ALFRED runs with the
+      // SDK's provider-agnostic defaults.
+      const isAnthropic = isAnthropicGatewayModel(effectiveModel)
+      const capabilities = isAnthropic
+        ? getClaudeCapabilities(effectiveModel)
+        : undefined
+
+      // Resolve "Deep think" -- only if the client asked for it AND
+      // the model supports it. Silent fallthrough on mismatch so a
+      // stale client doesn't block a request.
+      const thinkingEnabled = Boolean(
+        requestedThink && capabilities?.supportsThinking,
+      )
+      if (requestedThink && !thinkingEnabled) {
+        // Preserved from the implementation this block supersedes: a stale
+        // client can ask for Deep think on a model that doesn't support it (or
+        // on a non-Anthropic fallback pinned by the admin panel). We proceed
+        // without thinking rather than erroring the turn, but say so, because
+        // otherwise the toggle looks like it worked and silently didn't.
+        console.warn(
+          `[alfred] deep-think requested but not enabled for model ${effectiveModel} ` +
+            `(anthropic=${isAnthropic}, supportsThinking=${capabilities?.supportsThinking ?? "unknown"}). ` +
+            `Proceeding without it.`,
+        )
+      }
+
+      // Resolve effort: must be in the model's allowlist; otherwise
+      // null and we omit the option entirely.
+      const effortLevel =
+        requestedEffort &&
+        capabilities?.effortLevels.includes(requestedEffort)
+          ? requestedEffort
+          : null
+
+      // Anthropic provider options. We pass these on every request to
+      // an Anthropic model so caching / context management always run;
+      // thinking + effort are only attached when explicitly enabled
+      // because they change pricing and latency.
+      const anthropicProviderOptions = isAnthropic
+        ? {
+            anthropic: {
+              ...(thinkingEnabled
+                ? {
+                    // Adaptive thinking lets Claude decide how much to
+                    // reason. display: "summarized" ensures Opus 4.7
+                    // streams visible reasoning instead of pausing
+                    // silently for many seconds (default is "omitted"
+                    // on Opus 4.7).
+                    thinking: {
+                      type: "adaptive" as const,
+                      display: "summarized" as const,
+                    },
+                  }
+                : {}),
+              ...(effortLevel ? { effort: effortLevel } : {}),
+              // Trim old tool-use blocks once the conversation gets
+              // big. ALFRED can rack up 10+ DB / search rounds in a
+              // single turn; without this, follow-up turns pay full
+              // input cost on every prior tool call.
+              contextManagement: {
+                edits: [
+                  {
+                    type: "clear_tool_uses_20250919" as const,
+                    trigger: { type: "input_tokens" as const, value: 60_000 },
+                    keep: { type: "tool_uses" as const, value: 8 },
+                    clearAtLeast: {
+                      type: "input_tokens" as const,
+                      value: 2_000,
+                    },
+                    clearToolInputs: true,
+                  },
+                ],
+              },
+            },
+            // Gateway-level automatic caching. The Gateway adds
+            // cache_control: ephemeral markers to the static parts
+            // of the request (system prompt + tool definitions),
+            // which cuts input tokens by 80–90% on follow-up turns
+            // when the system prompt is the dominant cost.
+            gateway: {
+              caching: "auto" as const,
+            },
+          }
+        : undefined
+
+      // Wire Anthropic's hosted server tools when the model supports
+      // them. These run on Anthropic's side -- ALFRED gets the result
+      // back as a normal tool message but we don't have to implement
+      // or pay for the search/fetch ourselves. Audience-gated to
+      // staff-and-above via the existing policy.allowedTools list,
+      // matching how the local browsePage / webSearch tools work.
+      const serverWebTools =
+        isAnthropic &&
+        capabilities?.supportsServerWebTools &&
+        policy.allowedTools.includes("webSearch")
+          ? {
+              // Distinct keys so they don't collide with our own
+              // webSearch / browsePage tools. Either set may be
+              // present in filteredTools; the model will pick the
+              // best fit per turn.
+              anthropicWebSearch: anthropic.tools.webSearch_20250305({
+                maxUses: 5,
+              }),
+              anthropicWebFetch: anthropic.tools.webFetch_20250910({
+                maxUses: 5,
+              }),
+            }
+          : {}
 
       // ── Project context ───────────────────────────────────────────
       // If this conversation is filed under an ALFRED Project, append the
@@ -1418,32 +1510,36 @@ export async function POST(req: Request) {
         model: effectiveModel,
         system: systemPrompt,
         messages: modelMessages,
-        tools: filteredTools,
-        // 12 steps lets ALFRED chain webSearch → pick a result → browsePage →
-        // reply, with a couple DB lookups in the same turn if needed.
-        stopWhen: stepCountIs(12),
-        abortSignal: req.signal,
-        // Only present when Deep think is on AND the model supports it, so
-        // the default path is byte-for-byte what it was before this change.
-        //
-        // maxOutputTokens MUST be raised alongside the thinking budget:
-        // Anthropic requires max_tokens > thinking.budget_tokens, and the
-        // budget is *drawn from* max_tokens rather than added on top. Left
-        // unset, max_tokens falls back to a provider default at or below the
-        // budget and every thinking-enabled turn 400s.
-        ...(thinkingEnabled
-          ? {
-              maxOutputTokens: THINKING_MAX_OUTPUT_TOKENS,
-              providerOptions: {
-                anthropic: {
-                  thinking: { type: "enabled", budgetTokens: THINKING_BUDGET_TOKENS },
-                },
-              },
-            }
+        tools: {
+          ...filteredTools,
+          ...serverWebTools,
+        // Cast: the inferred schema types of our local Zod-typed tools
+        // and Anthropic's provider-defined tools have disjoint generic
+        // parameters (FlexibleSchema<{query: string}> vs FlexibleSchema<never>),
+        // so TS can't merge them into a single ToolSet shape. At runtime
+        // the AI SDK iterates the object, so the cast is safe.
+        } as Parameters<typeof streamText>[0]["tools"],
+        ...(anthropicProviderOptions
+          ? { providerOptions: anthropicProviderOptions }
           : {}),
-        onFinish: async ({ usage }) => {
-          // Fire-and-forget usage logging for the admin stats dashboard
-          // AI SDK 6 uses inputTokens/outputTokens; we map to our DB schema names
+        // 16 steps gives the model headroom for: webSearch -> fetch ->
+        // a few DB queries -> assemble the answer. Was 12 before we
+        // wired the Anthropic server tools.
+        stopWhen: stepCountIs(16),
+        abortSignal: req.signal,
+        onFinish: async ({ usage, providerMetadata }) => {
+          // Fire-and-forget usage logging for the admin stats dashboard.
+          // AI SDK 6 uses inputTokens/outputTokens; we map to our DB
+          // schema names. We also surface Anthropic-specific cache /
+          // thinking counters via metadata so the dashboard can show
+          // cache hit rates without a schema migration.
+          const anthropicMeta = providerMetadata?.anthropic as
+            | {
+                cacheCreationInputTokens?: number
+                cacheReadInputTokens?: number
+                thinkingTokens?: number
+              }
+            | undefined
           logAIUsage({
             useCase: "alfred_chat",
             model: effectiveModel,
@@ -1454,7 +1550,15 @@ export async function POST(req: Request) {
             success: true,
             userId: currentUser?.teamMemberId,
             userEmail: currentUser?.email,
-            metadata: { conversationId },
+            metadata: {
+              conversationId,
+              thinkingEnabled,
+              effortLevel,
+              cacheCreationInputTokens:
+                anthropicMeta?.cacheCreationInputTokens,
+              cacheReadInputTokens: anthropicMeta?.cacheReadInputTokens,
+              thinkingTokens: anthropicMeta?.thinkingTokens,
+            },
           })
         },
       })
