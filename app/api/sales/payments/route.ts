@@ -111,6 +111,7 @@ export async function GET(req: Request) {
       string,
       {
         invoice_number: string | null
+        invoice_date: string | null
         organization_id: string | null
         contact_id: string | null
         ignition_client_id: string | null
@@ -122,12 +123,13 @@ export async function GET(req: Request) {
         const { data } = await supabase
           .from("ignition_invoices")
           .select(
-            "ignition_invoice_id, invoice_number, organization_id, contact_id, ignition_client_id",
+            "ignition_invoice_id, invoice_number, invoice_date, organization_id, contact_id, ignition_client_id",
           )
           .in("ignition_invoice_id", chunk)
         for (const inv of data ?? []) {
           invoiceInfo.set(inv.ignition_invoice_id, {
             invoice_number: inv.invoice_number ?? null,
+            invoice_date: inv.invoice_date ?? null,
             organization_id: inv.organization_id ?? null,
             contact_id: inv.contact_id ?? null,
             ignition_client_id: inv.ignition_client_id ?? null,
@@ -205,30 +207,43 @@ export async function GET(req: Request) {
       { full_name: string; state: string | null; city: string | null }
     >()
 
+    // ~866 org ids + ~948 contact ids in practice — an unchunked .in()
+    // list blows past PostgREST's URL-length limit and silently blanks
+    // every client name/state, so chunk at 200 like the lookups above.
     if (orgIds.size) {
-      const { data } = await supabase
-        .from("organizations")
-        .select("id, name, state, city")
-        .in("id", Array.from(orgIds))
-      for (const o of data ?? []) {
-        orgInfo.set(o.id, {
-          name: o.name,
-          state: normalizeState(o.state),
-          city: o.city ?? null,
-        })
+      const orgArr = Array.from(orgIds)
+      for (let offset = 0; offset < orgArr.length; offset += 200) {
+        const chunk = orgArr.slice(offset, offset + 200)
+        const { data, error } = await supabase
+          .from("organizations")
+          .select("id, name, state, city")
+          .in("id", chunk)
+        if (error) console.error("[sales/payments] organizations lookup failed:", error)
+        for (const o of data ?? []) {
+          orgInfo.set(o.id, {
+            name: o.name,
+            state: normalizeState(o.state),
+            city: o.city ?? null,
+          })
+        }
       }
     }
     if (contactIds.size) {
-      const { data } = await supabase
-        .from("contacts")
-        .select("id, full_name, state, city")
-        .in("id", Array.from(contactIds))
-      for (const c of data ?? []) {
-        contactInfo.set(c.id, {
-          full_name: c.full_name,
-          state: normalizeState(c.state),
-          city: c.city ?? null,
-        })
+      const contactArr = Array.from(contactIds)
+      for (let offset = 0; offset < contactArr.length; offset += 200) {
+        const chunk = contactArr.slice(offset, offset + 200)
+        const { data, error } = await supabase
+          .from("contacts")
+          .select("id, full_name, state, city")
+          .in("id", chunk)
+        if (error) console.error("[sales/payments] contacts lookup failed:", error)
+        for (const c of data ?? []) {
+          contactInfo.set(c.id, {
+            full_name: c.full_name,
+            state: normalizeState(c.state),
+            city: c.city ?? null,
+          })
+        }
       }
     }
 
@@ -410,21 +425,10 @@ export async function GET(req: Request) {
     // empty so the UI can hide the tile rather than show 0.
     const daysToCollect: number[] = []
     const invoiceDateMap = new Map<string, string>()
-    // Reuse the invoiceInfo we already fetched — it has the invoice
-    // numbers but not the invoice_date, so we need one more lookup.
-    if (invoiceIds.length) {
-      for (let offset = 0; offset < invoiceIds.length; offset += 200) {
-        const chunk = invoiceIds.slice(offset, offset + 200)
-        const { data } = await supabase
-          .from("ignition_invoices")
-          .select("ignition_invoice_id, invoice_date")
-          .in("ignition_invoice_id", chunk)
-        for (const inv of data ?? []) {
-          if (inv.invoice_date) {
-            invoiceDateMap.set(inv.ignition_invoice_id, inv.invoice_date)
-          }
-        }
-      }
+    // Reuse the invoiceInfo we already fetched — invoice_date rides along
+    // on the first lookup now, so no second round-trip is needed.
+    for (const [invId, inv] of invoiceInfo) {
+      if (inv.invoice_date) invoiceDateMap.set(invId, inv.invoice_date)
     }
     for (const p of inWindow) {
       if (!p.paid_at || !p.ignition_invoice_id) continue

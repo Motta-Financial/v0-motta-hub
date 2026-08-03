@@ -11,7 +11,13 @@ interface CreateClientBody {
   phone?: string
   createInKarbon?: boolean
   linkToRecord?: {
-    type: "ignition_client" | "ignition_proposal" | "calendly_invitee" | "debrief"
+    type:
+      | "ignition_client"
+      | "ignition_proposal"
+      | "calendly_invitee"
+      | "debrief"
+      | "jotform_intake_submitter"
+      | "jotform_intake_referral"
     id: string
   }
 }
@@ -28,12 +34,25 @@ async function createKarbonContact(data: {
     return null
   }
 
+  // Karbon's Contact model has NO flat EmailAddress/PhoneNumber fields — they
+  // must be nested in BusinessCards[] (EmailAddresses is string[], PhoneNumbers
+  // is object[]). Sending the flat shape returns 400 "Invalid Model — The
+  // contact field is required" and silently fails creation. Keep this aligned
+  // with buildKarbonContactBody in lib/karbon/client-sync.ts.
   const body = {
     FirstName: data.firstName,
     LastName: data.lastName,
-    EmailAddress: data.email || null,
-    PhoneNumber: data.phone || null,
     ContactType: "Client",
+    RestrictionLevel: "Public",
+    BusinessCards: [
+      {
+        IsPrimaryCard: true,
+        EmailAddresses: data.email ? [data.email] : [],
+        PhoneNumbers: data.phone
+          ? [{ Number: data.phone, CountryCode: "US", Label: "Work" }]
+          : [],
+      },
+    ],
   }
 
   const { data: result, error } = await karbonFetch<{ ContactKey: string }>(
@@ -61,10 +80,22 @@ async function createKarbonOrganization(data: {
     return null
   }
 
+  // Organizations use FullName (not Name) and nest email/phone in
+  // BusinessCards[] — same rule as contacts. Aligned with
+  // buildKarbonOrganizationBody in lib/karbon/client-sync.ts.
   const body = {
-    Name: data.name,
-    EmailAddress: data.email || null,
-    PhoneNumber: data.phone || null,
+    FullName: data.name,
+    ContactType: "Client",
+    RestrictionLevel: "Public",
+    BusinessCards: [
+      {
+        IsPrimaryCard: true,
+        EmailAddresses: data.email ? [data.email] : [],
+        PhoneNumbers: data.phone
+          ? [{ Number: data.phone, CountryCode: "US", Label: "Work" }]
+          : [],
+      },
+    ],
   }
 
   const { data: result, error } = await karbonFetch<{ OrganizationKey: string }>(
@@ -125,7 +156,8 @@ export async function POST(request: NextRequest) {
         .insert({
           first_name: firstName,
           last_name: lastName,
-          full_name: `${firstName} ${lastName}`,
+          // full_name is a GENERATED column in Supabase — never write it or the
+          // insert fails with "cannot insert a non-DEFAULT value".
           primary_email: email || null,
           phone_primary: phone || null,
           karbon_contact_key: karbonKey,
@@ -175,8 +207,17 @@ export async function POST(request: NextRequest) {
           ? { organization_id: clientId, contact_id: null }
           : { contact_id: clientId, organization_id: null }
 
+      // Same shape, but for the referral side of an intake — keeps the
+      // prospect-side link untouched and only writes the `referral_*`
+      // FK pair instead.
+      const referralUpdateData =
+        type === "organization"
+          ? { referral_organization_id: clientId, referral_contact_id: null }
+          : { referral_contact_id: clientId, referral_organization_id: null }
+
       let tableName: string
       let idColumn: string
+      let payload: Record<string, unknown> = updateData
 
       switch (linkToRecord.type) {
         case "ignition_client":
@@ -195,6 +236,15 @@ export async function POST(request: NextRequest) {
           tableName = "debriefs"
           idColumn = "id"
           break
+        case "jotform_intake_submitter":
+          tableName = "jotform_intake_submissions"
+          idColumn = "id"
+          break
+        case "jotform_intake_referral":
+          tableName = "jotform_intake_submissions"
+          idColumn = "id"
+          payload = referralUpdateData
+          break
         default:
           console.warn("Unknown record type for linking:", linkToRecord.type)
           tableName = ""
@@ -204,7 +254,7 @@ export async function POST(request: NextRequest) {
       if (tableName) {
         await supabase
           .from(tableName)
-          .update(updateData)
+          .update(payload)
           .eq(idColumn, linkToRecord.id)
       }
     }
@@ -220,9 +270,15 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error("Error creating client:", error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    )
+    // Supabase/Postgrest errors are thrown as plain objects (not Error
+    // instances), so `instanceof Error` alone silently collapsed them into
+    // "Unknown error". Surface the real message instead.
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === "object" && error !== null && "message" in error
+          ? String((error as { message: unknown }).message)
+          : "Unknown error"
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }

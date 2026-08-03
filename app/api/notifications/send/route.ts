@@ -4,7 +4,7 @@ import {
   buildNotificationEmailHtml,
   mapNotificationTypeToCategory,
   resolveRecipientsForCategory,
-  sendEmail,
+  sendBatchEmail,
 } from "@/lib/email"
 
 export async function POST(request: Request) {
@@ -70,26 +70,21 @@ export async function POST(request: Request) {
 
       emailsSkipped = recipients.length - toResolve.length
 
-      // Send one personalized email per recipient so the greeting/CTA is
-      // tailored to them. Resend handles bulk reasonably; we don't fan out
-      // huge volumes through this endpoint.
-      const sendResults = await Promise.all(
-        toResolve.map(async (r) => {
-          const html = buildNotificationEmailHtml({
-            recipientName: r.full_name?.split(" ")[0] || "there",
-            title: title || "New notification",
-            message: message || "",
-            actionUrl: action_url || undefined,
-          })
-          const res = await sendEmail({
-            to: r.email,
-            subject: title || "New notification from MOTTA HUB",
-            html,
-          })
-          return res.success
+      // Build one personalized message per recipient (tailored greeting/CTA)
+      // and send them all in a single Resend batch call instead of N parallel
+      // sends. Each message is individually addressed.
+      const messages = toResolve.map((r) => ({
+        to: r.email,
+        subject: title || "New notification from MOTTA HUB",
+        html: buildNotificationEmailHtml({
+          recipientName: r.full_name?.split(" ")[0] || "there",
+          title: title || "New notification",
+          message: message || "",
+          actionUrl: action_url || undefined,
         }),
-      )
-      emailsSent = sendResults.filter(Boolean).length
+      }))
+      const { sent } = await sendBatchEmail(messages)
+      emailsSent = sent
     }
 
     return NextResponse.json({

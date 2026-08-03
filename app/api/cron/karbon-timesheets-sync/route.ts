@@ -29,16 +29,23 @@ function authorizeRequest(request: Request): boolean {
   return false
 }
 
-function resolveBaseUrl(): string {
-  if (process.env.NEXT_PUBLIC_APP_URL) {
-    const url = process.env.NEXT_PUBLIC_APP_URL
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      return `https://${url}`
-    }
-    return url
+function resolveBaseUrl(request: Request): string {
+  // Calls /api/karbon/timesheets on THIS deployment (internal server-to-server).
+  // Use our own origin — never NEXT_PUBLIC_APP_URL, which on the Hub points at
+  // the marketing domain (motta.cpa) and has none of these routes, so the
+  // timesheet import would silently 404.
+  try {
+    const origin = new URL(request.url).origin
+    if (origin && !origin.includes("localhost:0")) return origin
+  } catch {
+    // fall through
   }
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    const url = process.env.NEXT_PUBLIC_APP_URL
+    return url.startsWith("http") ? url : `https://${url}`
+  }
   return "http://localhost:3000"
 }
 
@@ -49,7 +56,7 @@ export async function GET(request: Request) {
 
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
-  const baseUrl = resolveBaseUrl()
+  const baseUrl = resolveBaseUrl(request)
 
   try {
     const url = new URL(request.url)

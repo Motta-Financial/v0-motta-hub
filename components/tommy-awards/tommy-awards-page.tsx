@@ -8,11 +8,13 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Trophy, Flame, Target, Users, Zap, Calendar, Filter, X, Send } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Trophy, Flame, Target, Users, Zap, Calendar, Filter, X, Send, Sparkles } from "lucide-react"
 import { TommyLeaderboard } from "./tommy-leaderboard"
 import { TommyYTDLeaderboard } from "./tommy-ytd-leaderboard"
 import { TommyRecentBallots } from "./tommy-recent-ballots"
+import { TommyStats } from "./tommy-stats"
+import { TommyWeeklyStats } from "./tommy-weekly-stats"
 
 interface Week {
   id: string
@@ -49,6 +51,9 @@ export function TommyAwardsPage() {
   // otherwise the most recent week with ballots). Used as the "default" baseline
   // for clearFilters() and hasActiveFilters detection.
   const [defaultWeekId, setDefaultWeekId] = useState<string | null>(null)
+  // Active leaderboard tab — lifted to state so we can conditionally
+  // render the "Recent Ballots" feed only on the Weekly / YTD views.
+  const [activeTab, setActiveTab] = useState<string>("weekly")
 
   useEffect(() => {
     fetchFilterData()
@@ -163,16 +168,15 @@ export function TommyAwardsPage() {
     }
   }
 
-  const toggleWeek = (weekId: string) => {
-    setFilters((prev) => {
-      const isSelected = prev.weekIds.includes(weekId)
-      return {
-        ...prev,
-        weekIds: isSelected
-          ? prev.weekIds.filter((id) => id !== weekId)
-          : [...prev.weekIds, weekId],
-      }
-    })
+  // The Weekly Leaderboard is anchored to a single week — multi-week
+  // unions made the recap panel ambiguous (which week's summary?) and
+  // muddled the standings narrative. Selecting a week now REPLACES
+  // the current selection rather than toggling it on top.
+  const selectWeek = (weekId: string) => {
+    setFilters((prev) => ({
+      ...prev,
+      weekIds: prev.weekIds[0] === weekId ? [] : [weekId],
+    }))
   }
 
   const clearFilters = () => {
@@ -417,19 +421,17 @@ export function TommyAwardsPage() {
                     <Calendar className="h-4 w-4 mr-2" style={{ color: "#A8C566" }} />
                     {filters.weekIds.length === 0 ? (
                       <span style={{ color: "#B8B3AA" }}>All Weeks</span>
-                    ) : filters.weekIds.length === 1 ? (
+                    ) : (
                       <span className="truncate">
                         {filteredWeeks.find((w) => w.id === filters.weekIds[0])?.week_name || "1 week"}
                       </span>
-                    ) : (
-                      <span>{filters.weekIds.length} weeks selected</span>
                     )}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-[320px] p-0" align="start">
                   <div className="p-3 border-b border-border">
                     <div className="flex items-center justify-between">
-                      <p className="text-sm font-medium text-foreground">Select Weeks</p>
+                      <p className="text-sm font-medium text-foreground">Select Week</p>
                       <div className="flex gap-2">
                         {filters.weekIds.length > 0 && (
                           <Button
@@ -451,12 +453,34 @@ export function TommyAwardsPage() {
                       return (
                         <button
                           key={week.id}
-                          onClick={() => toggleWeek(week.id)}
+                          onClick={() => selectWeek(week.id)}
                           className={`flex items-center gap-3 w-full px-3 py-2 rounded-lg text-left text-sm transition-colors ${
                             isSelected ? "bg-[#8E9B79]/15" : "hover:bg-muted"
                           }`}
                         >
-                          <Checkbox checked={isSelected} className="pointer-events-none" />
+                          {/*
+                            Single-select indicator (radio-style). The
+                            outer ring uses the same comic-green accent
+                            as the rest of the dashboard so the picker
+                            visually agrees with the "one week at a
+                            time" model — a checkbox here implied
+                            multi-select.
+                          */}
+                          <span
+                            aria-hidden
+                            className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border-2"
+                            style={{
+                              borderColor: isSelected ? "#A8C566" : "rgba(168,197,102,0.35)",
+                              backgroundColor: isSelected ? "rgba(168,197,102,0.10)" : "transparent",
+                            }}
+                          >
+                            {isSelected && (
+                              <span
+                                className="h-2 w-2 rounded-full"
+                                style={{ backgroundColor: "#A8C566" }}
+                              />
+                            )}
+                          </span>
                           <span className="flex-1 truncate">{week.week_name}</span>
                           {isCurrentWeek && (
                             <Badge
@@ -530,19 +554,84 @@ export function TommyAwardsPage() {
         </CardContent>
       </Card>
 
-      {/* Weekly leaderboard sits ABOVE the year-to-date standings — the
-          weekly result is what the team is most curious about right after
-          the recap goes out. The widget reads from the same `filters`
-          object, so when the user applies a multi-week or year filter
-          this section reflects those choices. */}
-      <TommyLeaderboard filters={filters} />
+      {/* Leaderboards are split into tabs so the Year-to-Date Standings
+          have a dedicated, full-bleed surface and aren't competing with
+          the weekly podium for attention. The team filters above apply
+          to both tabs (YTD honors only the year filter — multi-week
+          and team-member filters intentionally don't constrain
+          season-long standings). */}
+      {/*
+        Tab colors: previously the TabsList sat on a near-transparent sage
+        wash over the cream page background, which made the inactive tab
+        labels (#F4EFE8 cream text) practically invisible. The TabsList
+        now uses the same dark forest surface as the rest of the Tommy
+        chrome so inactive tabs read as crisp cream-on-forest, while the
+        active tab keeps the signature solid sage pill.
+      */}
+      <Tabs
+        value={activeTab}
+        onValueChange={setActiveTab}
+        className="space-y-4"
+      >
+        <TabsList
+          className="w-full justify-start gap-1 p-1 h-auto border"
+          style={{
+            backgroundColor: "#0F140C",
+            borderColor: "rgba(168,197,102,0.30)",
+          }}
+        >
+          <TabsTrigger
+            value="weekly"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#0F140C] data-[state=active]:shadow data-[state=inactive]:text-[#F4EFE8] data-[state=inactive]:hover:bg-[rgba(168,197,102,0.12)] data-[state=inactive]:hover:text-[#A8C566] gap-2 font-semibold"
+          >
+            <Trophy className="h-4 w-4" />
+            Weekly Leaderboard
+          </TabsTrigger>
+          <TabsTrigger
+            value="ytd"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#0F140C] data-[state=active]:shadow data-[state=inactive]:text-[#F4EFE8] data-[state=inactive]:hover:bg-[rgba(168,197,102,0.12)] data-[state=inactive]:hover:text-[#A8C566] gap-2 font-semibold"
+          >
+            <Calendar className="h-4 w-4" />
+            Year-to-Date Standings
+          </TabsTrigger>
+          <TabsTrigger
+            value="stats"
+            className="data-[state=active]:bg-[#A8C566] data-[state=active]:text-[#0F140C] data-[state=active]:shadow data-[state=inactive]:text-[#F4EFE8] data-[state=inactive]:hover:bg-[rgba(168,197,102,0.12)] data-[state=inactive]:hover:text-[#A8C566] gap-2 font-semibold"
+          >
+            <Sparkles className="h-4 w-4" />
+            Tommy Stats
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Year-to-Date Standings (with embedded Scoring System) */}
-      <TommyYTDLeaderboard year={filters.year} />
+        <TabsContent value="weekly" className="m-0">
+          <TommyLeaderboard filters={filters} />
+        </TabsContent>
 
-      {/* Recent ballots — full-width below the leaderboards now that the
-          voting form has its own dedicated /tommy-awards/ballot page. */}
-      <TommyRecentBallots filters={filters} />
+        <TabsContent value="ytd" className="m-0">
+          <TommyYTDLeaderboard year={filters.year} />
+        </TabsContent>
+
+        <TabsContent value="stats" className="m-0">
+          <TommyStats year={filters.year} />
+        </TabsContent>
+      </Tabs>
+
+      {/*
+        Recent ballots feed — shown on the Weekly and YTD tabs. On the
+        Tommy Stats tab the user explicitly asked to swap this out for a
+        firm-wide raw-stats panel (rendered inside <TommyStats/>), so we
+        hide the recent-ballots stream there to avoid duplicating the
+        "what's the team doing" surface.
+
+        On the Weekly tab specifically we tuck a `<TommyWeeklyStats/>`
+        panel UNDER the ballots feed. It surfaces the same vote-share
+        definition used by the Tommy Stats KPI Leaderboard
+        (points received ÷ firm total points cast in scope) so a single
+        week can be inspected at a glance without leaving the Weekly
+        tab.
+      */}
+      {activeTab !== "stats" && <TommyRecentBallots filters={filters} />}
+      {activeTab === "weekly" && <TommyWeeklyStats filters={filters} />}
     </div>
   )
 }

@@ -7,15 +7,17 @@
  *     ResourceType: 'Contact' | 'Organization' | 'ClientGroup' | 'Work' | 'Note' | 'NoteComment' |
  *                   'User' | 'IntegrationTask' | 'Invoice' | 'Estimate' | 'EstimateSummary' |
  *                   'CustomFieldValue',
- *     ActionType: 'Inserted' | 'Modified' | 'Deleted',
- *     TimeStamp: ISO8601,
+ *     ActionType: 'Inserted' | 'Updated' | 'Deleted' | 'Paid' | ...,
+ *     Timestamp: ISO8601,   // NOTE: Karbon spells it "Timestamp" (lowercase s)
  *     ParentEntityKey?: string,    // NoteComment payloads
  *     ClientKey?: string,          // IntegrationTask / CustomFieldValue payloads
  *     ClientType?: 'Contact' | 'Organization',
  *   }
  *
  * Goals:
- *   1. Verify signature (when KARBON_WEBHOOK_SIGNING_KEY is set).
+ *   1. Verify the `Signature` header (hex HMAC-SHA256 of the raw body with
+ *      KARBON_WEBHOOK_SIGNING_KEY). In production the key is required —
+ *      unverifiable events are rejected outright.
  *   2. Idempotently insert the event into karbon_webhook_events.
  *   3. Return 200 in <1s — never 5xx (Karbon cancels subs after 10 failures).
  *   4. Process asynchronously via waitUntil so the row updates eventually drive
@@ -25,6 +27,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { waitUntil } from "@vercel/functions"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
+import { requireAdmin } from "@/lib/auth/require-admin"
 import { processWebhookEvent } from "@/lib/karbon/process-webhook-event"
 
 export const runtime = "nodejs"
@@ -34,7 +37,11 @@ interface KarbonWebhookPayload {
   ResourcePermaKey: string
   ResourceType: string
   ActionType: string
-  TimeStamp: string
+  // Karbon sends "Timestamp" (per the API docs). Earlier code required
+  // "TimeStamp" (capital S), which is undefined on every real payload — so the
+  // required-fields guard 400'd every delivery. Accept both casings defensively.
+  Timestamp?: string
+  TimeStamp?: string
   ParentEntityKey?: string
   ClientKey?: string
   ClientType?: string
@@ -60,6 +67,7 @@ function resourceTypeToWebhookType(resourceType: string): string | null {
     case "ClientGroup":
       return "Contact"
     case "Work":
+    case "WorkItem": // live payloads send "WorkItem"; docs say "Work"
       return "Work"
     case "Note":
     case "NoteComment":
@@ -85,11 +93,14 @@ export async function POST(request: NextRequest) {
   // 1. Read raw body (needed for HMAC)
   const rawBody = await request.text()
 
-  // 2. Verify signature if a key is configured
+  // 2. Verify signature. Karbon signs deliveries when the subscription was
+  // created with a SigningKey: the `Signature` header carries a hex-encoded
+  // HMAC-SHA256 of the raw payload (per the Karbon developer docs, Aug 2024).
   const signingKey = process.env.KARBON_WEBHOOK_SIGNING_KEY
   let signatureValid: boolean | null = null
   if (signingKey) {
     const headerSig =
+      request.headers.get("signature") ||
       request.headers.get("x-karbon-signature") ||
       request.headers.get("x-karbon-signature-256") ||
       request.headers.get("karbon-signature")
@@ -98,6 +109,14 @@ export async function POST(request: NextRequest) {
       console.warn("[karbon-webhook] Invalid signature — rejecting")
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 })
     }
+  } else if (process.env.VERCEL_ENV === "production") {
+    // Fail closed: without a signing key anyone can forge events (including
+    // Deleted events that soft-delete rows). Production must have the key set
+    // AND the Karbon subscriptions registered with the same SigningKey.
+    console.error(
+      "[karbon-webhook] KARBON_WEBHOOK_SIGNING_KEY is not set in production — rejecting unverifiable event",
+    )
+    return NextResponse.json({ error: "Webhook signing not configured" }, { status: 401 })
   }
 
   // 3. Parse payload
@@ -108,9 +127,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
   }
 
-  if (!payload.ResourcePermaKey || !payload.ResourceType || !payload.ActionType || !payload.TimeStamp) {
+  const eventTimestamp = payload.Timestamp ?? payload.TimeStamp
+  if (!payload.ResourcePermaKey || !payload.ResourceType || !payload.ActionType || !eventTimestamp) {
     return NextResponse.json(
-      { error: "Missing required fields (ResourcePermaKey, ResourceType, ActionType, TimeStamp)" },
+      { error: "Missing required fields (ResourcePermaKey, ResourceType, ActionType, Timestamp)" },
       { status: 400 },
     )
   }
@@ -131,7 +151,7 @@ export async function POST(request: NextRequest) {
       parent_entity_key: payload.ParentEntityKey || null,
       client_key: payload.ClientKey || null,
       client_type: payload.ClientType || null,
-      event_timestamp: payload.TimeStamp,
+      event_timestamp: eventTimestamp,
       raw_payload: payload as any,
       signature_valid: signatureValid,
       processing_status: "pending",
@@ -177,9 +197,13 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Health/info endpoint — current subs + most recent events.
+ * Health/info endpoint — current subs + most recent events. Admin-only:
+ * exposes resource perma keys, processing errors, and subscription state.
  */
 export async function GET() {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   const db = tryCreateAdminClient()
   if (!db) return NextResponse.json({ error: "Supabase not configured" }, { status: 500 })
 
@@ -188,7 +212,7 @@ export async function GET() {
     db
       .from("karbon_webhook_events")
       .select(
-        "id, resource_type, action_type, resource_perma_key, processing_status, received_at, processed_at, processing_error",
+        "id, resource_type, action_type, resource_perma_key, processing_status, retry_count, received_at, processed_at, processing_error",
       )
       .order("received_at", { ascending: false })
       .limit(25),

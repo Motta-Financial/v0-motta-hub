@@ -1,7 +1,10 @@
 import { createAdminClient } from "@/lib/supabase/server"
+import { firmConfigSync } from "@/lib/firm-settings"
 
-const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "ALFRED Ai <Info@mottafinancial.com>"
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://motta.cpa"
+// Resolved per-send (not at module init) so firm_settings edits apply
+// without a redeploy once the config cache warms.
+const FROM_EMAIL = () => firmConfigSync().fromEmail
+const APP_URL = () => firmConfigSync().hubUrl
 
 // All email categories users can opt in/out of.
 // Each `notification_type` value emitted via /api/notifications/send is mapped
@@ -20,6 +23,18 @@ export const EMAIL_CATEGORIES = {
   // don't miss prospect intros, but appears under the same email
   // preferences UI so anyone can opt out.
   intake: { label: "New Intake Submissions", description: "ALFRED Ai alert when a prospect submits an intake form" },
+  // ALFRED-authored alert when a new meeting is booked via Calendly.
+  // Defaults to ON so the firm stays informed of every new booking,
+  // but lives under the standard email preferences UI so anyone can
+  // opt out. Unlike the "meeting_summary" digest, this fires in
+  // real-time on every `invitee.created` webhook.
+  meeting_booked: { label: "New Meeting Booked", description: "ALFRED Ai alert when a prospect or client books a meeting via Calendly" },
+  // ALFRED-authored reminder, sent shortly after a client/prospect meeting
+  // ends, asking the host + internal attendees to submit a debrief. Defaults
+  // ON (operational) but lives under the standard email preferences UI so
+  // anyone can opt out. One email per meeting, deduped via
+  // calendly_events/zoom_meetings.debrief_requested_at.
+  meeting_debrief: { label: "Debrief Reminders", description: "ALFRED Ai reminder to submit a debrief after a client or prospect meeting" },
   // ALFRED-authored alert when a new edition of the Motta Alliance comic
   // book series is issued through the in-app uploader. Defaults to ON so
   // every teammate sees new lore drops, but lives under the standard
@@ -38,11 +53,13 @@ export function mapNotificationTypeToCategory(notificationType?: string | null):
   const t = notificationType.toLowerCase()
   if (t.includes("action") || t === "task" || t === "todo") return "action_item"
   if (t.includes("mention") || t === "comment_mention") return "mention"
+  if (t.includes("debrief_request") || t.includes("debrief_reminder") || t.includes("debrief-reminder")) return "meeting_debrief"
   if (t.includes("debrief")) return "debrief"
   if (t.includes("work_item") || t.includes("workitem") || t === "assignment") return "work_item"
   if (t.includes("tommy_recap") || t.includes("tommy-recap")) return "tommy_recap"
   if (t.includes("tommy")) return "tommy_reminder"
   if (t.includes("daily_brief") || t.includes("daily-brief") || t.includes("morning_brief")) return "daily_briefing"
+  if (t.includes("meeting_booked") || t.includes("calendly_booked") || t.includes("new_booking")) return "meeting_booked"
   if (t.includes("meeting") || t.includes("calendly") || t.includes("zoom")) return "meeting_summary"
   if (t.includes("broadcast") || t.includes("announcement")) return "broadcast"
   if (t.includes("intake") || t.includes("jotform_intake") || t.includes("prospect")) return "intake"
@@ -104,7 +121,7 @@ export async function sendEmail({
 
   try {
     const { data, error } = await resend.emails.send({
-      from: FROM_EMAIL,
+      from: FROM_EMAIL(),
       to: Array.isArray(to) ? to : [to],
       subject,
       html,
@@ -125,6 +142,96 @@ export async function sendEmail({
     console.error("[email] Failed to send:", err)
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }
+}
+
+/**
+ * Send many emails in as few API calls as possible using Resend's batch
+ * endpoint (`resend.batch.send`), which accepts up to 100 messages per call.
+ *
+ * Why this exists: firing one `sendEmail` per recipient (via Promise.all or a
+ * sequential loop with sleeps) was both slow and rate-limit-prone. Batching
+ * collapses an N-recipient fan-out into ceil(N/100) calls, which is the
+ * efficient way to use a paid Resend plan.
+ *
+ * Each entry is its own message with its own `to`, so recipients are
+ * individually addressed — they never see each other's addresses.
+ *
+ * NOTE: Resend's batch endpoint does NOT support attachments. Callers that
+ * need attachments must use `sendEmail` per message instead (see
+ * `sendCategoryEmail`).
+ */
+const RESEND_BATCH_LIMIT = 100
+
+// Resend enforces a hard 10 requests/second limit. When we must send one
+// request per recipient (attachment sends, which the batch endpoint can't
+// carry), cap concurrency to 8 per ~1.1s window to stay safely under it.
+const RESEND_MAX_RPS = 8
+
+export async function sendBatchEmail(
+  messages: Array<Omit<SendEmailParams, "attachments">>,
+): Promise<{ sent: number; failed: number; ids: string[] }> {
+  if (messages.length === 0) return { sent: 0, failed: 0, ids: [] }
+
+  const resend = await getResendClient()
+  if (!resend) {
+    console.warn("[email] Email service not configured -- skipping batch send")
+    return { sent: 0, failed: messages.length, ids: [] }
+  }
+
+  let sent = 0
+  let failed = 0
+  const ids: string[] = []
+
+  for (let i = 0; i < messages.length; i += RESEND_BATCH_LIMIT) {
+    const chunk = messages.slice(i, i + RESEND_BATCH_LIMIT)
+    const payload = chunk.map((m) => ({
+      from: FROM_EMAIL(),
+      to: Array.isArray(m.to) ? m.to : [m.to],
+      subject: m.subject,
+      html: m.html,
+      replyTo: m.replyTo,
+    }))
+
+    // Resend enforces 10 requests/second account-wide. When a cron fires
+    // several sends in the same second (e.g. tommy-ballot-reminder), the
+    // batch call can 429 — previously that silently dropped the whole
+    // chunk. Retry rate-limited chunks with a pause instead.
+    let chunkSent = false
+    for (let attempt = 0; attempt < 3 && !chunkSent; attempt++) {
+      try {
+        const { data, error } = await resend.batch.send(payload)
+
+        if (error) {
+          const isRateLimit =
+            (error as { name?: string }).name === "rate_limit_exceeded" ||
+            (error as { statusCode?: number }).statusCode === 429
+          if (isRateLimit && attempt < 2) {
+            console.warn(`[email] Resend rate-limited, retrying chunk in ${1100 * (attempt + 1)}ms`)
+            await new Promise((r) => setTimeout(r, 1100 * (attempt + 1)))
+            continue
+          }
+          console.error("[email] Resend batch error:", error)
+          failed += chunk.length
+          break
+        }
+
+        // Resend returns { data: [{ id }, ...] } for the batch.
+        const results = (data as { data?: Array<{ id?: string }> } | null)?.data ?? []
+        sent += chunk.length
+        for (const r of results) if (r?.id) ids.push(r.id)
+        chunkSent = true
+      } catch (err) {
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 1100 * (attempt + 1)))
+          continue
+        }
+        console.error("[email] Failed to send batch chunk:", err)
+        failed += chunk.length
+      }
+    }
+  }
+
+  return { sent, failed, ids }
 }
 
 // Brand palette (Motta Hub)
@@ -256,7 +363,7 @@ export function buildDebriefEmailHtml({
   debriefUrl: string
   logoUrl?: string
 }) {
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_BASE_URL || "https://mottahub-motta.vercel.app"
+  const siteUrl = APP_URL()
   const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
 
   // Helper to render a Karbon deep link
@@ -593,11 +700,16 @@ export function buildDebriefEmailHtml({
 export function buildProspectEmailHtml({
   authorName,
   prospectName,
+  prospectType,
   serviceFocus,
   servicesRequested,
   entityTypes,
   personal,
   business,
+  socials,
+  referral,
+  enrichmentSummary,
+  workItem,
   internalNotes,
   attachmentCount,
   prospectUrl,
@@ -605,6 +717,8 @@ export function buildProspectEmailHtml({
 }: {
   authorName: string
   prospectName: string
+  // "individual" | "business" | "both" — drives the summary banner copy.
+  prospectType?: "individual" | "business" | "both" | null
   serviceFocus?: string | null
   servicesRequested?: string[]
   entityTypes?: string[]
@@ -629,15 +743,35 @@ export function buildProspectEmailHtml({
     accountingSystem?: string | null
     summary?: string | null
   } | null
+  // Web presence + social links (rendered only when provided). Maps to
+  // the same fields pushed to the Hub contact + Karbon BusinessCard.
+  socials?: {
+    website?: string | null
+    linkedin?: string | null
+    twitter?: string | null
+    facebook?: string | null
+    instagram?: string | null
+  } | null
+  // Who referred the prospect, when present. `contactUrl` deep-links
+  // into the referrer's Hub profile when the referrer was matched.
+  referral?: {
+    name?: string | null
+    contactUrl?: string | null
+    matched?: boolean
+  } | null
+  // ALFRED's drafted prospect summary / enrichment from website + socials.
+  enrichmentSummary?: string | null
+  // Optional Karbon work item created alongside the prospect.
+  workItem?: {
+    title?: string | null
+    url?: string | null
+  } | null
   internalNotes?: string | null
   attachmentCount?: number
   prospectUrl: string
   logoUrl?: string
 }) {
-  const siteUrl =
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.APP_BASE_URL ||
-    "https://mottahub-motta.vercel.app"
+  const siteUrl = APP_URL()
   const resolvedLogoUrl = logoUrl || `${siteUrl}/images/alfred-logo.png`
   const today = new Date().toLocaleDateString("en-US", {
     month: "long",
@@ -652,10 +786,20 @@ export function buildProspectEmailHtml({
       <td style="padding: 8px 12px; font-size: 14px; color: #1a1a1a;">${valueHtml}</td>
     </tr>`
 
+  const typeLabel =
+    prospectType === "individual"
+      ? "Individual"
+      : prospectType === "business"
+        ? "Business"
+        : prospectType === "both"
+          ? "Individual & Business (Business Owner)"
+          : null
+
   // -- 1. Prospect details (always present) ---------------------------
   const detailRows: string[] = []
   detailRows.push(row("Submitted By", authorName))
   detailRows.push(row("Submitted On", today))
+  if (typeLabel) detailRows.push(row("Prospect Type", typeLabel))
   if (serviceFocus) detailRows.push(row("Service Focus", serviceFocus))
   if (servicesRequested && servicesRequested.length > 0) {
     detailRows.push(row("Services Requested", servicesRequested.join(", ")))
@@ -725,6 +869,62 @@ export function buildProspectEmailHtml({
       </div>`
   }
 
+  // -- 3b. Web presence / socials (conditional) -----------------------
+  let socialsSection = ""
+  if (
+    socials &&
+    (socials.website || socials.linkedin || socials.twitter || socials.facebook || socials.instagram)
+  ) {
+    const link = (href: string, text: string) =>
+      `<a href="${href.startsWith("http") ? href : `https://${href}`}" style="color: #2563eb; text-decoration: underline;">${text}</a>`
+    const rows: string[] = []
+    if (socials.website) rows.push(row("Website", link(socials.website, socials.website)))
+    if (socials.linkedin) rows.push(row("LinkedIn", link(socials.linkedin, socials.linkedin)))
+    if (socials.twitter) rows.push(row("X / Twitter", link(socials.twitter, socials.twitter)))
+    if (socials.facebook) rows.push(row("Facebook", link(socials.facebook, socials.facebook)))
+    if (socials.instagram) rows.push(row("Instagram", link(socials.instagram, socials.instagram)))
+    socialsSection = `
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Web Presence</h2>
+        <table style="width: 100%; border-collapse: collapse;"><tbody>${rows.join("")}</tbody></table>
+      </div>`
+  }
+
+  // -- 3c. Referral (conditional) -------------------------------------
+  let referralSection = ""
+  if (referral && referral.name && referral.name.trim()) {
+    const valueHtml = referral.contactUrl
+      ? `<a href="${referral.contactUrl}" style="color: #2563eb; text-decoration: underline;">${referral.name}</a>${referral.matched ? "" : " <span style=\"color:#92400e;\">(unmatched — review)</span>"}`
+      : `${referral.name}${referral.matched ? "" : " <span style=\"color:#92400e;\">(unmatched — review)</span>"}`
+    referralSection = `
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">Referred By</h2>
+        <table style="width: 100%; border-collapse: collapse;"><tbody>${row("Referrer", valueHtml)}</tbody></table>
+      </div>`
+  }
+
+  // -- 3d. ALFRED enrichment summary (conditional) --------------------
+  let enrichmentSection = ""
+  if (enrichmentSummary && enrichmentSummary.trim()) {
+    enrichmentSection = `
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #1a1a1a; font-size: 16px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e5e5;">ALFRED Prospect Summary</h2>
+        <div style="background: ${BRAND.background}; border-radius: 6px; padding: 14px 16px; font-size: 14px; color: #333; white-space: pre-wrap; line-height: 1.6; border-left: 3px solid ${BRAND.primary};">${enrichmentSummary}</div>
+      </div>`
+  }
+
+  // -- 3e. Karbon work item (conditional) -----------------------------
+  let workItemSection = ""
+  if (workItem && workItem.title) {
+    const titleHtml = workItem.url
+      ? `<a href="${workItem.url}" style="color: #2563eb; text-decoration: underline;">${workItem.title}</a>`
+      : workItem.title
+    workItemSection = `
+      <div style="margin-bottom: 24px; padding: 12px 16px; background: #ecfdf5; border-left: 4px solid #10b981; border-radius: 6px; font-size: 13px; color: #065f46;">
+        Karbon work item created: <strong>${titleHtml}</strong>
+      </div>`
+  }
+
   // -- 4. Internal notes (conditional) --------------------------------
   let notesSection = ""
   if (internalNotes && internalNotes.trim()) {
@@ -790,6 +990,10 @@ export function buildProspectEmailHtml({
         ${detailsSection}
         ${personalSection}
         ${businessSection}
+        ${socialsSection}
+        ${referralSection}
+        ${enrichmentSection}
+        ${workItemSection}
         ${notesSection}
         ${attachmentHint}
 
@@ -815,7 +1019,7 @@ export function buildProspectEmailHtml({
 // cron jobs, and admin broadcast).
 // ============================================================
 
-interface RecipientResolution {
+export interface RecipientResolution {
   team_member_id: string
   email: string
   full_name: string
@@ -891,19 +1095,86 @@ export async function sendCategoryEmail(opts: {
     return { attempted, sent: 0, skipped: attempted }
   }
 
-  const result = await sendEmail({
-    to: recipients.map((r) => r.email),
-    subject: opts.subject,
-    html: opts.html,
-    replyTo: opts.replyTo,
-    attachments: opts.attachments,
-  })
+  let sent = 0
+
+  if (opts.attachments && opts.attachments.length > 0) {
+    // Resend's batch endpoint can't carry attachments, so send one message
+    // per recipient. Still individually addressed (no shared `to` list), so
+    // recipients never see each other's addresses.
+    //
+    // Resend enforces a hard 10 requests/second limit. Firing every send in
+    // one Promise.all tripped 429s (e.g. the 18-recipient Tommy recap only
+    // landed 10 of 18). Send in throttled chunks that stay safely under the
+    // limit: RESEND_MAX_RPS per ~1.1s window.
+    const chunkSize = RESEND_MAX_RPS
+    for (let i = 0; i < recipients.length; i += chunkSize) {
+      const chunk = recipients.slice(i, i + chunkSize)
+      const results = await Promise.all(
+        chunk.map((r) =>
+          sendEmail({
+            to: r.email,
+            subject: opts.subject,
+            html: opts.html,
+            replyTo: opts.replyTo,
+            attachments: opts.attachments,
+          }).then((res) => res.success),
+        ),
+      )
+      sent += results.filter(Boolean).length
+      // Pace the next chunk to respect the per-second cap (skip after last).
+      if (i + chunkSize < recipients.length) {
+        await new Promise((resolve) => setTimeout(resolve, 1100))
+      }
+    }
+  } else {
+    // No attachments -> collapse the whole fan-out into one batch call.
+    const { sent: batchSent } = await sendBatchEmail(
+      recipients.map((r) => ({
+        to: r.email,
+        subject: opts.subject,
+        html: opts.html,
+        replyTo: opts.replyTo,
+      })),
+    )
+    sent = batchSent
+  }
 
   return {
     attempted,
-    sent: result.success ? recipients.length : 0,
-    skipped: attempted - (result.success ? recipients.length : 0),
+    sent,
+    skipped: attempted - sent,
   }
+}
+
+/**
+ * Like `sendCategoryEmail`, but the HTML body is built PER recipient via a
+ * callback — used by digests (e.g. the Daily Briefing) that personalize the
+ * greeting. Respects per-user category opt-out and sends every message in a
+ * single batch call instead of a sequential loop with sleeps.
+ */
+export async function sendCategoryEmailPersonalized(opts: {
+  category: EmailCategory
+  teamMemberIds: string[]
+  subject: string | ((r: RecipientResolution) => string)
+  buildHtml: (r: RecipientResolution) => string
+  replyTo?: string
+}): Promise<{ attempted: number; sent: number; skipped: number }> {
+  const recipients = await resolveRecipientsForCategory(opts.teamMemberIds, opts.category)
+  const attempted = opts.teamMemberIds.length
+  if (recipients.length === 0) {
+    return { attempted, sent: 0, skipped: attempted }
+  }
+
+  const { sent } = await sendBatchEmail(
+    recipients.map((r) => ({
+      to: r.email,
+      subject: typeof opts.subject === "function" ? opts.subject(r) : opts.subject,
+      html: opts.buildHtml(r),
+      replyTo: opts.replyTo,
+    })),
+  )
+
+  return { attempted, sent, skipped: attempted - sent }
 }
 
 // ============================================================
@@ -947,7 +1218,7 @@ export function buildNotificationEmailHtml(opts: {
   const greet = opts.recipientName ? `<p style="margin:0 0 16px;">Hi ${opts.recipientName},</p>` : ""
   const cta = opts.actionUrl
     ? `<div style="margin-top:24px;text-align:center;">
-        <a href="${opts.actionUrl.startsWith("http") ? opts.actionUrl : APP_URL + opts.actionUrl}"
+        <a href="${opts.actionUrl.startsWith("http") ? opts.actionUrl : APP_URL() + opts.actionUrl}"
            style="display:inline-block;background:#1a1a1a;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
           ${opts.actionLabel || "View in MOTTA HUB"}
         </a>
@@ -958,6 +1229,67 @@ export function buildNotificationEmailHtml(opts: {
     <div style="white-space:pre-wrap;color:#333;">${opts.message}</div>
     ${cta}`
   return baseEmailWrapper(opts.title, body)
+}
+
+/**
+ * Post-meeting debrief request, authored by ALFRED Ai and sent by the
+ * hourly debrief-reminder cron once a client/prospect meeting has ended.
+ * Mirrors the look of Calendly's own "meeting ended" automation but keeps
+ * the firm in control of the form. The CTA opens the prefilled
+ * `/debriefs/new` form so the host only has to fill in substance.
+ */
+export function buildDebriefRequestHtml(opts: {
+  recipientName?: string
+  meetingName: string
+  /** Pretty, timezone-aware meeting time, already formatted by the caller. */
+  meetingTime: string
+  /** "Zoom" | "Phone call" | "In person" — human label for the modality. */
+  meetingTypeLabel: string
+  /** Display name of the client/prospect this meeting was tagged to. */
+  clientName?: string | null
+  /** Absolute URL to the prefilled debrief form. */
+  debriefUrl: string
+}) {
+  const greet = opts.recipientName ? `<p style="margin:0 0 16px;">Hi ${opts.recipientName},</p>` : ""
+  const clientRow = opts.clientName
+    ? `<tr>
+         <td style="padding:6px 0;color:${BRAND.textMuted};font-size:13px;width:120px;">Client</td>
+         <td style="padding:6px 0;color:${BRAND.textPrimary};font-size:13px;font-weight:600;">${opts.clientName}</td>
+       </tr>`
+    : ""
+
+  const body = `${greet}
+    <h2 style="font-size:18px;margin:0 0 12px;color:${BRAND.textPrimary};">How did the meeting go?</h2>
+    <p style="margin:0 0 18px;color:${BRAND.textMuted};font-size:14px;line-height:1.6;">
+      Your meeting has wrapped up. Take a minute to log a debrief so the rest of the team stays in the loop and any follow-ups get captured.
+    </p>
+    <div style="background:#F9FAFB;border:1px solid ${BRAND.border};border-radius:8px;padding:14px 18px;margin:0 0 22px;">
+      <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="width:100%;">
+        <tr>
+          <td style="padding:6px 0;color:${BRAND.textMuted};font-size:13px;width:120px;">Meeting</td>
+          <td style="padding:6px 0;color:${BRAND.textPrimary};font-size:13px;font-weight:600;">${opts.meetingName}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;color:${BRAND.textMuted};font-size:13px;">When</td>
+          <td style="padding:6px 0;color:${BRAND.textPrimary};font-size:13px;">${opts.meetingTime}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;color:${BRAND.textMuted};font-size:13px;">Type</td>
+          <td style="padding:6px 0;color:${BRAND.textPrimary};font-size:13px;">${opts.meetingTypeLabel}</td>
+        </tr>
+        ${clientRow}
+      </table>
+    </div>
+    <div style="text-align:center;">
+      <a href="${opts.debriefUrl}"
+         style="display:inline-block;background:${BRAND.primary};color:#fff;padding:13px 34px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
+        Submit Debrief
+      </a>
+    </div>
+    <p style="margin:20px 0 0;color:${BRAND.textMuted};font-size:12px;text-align:center;">
+      The form is pre-filled with this meeting's details — you just add the substance.
+    </p>`
+  return baseEmailWrapper("Submit your meeting debrief", body)
 }
 
 /**
@@ -1149,7 +1481,7 @@ export function buildMeetingDigestHtml(opts: {
     ${upcomingHtml}
     ${recentHtml}
     <div style="margin-top:24px;text-align:center;">
-      <a href="${APP_URL}/calendar"
+      <a href="${APP_URL()}/calendar"
          style="display:inline-block;background:#1a1a1a;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
         Open Calendar
       </a>
@@ -1412,7 +1744,7 @@ const newsHtml = `
       </table>`
     : `<p style="color:${BRAND.textMuted};font-size:14px;margin:0;">No updates were shipped yesterday — the Hub rests quietly.</p>`
 
-  // ── Section: Business Metrics (Appendix) ───────────────────────────────
+  // ── Section: Business Metrics (Appendix) ──────���────────────────────────
   const hasBusinessMetrics =
     (newIntakeForms && newIntakeForms.length > 0) ||
     (newFeedback && newFeedback.length > 0) ||
@@ -1729,6 +2061,96 @@ export function buildBroadcastHtml(opts: {
   const body = `<div style="margin-bottom:24px;color:#666;font-size:13px;">From: ${opts.fromName}</div>
     <div style="font-size:15px;color:#1a1a1a;">${opts.bodyHtml}</div>`
   return baseEmailWrapper(opts.subject, body, `Sent by ${opts.fromName} via MOTTA HUB.`)
+}
+
+/**
+ * Firm-wide announcement ("BREAKING NEWS") email, authored by ALFRED Ai.
+ *
+ * Four clearly-separated sections with real visual breaks:
+ *   TOPIC        — the headline / subject of the announcement
+ *   ANNOUNCEMENT — the body (multi-paragraph aware via formatNotesForEmail)
+ *   ACTION ITEMS — optional follow-ups (also multi-paragraph aware)
+ *   ATTACHMENTS  — optional file links
+ *
+ * The email "from" identity is controlled by FROM_EMAIL ("ALFRED Ai <…>"),
+ * so the message always appears to come from ALFRED. The subject line is
+ * built by the caller as "BREAKING NEWS: <Topic>".
+ */
+export function buildAnnouncementHtml(opts: {
+  topic: string
+  announcement: string
+  actionItems?: string | null
+  attachments?: Array<{ url: string; name: string; size_bytes?: number }> | null
+  fromName?: string | null
+}) {
+  const topicHtml = formatNotesForEmail(opts.topic) || "Firm Announcement"
+  const announcementHtml = formatNotesForEmail(opts.announcement)
+  const actionItemsHtml = formatNotesForEmail(opts.actionItems)
+  const authoredBy = opts.fromName ? opts.fromName : "ALFRED Ai"
+  const attachments = opts.attachments || []
+
+  const sections: string[] = []
+
+  // BREAKING NEWS banner
+  sections.push(`
+    <div style="display:inline-block;background:${BRAND.accent};color:#fff;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;padding:6px 14px;border-radius:6px;margin-bottom:20px;">
+      Breaking News
+    </div>
+  `)
+
+  // TOPIC
+  sections.push(`
+    <div style="margin-bottom:24px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${BRAND.textMuted};margin-bottom:6px;">Topic</div>
+      <div style="font-size:20px;font-weight:700;color:${BRAND.textPrimary};line-height:1.35;">${topicHtml}</div>
+    </div>
+  `)
+
+  // ANNOUNCEMENT
+  sections.push(`
+    <div style="margin-bottom:24px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${BRAND.textMuted};margin-bottom:8px;">Announcement</div>
+      <div style="background:#f9fafb;border:1px solid ${BRAND.border};border-radius:8px;padding:16px 18px;font-size:15px;color:${BRAND.textPrimary};line-height:1.6;">${announcementHtml || "<em style='color:#999;'>No details provided.</em>"}</div>
+    </div>
+  `)
+
+  // ACTION ITEMS (optional)
+  if (actionItemsHtml) {
+    sections.push(`
+      <div style="margin-bottom:24px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${BRAND.textMuted};margin-bottom:8px;">Action Items</div>
+        <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:16px 18px;font-size:15px;color:#92400e;line-height:1.6;">${actionItemsHtml}</div>
+      </div>
+    `)
+  }
+
+  // ATTACHMENTS (optional)
+  if (attachments.length > 0) {
+    const formatBytes = (b?: number) => {
+      if (!b) return ""
+      if (b < 1024) return ` (${b} B)`
+      if (b < 1024 * 1024) return ` (${(b / 1024).toFixed(1)} KB)`
+      return ` (${(b / (1024 * 1024)).toFixed(1)} MB)`
+    }
+    const attachmentLinks = attachments
+      .map(
+        (a) =>
+          `<a href="${a.url}" style="color:#2563EB;text-decoration:none;display:block;margin-bottom:6px;">📎 ${a.name}${formatBytes(a.size_bytes)}</a>`,
+      )
+      .join("")
+    sections.push(`
+      <div style="margin-bottom:8px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${BRAND.textMuted};margin-bottom:8px;">Attachments</div>
+        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:14px 16px;font-size:14px;line-height:1.7;">${attachmentLinks}</div>
+      </div>
+    `)
+  }
+
+  return baseEmailWrapper(
+    `BREAKING NEWS`,
+    sections.join(""),
+    `Firm announcement delivered by ${authoredBy} via MOTTA HUB.`,
+  )
 }
 
 /**

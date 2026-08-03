@@ -1,28 +1,32 @@
 import { Suspense } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
-import { IntakeList } from "@/components/intake/intake-list"
+import { IntakeTabs } from "@/components/intake/intake-tabs"
 
 /**
- * /sales/intake — admin queue for the embedded Jotform intake form
- * on mottafinancial.com. Lists every submission, supports filter +
- * search, and opens a side sheet with the full Q/A breakdown plus
- * triage controls (status, owner, notes). Lives under Sales because
- * intake is the literal first stage of the sales funnel — every row
- * here is a prospect to qualify, propose to, or decline.
+ * /sales/intake — the single Intake surface. Replaces the previous
+ * pair of routes (/sales/intake for the operational queue and
+ * /sales/intake/dashboard for analytics) with one page that exposes
+ * both views as tabs. The legacy dashboard route still exists as a
+ * redirect to /sales/intake?view=dashboard so old deep-links keep
+ * working.
+ *
+ * The Jotform integration status card was moved off this page onto
+ * /admin/webhooks, since webhook health belongs in admin tooling
+ * rather than the sales workflow.
  *
  * Supports ?search= URL param for deep-linking from Daily Briefing.
  */
 export const metadata = {
-  title: "Intake Submissions | Motta Hub",
-  description: "Triage prospects who submitted the embedded intake form.",
+  title: "Intake | Motta Hub",
+  description:
+    "Triage prospects from the embedded intake form and view pipeline analytics.",
 }
 
-// IntakeList uses useSearchParams for deep-linking, so we need Suspense
 export default function IntakePage() {
   return (
     <DashboardLayout>
       <Suspense fallback={null}>
-        <IntakeList />
+        <IntakeTabs />
       </Suspense>
     </DashboardLayout>
   )

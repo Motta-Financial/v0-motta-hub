@@ -1,12 +1,10 @@
 import { redirect } from "next/navigation"
 
 /**
- * Karbon webhook management has moved to /admin/karbon-sync.
- * That page is wired to the canonical webhook receiver at
- * /api/karbon/webhooks (with HMAC verification, idempotency, and a watchdog).
- *
- * This redirect preserves any existing bookmarks/links to /settings/webhooks.
+ * Webhook integrations have moved to /admin/webhooks — a single
+ * console that aggregates Karbon, Jotform, Calendly, Zoom, and
+ * Ignition. This redirect preserves any legacy bookmarks.
  */
 export default function WebhooksPageRedirect() {
-  redirect("/admin/karbon-sync")
+  redirect("/admin/webhooks")
 }

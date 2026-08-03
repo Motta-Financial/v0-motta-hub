@@ -10,16 +10,22 @@ import {
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/server"
 import { browsePageTool, webSearchTool } from "@/lib/alfred/tools"
+import { requireAdmin } from "@/lib/auth/require-admin"
+import { getZoomRecordingStats } from "@/lib/zoom/recording-stats"
+import { syncAccountWideRecordings } from "@/lib/zoom/sync-account-recordings"
+import { isS2SConfigured } from "@/lib/zoom/s2s-auth"
 import {
   ALLOWED_TABLES,
   buildTableCatalog,
   isAllowedTable,
 } from "@/lib/alfred/allowed-tables"
-import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
+import { getAlfredServiceAccount, ALFRED_EMAIL } from "@/lib/alfred/service-account"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
 import { anthropic } from "@ai-sdk/anthropic"
+import { buildProjectContext } from "@/lib/alfred/project-context"
 import {
   ALFRED_CHAT_MODEL,
   getClaudeCapabilities,
@@ -41,6 +47,7 @@ interface CurrentUser {
 }
 
 export const maxDuration = 60
+
 
 /**
  * Escape user-supplied text before splicing it into a PostgREST `.or()`
@@ -273,17 +280,22 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ teamMemberId, includeCompleted = false }) => {
       try {
         const supabase = createAdminClient()
-        let query = supabase.from("work_items").select("assignee_name, status, due_date, title")
+        // Page through every matching row — PostgREST caps a single
+        // response at 1,000 rows, which would silently truncate the
+        // workload counts once active work items cross that. Select
+        // only the columns the grouping below reads.
+        const data = await fetchAllPaged<{
+          assignee_name: string | null
+          due_date: string | null
+        }>(() => {
+          let query = supabase.from("work_items").select("assignee_name, due_date")
 
-        if (!includeCompleted) {
-          query = query.not("status", "in", '("Completed","Cancelled")')
-        }
+          if (!includeCompleted) {
+            query = query.not("status", "in", '("Completed","Cancelled")')
+          }
 
-        const { data, error } = await query
-
-        if (error) {
-          return { success: false, error: error.message }
-        }
+          return query
+        })
 
         // Group by assignee
         const workload: Record<string, { total: number; overdue: number; upcoming: number }> = {}
@@ -515,16 +527,25 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ period = "month" }) => {
       try {
         const supabase = createAdminClient()
-        // Get invoice totals
-        const { data: invoices } = await supabase
-          .from("invoices")
-          .select("total_amount, amount_paid, status, invoice_date")
+        // Get invoice totals. Paged: PostgREST caps a single response
+        // at 1,000 rows, which would silently understate the totals
+        // once invoices pass that — and select only the columns the
+        // reduces below read.
+        const invoices = await fetchAllPaged<{
+          total_amount: number | null
+          amount_paid: number | null
+        }>(() => supabase.from("invoices").select("total_amount, amount_paid"))
 
-        // Get recurring revenue
-        const { data: recurring } = await supabase
-          .from("recurring_revenue")
-          .select("monthly_amount, annual_amount, is_active")
-          .eq("is_active", true)
+        // Get recurring revenue (paged for the same reason)
+        const recurring = await fetchAllPaged<{
+          monthly_amount: number | null
+          annual_amount: number | null
+        }>(() =>
+          supabase
+            .from("recurring_revenue")
+            .select("monthly_amount, annual_amount")
+            .eq("is_active", true),
+        )
 
         const totalInvoiced = invoices?.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) || 0
         const totalPaid = invoices?.reduce((sum, inv) => sum + (inv.amount_paid || 0), 0) || 0
@@ -541,6 +562,137 @@ Use this to answer questions about clients, work items, team members, finances, 
             annualRecurringRevenue: annualRecurring,
             invoiceCount: invoices?.length || 0,
           },
+        }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
+    },
+  }),
+
+  // ── Deal pipeline ─────────────────────────────────────────────────────
+  // A deal is one sales opportunity per prospect and sits ABOVE meetings
+  // (it groups many meetings, debriefs, and tagged work items). This tool
+  // gives the model a ready-made pipeline rollup so it doesn't have to
+  // hand-roll a queryDatabase + group-by against deals_enriched every time
+  // someone asks "what's in the pipeline?".
+  getDealPipeline: tool({
+    description:
+      "Get the sales deal pipeline (opportunities). A deal = one opportunity per prospect, grouping its meetings, debriefs, and work items. " +
+      "Use this for 'what's in the pipeline', 'how many open deals', 'deals by stage', 'what deals does <owner> have', or 'recent/biggest deals'. " +
+      "Returns counts grouped by stage plus the matching deals (newest first) with contact/org/owner names and rollups.",
+    inputSchema: z.object({
+      status: z
+        .enum(["open", "won", "lost"])
+        .optional()
+        .describe("Filter by deal status. Omit to include all statuses."),
+      stage: z.string().optional().describe("Filter by a specific pipeline stage."),
+      ownerName: z
+        .string()
+        .optional()
+        .describe("Filter by deal owner (team member) display name, partial match."),
+      limit: z.number().optional().describe("Max deals to return, default 50."),
+    }),
+    execute: async ({ status, stage, ownerName, limit = 50 }) => {
+      try {
+        const supabase = createAdminClient()
+        let query = supabase.from("deals_enriched").select("*")
+
+        if (status) query = query.eq("status", status)
+        if (stage) query = query.eq("stage", stage)
+        if (ownerName) query = query.ilike("owner_name", `%${sanitizeIlikeTerm(ownerName)}%`)
+
+        const { data, error } = await query
+          .order("created_at", { ascending: false })
+          .limit(limit)
+
+        if (error) {
+          return { success: false, error: error.message }
+        }
+
+        const byStage: Record<string, number> = {}
+        const byStatus: Record<string, number> = {}
+        let totalEstimatedValue = 0
+        for (const d of data || []) {
+          const s = (d as { stage?: string }).stage || "Unknown"
+          byStage[s] = (byStage[s] || 0) + 1
+          const st = (d as { status?: string }).status || "Unknown"
+          byStatus[st] = (byStatus[st] || 0) + 1
+          totalEstimatedValue += (d as { estimated_value?: number }).estimated_value || 0
+        }
+
+        return {
+          success: true,
+          total: data?.length || 0,
+          byStage,
+          byStatus,
+          totalEstimatedValue,
+          deals: data || [],
+        }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
+    },
+  }),
+
+  // ── Projects ──────────────────────────────────────────────────────────
+  // Hub-native projects group Karbon work items by type/template. This tool
+  // wraps projects_enriched with the linked-clients array so the model can
+  // answer "what projects are active / for client X / of type Y" without
+  // composing a join itself.
+  getProjects: tool({
+    description:
+      "Get Hub-native projects (groupings of Karbon work items by type/template). " +
+      "Use this for 'what projects are active', 'projects for <client>', 'projects of type <X>', or 'project status breakdown'. " +
+      "Returns counts grouped by status and type plus the matching projects with their linked clients.",
+    inputSchema: z.object({
+      status: z
+        .enum(["active", "paused", "completed", "archived"])
+        .optional()
+        .describe("Filter by project status. Omit to include all."),
+      kind: z.string().optional().describe("Filter by project kind."),
+      searchTerm: z
+        .string()
+        .optional()
+        .describe("Match against project name / type / template title."),
+      limit: z.number().optional().describe("Max projects to return, default 50."),
+    }),
+    execute: async ({ status, kind, searchTerm, limit = 50 }) => {
+      try {
+        const supabase = createAdminClient()
+        let query = supabase.from("projects_enriched").select("*")
+
+        if (status) query = query.eq("status", status)
+        if (kind) query = query.eq("kind", kind)
+        if (searchTerm) {
+          const safe = sanitizeIlikeTerm(searchTerm)
+          query = query.or(
+            `name.ilike.%${safe}%,project_type_name.ilike.%${safe}%,project_template_title.ilike.%${safe}%`,
+          )
+        }
+
+        const { data, error } = await query
+          .order("created_at", { ascending: false })
+          .limit(limit)
+
+        if (error) {
+          return { success: false, error: error.message }
+        }
+
+        const byStatus: Record<string, number> = {}
+        const byType: Record<string, number> = {}
+        for (const p of data || []) {
+          const st = (p as { status?: string }).status || "Unknown"
+          byStatus[st] = (byStatus[st] || 0) + 1
+          const t = (p as { project_type_name?: string }).project_type_name || "Unknown"
+          byType[t] = (byType[t] || 0) + 1
+        }
+
+        return {
+          success: true,
+          total: data?.length || 0,
+          byStatus,
+          byType,
+          projects: data || [],
         }
       } catch (error) {
         return { success: false, error: String(error) }
@@ -638,6 +790,114 @@ Use this to answer questions about clients, work items, team members, finances, 
     },
   }),
 
+  // ── Zoom cloud recordings ────────────────────────────────────────────────
+  // Account-wide Zoom recording + transcript pipeline (Server-to-Server
+  // OAuth). `getZoomRecordingStatus` is read-only health/coverage; it never
+  // reads transcript bodies. `pullZoomRecordings` triggers an on-demand,
+  // admin-gated pull for a bounded date range. Heavy/long historical pulls
+  // and media archiving should run from the /admin/zoom-recordings page,
+  // which has no chat-budget timeout. See lib/zoom/sync-account-recordings.ts.
+  getZoomRecordingStatus: tool({
+    description:
+      "Read-only health + coverage of the firm's Zoom cloud-recording pipeline: how many recordings and transcripts the Hub holds, how many transcripts are parsed vs. failed, how many recordings have their MP4/M4A media archived to Blob, when the last sync ran, and the 10 most recent recordings. " +
+      "Use this to answer 'are we capturing Zoom recordings?', 'how many transcripts do we have?', 'did the recording sync run?', or 'is the video archived?'. Does NOT expose meeting content.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const supabase = createAdminClient()
+        const stats = await getZoomRecordingStats(supabase)
+        return { success: true, s2sConfigured: isS2SConfigured(), ...stats }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
+    },
+  }),
+
+  pullZoomRecordings: tool({
+    description:
+      "Trigger an on-demand account-wide pull of Zoom cloud recordings + transcripts for a bounded date range. Admin-only. " +
+      "Use when a user asks to 'pull/sync/fetch the latest Zoom recordings' or 'grab last week's recordings'. " +
+      "Defaults to the last 7 days, transcripts-only (fast). The date range must be <= 31 days — for longer historical backfills or to also archive the MP4 video to Blob, tell the user to use the Zoom Recordings admin page (/admin/zoom-recordings) since those runs can exceed the chat time limit.",
+    inputSchema: z.object({
+      from: z
+        .string()
+        .optional()
+        .describe("Start date YYYY-MM-DD. Defaults to 7 days ago. Range must be <= 31 days."),
+      to: z
+        .string()
+        .optional()
+        .describe("End date YYYY-MM-DD. Defaults to today."),
+      includeMedia: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also copy MP4/M4A video to Blob. Slow — only set true for a small range; otherwise recommend the admin page.",
+        ),
+    }),
+    execute: async ({ from, to, includeMedia = false }) => {
+      // Admin gate: triggering a service-role account-wide sync is privileged.
+      const admin = await requireAdmin()
+      if (!admin.ok) {
+        return {
+          success: false,
+          error: "This action requires an admin role. Ask a firm admin, or run it from /admin/zoom-recordings.",
+        }
+      }
+      if (!isS2SConfigured()) {
+        return { success: false, error: "Zoom Server-to-Server OAuth is not configured." }
+      }
+
+      // Default to the last 7 days when no range is given.
+      const today = new Date()
+      const toDate = to ?? today.toISOString().slice(0, 10)
+      const fromDate =
+        from ?? new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+
+      // Guard the chat budget: refuse spans > 31 days here.
+      const spanDays =
+        (new Date(`${toDate}T00:00:00Z`).getTime() - new Date(`${fromDate}T00:00:00Z`).getTime()) /
+        (24 * 60 * 60 * 1000)
+      if (!Number.isFinite(spanDays) || spanDays < 0) {
+        return { success: false, error: "Invalid date range." }
+      }
+      if (spanDays > 31) {
+        return {
+          success: false,
+          error:
+            "That range is longer than 31 days. Run multi-month backfills from the Zoom Recordings admin page (/admin/zoom-recordings) so they don't time out.",
+        }
+      }
+
+      try {
+        const supabase = createAdminClient()
+        const result = await syncAccountWideRecordings({
+          supabase,
+          from: fromDate,
+          to: toDate,
+          includeMedia,
+          // Keep the chat-triggered pull fast: skip the heavy participant
+          // resolution + Calendly bridge + triage. The hourly link-sweep cron
+          // tags clients separately.
+          tagParticipants: false,
+        })
+        return {
+          success: true,
+          from: fromDate,
+          to: toDate,
+          includeMedia,
+          usersScanned: result.usersScanned,
+          recordingsUpserted: result.recordingsUpserted,
+          transcriptsParsed: result.transcriptsParsed,
+          transcriptsFailed: result.transcriptsFailed,
+          mediaCopied: result.mediaCopied,
+          errors: result.errors.slice(0, 5),
+        }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
+    },
+  }),
+
   // ── Web research ────────────────────────────────────────────────────────
   // Two complementary tools for questions that go beyond Motta's internal
   // database. See lib/alfred/tools/{web-search,browse-page}.ts for details.
@@ -651,14 +911,14 @@ Use this to answer questions about clients, work items, team members, finances, 
 function buildIdentityPreamble(currentUser: CurrentUser | null): string {
   if (!currentUser) {
     return `You operate under two identities:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — UNKNOWN. No team member identity was provided with this turn.
 
 Because the requesting user is unknown, do NOT answer "my work items" / "my deadlines" / "my clients" style questions as if you knew who is asking. Tell the user you couldn't resolve their identity and answer firm-wide instead. Do NOT call getMyWorkItems or getMyUpcomingDeadlines in this state.`
   }
 
   return `You operate under two identities at once:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — ${currentUser.fullName ?? currentUser.email} (${currentUser.role ?? "no role"}, ${currentUser.department ?? "no department"}), team_members.id ${currentUser.teamMemberId}, Karbon user key ${currentUser.karbonUserKey ?? "none"}.
 
 When you create or send anything externally visible, the sender/author is ALFRED, but you ALWAYS include "on behalf of ${currentUser.fullName ?? currentUser.email}" in the body and record ${currentUser.teamMemberId} as on_behalf_of_id in activity_log.
@@ -685,8 +945,11 @@ If a user asks about a person, a client, a work item, a deadline, an invoice, a 
 
 - For ANY question of the form "Who is X?", "Do we have a contact named X?", "What's X's email/role/department?", "Find X for me" — your FIRST action is \`findPerson({ query: "X" })\`. Do not skip this step. Do not guess from memory. Do not tell the user you have no information without searching first.
 - For "what is X's workload / what work is assigned to X" — call \`findPerson\` first to resolve who X actually is, then \`getTeamWorkload\` or \`queryDatabase\` against \`work_items\` filtered by their team_members.id or assignee_name.
-- For "what's going on with client/company X" — call \`getClientInfo\` first.
-- For "what's due / what's overdue / show me deadlines" — call \`getUpcomingDeadlines\` or \`getMyUpcomingDeadlines\`.
+  - For "what's going on with client/company X" — call \`getClientInfo\` first.
+  - For "what's due / what's overdue / show me deadlines" — call \`getUpcomingDeadlines\` or \`getMyUpcomingDeadlines\`.
+  - For the sales pipeline — "what's in the pipeline", "open/won/lost deals", "deals by stage", "<owner>'s deals" — call \`getDealPipeline\`. A deal is one opportunity per prospect that groups its meetings, debriefs, and work items.
+  - For Hub projects — "active projects", "projects for client X", "projects of type Y", "project status breakdown" — call \`getProjects\`.
+  - For "what was said / discussed in a meeting", recapping a call, or grounding an answer in a Zoom conversation — query \`alfred_meeting_transcripts\` (filter by \`zoom_meeting_id\` first; resolve the meeting via \`zoom_meetings\`). It holds parsed transcript text only — never expect download links there.
 
 Only after a tool call has actually returned no matches may you say "I'm afraid I haven't that information to hand." A blank apology before tool use is a failure of duty.
 
@@ -725,6 +988,7 @@ The chat surface renders Markdown. Use that fact to deliver tidy, scannable repl
 - \`webSearch\` (Parallel Web) → broad questions: tax regulations, IRS guidance, industry news, software documentation. Returns ranked excerpts with URLs.
 - \`browsePage\` (Browserbase) → fetch the body of a specific URL. Each call costs roughly 5–10 seconds; reach for it only when you genuinely need the page content.
 - Web answers on tax / compliance topics should lean on .gov sources (irs.gov, state DORs) over third-party commentary.
+- Zoom recordings → \`getZoomRecordingStatus\` for pipeline health/coverage questions (counts, parsed vs. failed transcripts, media archived, last sync). \`pullZoomRecordings\` to fetch recent recordings on demand (admin-only, defaults to the last 7 days, transcripts-only). For ranges over 31 days or to archive the MP4 video to Blob, point the user to the Zoom Recordings admin page (/admin/zoom-recordings) instead of running it here.
 
 Motta Financial is a San Francisco–based CPA firm specialising in tax, accounting, and advisory services. You are in their service.`
 
@@ -850,6 +1114,10 @@ export async function POST(req: Request) {
 
   let conversationId: string | null = incomingConversationId
   let conversationTitleAlreadySet = false
+  // Project the conversation is filed under, if any. Read from the row
+  // rather than the request body: the alfred-chat client sets project_id
+  // directly via its own RLS-scoped connection, and the body is untrusted.
+  let conversationProjectId: string | null = null
 
   if (currentUser) {
     if (conversationId) {
@@ -857,13 +1125,14 @@ export async function POST(req: Request) {
       // If not, fall through and create a fresh one rather than 500ing.
       const { data: existing } = await adminAuthLookup
         .from("alfred_conversations")
-        .select("id, title, end_user_team_member_id")
+        .select("id, title, end_user_team_member_id, project_id")
         .eq("id", conversationId)
         .maybeSingle()
       if (!existing || existing.end_user_team_member_id !== currentUser.teamMemberId) {
         conversationId = null
       } else {
         conversationTitleAlreadySet = !!existing.title
+        conversationProjectId = existing.project_id ?? null
       }
     }
 
@@ -1121,6 +1390,18 @@ export async function POST(req: Request) {
       const thinkingEnabled = Boolean(
         requestedThink && capabilities?.supportsThinking,
       )
+      if (requestedThink && !thinkingEnabled) {
+        // Preserved from the implementation this block supersedes: a stale
+        // client can ask for Deep think on a model that doesn't support it (or
+        // on a non-Anthropic fallback pinned by the admin panel). We proceed
+        // without thinking rather than erroring the turn, but say so, because
+        // otherwise the toggle looks like it worked and silently didn't.
+        console.warn(
+          `[alfred] deep-think requested but not enabled for model ${effectiveModel} ` +
+            `(anthropic=${isAnthropic}, supportsThinking=${capabilities?.supportsThinking ?? "unknown"}). ` +
+            `Proceeding without it.`,
+        )
+      }
 
       // Resolve effort: must be in the model's allowlist; otherwise
       // null and we omit the option entirely.
@@ -1205,11 +1486,25 @@ export async function POST(req: Request) {
             }
           : {}
 
+      // ── Project context ───────────────────────────────────────────
+      // If this conversation is filed under an ALFRED Project, append the
+      // project's standing instructions and attached knowledge. Appended
+      // AFTER the base prompt so firm policy and the identity preamble
+      // still take precedence over user-authored project instructions.
+      // Returns null (and changes nothing) when there's no project, the
+      // caller isn't entitled to it, or it's empty.
+      const projectContext = currentUser
+        ? await buildProjectContext(supabase, conversationProjectId, currentUser.teamMemberId)
+        : null
+      const systemPrompt = projectContext
+        ? `${baseSystemPrompt}\n\n---\n\n${projectContext.promptFragment}`
+        : baseSystemPrompt
+
       const result = streamText({
         // Resolution order: per-request override (validated against
         // CLAUDE_MODELS) > admin-panel override > ALFRED_CHAT_MODEL.
         model: effectiveModel,
-        system: baseSystemPrompt,
+        system: systemPrompt,
         messages: modelMessages,
         tools: {
           ...filteredTools,

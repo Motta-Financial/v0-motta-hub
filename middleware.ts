@@ -74,6 +74,12 @@ export async function middleware(request: NextRequest) {
   }
 
   const isLoginPage = pathname === "/login"
+  // Anonymous landing page served at motta.cpa. We deliberately do not
+  // redirect signed-in users away from /welcome — a logged-in team
+  // member can still want to view the public marketing surface (e.g.
+  // to share a screenshot with a prospect). The "Team log in" CTA on
+  // the page links to /login, which IS gated below.
+  const isWelcomePage = pathname === "/welcome"
   const isAuthCallback = pathname.startsWith("/auth")
   // Public auth API: /api/auth/forgot-password is the entrypoint for the
   // self-service password reset flow and must be reachable without a session.
@@ -99,7 +105,18 @@ export async function middleware(request: NextRequest) {
   // cookie OR `Authorization: Bearer`, but middleware still has to let
   // the request reach the handler in the Bearer case (no cookie =>
   // `user` is null, which would otherwise 401 below).
-  const isPublicApi = isPublicAuthApi
+  const isPublicApi =
+    isPublicAuthApi ||
+    // The public-website surface. motta.cpa (and the website team's
+    // Vercel previews) POST contact + intake submissions here. CORS
+    // origin allowlist + honeypot + IP rate-limit live INSIDE each
+    // route, not in middleware — middleware just has to let the
+    // anonymous request reach the handler.
+    pathname.startsWith("/api/public/")
+  // Public iframe-able pages used by the marketing site at motta.cpa.
+  // No auth, no Hub chrome — see app/embed/layout.tsx and the
+  // frame-ancestors CSP in next.config.mjs.
+  const isPublicEmbed = pathname.startsWith("/embed/")
   const isWebhook =
     pathname.startsWith("/api/webhooks") ||
     pathname.startsWith("/api/karbon/webhooks") ||
@@ -119,6 +136,11 @@ export async function middleware(request: NextRequest) {
     // without a Hub session. The route handler verifies the
     // x-zm-signature HMAC against ZOOM_WEBHOOK_SECRET_TOKEN.
     pathname === "/api/zoom/webhook" ||
+    // Account-wide Server-to-Server app delivers events here, verified
+    // against ZOOM_S2S_WEBHOOK_SECRET_TOKEN. Same handshake + signature
+    // requirements as the user-OAuth webhook above, so it likewise must
+    // be reachable without a Hub session.
+    pathname === "/api/zoom/s2s-webhook" ||
     // Zoom OAuth callback (and authorize). When a user installs the
     // Hub from Zoom's Marketplace "Add to Zoom" button, the redirect
     // back to /api/zoom/oauth/callback may not carry a Hub session
@@ -128,6 +150,28 @@ export async function middleware(request: NextRequest) {
     // to Zoom) and /callback resolves the Hub user via cookie OR
     // state OR returns a friendly error.
     pathname.startsWith("/api/zoom/oauth/")
+
+  // ProConnect Tax (Intuit) POSTs real-time webhook notifications for
+  // Client, TaxReturn, and TaxReturnWorkStatus events. The route handler
+  // verifies each payload's HMAC-SHA256 `intuit-signature` against
+  // PROCONNECT_WEBHOOK_VERIFIER_TOKEN.
+  const isProConnectWebhook = pathname === "/api/proconnect/webhooks"
+
+  // ProConnect sync endpoint - uses CRON_SECRET Bearer auth in the handler
+  const isProConnectSync = pathname === "/api/proconnect/sync"
+
+  // Zoom recordings backfill - uses CRON_SECRET Bearer auth in the handler
+  // (or a logged-in admin). Middleware must let the request through so the
+  // route's own auth logic can run.
+  const isZoomRecordingsBackfill = pathname === "/api/zoom/recordings/backfill"
+
+  // Zoom account-wide S2S sync - CRON_SECRET Bearer auth or logged-in admin,
+  // checked in the handler. Pulls recordings for ALL account users.
+  const isZoomAccountSync = pathname === "/api/zoom/recordings/sync-account"
+
+  // Hub Meetings sync - CRON_SECRET Bearer auth or logged-in admin, checked
+  // in the handler. (GET /api/meetings stays behind normal session auth.)
+  const isHubMeetingsSync = pathname === "/api/meetings/sync"
 
   // The Zoom App "Surface" (Marketplace > Features > Surface) iframes
   // /zoom/embed inside the Zoom desktop / web client. The Hub user is
@@ -151,6 +195,13 @@ export async function middleware(request: NextRequest) {
   // not the rest of the OAuth surface (authorize/refresh/disconnect still
   // require a logged-in team member).
   const isCalendlyOAuthCallback = pathname === "/api/calendly/oauth/callback"
+
+  // Intuit sends the user back to /api/proconnect/oauth/callback after consent
+  // on appcenter.intuit.com — that cross-domain redirect won't carry our Hub
+  // session cookie, so exempt ONLY the callback. Identity/CSRF is enforced
+  // inside the handler via the HMAC-signed `state`. /connect, /disconnect, and
+  // /launch are deliberately NOT exempt — they require a logged-in admin.
+  const isProconnectOAuthCallback = pathname === "/api/proconnect/oauth/callback"
 
   // Allow internal server-to-server calls (e.g. cron -> /api/karbon/sync -> /api/karbon/contacts)
   // These pass a shared secret so middleware doesn't block the sync chain.
@@ -204,8 +255,14 @@ export async function middleware(request: NextRequest) {
     isAuthCallback ||
     isPublicApi ||
     isWebhook ||
+    isProConnectWebhook ||
+    isProConnectSync ||
+    isZoomRecordingsBackfill ||
+    isZoomAccountSync ||
+    isHubMeetingsSync ||
     isCron ||
     isCalendlyOAuthCallback ||
+    isProconnectOAuthCallback ||
     isInternalCall ||
     isAlfredDataCall ||
     isAlfredHealthCheck ||
@@ -213,7 +270,9 @@ export async function middleware(request: NextRequest) {
     isAlfredBearerCall ||
     isZoomEmbed ||
     isLegalPage ||
-    isDocsPage
+    isDocsPage ||
+    isPublicEmbed ||
+    isWelcomePage
   ) {
     return supabaseResponse
   }
@@ -224,10 +283,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  // Redirect unauthenticated users to login (except if already on login)
+  // Redirect unauthenticated users to the public landing page (except
+  // if they've explicitly navigated to /login, which we let through so
+  // the auth screen can render).
   if (!user && !isLoginPage) {
     const url = request.nextUrl.clone()
-    url.pathname = "/login"
+    url.pathname = "/welcome"
     return NextResponse.redirect(url)
   }
 

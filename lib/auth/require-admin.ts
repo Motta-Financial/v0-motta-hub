@@ -4,17 +4,22 @@ import { createClient } from "@/lib/supabase/server"
 /**
  * The set of `team_members.role` values that count as platform admins.
  *
- * Today we treat firm leadership ("Company" and "Partner") as the admin
- * tier. If/when an explicit `is_admin` column gets added to
- * `team_members`, swap this constant out for a column check — the rest
- * of this module is intentionally written so that's a one-line change
- * inside `loadCallerAdminStatus`.
+ * - "Company" and "Partner" are the firm-leadership tier.
+ * - "Admin" is reserved for non-leadership operators that still need
+ *   full platform access (e.g. the back-end development lead). This
+ *   role gates settings, user mgmt, and the ProConnect "Run full
+ *   import" button without conferring partner-level data visibility.
+ *
+ * If/when an explicit `is_admin` column gets added to `team_members`,
+ * swap this constant out for a column check — the rest of this module
+ * is intentionally written so that's a one-line change inside
+ * `loadCallerAdminStatus`.
  *
  * Exported so admin-only UI (e.g. the /settings/users page) can mirror
  * the same allowlist client-side and hide controls the caller cannot
  * use. The server check below is still authoritative.
  */
-export const ADMIN_ROLES = ["Company", "Partner"] as const
+export const ADMIN_ROLES = ["Company", "Partner", "Admin"] as const
 
 export type AdminRole = (typeof ADMIN_ROLES)[number]
 

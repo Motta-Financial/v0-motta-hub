@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js"
 import { NextResponse } from "next/server"
+import { requireAdmin } from "@/lib/auth/require-admin"
 
 // Create Supabase admin client with service role key for user management
 function createAdminClient() {
@@ -29,6 +30,9 @@ function generateTempPassword(): string {
 }
 
 export async function POST(request: Request) {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   try {
     const { searchParams } = new URL(request.url)
     const dryRun = searchParams.get("dryRun") === "true"

@@ -1,5 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
+
+export const maxDuration = 300
 
 const KARBON_API_BASE = "https://api.karbonhq.com/v3"
 
@@ -132,9 +135,14 @@ export async function POST(_request: NextRequest) {
     const contactKeyToFullName = new Map<string, string>()
     const orgKeyToFullName = new Map<string, string>()
 
+    // Bounded concurrency for the per-row UPDATE batches below — one awaited
+    // round trip per row would mean thousands of serial Supabase calls.
+    const CONCURRENCY = 25
+
     // ---------- CONTACTS ----------
     // contacts.full_name is GENERATED ALWAYS (TRIM(first_name || ' ' || last_name)),
     // so we MUST write to first_name / last_name only, never full_name itself.
+    const contactUpdates: { contact: KarbonListContact; first: string | null; last: string | null }[] = []
     for (const contact of karbonContacts) {
       if (!contact.ContactKey) continue
       const { first, last } = parseContactFullName(contact.FullName, contact.PreferredName)
@@ -144,53 +152,74 @@ export async function POST(_request: NextRequest) {
         continue
       }
 
-      const update: Record<string, unknown> = {
-        first_name: first,
-        last_name: last,
-        preferred_name: contact.PreferredName || null,
-        karbon_modified_at: contact.LastModifiedDateTime || null,
-        last_synced_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }
+      contactUpdates.push({ contact, first, last })
+    }
 
-      const { error } = await supabase
-        .from("contacts")
-        .update(update)
-        .eq("karbon_contact_key", contact.ContactKey)
-
-      if (error) {
-        errors.push(`Contact ${contact.ContactKey} (${contact.FullName}): ${error.message}`)
-      } else {
-        contactsUpdated++
-        const computed = [first, last].filter(Boolean).join(" ").trim()
-        if (computed) contactKeyToFullName.set(contact.ContactKey, computed)
-      }
+    for (let i = 0; i < contactUpdates.length; i += CONCURRENCY) {
+      const batch = contactUpdates.slice(i, i + CONCURRENCY)
+      const results = await Promise.all(
+        batch.map(({ contact, first, last }) =>
+          supabase
+            .from("contacts")
+            .update({
+              first_name: first,
+              last_name: last,
+              preferred_name: contact.PreferredName || null,
+              karbon_modified_at: contact.LastModifiedDateTime || null,
+              last_synced_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("karbon_contact_key", contact.ContactKey),
+        ),
+      )
+      results.forEach((res, idx) => {
+        const { contact, first, last } = batch[idx]
+        if (res.error) {
+          errors.push(`Contact ${contact.ContactKey} (${contact.FullName}): ${res.error.message}`)
+        } else {
+          contactsUpdated++
+          const computed = [first, last].filter(Boolean).join(" ").trim()
+          if (computed) contactKeyToFullName.set(contact.ContactKey, computed)
+        }
+      })
     }
 
     // ---------- ORGANIZATIONS ----------
     // organizations table has no generated columns — both name and full_name are writable.
+    const orgUpdates: { org: KarbonListOrganization; orgName: string }[] = []
     for (const org of karbonOrgs) {
       if (!org.OrganizationKey) continue
       const orgName = (org.FullName || org.Name || "").trim()
       if (!orgName) continue
 
-      const { error } = await supabase
-        .from("organizations")
-        .update({
-          name: orgName,
-          full_name: orgName,
-          karbon_modified_at: org.LastModifiedDateTime || null,
-          last_synced_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("karbon_organization_key", org.OrganizationKey)
+      orgUpdates.push({ org, orgName })
+    }
 
-      if (error) {
-        errors.push(`Organization ${org.OrganizationKey} (${orgName}): ${error.message}`)
-      } else {
-        organizationsUpdated++
-        orgKeyToFullName.set(org.OrganizationKey, orgName)
-      }
+    for (let i = 0; i < orgUpdates.length; i += CONCURRENCY) {
+      const batch = orgUpdates.slice(i, i + CONCURRENCY)
+      const results = await Promise.all(
+        batch.map(({ org, orgName }) =>
+          supabase
+            .from("organizations")
+            .update({
+              name: orgName,
+              full_name: orgName,
+              karbon_modified_at: org.LastModifiedDateTime || null,
+              last_synced_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("karbon_organization_key", org.OrganizationKey),
+        ),
+      )
+      results.forEach((res, idx) => {
+        const { org, orgName } = batch[idx]
+        if (res.error) {
+          errors.push(`Organization ${org.OrganizationKey} (${orgName}): ${res.error.message}`)
+        } else {
+          organizationsUpdated++
+          orgKeyToFullName.set(org.OrganizationKey, orgName)
+        }
+      })
     }
 
     // ---------- WORK_ITEMS (denormalized client_name refresh) ----------
@@ -199,10 +228,27 @@ export async function POST(_request: NextRequest) {
     // "Last, First" format and it goes stale every time a contact's name
     // changes upstream. Re-derive it from the just-synced contacts/organizations.
     console.log("[v0] sync-fullnames: refreshing work_items.client_name...")
-    const { data: workItems, error: wiErr } = await supabase
-      .from("work_items")
-      .select("id, karbon_client_key, client_type, client_name")
-      .not("karbon_client_key", "is", null)
+    // work_items is well past PostgREST's silent 1,000-row response cap, so
+    // page through the table — an un-ranged select would skip most of it.
+    let workItems:
+      | { id: string; karbon_client_key: string | null; client_type: string | null; client_name: string | null }[]
+      | null = null
+    let wiErr: Error | null = null
+    try {
+      workItems = await fetchAllPaged<{
+        id: string
+        karbon_client_key: string | null
+        client_type: string | null
+        client_name: string | null
+      }>(() =>
+        supabase
+          .from("work_items")
+          .select("id, karbon_client_key, client_type, client_name")
+          .not("karbon_client_key", "is", null),
+      )
+    } catch (err) {
+      wiErr = err instanceof Error ? err : new Error(String(err))
+    }
 
     if (wiErr) {
       errors.push(`work_items fetch failed: ${wiErr.message}`)
@@ -225,7 +271,6 @@ export async function POST(_request: NextRequest) {
       }
 
       // Run updates with bounded concurrency to keep the route responsive.
-      const CONCURRENCY = 25
       for (let i = 0; i < stale.length; i += CONCURRENCY) {
         const batch = stale.slice(i, i + CONCURRENCY)
         const results = await Promise.all(

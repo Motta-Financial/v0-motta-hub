@@ -1,7 +1,7 @@
 {
-  "name": "Motta Hub",
-  "short_name": "Motta Hub",
-  "description": "Internal dashboard for Motta Financial professionals",
+  "name": "ALFRED Hub",
+  "short_name": "ALFRED",
+  "description": "Internal operations Ai for Motta Financial professionals",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

@@ -17,6 +17,7 @@ import {
   EMAIL_PROSE_MODEL,
   LEAD_ENRICHMENT_MODEL,
   QUESTION_RESEARCH_MODEL,
+  MEETING_SUMMARY_MODEL,
   CLAUDE_DEFAULT,
   OPENAI_GPT_4O,
   OPENAI_GPT_5,
@@ -36,6 +37,9 @@ export type AIUseCase =
   | "tommy_recap"
   | "jotform_enrichment"
   | "question_research"
+  | "intake_fee_estimate"
+  | "meeting_research"
+  | "meeting_summary"
   | "claude_playground"
 
 export interface AIConfig {
@@ -79,6 +83,9 @@ const DEFAULT_MODELS: Record<AIUseCase, string> = {
   tommy_recap: EMAIL_PROSE_MODEL,            // Claude Haiku — fast prose generation
   jotform_enrichment: LEAD_ENRICHMENT_MODEL, // Claude Haiku — fast summarization
   question_research: QUESTION_RESEARCH_MODEL, // Claude Sonnet — accurate technical answers
+  intake_fee_estimate: QUESTION_RESEARCH_MODEL, // Claude Sonnet — same reasoning tier as research
+  meeting_research: QUESTION_RESEARCH_MODEL, // Claude Sonnet — partner-facing meeting brief
+  meeting_summary: MEETING_SUMMARY_MODEL,    // Claude Sonnet — transcript -> client note
   claude_playground: CLAUDE_DEFAULT,         // Claude Sonnet — general playground
 }
 
@@ -88,6 +95,9 @@ const DEFAULT_DISPLAY_NAMES: Record<AIUseCase, string> = {
   tommy_recap: "Tommy Weekly Recap",
   jotform_enrichment: "Jotform Lead Enrichment",
   question_research: "Question Research",
+  intake_fee_estimate: "Intake Fee Estimate",
+  meeting_research: "Meeting Booking Research",
+  meeting_summary: "Meeting Transcript Summary",
   claude_playground: "Claude Playground",
 }
 
@@ -202,6 +212,9 @@ export async function getAllAIConfigs(): Promise<AIConfig[]> {
     "tommy_recap",
     "jotform_enrichment",
     "question_research",
+    "intake_fee_estimate",
+    "meeting_research",
+    "meeting_summary",
     "claude_playground",
   ]
 

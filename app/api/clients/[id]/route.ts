@@ -12,9 +12,11 @@
  * ever hitting Karbon's live API.
  */
 import { NextResponse } from "next/server"
-import { createAdminClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { getClientType } from "@/lib/client-type"
 import { summarizePayments } from "@/lib/ignition/payments"
+import { recordAudit } from "@/lib/audit"
+import { getTeamMemberByAuthId } from "@/lib/team-members"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -87,6 +89,13 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 
     const { kind, row } = resolved
     const isOrg = kind === "organization"
+
+    // Raw mode: return just the raw entity row (used by edit sheets to
+    // pre-fill exact DB column values without the heavy bundle transform).
+    const url = new URL(_request.url)
+    if (url.searchParams.get("raw") === "1") {
+      return NextResponse.json({ kind, record: row })
+    }
     const entityId: string = row.id
     const karbonKey: string | null = isOrg ? row.karbon_organization_key : row.karbon_contact_key
 
@@ -128,8 +137,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       groupMembersRes,
       contactOrgsRes,
       ignitionClientsRes,
-      intakeSubmissionsRes,
-      ignitionPaymentsRes,
+  intakeSubmissionsRes,
+  prospectSubmissionsRes,
+  ignitionPaymentsRes,
+  calendlyEventLinksRes,
+  zoomMeetingLinksRes,
       pcMappingRes,
     ] = await Promise.all([
       // Work items: filter by karbon_client_key (always populated) — covers both
@@ -339,16 +351,40 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       supabase
         .from("jotform_intake_submissions")
         .select(
-          `id, jotform_submission_id, jotform_created_at,
+          `id, created_at,
            submitter_full_name, submitter_email, submitter_phone,
            service_focus, services_requested, business_name, business_state,
-           filing_status, dependents_count, primary_residence_state,
-           hear_about_us, questions_or_concerns,
+           business_situation, entity_types,
+           questions_or_concerns, additional_notes,
+           referral_source,
            lead_status, link_method, linked_at,
+           karbon_work_item_key, karbon_work_item_title, karbon_work_item_url,
            raw_answers`,
         )
         .or(`${idCol}.eq.${entityId}`)
-        .order("jotform_created_at", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false, nullsFirst: false })
+        .limit(20),
+
+      // Internal prospect submissions — the teammate-filed intake form
+      // (components/prospects/prospect-form.tsx). Linked to the master Hub
+      // contact/org at submit time. Surfaced in the same Intakes tab as
+      // Jotform intakes so the full intake history lives in one place.
+      supabase
+        .from("prospect_submissions")
+        .select(
+          `id, created_at, prospect_type,
+           submitter_full_name, submitter_email, submitter_phone,
+           service_focus, services_requested, business_name, business_state,
+           business_situation, entity_types,
+           website, linkedin_url, twitter_url, facebook_url, instagram_url,
+           business_website,
+           referred_by_raw, internal_notes,
+           link_method, linked_at,
+           karbon_work_item_key, karbon_work_item_title, karbon_work_item_url,
+           enrichment`,
+        )
+        .or(`${idCol}.eq.${entityId}`)
+        .order("created_at", { ascending: false, nullsFirst: false })
         .limit(20),
 
       // Ignition payments — the source of truth for client payments. Has
@@ -369,6 +405,32 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         .or(`${idCol}.eq.${entityId}`)
         .order("paid_at", { ascending: false, nullsFirst: false })
         .limit(500),
+
+      // Calendly events linked to this client via calendly_event_clients
+      // (auto/manual/alfred/calendly_bridge link sources). We fetch the
+      // link rows by FK then hydrate the event detail in a follow-up
+      // query so the profile can render meeting topic, time, status, and
+      // the join URL without needing the live Calendly API.
+      supabase
+        .from("calendly_event_clients")
+        .select(
+          "id, calendly_event_id, link_source, confidence, needs_review, match_method, created_at",
+        )
+        .or(`${idCol}.eq.${entityId}`)
+        .order("created_at", { ascending: false })
+        .limit(200),
+
+      // Zoom meetings linked to this client via zoom_meeting_clients (the
+      // mirror of the calendly link table — set by the participant sweep,
+      // the Calendly→Zoom bridge, ALFRED triage, and manual tagging).
+      supabase
+        .from("zoom_meeting_clients")
+        .select(
+          "id, zoom_meeting_id, link_source, confidence, needs_review, match_method, created_at",
+        )
+        .or(`${idCol}.eq.${entityId}`)
+        .order("created_at", { ascending: false })
+        .limit(200),
 
       // ProConnect link lookup. The `client_mapping` table is the only
       // place that ties our internal contact/org UUID to a ProConnect
@@ -395,7 +457,82 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const ignitionProposals = ignitionProposalsRes.data || []
     const ignitionClients = ignitionClientsRes.data || []
     const ignitionPayments = ignitionPaymentsRes.data || []
+    const calendlyEventLinks = (calendlyEventLinksRes.data || []) as any[]
+    const zoomMeetingLinks = (zoomMeetingLinksRes.data || []) as any[]
     const pcMapping = pcMappingRes.data || null
+
+    // ── Hydrate Calendly events ──────────────────────────────────────────
+    // The link table only stores FKs; we need the event row for topic /
+    // time / status / join URL display. Single round-trip with `in()`.
+    let calendlyEvents: any[] = []
+    if (calendlyEventLinks.length > 0) {
+      const eventIds = Array.from(
+        new Set(calendlyEventLinks.map((l) => l.calendly_event_id).filter(Boolean)),
+      )
+      if (eventIds.length > 0) {
+        const { data: events } = await supabase
+          .from("calendly_events")
+          .select(
+            "id, name, status, event_type_name, location, location_type, join_url, calendly_uri, start_time, end_time, calendly_user_name, calendly_user_email, canceled_at, cancel_reason, rescheduled",
+          )
+          .in("id", eventIds)
+        const linkByEventId = new Map(
+          calendlyEventLinks.map((l) => [l.calendly_event_id, l]),
+        )
+        calendlyEvents = (events || [])
+          .map((ev: any) => {
+            const link = linkByEventId.get(ev.id)
+            return {
+              ...ev,
+              link_source: link?.link_source || null,
+              confidence: link?.confidence ?? null,
+              needs_review: !!link?.needs_review,
+              link_id: link?.id || null,
+            }
+          })
+          .sort(
+            (a, b) =>
+              new Date(b.start_time || 0).getTime() -
+              new Date(a.start_time || 0).getTime(),
+          )
+      }
+    }
+
+    // ── Hydrate Zoom meetings ────────────────────────────────────────────
+    let zoomMeetings: any[] = []
+    if (zoomMeetingLinks.length > 0) {
+      const meetingIds = Array.from(
+        new Set(zoomMeetingLinks.map((l) => l.zoom_meeting_id).filter(Boolean)),
+      )
+      if (meetingIds.length > 0) {
+        const { data: meetings } = await supabase
+          .from("zoom_meetings")
+          .select(
+            "id, zoom_meeting_id, topic, agenda, status, host_email, start_time, started_at, ended_at, duration, join_url, calendly_event_id",
+          )
+          .in("id", meetingIds)
+        const linkByMeetingId = new Map(
+          zoomMeetingLinks.map((l) => [l.zoom_meeting_id, l]),
+        )
+        zoomMeetings = (meetings || [])
+          .map((m: any) => {
+            const link = linkByMeetingId.get(m.id)
+            return {
+              ...m,
+              link_source: link?.link_source || null,
+              confidence: link?.confidence ?? null,
+              needs_review: !!link?.needs_review,
+              link_id: link?.id || null,
+            }
+          })
+          .sort(
+            (a, b) =>
+              new Date(b.start_time || b.started_at || 0).getTime() -
+              new Date(a.start_time || a.started_at || 0).getTime(),
+          )
+      }
+    }
+
 
     // ── ProConnect auto-link (self-healing) ──────────────────────────────
     // The seed run of scripts/match-proconnect-clients-by-email.ts only
@@ -695,7 +832,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     // `collected | disbursed` being the union of "real" paid states.
     const paymentsSummary = summarizePayments(ignitionPayments)
 
-    // ── Unified Invoices ─────────────────────────────────────────────────
+    // ── Unified Invoices ──────────────��──────────────────────────────────
     // Normalizes Karbon and Ignition (incl. legacy HubSpot) invoices into a
     // single shape so the UI can render one list. The original arrays remain
     // available for any downstream consumer that needs source-specific fields.
@@ -770,7 +907,49 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const debriefs = debriefsRes.data || []
     const groupMembers = (groupMembersRes.data || []) as any[]
     const contactOrgs = (contactOrgsRes.data || []) as any[]
-    const intakeSubmissions = intakeSubmissionsRes.data || []
+    // Merge Jotform intakes + internal prospect submissions into one
+    // chronologically-sorted list for the Intakes tab. Both are mapped to
+    // the same shape; `source` lets the UI badge them differently.
+    const jotformIntakes = (intakeSubmissionsRes.data || []).map((s: any) => ({
+      ...s,
+      source: "jotform" as const,
+    }))
+    const prospectIntakes = (prospectSubmissionsRes.data || []).map((s: any) => ({
+      id: s.id,
+      created_at: s.created_at,
+      submitter_full_name: s.submitter_full_name,
+      submitter_email: s.submitter_email,
+      submitter_phone: s.submitter_phone,
+      service_focus: s.service_focus,
+      services_requested: s.services_requested,
+      business_name: s.business_name,
+      business_state: s.business_state,
+      business_situation: s.business_situation,
+      entity_types: s.entity_types,
+      // Prospect form has no explicit "questions" field; surface the
+      // teammate's internal notes there so the card isn't empty.
+      questions_or_concerns: null,
+      additional_notes: s.internal_notes,
+      referral_source: s.referred_by_raw,
+      lead_status: null,
+      link_method: s.link_method,
+      linked_at: s.linked_at,
+      karbon_work_item_key: s.karbon_work_item_key,
+      karbon_work_item_title: s.karbon_work_item_title,
+      karbon_work_item_url: s.karbon_work_item_url,
+      raw_answers: null,
+      source: "prospect" as const,
+      prospect_type: s.prospect_type,
+      website: s.website || s.business_website || null,
+      linkedin_url: s.linkedin_url,
+      twitter_url: s.twitter_url,
+      facebook_url: s.facebook_url,
+      instagram_url: s.instagram_url,
+      enrichment: s.enrichment,
+    }))
+    const intakeSubmissions = [...jotformIntakes, ...prospectIntakes].sort(
+      (a: any, b: any) => dateMs(b.created_at) - dateMs(a.created_at),
+    )
 
     // ── Derived data ───────────────────────────────────────────────────────
 
@@ -823,6 +1002,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       totalNotes: karbonNotes.length + manualNotes.length,
       totalDocuments: documents.length,
       totalMeetings: meetings.length,
+      totalCalendlyEvents: calendlyEvents.length,
+      totalZoomMeetings: zoomMeetings.length,
       totalDebriefs: debriefs.length,
       totalIntakeSubmissions: intakeSubmissions.length,
       // Unified invoice stats span Karbon + Ignition + legacy HubSpot.
@@ -1081,6 +1262,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       relatedOrganizations,
       ignitionPayments,
       paymentsSummary,
+      calendlyEvents,
+      zoomMeetings,
       proconnect,
     })
   } catch (error) {
@@ -1090,6 +1273,148 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         error: "Failed to fetch client",
         details: error instanceof Error ? error.message : "Unknown error",
       },
+      { status: 500 },
+    )
+  }
+}
+
+// ── Editable field whitelists ─────────────────────────────────────────────
+// Only these columns may be set via PATCH. Everything else (Karbon keys,
+// sync timestamps, encrypted identifiers, etc.) is read-only here.
+const CONTACT_EDITABLE = new Set<string>([
+  "first_name",
+  "last_name",
+  "preferred_name",
+  "salutation",
+  "suffix",
+  "primary_email",
+  "secondary_email",
+  "phone_primary",
+  "phone_mobile",
+  "phone_work",
+  "address_line1",
+  "address_line2",
+  "city",
+  "state",
+  "zip_code",
+  "country",
+  "status",
+  "notes",
+  "tags",
+  "occupation",
+  "employer",
+  "contact_preference",
+  "linkedin_url",
+  "twitter_handle",
+  "website",
+])
+
+const ORGANIZATION_EDITABLE = new Set<string>([
+  "name",
+  "trading_name",
+  "entity_type",
+  "industry",
+  "line_of_business",
+  "primary_email",
+  "phone",
+  "website",
+  "address_line1",
+  "address_line2",
+  "city",
+  "state",
+  "zip_code",
+  "country",
+  "status",
+  "notes",
+  "ein",
+  "incorporation_state",
+  "fiscal_year_end_month",
+  "description",
+  "linkedin_url",
+  "twitter_handle",
+  "facebook_url",
+])
+
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params
+    const supabase = createAdminClient()
+
+    const resolved = await resolveEntity(supabase, id)
+    if (!resolved) {
+      return NextResponse.json({ error: "Client not found" }, { status: 404 })
+    }
+
+    const { kind, row: oldRecord } = resolved
+    const table = kind === "organization" ? "organizations" : "contacts"
+    const editable = kind === "organization" ? ORGANIZATION_EDITABLE : CONTACT_EDITABLE
+    const entityId: string = oldRecord.id
+
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+
+    // Build a whitelisted patch.
+    const patch: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(body)) {
+      if (editable.has(key)) patch[key] = value
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return NextResponse.json({ error: "No editable fields provided" }, { status: 400 })
+    }
+
+    // Keep the denormalized full_name in sync for contacts.
+    if (kind === "contact" && ("first_name" in patch || "last_name" in patch)) {
+      const first = (patch.first_name ?? oldRecord.first_name ?? "") as string
+      const last = (patch.last_name ?? oldRecord.last_name ?? "") as string
+      const full = `${first} ${last}`.trim()
+      if (full) patch.full_name = full
+    }
+
+    patch.updated_at = new Date().toISOString()
+
+    const { data: newRecord, error } = await supabase
+      .from(table)
+      .update(patch)
+      .eq("id", entityId)
+      .select("*")
+      .maybeSingle()
+
+    if (error) {
+      console.error("[v0] PATCH /api/clients/[id] error:", error)
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+    if (!newRecord) return NextResponse.json({ error: "Client not found" }, { status: 404 })
+
+    // Resolve the acting team member for the audit trail.
+    let teamMemberId: string | null = null
+    try {
+      const userSupabase = await createClient()
+      const {
+        data: { user },
+      } = await userSupabase.auth.getUser()
+      if (user) {
+        const teamMember = await getTeamMemberByAuthId(user.id, user.email)
+        teamMemberId = teamMember?.id || null
+      }
+    } catch (e) {
+      console.error("[v0] PATCH /api/clients/[id] user resolve error:", e)
+    }
+
+    await recordAudit({
+      entityType: kind,
+      entityId,
+      teamMemberId,
+      action: "update",
+      oldRecord,
+      newRecord,
+    })
+
+    // `record` is canonical; `data` is an alias the edit sheets read.
+    return NextResponse.json({ ok: true, kind, record: newRecord, data: newRecord })
+  } catch (error) {
+    console.error("[v0] PATCH /api/clients/[id] unexpected error:", error)
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
       { status: 500 },
     )
   }

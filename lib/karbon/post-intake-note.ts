@@ -25,12 +25,17 @@
  */
 
 import { getKarbonCredentials, karbonFetch, type KarbonApiConfig } from "@/lib/karbon-api"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 // ── Types ────────────────────────────────────────────────────────────
 
 export type IntakeNoteEntity = {
-  /** "Contact" or "Organization" — must match Karbon's entity type. */
-  entityType: "Contact" | "Organization"
+  /**
+   * Karbon entity type the note attaches to. "Contact"/"Organization"
+   * for the prospect's profile timeline; "WorkItem" to pin the intake
+   * summary directly onto a work item's timeline.
+   */
+  entityType: "Contact" | "Organization" | "WorkItem"
   /** Karbon entity key the note should attach to. */
   entityKey: string
 }
@@ -59,6 +64,14 @@ export type IntakeNoteSubmission = {
   preferred_team_member?: string | null
   enrichment?: { summary?: string | null } | null
   question_research?: { summary?: string | null } | null
+  // Web presence + social links (rendered when present).
+  website?: string | null
+  linkedin_url?: string | null
+  twitter_handle?: string | null
+  facebook_url?: string | null
+  instagram_url?: string | null
+  // Referral attribution surfaced on the timeline note.
+  referral?: { name?: string | null; matched?: boolean } | null
 }
 
 export type IntakeNoteContext = {
@@ -82,6 +95,23 @@ export type IntakeNoteContext = {
   authorEmail?: string | null
   /** URL into Motta Hub for the canonical intake row. */
   hubUrl?: string | null
+  /**
+   * Best-effort pin the note to the top of the entity timeline. Karbon's
+   * public API does not officially document a pin field, so we send
+   * `IsPinned: true` on the create payload and, if Karbon rejects it,
+   * automatically retry the create without the flag so the note is still
+   * posted. When the flag is silently accepted the note is pinned.
+   */
+  pinned?: boolean
+  /**
+   * Extra timelines to attach this SAME note to, in addition to the
+   * primary `entity`. Karbon's Notes API accepts multiple `Timelines`
+   * on a single note, so passing e.g. a WorkItem here lands the intake
+   * summary on the work item AND the contact in one POST. Combined with
+   * `pinned`, this is how the intake form gets pinned onto a freshly
+   * created Karbon work item. Duplicate entity keys are de-duplicated.
+   */
+  additionalTimelines?: IntakeNoteEntity[]
 }
 
 export type PostIntakeNoteResult = {
@@ -217,6 +247,34 @@ function buildNoteBody(
     }
   }
 
+  // Web presence / social links
+  if (
+    submission.website ||
+    submission.linkedin_url ||
+    submission.twitter_handle ||
+    submission.facebook_url ||
+    submission.instagram_url
+  ) {
+    parts.push("<h3>Web presence</h3>")
+    parts.push(
+      renderKvList([
+        { label: "Website", value: submission.website },
+        { label: "LinkedIn", value: submission.linkedin_url },
+        { label: "X / Twitter", value: submission.twitter_handle },
+        { label: "Facebook", value: submission.facebook_url },
+        { label: "Instagram", value: submission.instagram_url },
+      ]),
+    )
+  }
+
+  // Referral attribution
+  if (submission.referral?.name) {
+    parts.push("<h3>Referred by</h3>")
+    parts.push(
+      `<p>${escape(submission.referral.name)}${submission.referral.matched ? "" : " (unmatched — pending review in Motta Hub)"}</p>`,
+    )
+  }
+
   // Questions / notes from the prospect themselves
   if (submission.questions_or_concerns) {
     parts.push("<h3>Questions from the prospect</h3>")
@@ -257,10 +315,7 @@ function buildNoteBody(
 // ── Public API ───────────────────────────────────────────────────────
 
 function defaultHubUrlFor(submissionId: string): string {
-  const siteUrl =
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    "https://mottahub-motta.vercel.app"
+  const siteUrl = firmConfigSync().hubUrl
   // Mirrors components/intake/intake-list.tsx's deep-link convention.
   return `${siteUrl}/sales/intake?submission=${submissionId}`
 }
@@ -302,25 +357,58 @@ export async function postIntakeNoteToKarbon(
 
   const body = buildNoteBody(submission, { ...context, hubUrl })
 
+  // Build the timeline list: the primary entity plus any additional
+  // targets (e.g. a WorkItem). De-dupe on EntityType+EntityKey so we
+  // never send the same timeline twice if a caller passes the primary
+  // entity again in additionalTimelines.
+  const seenTimelines = new Set<string>()
+  const timelines = [entity, ...(context.additionalTimelines ?? [])]
+    .filter((t): t is IntakeNoteEntity => Boolean(t?.entityKey))
+    .filter((t) => {
+      const key = `${t.entityType}:${t.entityKey}`
+      if (seenTimelines.has(key)) return false
+      seenTimelines.add(key)
+      return true
+    })
+    .map((t) => ({ EntityType: t.entityType, EntityKey: t.entityKey }))
+
   const payload: Record<string, unknown> = {
     Subject: subject,
     Body: body,
     AuthorEmailAddress: authorEmail,
-    Timelines: [{ EntityType: entity.entityType, EntityKey: entity.entityKey }],
+    Timelines: timelines,
   }
   if (submission.jotform_created_at) {
     payload.TodoDate = submission.jotform_created_at
   }
+  if (context.pinned) {
+    // Best-effort pin — see PostIntakeNoteResult/context.pinned doc above.
+    payload.IsPinned = true
+  }
 
-  const { data, error } = await karbonFetch<{ NoteKey?: string }>(
+  // Karbon's POST /v3/Notes 201 response returns the key as `Id` (per the
+  // official OpenAPI spec and the live GET shape — see mappers/note.ts).
+  let { data, error } = await karbonFetch<{ Id?: string; NoteKey?: string }>(
     "/Notes",
     credentials,
     { method: "POST", body: payload },
   )
 
+  // If Karbon rejected the request and we sent the unofficial IsPinned
+  // flag, retry once without it so the note still lands on the timeline.
+  if (error && context.pinned) {
+    console.warn("[karbon-intake-note] POST /Notes with IsPinned failed — retrying without pin.")
+    delete payload.IsPinned
+    ;({ data, error } = await karbonFetch<{ Id?: string; NoteKey?: string }>(
+      "/Notes",
+      credentials,
+      { method: "POST", body: payload },
+    ))
+  }
+
   if (error) {
     console.error("[karbon-intake-note] POST /Notes failed:", error)
     return { ok: false, error }
   }
-  return { ok: true, noteKey: (data as any)?.NoteKey }
+  return { ok: true, noteKey: data?.Id ?? data?.NoteKey }
 }

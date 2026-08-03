@@ -21,6 +21,7 @@ import {
   Building2,
   Network,
   Sparkles,
+  FileText,
 } from "lucide-react"
 import { ViewManager } from "@/components/view-manager"
 import type { FilterView } from "@/lib/view-types"
@@ -86,8 +87,17 @@ export function Teammates() {
   // here.
   const [activeHero, setActiveHero] = useState<HeroProfile | null>(null)
 
+  // Tax return counts keyed by team_member_id. Loaded in parallel with
+  // the directory fetch from /api/team-members/tax-return-counts (which
+  // joins proconnect_profiles → proconnect_engagements). Teammates with
+  // no linked ProConnect profile simply won't appear here, so the card
+  // hides the badge instead of rendering "0" — operators map preparers
+  // at /tax/settings.
+  const [taxCounts, setTaxCounts] = useState<Record<string, number>>({})
+
   useEffect(() => {
     fetchUsers()
+    fetchTaxCounts()
   }, [])
 
   const fetchUsers = async () => {
@@ -106,6 +116,25 @@ export function Teammates() {
       setUsers([])
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Pulls per-teammate ProConnect engagement counts. Failure is
+  // non-fatal — the directory still renders, just without the badge.
+  const fetchTaxCounts = async () => {
+    try {
+      const response = await fetch("/api/team-members/tax-return-counts")
+      if (!response.ok) return
+      const data = await response.json()
+      const map: Record<string, number> = {}
+      for (const row of data.counts || []) {
+        if (row?.team_member_id) {
+          map[row.team_member_id] = row.total ?? 0
+        }
+      }
+      setTaxCounts(map)
+    } catch (error) {
+      console.error("Error fetching tax return counts:", error)
     }
   }
 
@@ -324,6 +353,12 @@ export function Teammates() {
                   const heroProfile = user.hero_profile_slug
                     ? findHeroProfileBySlug(user.hero_profile_slug)
                     : findHeroProfile(user.full_name)
+                  // Tax-return count from /api/team-members/tax-return-counts.
+                  // `undefined` = teammate has no linked ProConnect profile
+                  // (admin hasn't mapped them at /tax/settings yet) — we
+                  // hide the row entirely rather than render a misleading
+                  // "0". `0` = mapped, but no engagements assigned.
+                  const taxReturnCount = taxCounts[user.id]
                   return (
                   <Card
                     key={user.id}
@@ -376,6 +411,16 @@ export function Teammates() {
                             <p className="text-xs text-gray-500 truncate mt-1 flex items-center gap-1">
                               <Shield className="h-3 w-3" />
                               {user.role}
+                            </p>
+                          )}
+                          {taxReturnCount !== undefined && (
+                            <p
+                              className="text-xs text-gray-500 truncate mt-1 flex items-center gap-1"
+                              title="Tax returns assigned to this preparer in ProConnect (all years)"
+                            >
+                              <FileText className="h-3 w-3" />
+                              {taxReturnCount.toLocaleString()} tax return
+                              {taxReturnCount === 1 ? "" : "s"}
                             </p>
                           )}
                           <div className="mt-3 space-y-2">

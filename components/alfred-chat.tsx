@@ -17,6 +17,9 @@ import {
   Send,
   X,
   Minimize2,
+  Maximize2,
+  Shrink,
+  ExternalLink,
   Loader2,
   User,
   Search,
@@ -27,6 +30,7 @@ import {
   Database,
   History,
   Plus,
+  Trash2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useUser } from "@/contexts/user-context"
@@ -71,6 +75,18 @@ interface AlfredChatProps {
   onMinimize?: () => void
   isMinimized?: boolean
   className?: string
+  // When true the chat fills its container (used by the standalone
+  // /alfred window route) rather than floating as a fixed bottom-right
+  // card. In this mode the minimize / expand / pop-out controls are
+  // hidden since they make no sense in a dedicated window.
+  fullPage?: boolean
+  // Widget-only: toggles the floating card between its default compact
+  // footprint and a larger expanded size.
+  isExpanded?: boolean
+  onToggleExpand?: () => void
+  // Widget-only: pops the conversation out into a standalone browser
+  // window (the /alfred route).
+  onOpenInNewWindow?: () => void
 }
 
 const suggestedQueries = [
@@ -94,7 +110,17 @@ const OLIVE = {
   wash: "#F5F6E8",       // pale wash   — hover/tint backgrounds
 }
 
-export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className }: AlfredChatProps) {
+export function AlfredChat({
+  isOpen,
+  onClose,
+  onMinimize,
+  isMinimized,
+  className,
+  fullPage = false,
+  isExpanded = false,
+  onToggleExpand,
+  onOpenInNewWindow,
+}: AlfredChatProps) {
   const [inputValue, setInputValue] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -121,6 +147,10 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
   const [recentConversations, setRecentConversations] = useState<ConversationSummary[]>([])
   const [recentLoading, setRecentLoading] = useState(false)
   const [hydrating, setHydrating] = useState(false)
+  // Id of the conversation currently being deleted (for per-row spinner),
+  // and a flag for the "clear all" action.
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [clearingAll, setClearingAll] = useState(false)
 
   const { messages, sendMessage, status, error, setMessages } = useChat({
     transport: new DefaultChatTransport({
@@ -223,6 +253,47 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
     inputRef.current?.focus()
   }, [setMessages])
 
+  // Delete a single conversation from the recent rail. Optimistically drops
+  // it from the list; if the user is currently viewing that thread we also
+  // reset to a fresh chat so they aren't left looking at a deleted thread.
+  const deleteConversation = useCallback(
+    async (id: string) => {
+      setDeletingId(id)
+      try {
+        const res = await fetch(`/api/alfred/conversations/${id}`, { method: "DELETE" })
+        if (!res.ok) return
+        setRecentConversations((prev) => prev.filter((c) => c.id !== id))
+        if (conversationIdRef.current === id) {
+          setMessages([])
+          setConversationId(null)
+          conversationIdRef.current = null
+        }
+      } catch {
+        // Non-fatal: leave the row in place so the user can retry.
+      } finally {
+        setDeletingId(null)
+      }
+    },
+    [setMessages],
+  )
+
+  // Clear the entire recent-conversations history for this user.
+  const clearAllConversations = useCallback(async () => {
+    setClearingAll(true)
+    try {
+      const res = await fetch("/api/alfred/conversations", { method: "DELETE" })
+      if (!res.ok) return
+      setRecentConversations([])
+      setMessages([])
+      setConversationId(null)
+      conversationIdRef.current = null
+    } catch {
+      // Non-fatal.
+    } finally {
+      setClearingAll(false)
+    }
+  }, [setMessages])
+
   const isLoading = status === "streaming" || status === "submitted"
 
   // The last assistant message may already have text streaming in — in
@@ -318,10 +389,21 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
     )
   }
 
+  // Sizing is mode-driven:
+  //  • fullPage  → fill the standalone /alfred window
+  //  • expanded  → roomy floating card (capped to the viewport)
+  //  • default   → compact bottom-right launcher card
+  const sizingClasses = fullPage
+    ? "relative w-full h-full rounded-none border-0 shadow-none"
+    : isExpanded
+      ? "fixed bottom-4 right-4 z-50 w-[min(880px,calc(100vw-2rem))] h-[min(820px,calc(100vh-2rem))] shadow-2xl border-border/60"
+      : "fixed bottom-4 right-4 z-50 w-[420px] h-[600px] shadow-2xl border-border/60"
+
   return (
     <Card
       className={cn(
-        "fixed bottom-4 right-4 z-50 w-[420px] h-[600px] flex flex-col shadow-2xl border-border/60",
+        "flex flex-col transition-[width,height] duration-200 ease-out",
+        sizingClasses,
         className,
       )}
     >
@@ -348,19 +430,51 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
           >
             <Plus className="h-4 w-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
-            onClick={onMinimize}
-          >
-            <Minimize2 className="h-4 w-4" />
-          </Button>
+          {/* Pop-out + expand controls only make sense for the floating
+              widget, not the dedicated /alfred window. */}
+          {!fullPage && onOpenInNewWindow && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
+              onClick={onOpenInNewWindow}
+              title="Open in new window"
+              aria-label="Open ALFRED in a new window"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </Button>
+          )}
+          {!fullPage && onToggleExpand && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
+              onClick={onToggleExpand}
+              title={isExpanded ? "Collapse" : "Expand"}
+              aria-label={isExpanded ? "Collapse chat" : "Expand chat"}
+            >
+              {isExpanded ? <Shrink className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </Button>
+          )}
+          {!fullPage && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
+              onClick={onMinimize}
+              title="Minimize"
+              aria-label="Minimize chat"
+            >
+              <Minimize2 className="h-4 w-4" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
             className="h-8 w-8 text-background/80 hover:bg-white/10 hover:text-background"
             onClick={onClose}
+            title={fullPage ? "Close window" : "Close"}
+            aria-label="Close chat"
           >
             <X className="h-4 w-4" />
           </Button>
@@ -395,17 +509,25 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
                       <History className="h-3 w-3" />
                       Recent conversations
                     </p>
-                    {recentLoading && (
-                      <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                    )}
+                    <div className="flex items-center gap-2">
+                      {(recentLoading || clearingAll) && (
+                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                      )}
+                      <button
+                        onClick={clearAllConversations}
+                        disabled={clearingAll || hydrating || !!deletingId}
+                        className="text-xs font-medium text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                        title="Clear all conversations"
+                      >
+                        Clear all
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-1">
                     {recentConversations.slice(0, 10).map((c) => (
-                      <button
+                      <div
                         key={c.id}
-                        onClick={() => loadConversation(c.id)}
-                        disabled={hydrating}
-                        className="w-full flex items-center justify-between gap-2 p-2 text-left text-sm rounded-lg border border-border hover:bg-[var(--alfred-wash)] hover:border-[var(--alfred-ring)] transition-colors disabled:opacity-50"
+                        className="group w-full flex items-center gap-1 rounded-lg border border-border hover:bg-[var(--alfred-wash)] hover:border-[var(--alfred-ring)] transition-colors"
                         style={
                           {
                             "--alfred-wash": OLIVE.wash,
@@ -413,13 +535,32 @@ export function AlfredChat({ isOpen, onClose, onMinimize, isMinimized, className
                           } as React.CSSProperties
                         }
                       >
-                        <span className="truncate text-foreground">
-                          {c.title?.trim() || "Untitled conversation"}
-                        </span>
-                        <span className="text-xs text-muted-foreground shrink-0">
-                          {formatRelative(c.updated_at)}
-                        </span>
-                      </button>
+                        <button
+                          onClick={() => loadConversation(c.id)}
+                          disabled={hydrating || deletingId === c.id}
+                          className="flex-1 min-w-0 flex items-center justify-between gap-2 p-2 text-left text-sm disabled:opacity-50"
+                        >
+                          <span className="truncate text-foreground">
+                            {c.title?.trim() || "Untitled conversation"}
+                          </span>
+                          <span className="text-xs text-muted-foreground shrink-0">
+                            {formatRelative(c.updated_at)}
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => deleteConversation(c.id)}
+                          disabled={deletingId === c.id || clearingAll}
+                          className="shrink-0 p-2 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
+                          title="Delete conversation"
+                          aria-label="Delete conversation"
+                        >
+                          {deletingId === c.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </div>
                     ))}
                   </div>
                 </div>

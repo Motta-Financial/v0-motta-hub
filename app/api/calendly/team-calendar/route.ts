@@ -79,9 +79,9 @@ export async function GET(request: NextRequest) {
             event_type_name,
             team_members:team_member_id ( id, full_name, email, avatar_url, title ),
             calendly_invitees ( id, name, email, status, timezone, questions_answers, contact_id ),
-            calendly_event_clients ( id, contact_id, organization_id, link_source, match_method, contact:contacts ( id, full_name, primary_email ), organization:organizations ( id, name ) ),
-            calendly_event_work_items ( id, work_item_id, work_item:work_items ( id, title, client_name, status ) ),
-            calendly_event_services ( id, service_id, service:services ( id, name, category ) ),
+            calendly_event_clients ( id, contact_id, organization_id, link_source, match_method, confidence, alfred_reason, needs_review, contact:contacts ( id, full_name, primary_email ), organization:organizations ( id, name ) ),
+            calendly_event_work_items ( id, work_item_id, link_source, confidence, alfred_reason, needs_review, work_item:work_items ( id, title, client_name, status ) ),
+            calendly_event_services ( id, service_id, link_source, confidence, alfred_reason, needs_review, service:services ( id, name, category ) ),
             calendly_event_comments ( id )
           `,
         )

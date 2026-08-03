@@ -1,0 +1,370 @@
+/**
+ * ProConnect OAuth Token Manager
+ *
+ * Handles token refresh and storage. Tokens are stored in Supabase
+ * (proconnect_oauth_tokens table) and refreshed automatically when
+ * within 5 minutes of expiration.
+ *
+ * Environment variables required:
+ * - PROCONNECT_CLIENT_ID
+ * - PROCONNECT_CLIENT_SECRET
+ * - PROCONNECT_REFRESH_TOKEN (initial seed, stored in DB after first use)
+ * - PROCONNECT_REALM_ID
+ * - PROCONNECT_TOKEN_KEY (32-byte hex; encrypts tokens at rest. Optional but
+ *   strongly recommended — without it tokens are stored in plaintext. See
+ *   lib/proconnect/token-cipher.ts for the zero-downtime rollout behaviour.)
+ */
+
+import { createClient } from "@supabase/supabase-js"
+import {
+  decryptToken,
+  encryptToken,
+  isEncrypted,
+  isTokenEncryptionConfigured,
+} from "./token-cipher"
+import { firmConfigSync } from "@/lib/firm-settings"
+
+const SUPABASE_URL = process.env.SUPABASE_URL!
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+
+const PROCONNECT_CLIENT_ID = process.env.PROCONNECT_CLIENT_ID!
+const PROCONNECT_CLIENT_SECRET = process.env.PROCONNECT_CLIENT_SECRET!
+const PROCONNECT_REFRESH_TOKEN = process.env.PROCONNECT_REFRESH_TOKEN!
+const PROCONNECT_REALM_ID = process.env.PROCONNECT_REALM_ID!
+
+const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+const REFRESH_BUFFER_SECONDS = 300 // Refresh 5 minutes before expiry
+
+interface TokenResponse {
+  access_token: string
+  refresh_token: string
+  token_type: string
+  expires_in: number
+  x_refresh_token_expires_in?: number
+  /** Space-delimited list of *granted* scopes per OAuth 2.0 RFC 6749 §5.1. */
+  scope?: string
+}
+
+interface StoredToken {
+  id: string
+  access_token: string
+  refresh_token: string
+  token_type: string
+  expires_at: string
+  scope: string | null
+  realm_id: string | null
+}
+
+/**
+ * Get a Supabase client with service role for token operations
+ */
+function getSupabaseAdmin() {
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+    auth: { persistSession: false },
+  })
+}
+
+/**
+ * Refresh the access token using the refresh token
+ */
+async function refreshAccessToken(
+  refreshToken: string
+): Promise<TokenResponse> {
+  const credentials = Buffer.from(
+    `${PROCONNECT_CLIENT_ID}:${PROCONNECT_CLIENT_SECRET}`
+  ).toString("base64")
+
+  const response = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: `Basic ${credentials}`,
+      Accept: "application/json",
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(
+      `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`
+    )
+  }
+
+  return response.json()
+}
+
+/**
+ * Store tokens in Supabase using insert-or-update pattern.
+ * The Supabase JS SDK doesn't support partial indexes for upsert conflict
+ * resolution, so we try insert first and fall back to update on conflict.
+ */
+async function storeTokens(tokens: TokenResponse): Promise<void> {
+  const supabase = getSupabaseAdmin()
+
+  const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+  const now = new Date().toISOString()
+
+  // Encrypt at rest. `encryptToken` is opportunistic: with
+  // PROCONNECT_TOKEN_KEY set it returns a `v1:` envelope, without it the
+  // value passes through unchanged (and logs loudly). Either way the read
+  // path handles both, so this row upgrades itself on the first refresh
+  // after the key lands in the environment. See lib/proconnect/token-cipher.ts.
+  const payload = {
+    is_singleton: true,
+    access_token: encryptToken(tokens.access_token),
+    refresh_token: encryptToken(tokens.refresh_token),
+    token_type: tokens.token_type,
+    expires_at: expiresAt,
+    // Persist the *granted* scope so /tax/settings can detect when
+    // `com.intuit.proconnect.taxreturns` was not actually allow-listed
+    // for this app (Phase 1 §2.1) and surface a re-consent CTA.
+    scope: tokens.scope ?? "com.intuit.proconnect.taxreturns",
+    realm_id: PROCONNECT_REALM_ID,
+    // A successful refresh clears any prior failure flag.
+    last_refresh_error: null,
+    updated_at: now,
+  }
+
+  // Try insert first
+  const { error: insertError } = await supabase
+    .from("proconnect_oauth_tokens")
+    .insert(payload)
+
+  if (insertError) {
+    // If unique violation (code 23505), update instead
+    if (insertError.code === "23505") {
+      const { error: updateError } = await supabase
+        .from("proconnect_oauth_tokens")
+        .update({
+          access_token: encryptToken(tokens.access_token),
+          refresh_token: encryptToken(tokens.refresh_token),
+          token_type: tokens.token_type,
+          expires_at: expiresAt,
+          scope: tokens.scope ?? "com.intuit.proconnect.taxreturns",
+          last_refresh_error: null,
+          updated_at: now,
+        })
+        .eq("is_singleton", true)
+
+      if (updateError) {
+        throw new Error(`Failed to update tokens: ${updateError.message}`)
+      }
+    } else {
+      throw new Error(`Failed to insert tokens: ${insertError.message}`)
+    }
+  }
+}
+
+/**
+ * Best-effort: record a refresh failure on the singleton row so the
+ * /tax/settings card can surface a "Reconnect required" banner. A failed
+ * refresh almost always means the stored refresh token was revoked/expired
+ * and an admin must re-consent. We swallow any write error here so this
+ * never masks the original refresh failure that the caller is about to see.
+ */
+async function recordRefreshError(message: string): Promise<void> {
+  try {
+    const supabase = getSupabaseAdmin()
+    await supabase
+      .from("proconnect_oauth_tokens")
+      .update({ last_refresh_error: message.slice(0, 1000), updated_at: new Date().toISOString() })
+      .eq("is_singleton", true)
+  } catch {
+    // ignore — diagnostics only
+  }
+}
+
+/**
+ * Get stored tokens from Supabase
+ */
+async function getStoredTokens(): Promise<StoredToken | null> {
+  const supabase = getSupabaseAdmin()
+
+  const { data, error } = await supabase
+    .from("proconnect_oauth_tokens")
+    .select("*")
+    .limit(1)
+    .single()
+
+  if (error && error.code !== "PGRST116") {
+    // PGRST116 = no rows
+    throw new Error(`Failed to get tokens: ${error.message}`)
+  }
+
+  if (!data) return null
+
+  // Decrypt at the boundary so every caller downstream keeps working with
+  // plaintext tokens exactly as before. `decryptToken` passes legacy
+  // plaintext through untouched, so this is safe on a row written before
+  // encryption was enabled.
+  return {
+    ...data,
+    access_token: decryptToken(data.access_token),
+    refresh_token: decryptToken(data.refresh_token),
+  }
+}
+
+/**
+ * Check if token needs refresh (within buffer of expiry)
+ */
+function needsRefresh(expiresAt: string): boolean {
+  const expiryTime = new Date(expiresAt).getTime()
+  const bufferTime = Date.now() + REFRESH_BUFFER_SECONDS * 1000
+  return bufferTime >= expiryTime
+}
+
+/**
+ * Get a valid access token, refreshing if necessary.
+ * This is the main entry point for other modules.
+ */
+export async function getAccessToken(): Promise<string> {
+  const fnStart = Date.now()
+  console.log("[v0] getAccessToken start")
+
+  // Check for stored token
+  console.log("[v0] getAccessToken - fetching stored tokens", Date.now() - fnStart, "ms")
+  const stored = await getStoredTokens()
+  console.log("[v0] getAccessToken - got stored tokens", Date.now() - fnStart, "ms, hasToken:", !!stored)
+
+  if (stored && !needsRefresh(stored.expires_at)) {
+    // Token is still valid
+    console.log("[v0] getAccessToken - using cached token", Date.now() - fnStart, "ms")
+    return stored.access_token
+  }
+
+  // Need to refresh
+  const refreshToken = stored?.refresh_token || PROCONNECT_REFRESH_TOKEN
+
+  if (!refreshToken) {
+    throw new Error(
+      "No refresh token available. Set PROCONNECT_REFRESH_TOKEN env var."
+    )
+  }
+
+  console.log("[v0] getAccessToken - refreshing token", Date.now() - fnStart, "ms")
+  let newTokens: TokenResponse
+  try {
+    newTokens = await refreshAccessToken(refreshToken)
+  } catch (err) {
+    // Surface the failure on the singleton row so the settings card shows
+    // "Reconnect required", then rethrow so callers behave exactly as before.
+    await recordRefreshError(err instanceof Error ? err.message : String(err))
+    throw err
+  }
+  console.log("[v0] getAccessToken - got new tokens", Date.now() - fnStart, "ms")
+
+  await storeTokens(newTokens)
+  console.log("[v0] getAccessToken - stored tokens", Date.now() - fnStart, "ms")
+
+  return newTokens.access_token
+}
+
+/**
+ * Force a token refresh (useful for testing or manual intervention)
+ */
+export async function forceTokenRefresh(): Promise<string> {
+  const stored = await getStoredTokens()
+  const refreshToken = stored?.refresh_token || PROCONNECT_REFRESH_TOKEN
+
+  if (!refreshToken) {
+    throw new Error("No refresh token available")
+  }
+
+  const newTokens = await refreshAccessToken(refreshToken)
+  await storeTokens(newTokens)
+
+  return newTokens.access_token
+}
+
+/**
+ * Get the current token status (for admin/debugging)
+ */
+export async function getTokenStatus(): Promise<{
+  hasToken: boolean
+  expiresAt: string | null
+  isExpired: boolean
+  needsRefresh: boolean
+  /** True when PROCONNECT_TOKEN_KEY is present and well-formed. */
+  encryptionConfigured: boolean
+  /**
+   * True when the row on disk actually carries the ciphertext envelope.
+   * Distinct from `encryptionConfigured`: right after the key is added this
+   * is still false until the next refresh rewrites the row.
+   */
+  atRestEncrypted: boolean
+}> {
+  const encryptionConfigured = isTokenEncryptionConfigured()
+
+  // Read the raw (still-encrypted) row separately so we can report what is
+  // physically on disk — getStoredTokens() decrypts and would always look
+  // like plaintext from here.
+  let atRestEncrypted = false
+  try {
+    const { data: raw } = await getSupabaseAdmin()
+      .from("proconnect_oauth_tokens")
+      .select("access_token")
+      .limit(1)
+      .single()
+    atRestEncrypted = isEncrypted(raw?.access_token)
+  } catch {
+    // Diagnostics only — never let this break the status call.
+  }
+
+  const stored = await getStoredTokens()
+
+  if (!stored) {
+    return {
+      hasToken: false,
+      expiresAt: null,
+      isExpired: true,
+      needsRefresh: true,
+      encryptionConfigured,
+      atRestEncrypted,
+    }
+  }
+
+  const now = Date.now()
+  const expiryTime = new Date(stored.expires_at).getTime()
+
+  return {
+    hasToken: true,
+    expiresAt: stored.expires_at,
+    isExpired: now >= expiryTime,
+    needsRefresh: needsRefresh(stored.expires_at),
+    encryptionConfigured,
+    atRestEncrypted,
+  }
+}
+
+/**
+ * Get the realm ID for API calls
+ */
+export function getRealmId(): string {
+  return PROCONNECT_REALM_ID
+}
+
+/**
+ * Resolve the OAuth redirect_uri. This MUST be byte-for-byte identical to
+ * the value registered in the Intuit Developer app's "Redirect URIs"
+ * section AND identical between the authorize request (/connect) and the
+ * token exchange (/callback) — otherwise Intuit returns
+ * "The redirect_uri query parameter value is invalid."
+ *
+ * Source of truth is PROCONNECT_REDIRECT_URI. We deliberately do NOT fall
+ * back to NEXT_PUBLIC_APP_URL: that points at the marketing site
+ * (motta.cpa), whereas ProConnect is registered against the Hub host
+ * (hub.motta.cpa). Falling back to it produced the wrong subdomain and
+ * caused the invalid-redirect_uri error. The secondary fallback is the
+ * Hub's own APP_BASE_URL.
+ */
+export function getRedirectUri(): string {
+  const explicit = process.env.PROCONNECT_REDIRECT_URI
+  if (explicit) return explicit
+
+  const hubBase = firmConfigSync().hubUrl
+  return `${hubBase.replace(/\/$/, "")}/api/proconnect/oauth/callback`
+}

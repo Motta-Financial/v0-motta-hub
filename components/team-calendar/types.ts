@@ -35,8 +35,15 @@ export interface TeamCalendarClientTag {
   id: string
   contact_id: string | null
   organization_id: string | null
-  link_source: "auto" | "manual"
+  /** "alfred" rows come from the AI triage step; see lib/alfred/calendly-triage.ts. */
+  link_source: "auto" | "manual" | "alfred"
   match_method: string | null
+  /** ALFRED's self-reported confidence (0..1). Null for auto/manual. */
+  confidence?: number | null
+  /** ALFRED's one-sentence justification, surfaced as a tooltip. */
+  alfred_reason?: string | null
+  /** True when ALFRED's confidence is below the auto-accept threshold. */
+  needs_review?: boolean | null
   contact?: { id: string; full_name: string | null; primary_email: string | null } | null
   organization?: { id: string; name: string | null } | null
 }
@@ -44,12 +51,20 @@ export interface TeamCalendarClientTag {
 export interface TeamCalendarWorkItemTag {
   id: string
   work_item_id: string
+  link_source?: "auto" | "manual" | "alfred"
+  confidence?: number | null
+  alfred_reason?: string | null
+  needs_review?: boolean | null
   work_item: { id: string; title: string; client_name: string | null; status: string | null } | null
 }
 
 export interface TeamCalendarServiceTag {
   id: string
   service_id: string
+  link_source?: "auto" | "manual" | "alfred"
+  confidence?: number | null
+  alfred_reason?: string | null
+  needs_review?: boolean | null
   service: { id: string; name: string; category: string | null } | null
 }
 

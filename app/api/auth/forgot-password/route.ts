@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { sendEmail, buildPasswordResetEmailHtml } from "@/lib/email"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * POST /api/auth/forgot-password
@@ -123,8 +124,7 @@ export async function POST(request: NextRequest) {
  *
  * Priority:
  *   1. Request `Origin` header (works for previews, prod, localhost).
- *   2. NEXT_PUBLIC_APP_URL / APP_BASE_URL env (configured in Vercel).
- *   3. Hardcoded prod fallback.
+ *   2. firm.hub_url via lib/firm-settings (DB row → env → default).
  *
  * We bias toward the request origin so dev / preview deployments mail their
  * own URLs, not the prod domain.
@@ -133,14 +133,5 @@ function resolveSiteUrl(request: NextRequest): string {
   const origin = request.headers.get("origin")
   if (origin) return origin.replace(/\/$/, "")
 
-  const envUrl =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.APP_BASE_URL
-  if (envUrl) {
-    const normalized = envUrl.startsWith("http") ? envUrl : `https://${envUrl}`
-    return normalized.replace(/\/$/, "")
-  }
-
-  return "https://mottahub-motta.vercel.app"
+  return firmConfigSync().hubUrl
 }

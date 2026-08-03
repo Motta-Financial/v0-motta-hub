@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server"
+import { NextResponse, after } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import {
   calendlyListAll,
@@ -11,6 +11,12 @@ import {
   matchInviteeToContact,
   upsertAutoClientLink,
 } from "@/lib/calendly-invitee-match"
+import { runAlfredCalendlyTriage } from "@/lib/alfred/calendly-triage"
+import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
+import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
+import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
+import { notifyTeamOfNewBooking } from "@/lib/calendly/notify"
+import { pushHubContactToKarbon } from "@/lib/karbon/client-sync"
 
 /**
  * Calendly webhook receiver.
@@ -139,37 +145,30 @@ async function upsertEvent(
 ) {
   const uuid = extractUuid(event.uri)
   if (!uuid) return null
-  const location = event.location || {}
 
+  // Full field capture lives in the shared mapper so the webhook and the
+  // polling sync stay identical. We override `status` with the value the
+  // caller derived from the event type (created vs canceled) and add the
+  // webhook-only host resolution + connection linkage on top.
   const { data, error } = await supabase
     .from("calendly_events")
     .upsert(
       {
+        ...mapCalendlyEventFields(event),
         calendly_uuid: uuid,
         calendly_uri: event.uri,
         calendly_connection_id: connection?.id ?? null,
         team_member_id: connection?.team_member_id ?? null,
-        name: event.name,
         status,
-        start_time: event.start_time,
-        end_time: event.end_time,
-        event_type_uuid: extractUuid(event.event_type),
-        event_type_name: event.name,
-        location_type: location.type,
-        location: location.location,
-        join_url: location.join_url,
-        calendly_user_uri: event.event_memberships?.[0]?.user,
+        // Host resolution: the webhook payload carries event_memberships
+        // inline, so prefer that over the connection's owner identity.
+        calendly_user_uri:
+          event.event_memberships?.[0]?.user ?? connection?.calendly_user_uri ?? null,
         calendly_user_name:
           event.event_memberships?.[0]?.user_name ?? connection?.calendly_user_name ?? null,
         calendly_user_email:
           event.event_memberships?.[0]?.user_email ?? connection?.calendly_user_email ?? null,
-        canceled_at: event.cancellation?.canceled_at ?? null,
-        canceler_type: event.cancellation?.canceler_type ?? null,
-        canceler_name: event.cancellation?.canceled_by ?? null,
-        cancel_reason: event.cancellation?.reason ?? null,
         raw_data: event,
-        calendly_created_at: event.created_at,
-        calendly_updated_at: event.updated_at,
         synced_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
@@ -190,9 +189,20 @@ async function upsertInvitee(
   invitee: any,
   eventId: string,
   eventUuid: string,
-) {
+): Promise<{
+  inviteeUuid: string | null
+  deterministicMatch: { contactId: string | null; matchMethod: "email" | "name_phone" | "name" | null }
+  wasNewContact: boolean
+  invitee: any
+}> {
   const uuid = extractUuid(invitee.uri)
-  if (!uuid) return null
+  if (!uuid)
+    return {
+      inviteeUuid: null,
+      deterministicMatch: { contactId: null, matchMethod: null },
+      wasNewContact: false,
+      invitee,
+    }
 
   // Match invitee → CRM contact using email → name+phone → name. The
   // helper returns null when nothing matches, in which case the invitee
@@ -200,54 +210,118 @@ async function upsertInvitee(
   // *is* found we also write a `calendly_event_clients` row tagged as
   // an auto-link so the Team Calendar can render it as a "client" tag
   // alongside any manual tags users add later.
+  const inviteePhone = extractPhoneFromInvitee(invitee)
   const match = await matchInviteeToContact(supabase, {
     email: invitee.email,
     name: invitee.name,
-    phone: extractPhoneFromInvitee(invitee),
+    phone: inviteePhone,
   })
-  const contactId = match?.contactId ?? null
+  let contactId = match?.contactId ?? null
+  let contactMatchMethod: "email" | "name_phone" | "name" | "auto_created" | null =
+    match?.matchMethod ?? null
 
-  if (match?.contactId && eventId) {
-    await upsertAutoClientLink(supabase, {
-      calendlyEventId: eventId,
-      contactId: match.contactId,
-      matchMethod: match.matchMethod,
-    })
+  // Hub-first: when nothing matched, auto-create a Master Hub Contact
+  // for the invitee. Calendly bookings are one of the three canonical
+  // intake channels (alongside Jotform and Zoom) — every booked
+  // invitee should exist as a Hub contact even if a teammate has not
+  // yet manually linked them. We tag the row with source=calendly and
+  // is_prospect=true; pushing to Karbon happens fire-and-forget below.
+  let wasNewContact = false
+  if (!contactId && (invitee.email || invitee.name)) {
+    try {
+      const created = await findOrCreateHubContact(
+        {
+          email: invitee.email ?? null,
+          fullName: invitee.name ?? null,
+          phone: inviteePhone,
+        },
+        { source: "calendly", supabase, skipInternal: true },
+      )
+      if (created.contact_id) {
+        contactId = created.contact_id
+        wasNewContact = !!created.created
+        contactMatchMethod = created.created ? "auto_created" : "email"
+        console.log(
+          `[calendly] hub auto-${created.created ? "created" : "matched"} contact ${created.contact_id}: ${created.reason}`,
+        )
+
+        // Fire-and-forget Karbon push for newly-created contacts only.
+        // This ensures direct Calendly bookings (prospects who skipped
+        // the intake form) still land in Karbon. Existing contacts
+        // already have a Karbon key or will be linked manually.
+        if (wasNewContact) {
+          const newContactId = contactId
+          after(() =>
+            pushHubContactToKarbon(newContactId, { source: "Calendly Booking" }).catch((err) => {
+              console.error("[calendly] karbon push failed (non-blocking):", err)
+            }),
+          )
+        }
+      }
+    } catch (err) {
+      console.error("[calendly] hub auto-create failed (non-blocking):", err)
+    }
   }
 
-  const tracking = invitee.tracking || {}
+  if (contactId && eventId) {
+    await upsertAutoClientLink(supabase, {
+      calendlyEventId: eventId,
+      contactId,
+      // `calendly_event_clients.match_method` is constrained to the
+      // legacy enum; coerce auto_created → "email" since email was the
+      // primary signal we used to build the new contact. Source-of-
+      // truth for "this contact came from Calendly" lives on
+      // contacts.source.
+      matchMethod:
+        contactMatchMethod === "auto_created"
+          ? "email"
+          : (contactMatchMethod ?? "email"),
+    })
+
+    // Open (or reuse) the contact's single open Deal. A Calendly booking
+    // is one of the three canonical ways a prospect enters the Hub, so
+    // the meeting we just linked should hang off an opportunity. The
+    // Calendly→Zoom bridge + hub-meetings sync attach the actual meeting
+    // row to this deal. Best-effort: never block webhook processing.
+    try {
+      await findOrCreateDeal(
+        {
+          contactId,
+          title: invitee.name ?? invitee.email ?? "Calendly Prospect",
+          source: "calendly",
+        },
+        { supabase },
+      )
+    } catch (err) {
+      console.error("[calendly] deal create failed (non-blocking):", err)
+    }
+  }
+
   const { error } = await supabase.from("calendly_invitees").upsert(
     {
+      ...mapCalendlyInviteeFields(invitee),
       calendly_uuid: uuid,
       calendly_uri: invitee.uri,
       calendly_event_id: eventId,
       calendly_event_uuid: eventUuid,
-      name: invitee.name,
-      email: invitee.email,
-      timezone: invitee.timezone,
-      status: invitee.status || "active",
-      reschedule_url: invitee.reschedule_url,
-      cancel_url: invitee.cancel_url,
-      canceled_at: invitee.cancellation?.canceled_at ?? null,
-      canceler_type: invitee.cancellation?.canceler_type ?? null,
-      cancel_reason: invitee.cancellation?.reason ?? null,
-      questions_answers: invitee.questions_and_answers ?? null,
-      utm_source: tracking.utm_source,
-      utm_medium: tracking.utm_medium,
-      utm_campaign: tracking.utm_campaign,
-      utm_term: tracking.utm_term,
-      utm_content: tracking.utm_content,
       contact_id: contactId,
       raw_data: invitee,
-      calendly_created_at: invitee.created_at,
-      calendly_updated_at: invitee.updated_at,
       synced_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     },
     { onConflict: "calendly_uuid" },
   )
   if (error) console.error("[calendly] invitee upsert failed:", error)
-  return uuid
+  return {
+    inviteeUuid: uuid,
+    deterministicMatch: {
+      contactId,
+      matchMethod:
+        contactMatchMethod === "auto_created" ? "email" : contactMatchMethod,
+    },
+    wasNewContact,
+    invitee,
+  }
 }
 
 /**
@@ -333,16 +407,82 @@ async function handleInviteeCreated(payload: any) {
   const saved = await upsertEvent(supabase, event, "active", connection)
   if (!saved) return { success: false, error: "event upsert failed" }
 
+  // Track every invitee we processed so ALFRED can run a triage pass
+  // per invitee. The deterministic matcher already wrote a contact tag
+  // (when it found one); ALFRED supplements with org / work / service
+  // tags and can upgrade an unmatched invitee to a confident contact.
+  const processed: Array<Awaited<ReturnType<typeof upsertInvitee>>> = []
   if (invitee?.uri) {
-    await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid)
+    processed.push(await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid))
   } else if (connection) {
     const fetched = await calendlyListAll<any>(connection, supabase, `${event.uri}/invitees`, {
       query: { count: 100 },
     }).catch(() => [])
-    for (const i of fetched) await upsertInvitee(supabase, i, saved.id, saved.calendly_uuid)
+    for (const i of fetched) {
+      processed.push(await upsertInvitee(supabase, i, saved.id, saved.calendly_uuid))
+    }
+  }
+
+  // Run ALFRED triage for each invitee. We deliberately do NOT block
+  // the webhook response on this — model latency on a slow link can
+  // exceed Calendly's webhook timeout. Fire-and-forget with a top-level
+  // try/catch inside the helper so any failure stays out of the
+  // critical path. The audit row in calendly_alfred_triage_log is the
+  // durable record either way.
+  for (const p of processed) {
+    if (!p?.inviteeUuid) continue
+    after(() =>
+      runAlfredCalendlyTriage(supabase, {
+        calendlyEventId: saved.id,
+        calendlyEventUuid: saved.calendly_uuid,
+        calendlyInviteeUuid: p.inviteeUuid,
+        eventName: event?.name ?? null,
+        eventTypeName: event?.name ?? null,
+        startTime: event?.start_time ?? null,
+        invitee: {
+          name: p.invitee?.name ?? null,
+          email: p.invitee?.email ?? null,
+          phone: extractPhoneFromInvitee(p.invitee),
+          questionsAndAnswers: p.invitee?.questions_and_answers ?? null,
+        },
+        deterministicMatch: p.deterministicMatch,
+      }).catch((err) => {
+        console.error("[calendly] alfred triage failed (non-blocking):", err)
+      }),
+    )
   }
 
   await notifyTeamMembers(supabase, event, invitee, "created", connection)
+
+  // Fire-and-forget ALFRED email to all team members (opt-out honored via
+  // the meeting_booked email category). The email includes everything the
+  // team needs at a glance: who booked, when, whether they're new or
+  // existing, and a link to the Hub record. Dedupe happens inside
+  // notifyTeamOfNewBooking via the team_notified_at column.
+  const firstInvitee = processed[0]
+  if (firstInvitee?.inviteeUuid) {
+    after(() =>
+      notifyTeamOfNewBooking({
+        eventId: saved.id,
+        eventUuid: saved.calendly_uuid,
+        eventName: event?.name ?? "Meeting",
+        startTime: event?.start_time ?? new Date().toISOString(),
+        endTime: event?.end_time ?? new Date().toISOString(),
+        joinUrl: event?.location?.join_url ?? null,
+        hostName: connection?.calendly_user_name ?? null,
+        inviteeName: firstInvitee.invitee?.name ?? "Unknown",
+        inviteeEmail: firstInvitee.invitee?.email ?? "",
+        inviteePhone: extractPhoneFromInvitee(firstInvitee.invitee),
+        wasNewContact: firstInvitee.wasNewContact ?? false,
+        contactId: firstInvitee.deterministicMatch?.contactId ?? null,
+        karbonKey: null, // Karbon push is async; email goes out immediately
+        questionsAndAnswers: firstInvitee.invitee?.questions_and_answers ?? null,
+      }).catch((err) => {
+        console.error("[calendly] team email failed (non-blocking):", err)
+      }),
+    )
+  }
+
   return { success: true, action: "invitee_created" }
 }
 
@@ -369,11 +509,20 @@ async function handleNoShow(payload: any, isNoShow: boolean) {
   const inviteeUuid = extractUuid(inviteeUri)
   if (!inviteeUuid) return { success: false, error: "missing invitee uri" }
 
+  // The no_show resource uri is the top-level `uri` on the no_show
+  // payload; when un-marking we clear both the flag and the stored uri.
+  const noShowUri = isNoShow ? (payload?.uri ?? null) : null
+
+  // Deliberately do NOT touch raw_data here: the no-show webhook payload
+  // is a tiny stub, and overwriting the stored invitee snapshot with it
+  // would destroy questions_and_answers/tracking/payment data that other
+  // code paths rely on. no_show_uri preserves the no-show resource.
   const { error } = await supabase
     .from("calendly_invitees")
     .update({
       status: isNoShow ? "no_show" : "active",
-      raw_data: payload,
+      no_show: isNoShow,
+      no_show_uri: noShowUri,
       updated_at: new Date().toISOString(),
     })
     .eq("calendly_uuid", inviteeUuid)

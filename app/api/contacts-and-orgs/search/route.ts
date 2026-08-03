@@ -63,24 +63,54 @@ export async function GET(req: Request) {
   // the requested page even if (say) contacts dominates the hit set.
   const perTable = Math.min(limit * 2, 40)
   const qLower = q.toLowerCase()
-  // Supabase .or() takes a comma-separated list of column.op.value
-  // clauses. We escape any commas / parens in the user input to keep
-  // the parser happy; the search input doesn't legitimately contain
-  // either and stripping them is preferable to URL-encoding noise.
+  // We escape any commas / parens in the user input to keep the
+  // PostgREST .or() parser happy; the search input doesn't legitimately
+  // contain either and stripping them is preferable to URL-encoding
+  // noise.
   const safe = q.replace(/[%,()*]/g, " ").trim()
+
+  // ── Token-aware fuzzy fallback ──────────────────────────────
+  // Triagers routinely mistype prospect names ("Ciracello" vs the
+  // real "Cirasiello"). A single ILIKE %term% never recovers from
+  // a substitution, so we ALSO ILIKE every whitespace-separated
+  // token of length ≥ 3. That way "Ryan Ciracello" still finds
+  // "Ryan Cirasiello" via the first-name token, "Ryan", and the
+  // ranking step keeps the most relevant rows on top.
+  //
+  // When the user types a full name like "Ryan Cirasiello" we
+  // OR all of: full string, "Ryan", "Cirasiello". When the typed
+  // term is a single word, only the full string is added.
+  const tokens = Array.from(
+    new Set(
+      safe
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 3),
+    ),
+  )
+  const allTerms = Array.from(new Set([safe, ...tokens])).filter((t) => t.length >= 2)
+
+  const contactsOr = allTerms
+    .flatMap((term) => [
+      `full_name.ilike.%${term}%`,
+      `primary_email.ilike.%${term}%`,
+      `secondary_email.ilike.%${term}%`,
+    ])
+    .join(",")
+  const orgsOr = allTerms
+    .flatMap((term) => [`name.ilike.%${term}%`, `primary_email.ilike.%${term}%`])
+    .join(",")
 
   const [contactsRes, orgsRes] = await Promise.all([
     supabase
       .from("contacts")
       .select("id, full_name, primary_email, secondary_email")
-      .or(
-        `full_name.ilike.%${safe}%,primary_email.ilike.%${safe}%,secondary_email.ilike.%${safe}%`,
-      )
+      .or(contactsOr)
       .limit(perTable),
     supabase
       .from("organizations")
       .select("id, name, primary_email")
-      .or(`name.ilike.%${safe}%,primary_email.ilike.%${safe}%`)
+      .or(orgsOr)
       .limit(perTable),
   ])
 

@@ -144,7 +144,7 @@ export function MottaSetupTab({ teamMemberId }: MottaSetupTabProps) {
         detail: zoomDetail,
         primaryAction: {
           label: zoomStatus === "connected" ? "Manage" : "Connect Zoom",
-          href: "/zoom",
+          href: "/meetings/zoom",
         },
       },
       {

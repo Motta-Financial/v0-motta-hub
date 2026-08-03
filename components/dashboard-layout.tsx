@@ -32,7 +32,6 @@ import {
   ClipboardList,
   Calculator,
   FileText,
-  Flame,
   DollarSign,
   Workflow,
   BarChart3,
@@ -57,12 +56,16 @@ import {
   Sparkles,
   Layers,
   Network,
+  Share2,
   BookOpen,
   Palette,
   Wallet,
   Webhook,
   FolderKanban,
   Crown,
+  LibraryBig,
+  Compass,
+  HelpCircle,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -129,26 +132,48 @@ const navigation = [
           { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
         ],
       },
+      // Meetings is now its OWN top-level Home section (it used to be
+      // nested under Clients). The Team Calendar and Zoom dashboards —
+      // previously their own top-level routes (/calendar, /zoom) — now
+      // live underneath it alongside Calendly and Debriefs. All four are
+      // "meeting surfaces," so grouping them here keeps every meeting
+      // touchpoint in one place. The legacy URLs (/clients/meetings/*,
+      // /calendar, /zoom, /debriefs) all redirect to /meetings/* so
+      // existing bookmarks keep working.
+      // Deals is the opportunity pipeline — one deal per prospect that
+      // groups all of their meetings (Zoom / phone / in person) and the
+      // debrief. It supersedes the old "Hub Meetings" framing: meetings
+      // now roll UP into a deal rather than standing alone.
+      // Deals + Meetings are now ONE section. A deal is the opportunity
+      // pipeline (one per prospect) that groups every meeting + debrief, so
+      // the pipeline is the section's default landing (/meetings renders the
+      // Deals pipeline) and the meeting surfaces hang off it as tabs. The
+      // standalone /deals route still works — it redirects to /meetings.
       {
-        // Calendly used to live as a child here ("Calendly Admin").
-        // It moved to /settings/calendly so it sits alongside the
-        // other per-user OAuth connections (and the old /calendly
-        // URL now server-redirects there). Zoom stays since it's a
-        // shared meeting room view, not a per-user setup screen.
-        name: "Calendar",
-        href: "/calendar",
+        name: "Meetings",
+        href: "/meetings",
         icon: Calendar,
-        children: [{ name: "Zoom", href: "/zoom", icon: Video }],
-      },
-      {
-        // "New Debrief" used to live as a child here, but the form is now
-        // surfaced exclusively through the header Forms dropdown (alongside
-        // Prospect Form + Tommy Award Ballot). The Debriefs hub itself has
-        // a "+ New Debrief" button on its own page, so keeping a sidebar
-        // child was redundant.
-        name: "Debriefs",
-        href: "/debriefs",
-        icon: MessageSquare,
+        children: [
+          { name: "Deals", href: "/meetings", icon: Briefcase },
+          { name: "Calendar", href: "/meetings/calendar", icon: Calendar },
+          { name: "Calendly", href: "/meetings/calendly", icon: Calendar },
+          { name: "Zoom", href: "/meetings/zoom", icon: Video },
+          // Debriefs is now expandable: the parent row + "All Debriefs"
+          // both open the list at /meetings/debriefs, while "New Debrief"
+          // jumps straight to the logging form (also reachable from the
+          // header Forms dropdown). Keeping the list reachable from both
+          // the parent row and an explicit child mirrors how the other
+          // section parents behave.
+          {
+            name: "Debriefs",
+            href: "/meetings/debriefs",
+            icon: MessageSquare,
+            children: [
+              { name: "All Debriefs", href: "/meetings/debriefs", icon: MessageSquare },
+              { name: "New Debrief", href: "/debriefs/new", icon: NotebookPen },
+            ],
+          },
+        ],
       },
     ],
   },
@@ -182,23 +207,46 @@ const navigation = [
         icon: FileText,
         children: [
           // ── ProConnect-backed Tax surfaces ───────────────────────────
-          // Ordered from "all returns at a glance" down to "single
-          // client roster". The four return-form pages (Individual,
-          // Business, Nonprofit) each drill into one or more PC tables;
-          // Returns is the unified browser; Clients is the PC roster
-          // joined onto the master_client_mapping view.
-          { name: "Returns", href: "/tax/returns", icon: FileText },
-          { name: "Individual (1040)", href: "/tax/individual", icon: Users },
+          // Two top-level groupings now sit under Tax:
+          //   • Clients — the PC roster joined onto the
+          //     master_client_mapping view. Relationships (the entity ↔
+          //     individual graph) nests under it because it's a lens on
+          //     the same client population.
+          //   • Returns — the unified return browser, with the three
+          //     return-form views (Individual 1040, Business
+          //     1065/1120/1120S, Nonprofit 990) nested as children since
+          //     each one drills into a subset of what Returns lists.
+          // Clients sits above Returns so the roster reads first, then
+          // the work product. Settings stays a flat leaf at the bottom.
           {
-            name: "Business (1065/1120/1120S)",
-            href: "/tax/business",
-            icon: Building2,
+            name: "Clients",
+            href: "/tax/clients",
+            icon: UserCircle,
+            children: [
+              { name: "Relationships", href: "/tax/relationships", icon: Network },
+            ],
           },
-          { name: "Nonprofit (990)", href: "/tax/nonprofit", icon: Landmark },
-          { name: "Clients", href: "/tax/clients", icon: UserCircle },
+          {
+            name: "Returns",
+            href: "/tax/returns",
+            icon: FileText,
+            children: [
+              { name: "Individual (1040)", href: "/tax/individual", icon: Users },
+              {
+                name: "Business (1065/1120/1120S)",
+                href: "/tax/business",
+                icon: Building2,
+              },
+              { name: "Nonprofit (990)", href: "/tax/nonprofit", icon: Landmark },
+            ],
+          },
+          { name: "Settings", href: "/tax/settings", icon: Settings },
         ],
       },
-      { name: "Special Teams", href: "/special-teams", icon: Flame },
+      // Special Teams is intentionally hidden from the sidebar for now.
+      // The /special-teams page + its API routes still exist and remain
+      // reachable by direct URL — this is purely a nav-visibility change,
+      // so re-adding the entry here is the only step needed to restore it.
     ],
   },
   // Sales is the proposal-to-payment lifecycle hub. Payments and the
@@ -215,6 +263,10 @@ const navigation = [
       // checks "where are we vs MRR target" before drilling into the
       // funnel below.
       { name: "Recurring Revenue", href: "/sales/recurring-revenue", icon: Repeat },
+      // Payment Links is the Hub-native "send a client a Stripe pay link for a
+      // fixed service package" flow — distinct from the read-only Ignition
+      // Payments feed below (which only mirrors payments that already cleared).
+      { name: "Payment Links", href: "/sales/payment-links", icon: Wallet },
       // Ignition is the proposal-to-payment engine, so Proposals,
       // Invoices, and Payments live underneath it as a single grouped
       // workflow (matches the way Ignition organizes them in its own
@@ -284,6 +336,25 @@ const navigation = [
       },
     ],
   },
+  // "Resources" is the firm's knowledge base — sits between Talent and
+  // Settings. It holds team SOPs, the Hub user guide (functionality +
+  // underlying integrations), an FAQ, a curated bank of client-facing
+  // resources, and reusable templates. Content is curated in
+  // `lib/resources/content.ts` for now; the resource + template banks are
+  // structured so they can be wired to Supabase + Blob uploads later.
+  // Visible to all signed-in teammates.
+  {
+    name: "Resources",
+    href: "/resources",
+    icon: LibraryBig,
+    children: [
+      { name: "Hub Guide", href: "/resources?tab=hub-guide", icon: Compass },
+      { name: "SOPs", href: "/resources?tab=sops", icon: ClipboardList },
+      { name: "FAQ", href: "/resources?tab=faq", icon: HelpCircle },
+      { name: "Client Resources", href: "/resources?tab=client-resources", icon: FolderKanban },
+      { name: "Templates", href: "/resources?tab=templates", icon: FileText },
+    ],
+  },
   // Settings is the personal hub for the signed-in user. The
   // sub-tree mirrors the /settings page's section order:
   //   - Account: Profile, Notifications
@@ -310,6 +381,8 @@ const navigation = [
         children: [
           { name: "ALFRED AI", href: "/admin/alfred-ai", icon: Sparkles },
           { name: "Karbon Sync", href: "/admin/karbon-sync", icon: RefreshCw },
+          { name: "Webhooks", href: "/admin/webhooks", icon: Webhook },
+          { name: "Referrals", href: "/admin/referrals", icon: Share2 },
           {
             name: "Master Client Mapping",
             href: "/admin/master-client-mapping",
@@ -320,7 +393,6 @@ const navigation = [
           { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
           { name: "Work Statuses", href: "/admin/work-statuses", icon: ListChecks },
           { name: "Migration", href: "/settings/migration", icon: ArrowRightLeft },
-          { name: "Webhooks", href: "/settings/webhooks", icon: Webhook },
         ],
       },
     ],
@@ -397,12 +469,12 @@ function HubHeader({
             </SheetContent>
           </Sheet>
           <a href="/" className="flex items-center gap-3">
-            <img src="/images/alfred-logo.png" alt="Motta Hub" className="h-10 w-auto" />
+            <img src="/images/alfred-logo.png" alt="ALFRED Hub" className="h-10 w-auto" />
             <div className="flex flex-col leading-tight">
               <span className="text-base font-bold tracking-wide" style={{ color: "#6B745D" }}>
-                MOTTA HUB
+                ALFRED HUB
               </span>
-              <span className="text-[10px] text-gray-500 uppercase tracking-wider">Powered by ALFRED AI</span>
+              <span className="text-[10px] text-gray-500 uppercase tracking-wider">A Motta Financial product</span>
             </div>
           </a>
         </div>
@@ -469,6 +541,168 @@ function buildInitialExpandedState(
 }
 
 // ---------------------------------------------------------------------------
+// Recursive sidebar node
+// ---------------------------------------------------------------------------
+// One component renders every level of the nav tree, so nesting depth is no
+// longer capped (previously the renderer was hand-written for exactly three
+// levels). Indentation and the parent→child guide line are both computed
+// from `depth` in pixels rather than hard-coded Tailwind padding classes,
+// which keeps deeper levels (e.g. Departments → Tax → Returns → Individual)
+// aligned automatically. Every node that has children shows the SAME
+// affordance — a subpage count badge + a left/down chevron — so it's always
+// clear which rows expand.
+const NAV_INDENT_BASE_PX = 8 // matches the old top-level pl-2
+const NAV_INDENT_STEP_PX = 20 // per nesting level
+
+// Motta sidebar palette — kept inline (not tokens) to match the rest of
+// this component, which already styles via these literals.
+const NAV_ACTIVE_BG = "#6B745D"
+const NAV_HOVER_BG = "#8E9B79"
+const NAV_ACTIVE_BORDER = "#333333"
+
+function NavNode({
+  node,
+  depth,
+  pathname,
+  expandedSections,
+  toggleSection,
+  expandSection,
+}: {
+  node: any
+  depth: number
+  pathname: string
+  expandedSections: Record<string, boolean>
+  toggleSection: (name: string) => void
+  expandSection: (name: string) => void
+}) {
+  const hasChildren = !!node.children?.length
+  const isExpanded = expandedSections[node.name] || false
+
+  // A node lights up when: it's the exact current route, OR (for leaves)
+  // the path is nested under it, OR any descendant in its subtree is active
+  // (so ancestors stay highlighted while collapsed). `branchContainsActive`
+  // recurses the whole subtree, so this works at any depth.
+  const isSelfCurrent = node.href !== "/" && pathname === node.href
+  const isLeafNested =
+    !hasChildren && node.href !== "/" && pathname.startsWith(node.href + "/")
+  const isBranchActive =
+    hasChildren && node.children.some((c: any) => branchContainsActive(c, pathname))
+  const highlighted = isSelfCurrent || isLeafNested || isBranchActive
+
+  const paddingLeft = NAV_INDENT_BASE_PX + depth * NAV_INDENT_STEP_PX
+  const guideLeft = paddingLeft + 10 // sits under the icon center
+  const iconSize = depth === 0 ? "h-5 w-5" : "h-4 w-4"
+
+  return (
+    <li>
+      <div className="flex items-center">
+        <a
+          href={node.href}
+          // Clicking the row navigates AND opens its subpages (never
+          // collapses) so you never lose sight of where you are.
+          // Collapsing is the chevron button's job.
+          onClick={() => {
+            if (hasChildren) expandSection(node.name)
+          }}
+          style={{
+            paddingLeft,
+            backgroundColor: highlighted ? NAV_ACTIVE_BG : "transparent",
+            borderColor: highlighted ? NAV_ACTIVE_BORDER : "transparent",
+          }}
+          className={cn(
+            highlighted ? "text-white border-r-2" : "text-gray-700 hover:text-white",
+            "group flex flex-1 items-center gap-x-3 rounded-l-md py-2 pr-3 leading-6 font-medium transition-colors relative",
+            depth > 0 && "text-sm",
+          )}
+          onMouseEnter={(e) => {
+            if (!highlighted) e.currentTarget.style.backgroundColor = NAV_HOVER_BG
+          }}
+          onMouseLeave={(e) => {
+            if (!highlighted) e.currentTarget.style.backgroundColor = "transparent"
+          }}
+        >
+          <node.icon
+            className={cn(
+              highlighted ? "text-white" : "text-gray-400 group-hover:text-white",
+              iconSize,
+              "shrink-0",
+            )}
+            aria-hidden="true"
+          />
+          <span className="flex-1">{node.name}</span>
+        </a>
+
+        {hasChildren && (
+          // Count badge + chevron rendered as a sibling <button> (valid
+          // HTML — never a <button> inside the <a>). The same control at
+          // every level makes "this row has subpages" unmistakable.
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault()
+              toggleSection(node.name)
+            }}
+            aria-label={
+              isExpanded
+                ? `Collapse ${node.name} (${node.children.length} subpages)`
+                : `Expand ${node.name} (${node.children.length} subpages)`
+            }
+            aria-expanded={isExpanded}
+            className={cn(
+              "mr-1 flex shrink-0 items-center gap-1 rounded-full px-1.5 py-1 transition-colors",
+              highlighted ? "text-white hover:bg-white/15" : "text-gray-500 hover:bg-gray-100",
+            )}
+          >
+            <span
+              className={cn(
+                "text-[10px] font-semibold tabular-nums leading-none",
+                highlighted ? "text-white/80" : "text-gray-400",
+              )}
+            >
+              {node.children.length}
+            </span>
+            {isExpanded ? (
+              <ChevronDown className="h-4 w-4" aria-hidden="true" />
+            ) : (
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
+            )}
+          </button>
+        )}
+      </div>
+
+      {hasChildren && isExpanded && (
+        // Vertical guide line connects children back to their parent. Drawn
+        // as an explicit absolutely-positioned span (rather than a pseudo-
+        // element) so its per-depth left offset can come straight from an
+        // inline style — guaranteed to render at any nesting depth without
+        // relying on Tailwind JIT picking up an arbitrary value. The span is
+        // a sibling of (not inside) the <ul> so the list stays valid markup.
+        <div className="relative mt-1">
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-1 top-1 w-px bg-gray-200"
+            style={{ left: guideLeft }}
+          />
+          <ul className="space-y-1">
+            {node.children.map((child: any) => (
+              <NavNode
+                key={child.name}
+                node={child}
+                depth={depth + 1}
+                pathname={pathname}
+                expandedSections={expandedSections}
+                toggleSection={toggleSection}
+                expandSection={expandSection}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
+    </li>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Header quick-launcher dropdowns
 // ---------------------------------------------------------------------------
 // We expose three sibling dropdowns in the global header:
@@ -525,6 +759,15 @@ const HEADER_FORMS: ReadonlyArray<HeaderMenuItem> = [
     href: "/tommy-awards/ballot",
     description: "Nominate a teammate for this week's award",
     icon: Trophy,
+  },
+  {
+    // Firm-wide announcement composer. Posts a "Breaking News"
+    // broadcast that lands in everyone's Triage feed and is emailed
+    // from ALFRED. Lives at /admin/broadcast but any teammate can post.
+    name: "Broadcast Announcement",
+    href: "/admin/broadcast",
+    description: "Send a firm-wide announcement to everyone's Triage + email",
+    icon: Radio,
   },
 ]
 
@@ -920,28 +1163,26 @@ function Sidebar() {
   const [hydrated, setHydrated] = useState(false)
 
   // Once mounted on the client, seed expanded sections from localStorage
-  // and the active route. This runs only once after hydration so the
-  // server/client first-render is identical (empty → avoids mismatch).
+  // ONLY. We deliberately do NOT pre-expand the active route's ancestors
+  // — the user asked for the nav to start fully collapsed every load,
+  // and to only open sections when they explicitly click them. Persisted
+  // choices still win so a section the user opened earlier stays open
+  // across reloads.
   useEffect(() => {
-    const seed = buildInitialExpandedState(navigation, pathname)
-    let initial = seed
+    let initial: Record<string, boolean> = {}
     try {
       const raw = window.localStorage.getItem(SIDEBAR_EXPANDED_STORAGE_KEY)
       if (raw) {
         const parsed = JSON.parse(raw)
         if (parsed && typeof parsed === "object") {
-          // Merge persisted choices over active-ancestor seed — this way
-          // an explicitly-collapsed section the user closed earlier stays
-          // closed unless it's an ancestor of the current page.
-          initial = { ...parsed, ...seed }
+          initial = parsed as Record<string, boolean>
         }
       }
     } catch {
-      // Storage can throw in private mode; continue with seed.
+      // Storage can throw in private mode; fall through to fully-collapsed.
     }
     setExpandedSections(initial)
     setHydrated(true)
-    // Only run on mount — pathname changes are handled by a separate effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -963,26 +1204,25 @@ function Sidebar() {
     }
   }, [expandedSections, hydrated])
 
-  // When the user navigates between pages we want the new active section to
-  // auto-open, but we deliberately MERGE rather than replace so that any
-  // sibling sections the user manually opened stay open. The only thing we
-  // ever flip here is `true` for ancestors of the new pathname — never
-  // `false`, so the sidebar never yanks something closed underneath them.
+  // Keep the *active* page's section visible: whenever the route changes,
+  // merge in the expanded state for every ancestor of the current path.
+  // This is purely additive — it OPENS the active branch but never closes
+  // anything the user opened manually, so the "collapsed by default"
+  // feel is preserved (nothing else springs open) while the page you're
+  // actually on is always revealed in the tree. Runs after hydration so
+  // it composes with the localStorage-restored state above.
   useEffect(() => {
-    const activeAncestors = buildInitialExpandedState(navigation, pathname)
-    if (Object.keys(activeAncestors).length === 0) return
+    if (!hydrated) return
+    const activeBranch = buildInitialExpandedState(visibleNavigation, pathname)
+    if (Object.keys(activeBranch).length === 0) return
     setExpandedSections((prev) => {
-      let changed = false
-      const next = { ...prev }
-      for (const key of Object.keys(activeAncestors)) {
-        if (!next[key]) {
-          next[key] = true
-          changed = true
-        }
-      }
-      return changed ? next : prev
+      // Avoid a redundant state write (and localStorage churn) when every
+      // active-branch ancestor is already expanded.
+      const needsUpdate = Object.keys(activeBranch).some((name) => !prev[name])
+      return needsUpdate ? { ...prev, ...activeBranch } : prev
     })
-  }, [pathname])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname, hydrated])
 
   const toggleSection = (name: string) => {
     setExpandedSections((prev) => ({
@@ -1000,14 +1240,6 @@ function Sidebar() {
     setExpandedSections((prev) => (prev[name] ? prev : { ...prev, [name]: true }))
   }
 
-  // Recurses through the entire subtree so a parent like Home stays
-  // highlighted even when the active route is a grandchild (e.g.
-  // /calendly under Home → Calendar → Calendly Admin).
-  const hasActiveChild = (children?: any[]) => {
-    if (!children?.length) return false
-    return children.some((child: any) => branchContainsActive(child, pathname))
-  }
-
   return (
     <div
       className="flex grow flex-col gap-y-5 overflow-y-auto bg-white px-6 pb-4 shadow-sm border-r"
@@ -1017,272 +1249,24 @@ function Sidebar() {
         <ul role="list" className="flex flex-1 flex-col gap-y-7">
           <li>
             <ul role="list" className="-mx-2 space-y-1">
-              {visibleNavigation.map((item) => {
-                const hasChildren = item.children && item.children.length > 0
-                const isExpanded = expandedSections[item.name] || false
-                const isParentActive = hasActiveChild(item.children)
-                const isCurrent =
-                  pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href) && !hasChildren)
-
-                return (
-                  <li key={item.name}>
-                    <div className="flex items-center">
-                      <a
-                        href={item.href}
-                        // Clicking the row opens its subpages alongside the
-                        // navigation. Skipped when there are no children so
-                        // we don't pay for unnecessary state writes on leaf
-                        // nav items.
-                        onClick={() => {
-                          if (hasChildren) expandSection(item.name)
-                        }}
-                        className={cn(
-                          isCurrent || isParentActive
-                            ? "text-white border-r-2"
-                            : "text-gray-700 hover:text-white hover:bg-opacity-80",
-                          "pl-2 group flex flex-1 gap-x-3 rounded-l-md py-2 pr-3 leading-6 font-medium transition-colors relative",
-                        )}
-                        style={{
-                          backgroundColor: isCurrent || isParentActive ? "#6B745D" : "transparent",
-                          borderColor: isCurrent || isParentActive ? "#333333" : "transparent",
-                        }}
-                        onMouseEnter={(e) => {
-                          if (!isCurrent && !isParentActive) {
-                            e.currentTarget.style.backgroundColor = "#8E9B79"
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!isCurrent && !isParentActive) {
-                            e.currentTarget.style.backgroundColor = "transparent"
-                          }
-                        }}
-                      >
-                        <item.icon
-                          className={cn(
-                            isCurrent || isParentActive ? "text-white" : "text-gray-400 group-hover:text-white",
-                            "h-5 w-5 shrink-0",
-                          )}
-                          aria-hidden="true"
-                        />
-                        {/* `flex-1` on the label pushes the chevron to a
-                            consistent right-edge position across every
-                            parent row, so all chevrons line up
-                            vertically regardless of label length. */}
-                        <span className="flex-1">{item.name}</span>
-                        {/* Right-aligned chevron — single dropdown
-                            affordance per parent. Implemented as a
-                            `<span role="button">` because a real
-                            <button> inside an <a> is invalid HTML. The
-                            role + tabIndex + keyboard handler give it
-                            the same accessibility semantics as a
-                            button, and stopPropagation prevents the
-                            parent <a>'s click handler from also firing
-                            — clicking the chevron toggles open/closed
-                            only, while clicking the row still navigates
-                            and auto-expands. */}
-                        {hasChildren && (
-                          <span
-                            role="button"
-                            tabIndex={0}
-                            onClick={(e) => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              toggleSection(item.name)
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault()
-                                e.stopPropagation()
-                                toggleSection(item.name)
-                              }
-                            }}
-                            aria-label={
-                              isExpanded
-                                ? `Collapse ${item.name} (${item.children!.length} subpages)`
-                                : `Expand ${item.name} (${item.children!.length} subpages)`
-                            }
-                            aria-expanded={isExpanded}
-                            className={cn(
-                              "-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors cursor-pointer",
-                              isCurrent || isParentActive
-                                ? "text-white/80 hover:bg-white/15 hover:text-white"
-                                : "text-gray-400 hover:bg-gray-100 hover:text-gray-700",
-                            )}
-                          >
-                            <ChevronDown
-                              className={cn(
-                                "h-4 w-4 transition-transform duration-200",
-                                isExpanded ? "rotate-0" : "-rotate-90",
-                              )}
-                              aria-hidden="true"
-                            />
-                          </span>
-                        )}
-                      </a>
-                    </div>
-
-                    {hasChildren && isExpanded && (
-                      // Vertical guide line connects children back to their
-                      // parent visually. The pseudo-element is positioned at
-                      // 18px from the ul's left edge — that lines up with the
-                      // right edge of the parent icon, so the eye traces a
-                      // clean L-path from parent down through its kids
-                      // without shifting any row's actual indent.
-                      <ul
-                        className="relative mt-1 space-y-1 before:absolute before:bottom-1 before:left-[18px] before:top-1 before:w-px before:bg-gray-200 before:content-['']"
-                      >
-                        {(item.children as any[])!.map((child: any) => {
-                          const isChildCurrent = pathname === child.href || pathname.startsWith(child.href + "/")
-                          const hasGrandchildren = child.children && child.children.length > 0
-                          const isChildExpanded = expandedSections[child.name] || false
-                          const hasActiveGrandchild =
-                            hasGrandchildren &&
-                            child.children!.some(
-                              (gc: any) => pathname === gc.href || pathname.startsWith(gc.href + "/"),
-                            )
-
-                          return (
-                            <li key={child.name}>
-                              <div className="flex items-center">
-                                <a
-                                  href={child.href}
-                                  // Same expand-on-navigate behavior as the
-                                  // parent row, scoped to whichever child
-                                  // has its own grandchildren (e.g. Talent →
-                                  // Tommy Awards → Submit Ballot).
-                                  onClick={() => {
-                                    if (hasGrandchildren) expandSection(child.name)
-                                  }}
-                                  className={cn(
-                                    isChildCurrent || hasActiveGrandchild
-                                      ? "text-white border-r-2"
-                                      : "text-gray-700 hover:text-white hover:bg-opacity-80",
-                                    "pl-8 text-sm group flex flex-1 gap-x-3 rounded-l-md py-2 pr-3 leading-6 font-medium transition-colors relative",
-                                  )}
-                                  style={{
-                                    backgroundColor: isChildCurrent || hasActiveGrandchild ? "#6B745D" : "transparent",
-                                    borderColor: isChildCurrent || hasActiveGrandchild ? "#333333" : "transparent",
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    if (!isChildCurrent && !hasActiveGrandchild) {
-                                      e.currentTarget.style.backgroundColor = "#8E9B79"
-                                    }
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    if (!isChildCurrent && !hasActiveGrandchild) {
-                                      e.currentTarget.style.backgroundColor = "transparent"
-                                    }
-                                  }}
-                                >
-                                  <child.icon
-                                    className={cn(
-                                      isChildCurrent || hasActiveGrandchild
-                                        ? "text-white"
-                                        : "text-gray-400 group-hover:text-white",
-                                      "h-4 w-4 shrink-0",
-                                    )}
-                                    aria-hidden="true"
-                                  />
-                                  <span className="flex-1">{child.name}</span>
-                                </a>
-                                {hasGrandchildren && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.preventDefault()
-                                      toggleSection(child.name)
-                                    }}
-                                    aria-label={
-                                      isChildExpanded
-                                        ? `Collapse ${child.name} (${child.children!.length} subpages)`
-                                        : `Expand ${child.name} (${child.children!.length} subpages)`
-                                    }
-                                    aria-expanded={isChildExpanded}
-                                    className={cn(
-                                      "mr-1 flex items-center gap-1 rounded-full px-1.5 py-1 transition-colors",
-                                      isChildCurrent || hasActiveGrandchild
-                                        ? "text-white hover:bg-white/15"
-                                        : "text-gray-500 hover:bg-gray-100",
-                                    )}
-                                  >
-                                    <span
-                                      className={cn(
-                                        "text-[10px] font-semibold tabular-nums leading-none",
-                                        isChildCurrent || hasActiveGrandchild
-                                          ? "text-white/80"
-                                          : "text-gray-400",
-                                      )}
-                                    >
-                                      {child.children!.length}
-                                    </span>
-                                    {isChildExpanded ? (
-                                      <ChevronDown className="h-4 w-4" />
-                                    ) : (
-                                      <ChevronRight className="h-4 w-4" />
-                                    )}
-                                  </button>
-                                )}
-                              </div>
-
-                              {hasGrandchildren && isChildExpanded && (
-                                // Same guide-line pattern, but at 40px to
-                                // sit under the child icon (one indent level
-                                // deeper than the parent guide above).
-                                <ul
-                                  className="relative mt-1 space-y-1 before:absolute before:bottom-1 before:left-[40px] before:top-1 before:w-px before:bg-gray-200 before:content-['']"
-                                >
-                                  {child.children!.map((grandchild: any) => {
-                                    const isGrandchildCurrent =
-                                      pathname === grandchild.href || pathname.startsWith(grandchild.href + "/")
-
-                                    return (
-                                      <li key={grandchild.name}>
-                                        <a
-                                          href={grandchild.href}
-                                          className={cn(
-                                            isGrandchildCurrent
-                                              ? "text-white border-r-2"
-                                              : "text-gray-700 hover:text-white hover:bg-opacity-80",
-                                            "pl-12 text-sm group flex gap-x-3 rounded-l-md py-2 pr-3 leading-6 font-medium transition-colors relative",
-                                          )}
-                                          style={{
-                                            backgroundColor: isGrandchildCurrent ? "#6B745D" : "transparent",
-                                            borderColor: isGrandchildCurrent ? "#333333" : "transparent",
-                                          }}
-                                          onMouseEnter={(e) => {
-                                            if (!isGrandchildCurrent) {
-                                              e.currentTarget.style.backgroundColor = "#8E9B79"
-                                            }
-                                          }}
-                                          onMouseLeave={(e) => {
-                                            if (!isGrandchildCurrent) {
-                                              e.currentTarget.style.backgroundColor = "transparent"
-                                            }
-                                          }}
-                                        >
-                                          <grandchild.icon
-                                            className={cn(
-                                              isGrandchildCurrent
-                                                ? "text-white"
-                                                : "text-gray-400 group-hover:text-white",
-                                              "h-4 w-4 shrink-0",
-                                            )}
-                                            aria-hidden="true"
-                                          />
-                                          <span className="flex-1">{grandchild.name}</span>
-                                        </a>
-                                      </li>
-                                    )
-                                  })}
-                                </ul>
-                              )}
-                            </li>
-                          )
-                        })}
-                      </ul>
-                    )}
-                  </li>
-                )
-              })}
+              {/* The sidebar tree is now rendered by a single recursive
+                  <NavNode> (defined above DashboardLayout). It supports
+                  arbitrary nesting depth — Home → Meetings → Debriefs →
+                  New Debrief and Departments → Tax → Returns → Individual
+                  both go four levels deep — and gives every node that has
+                  children the same count-badge + chevron affordance so
+                  it's always obvious which rows expand. */}
+              {visibleNavigation.map((item) => (
+                <NavNode
+                  key={item.name}
+                  node={item}
+                  depth={0}
+                  pathname={pathname}
+                  expandedSections={expandedSections}
+                  toggleSection={toggleSection}
+                  expandSection={expandSection}
+                />
+              ))}
             </ul>
           </li>
         </ul>

@@ -104,6 +104,14 @@ export async function generateZoomMeetingTodos(
     // Only sweep meetings that actually happened. Future meetings are
     // not "untagged" in any meaningful sense yet.
     .lte("start_time", new Date().toISOString())
+    // Bounded, deterministic batch: PostgREST silently caps every
+    // response at 1,000 rows, so without an explicit order + limit an
+    // arbitrary subset would be swept once the window exceeds that.
+    // Oldest first — meetings closest to aging out of the window get
+    // their todo before they expire; the recurring cron picks up the
+    // rest on subsequent runs (upsert dedup keeps this idempotent).
+    .order("start_time", { ascending: true })
+    .limit(500)
 
   if (teamMemberId) {
     query = query.eq("team_member_id", teamMemberId)
@@ -179,16 +187,18 @@ export async function generateZoomMeetingTodos(
       // pre-selected so clicking the task takes the user straight to
       // the tag dialog. The dashboard reads `?meetingId=` and opens
       // the dialog (see zoom-dashboard.tsx changes in this commit).
-      source_url: `/zoom?meetingId=${r.zoom_meeting_id}`,
+      source_url: `/meetings/zoom?meetingId=${r.zoom_meeting_id}`,
     }
   })
 
-  // ── 4. Upsert with the partial unique index doing the dedup ───────
-  // We can't use Supabase's `.upsert({ onConflict })` here because the
-  // dedup target is a *partial* unique index (where zoom_meeting_id is
-  // not null). Supabase's REST layer wants a column tuple. Instead we
-  // INSERT and let the index reject duplicates with `ignoreDuplicates`,
-  // then count returned rows to know what was actually created.
+  // ── 4. Upsert with the unique index doing the dedup ────────────────
+  // `tasks_unique_zoom_meeting_per_assignee` is a FULL unique index on
+  // (assignee_id, zoom_meeting_id) — migration 349. It must stay
+  // non-partial: Postgres can only match PostgREST's plain-column
+  // ON CONFLICT arbiter against a complete index, and the original
+  // partial version (WHERE zoom_meeting_id IS NOT NULL) made every
+  // sweep run error out. Normal tasks (NULL zoom_meeting_id) never
+  // conflict because NULLs are distinct in unique indexes.
   const { data: inserted, error: insErr } = await supabase
     .from("tasks")
     .upsert(insertRows, {

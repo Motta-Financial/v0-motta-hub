@@ -16,6 +16,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { tryCreateAdminClient } from "@/lib/supabase/server"
 import { getKarbonCredentials } from "@/lib/karbon-api"
+import { requireAdmin } from "@/lib/auth/require-admin"
 import {
   resolveWebhookTargetUrl,
   KARBON_WEBHOOK_TYPES,
@@ -41,6 +42,9 @@ function karbonHeaders() {
 // GET — list subscriptions across all types, joined with our local registry
 // ---------------------------------------------------------------------------
 export async function GET() {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   let headers: HeadersInit
   try {
     headers = karbonHeaders()
@@ -54,7 +58,18 @@ export async function GET() {
       const res = await fetch(`${KARBON_BASE}/WebhookSubscriptions/${type}`, { headers })
       if (res.ok) {
         const json = await res.json()
-        const items = Array.isArray(json.value) ? json.value : Array.isArray(json) ? json : []
+        // Karbon's GET /WebhookSubscriptions/{type} returns a SINGLE $entity
+        // object ({ TargetUrl, WebhookType }) when a subscription exists — NOT
+        // a { value: [...] } collection. Handle all three shapes so the admin
+        // UI accurately reflects what's registered (previously single-entity
+        // responses were dropped, making it look like remote=0).
+        const items = Array.isArray(json.value)
+          ? json.value
+          : Array.isArray(json)
+            ? json
+            : json && (json.TargetUrl || json.WebhookType)
+              ? [json]
+              : []
         for (const it of items) remote.push({ ...it, _webhookType: type })
       }
     } catch (e) {
@@ -80,6 +95,9 @@ interface SubscribeBody {
 }
 
 export async function POST(request: NextRequest) {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   let headers: HeadersInit
   try {
     headers = karbonHeaders()
@@ -93,9 +111,20 @@ export async function POST(request: NextRequest) {
       ? body.webhookTypes.filter((t) => KARBON_WEBHOOK_TYPES.includes(t))
       : [...KARBON_WEBHOOK_TYPES]
 
+  // Deliveries must go to THIS Hub. A caller-supplied targetUrl would
+  // let webhook traffic (client PII) be redirected to an arbitrary
+  // server, so it may only override the path-suffix-normalized default
+  // when it matches the resolved Hub target exactly.
   let targetUrl: string
   try {
-    targetUrl = body.targetUrl || resolveWebhookTargetUrl()
+    const resolved = resolveWebhookTargetUrl()
+    if (body.targetUrl && body.targetUrl !== resolved) {
+      return NextResponse.json(
+        { error: `targetUrl must match the configured webhook target (${resolved})` },
+        { status: 400 },
+      )
+    }
+    targetUrl = resolved
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 400 })
   }
@@ -182,6 +211,9 @@ export async function POST(request: NextRequest) {
 // DELETE — remove a subscription (by webhookType + targetUrl, or all)
 // ---------------------------------------------------------------------------
 export async function DELETE(request: NextRequest) {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth.response
+
   let headers: HeadersInit
   try {
     headers = karbonHeaders()

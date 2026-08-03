@@ -35,6 +35,7 @@ import {
 } from "@/lib/email"
 import { QUESTION_RESEARCH_MODEL } from "@/lib/ai/models"
 import { logAIUsage } from "@/lib/ai/config"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 export const maxDuration = 120
 export const dynamic = "force-dynamic"
@@ -304,11 +305,7 @@ WRITING GUIDELINES:
   }
 
   // ── 7. Email the team ─────────────────────────────────────────────
-  const appUrl =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.APP_BASE_URL ||
-    "https://motta.cpa"
-  const hubUrl = appUrl.startsWith("http") ? appUrl : `https://${appUrl}`
+  const hubUrl = firmConfigSync().hubUrl
   const galleryUrl = `${hubUrl}/motta-alliance`
 
   const emailHtml = buildMottaAllianceIssueHtml({

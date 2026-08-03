@@ -110,6 +110,13 @@ export const LEAD_ENRICHMENT_MODEL = CLAUDE_HAIKU
  *  accurate technical reasoning, so we use Sonnet over Haiku. */
 export const QUESTION_RESEARCH_MODEL = CLAUDE_SONNET
 
+/** Meeting-transcript summarization — turns a raw Zoom transcript into
+ *  a structured client-note summary (overview, key points, action
+ *  items, follow-ups). Goes onto the client profile and is read by the
+ *  team, so accuracy matters more than cost; transcripts are long so we
+ *  want strong long-context comprehension. Sonnet is the fit. */
+export const MEETING_SUMMARY_MODEL = CLAUDE_SONNET
+
 // Legacy alias — kept for backward compatibility during migration.
 // New code should use LEAD_ENRICHMENT_MODEL or QUESTION_RESEARCH_MODEL.
 export const RESEARCH_SUMMARY_MODEL = LEAD_ENRICHMENT_MODEL
@@ -208,6 +215,26 @@ export const CLAUDE_MODELS: ClaudeModelOption[] = [
     },
   },
 ]
+
+/**
+ * Narrow capability view: {supportsThinking, supportsVision}.
+ *
+ * Reads through to the richer `capabilities` object rather than keeping a
+ * parallel set of flat fields, so there is one source of truth. Kept as a
+ * distinct export because this narrow contract is what the chat route's
+ * Deep-think gate and the alfred-chat client consume; callers wanting
+ * effortLevels / server-tool / cache detail should use getClaudeCapabilities().
+ */
+export function getClaudeModelCapabilities(
+  id: unknown,
+): { supportsThinking: boolean; supportsVision: boolean } | null {
+  const caps = CLAUDE_MODELS.find((m) => m.id === id)?.capabilities
+  if (!caps) return null
+  return {
+    supportsThinking: caps.supportsThinking,
+    supportsVision: caps.supportsVision,
+  }
+}
 
 /** Runtime guard for incoming request bodies. */
 export function isClaudeModel(id: unknown): id is ClaudeModelId {

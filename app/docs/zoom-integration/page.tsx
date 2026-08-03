@@ -158,7 +158,7 @@ export default function ZoomIntegrationDocsPage() {
             <h2 className="text-xl font-semibold mb-4">4. Webhook events</h2>
             <p className="leading-relaxed mb-4">
               Motta Hub subscribes to the following Zoom webhook events at{" "}
-              <code className="text-xs">https://motta.cpa/api/zoom/webhook</code>. Every
+              <code className="text-xs">https://hub.motta.cpa/api/zoom/webhook</code>. Every
               incoming event is verified before processing using the{" "}
               <code className="text-xs">x-zm-signature</code> header and the app&apos;s
               Secret Token (HMAC-SHA256). Requests with a timestamp more than five

@@ -1,5 +1,7 @@
+import crypto from "crypto"
 import { NextResponse } from "next/server"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * Zoom OAuth callback.
@@ -7,7 +9,7 @@ import { createAdminClient, createClient } from "@/lib/supabase/server"
  * Two install paths land here:
  *
  *  1. **In-Hub "Connect Zoom" button** -> /api/zoom/oauth/authorize
- *     builds a base64'd `state` JSON containing { team_member_id }
+ *     builds an HMAC-signed base64 `state` containing { team_member_id }
  *     and redirects to Zoom. Zoom redirects back to this route with
  *     `code` + `state`. We exchange the code, look up the user via
  *     /v2/users/me, and upsert into `zoom_connections` keyed on
@@ -27,28 +29,24 @@ import { createAdminClient, createClient } from "@/lib/supabase/server"
  * (e.g. a thrown env-var-missing error) get redirected, not 500'd.
  */
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url)
+  const { searchParams } = new URL(request.url)
   const code = searchParams.get("code")
   const state = searchParams.get("state")
   const oauthError = searchParams.get("error")
 
-  // Resolve the redirect base URL with two safeguards:
-  //   1. NEXT_PUBLIC_APP_URL in this project is set to "motta.cpa"
-  //      WITHOUT a scheme, which makes NextResponse.redirect() throw
-  //      `ERR_INVALID_URL` because it requires absolute URLs. Prepend
-  //      https:// when the env var is missing one.
-  //   2. Strip any trailing slash so the `${baseUrl}/zoom` template
-  //      can't produce `https://motta.cpa//zoom`.
-  const rawBase = process.env.NEXT_PUBLIC_APP_URL?.trim() || origin
-  const withScheme = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`
-  const baseUrl = withScheme.replace(/\/+$/, "")
+  // Post-OAuth landing base URL: firm.hub_url via lib/firm-settings
+  // (already scheme-normalized, no trailing slash). NEXT_PUBLIC_APP_URL
+  // is deliberately not consulted — it has historically been pointed at
+  // the MARKETING site (motta.cpa), which has no /meetings/zoom page;
+  // landing there was a recurring bug here.
+  const baseUrl = firmConfigSync().hubUrl
 
   const fail = (reason: string, log?: unknown) => {
     // Always log the failure (even without extra context) so we can see
     // every branch in the server log when the user reports "it didn't
     // work." Tagged with [v0] so it stands out in the debug stream.
     console.error(`[v0] [Zoom OAuth] FAIL: ${reason}`, log ?? "")
-    return NextResponse.redirect(`${baseUrl}/zoom?error=${encodeURIComponent(reason)}`)
+    return NextResponse.redirect(`${baseUrl}/meetings/zoom?error=${encodeURIComponent(reason)}`)
   }
 
   console.log(
@@ -66,13 +64,28 @@ export async function GET(request: Request) {
     let teamMemberId: string | null = null
 
     if (state) {
+      // State minted by /authorize is `<base64 payload>.<hmac-sha256 hex>`
+      // signed with ZOOM_CLIENT_SECRET. Verify the signature before
+      // trusting the embedded team_member_id -- an unsigned or forged
+      // state must not be able to point the token upsert at an
+      // arbitrary team member's row. Invalid/legacy unsigned states are
+      // rejected outright rather than falling back to the session.
+      const stateSecret = process.env.ZOOM_CLIENT_SECRET
+      const [statePayload, stateSig] = state.split(".")
+      if (!stateSecret || !statePayload || !stateSig) {
+        return fail("invalid_state")
+      }
+      const expectedSig = crypto.createHmac("sha256", stateSecret).update(statePayload).digest("hex")
+      const sigBuf = Buffer.from(stateSig)
+      const expectedBuf = Buffer.from(expectedSig)
+      if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+        return fail("invalid_state")
+      }
       try {
-        const decoded = JSON.parse(Buffer.from(state, "base64").toString("utf8"))
+        const decoded = JSON.parse(Buffer.from(statePayload, "base64").toString("utf8"))
         teamMemberId = decoded?.team_member_id ?? null
       } catch (err) {
-        console.error("[Zoom OAuth] Failed to decode state:", err)
-        // Fall through to session lookup -- a malformed state should
-        // not be fatal if we can identify the user another way.
+        return fail("invalid_state", err)
       }
     }
 
@@ -205,7 +218,7 @@ export async function GET(request: Request) {
     console.log(
       `[v0] [Zoom OAuth] SUCCESS: connected ${zoomUser.email} (zoom_user_id=${zoomUser.id}) to team_member ${teamMemberId}`,
     )
-    return NextResponse.redirect(`${baseUrl}/zoom?success=true`)
+    return NextResponse.redirect(`${baseUrl}/meetings/zoom?success=true`)
   } catch (err) {
     return fail("callback_failed", err)
   }

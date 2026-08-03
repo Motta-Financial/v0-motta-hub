@@ -166,6 +166,78 @@ export const HERO_PROFILES: HeroProfile[] = [
     aliases: ["samprina zekio", "the code keeper"],
   },
   {
+    slug: "julian-jacobson",
+    name: "Julian Jacobson",
+    alias: "The Operations Playmaker",
+    role: "Client Operations. Workflow Command. The Seamless Handoff.",
+    quote: "Every client move matters. I keep the whole game moving.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Julian_Jacobson-6S4DRauuamkRpdIhgB5grfcCHNuZdD.png",
+    appearance:
+      "Adult man, Caucasian, dark wavy hair, confident smile. Black tactical suit, white lotus chest emblem, olive-green accents. Signature: glowing holographic client-pipeline and workflow dashboards orbiting him; gold baseball-bat motif.",
+    aliases: [
+      "julian jacobson",
+      "the operations playmaker",
+      "julian.jacobson@mottafinancial.com",
+      "julian",
+    ],
+  },
+  {
+    slug: "terry-song",
+    name: "Terry Song",
+    alias: "The Tax Strategist",
+    role: "Tax Advisory. Flow-Through Command. The Flow-Through Forecast.",
+    quote: "Complex structures don't scare me. That's where the strategy lives.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Terry_Song-DCPCjeFaV5eot8FPp13UHkP7WlmDb7.png",
+    appearance:
+      "Adult man, East Asian, short dark spiky hair, clean-shaven, composed expression. Black tactical suit with white lotus chest emblem, olive-green accents. Signature: glowing holographic tax-strategy, flow-through-analysis, and K-1 / entity-structure dashboards orbiting him.",
+    aliases: [
+      "terry song",
+      "the tax strategist",
+      "terry.song@mottafinancial.com",
+      "terry",
+    ],
+  },
+  {
+    slug: "justin-bestel",
+    name: "Justin Bestel",
+    alias: "The Systems Strategist",
+    role: "Accounting Consultant. Forecasting Specialist. Process-Improvement Operator.",
+    quote: "When the process breaks down, I build the system back stronger.",
+    variant: "primary",
+    imageUrl:
+      "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Justin%20Bestel-1iKHkg9WHF5Tbc2AYVkSDW3yRQ9R7P.png",
+    appearance:
+      "Adult man, Caucasian features, short dark hair, confident analytical stance. Black tactical suit with white lotus chest emblem, dark green armoured plating. Signature: glowing holographic KPI dashboard, Cash Flow Forecast panel, and Systems Map floating around him.",
+    aliases: [
+      "justin bestel",
+      "the systems strategist",
+      "justin.bestel@mottafinancial.com",
+      "justin",
+    ],
+  },
+  {
+    slug: "shinika-shelley",
+    name: "Shinika Shelley",
+    alias: "The Control Tower",
+    role: "Fractional Accounting Professional. Multi-Client Accounting Strategist.",
+    quote: "When the numbers get noisy, I bring the signal back.",
+    variant: "amber",
+    imageUrl:
+      "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/MA_Shinika%20Shelley-CqA3jO4M572CQdwvJ8v7Q9mk3p0P8Y.png",
+    appearance:
+      "Adult WOMAN — feminine build, Black woman with long curly dark hair, confident controller stance. Black tactical suit with dark green cape and white lotus chest emblem, amber accents. Signature: glowing Financial Overview and Cash Flow Analysis holographic panels in her hands.",
+    aliases: [
+      "shinika shelley",
+      "the control tower",
+      "shinika.shelley@mottafinancial.com",
+      "shinika",
+    ],
+  },
+  {
     slug: "alfred",
     name: "ALFRED",
     alias: "The AI Operative",

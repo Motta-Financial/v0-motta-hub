@@ -6,6 +6,7 @@ import {
   sendEmail,
 } from "@/lib/email"
 import { extractMentionedTeamMemberIds } from "@/lib/mentions-server"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 function isTableNotFoundError(error: any): boolean {
   if (!error) return false
@@ -194,7 +195,7 @@ async function notifyDebriefParticipants(
   }
 
   const idsArr = Array.from(recipientIds)
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://mottahub-motta.vercel.app"
+  const siteUrl = firmConfigSync().hubUrl
   const debriefUrl = `${siteUrl}/debriefs?id=${debriefId}`
   const preview = content.length > 220 ? content.slice(0, 220) + "…" : content
 

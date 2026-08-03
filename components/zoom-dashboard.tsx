@@ -1,9 +1,10 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
+import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
-import { ListChecks, Loader2 } from "lucide-react"
+import { ListChecks, Loader2, Briefcase } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -33,6 +34,7 @@ import {
   Settings,
   AlertCircle,
   UserPlus,
+  type LucideIcon,
 } from "lucide-react"
 import { useUser } from "@/hooks/use-user"
 import type { ZoomMeeting, ZoomCallHistory } from "@/lib/zoom-types"
@@ -41,6 +43,7 @@ import {
   ZoomMeetingTagDialog,
   type ZoomMeetingForTagging,
 } from "@/components/zoom/zoom-meeting-tag-dialog"
+import { RecordingsLibrary } from "@/components/zoom/recordings-library"
 import { Tag, TagIcon, AlertTriangle } from "lucide-react"
 
 interface ZoomConnection {
@@ -65,6 +68,70 @@ interface MasterMeeting extends ZoomMeeting {
   host_pic_url?: string
 }
 
+// Which stat tile's detail drawer is open. `null` = none.
+type StatKey = "today" | "week" | "team" | "recordings" | "untagged"
+
+/**
+ * A single stat tile. When `onClick` is provided (and not disabled) the
+ * tile becomes an accessible button that opens its detail dialog —
+ * keyboard-operable (Enter/Space) with a visible focus ring and a hover
+ * affordance. Tiles with no underlying rows render inert (greyed out).
+ */
+function StatCard({
+  icon: Icon,
+  iconWrapClass,
+  iconClass,
+  value,
+  label,
+  onClick,
+  disabled,
+}: {
+  icon: LucideIcon
+  iconWrapClass: string
+  iconClass: string
+  value: number
+  label: string
+  onClick?: () => void
+  disabled?: boolean
+}) {
+  const interactive = !!onClick && !disabled
+  return (
+    <Card
+      onClick={interactive ? onClick : undefined}
+      onKeyDown={
+        interactive
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                onClick?.()
+              }
+            }
+          : undefined
+      }
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={interactive ? `${label}: ${value}. View details` : undefined}
+      className={`p-4 ${
+        interactive
+          ? "cursor-pointer transition-colors hover:bg-muted/50 hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          : disabled
+            ? "opacity-60"
+            : ""
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <div className={`p-2 rounded-lg ${iconWrapClass}`}>
+          <Icon className={`h-5 w-5 ${iconClass}`} />
+        </div>
+        <div>
+          <p className="text-2xl font-bold">{value}</p>
+          <p className="text-sm text-muted-foreground">{label}</p>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 export function ZoomDashboard() {
   const { teamMember } = useUser()
   const [meetings, setMeetings] = useState<MasterMeeting[]>([])
@@ -75,22 +142,36 @@ export function ZoomDashboard() {
   const [myConnection, setMyConnection] = useState<ZoomConnection | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  // Account-wide (Server-to-Server) recording sweep. Pulls cloud
+  // recordings for EVERY teammate in the Zoom account — even those who
+  // never personally connected the Hub — and links them. Previously only
+  // reachable via cron / curl; this exposes it to admins from the UI.
+  const [syncingAccount, setSyncingAccount] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTab, setActiveTab] = useState("meetings")
   const [viewMode, setViewMode] = useState<"schedule" | "byHost">("schedule")
   const [showSettings, setShowSettings] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Which stat tile's detail dialog is open (Today's Meetings, This Week,
+  // Team Members, Recordings, Untagged). Null = closed.
+  const [statDetail, setStatDetail] = useState<StatKey | null>(null)
 
   // Tag state — keyed on Zoom's bigint meeting id (as string). The
   // dashboard fetches counts in bulk so 50 cards = 1 round trip.
   const [tagCounts, setTagCounts] = useState<
-    Record<string, { clients: number; workItems: number }>
+    Record<
+      string,
+      { clients: number; workItems: number; deals: number; projects: number; dealId?: string | null }
+    >
   >({})
   const [tagDialogMeeting, setTagDialogMeeting] = useState<ZoomMeetingForTagging | null>(null)
   // Pending state for the "Send untagged to my To-Do list" action so we
   // can disable the button + render an inline spinner while the API
   // call is in flight. The toast carries the success/failure summary.
   const [generatingTodos, setGeneratingTodos] = useState(false)
+  // Bumped after an account-wide sync so the in-Hub Recordings library
+  // refetches the freshly pulled rows.
+  const [recordingsRefreshKey, setRecordingsRefreshKey] = useState(0)
   const { toast } = useToast()
   const searchParams = useSearchParams()
 
@@ -116,24 +197,36 @@ export function ZoomDashboard() {
         setError(errorData.error || "Failed to fetch meetings")
       }
 
-      // Bulk-load tag counts for all visible meetings in one round trip.
-      // Cards render an "Untagged" warning until this resolves so users
-      // know which meetings still need clients/work items linked.
-      if (meetingList.length > 0) {
-        const ids = meetingList.map((m) => String(m.id)).filter(Boolean)
-        if (ids.length > 0) {
-          fetch(`/api/zoom/meetings/tag-counts?ids=${ids.join(",")}`)
-            .then((r) => (r.ok ? r.json() : { counts: {} }))
-            .then((j) => setTagCounts(j.counts || {}))
-            .catch(() => setTagCounts({}))
-        }
-      }
-
       // Fetch recordings
+      let recordingList: any[] = []
       const recordingsRes = await fetch("/api/zoom/recordings")
       if (recordingsRes.ok) {
         const recordingsData = await recordingsRes.json()
-        setRecordings(Array.isArray(recordingsData) ? recordingsData : [])
+        recordingList = Array.isArray(recordingsData) ? recordingsData : []
+        setRecordings(recordingList)
+      }
+
+      // Bulk-load tag counts for everything visible in ONE round trip —
+      // both upcoming meetings AND recordings. Previously only meetings
+      // were loaded, so a tagged recording rendered as "Untagged" again
+      // after a navigation away/back even though the link was saved.
+      // Recordings share Zoom's bigint id with their parent meeting, so a
+      // single id set covers both lists.
+      const idSet = new Set<string>()
+      for (const m of meetingList) {
+        const id = String(m.id ?? "")
+        if (id) idSet.add(id)
+      }
+      for (const r of recordingList) {
+        const id = String(r.id ?? r.zoom_meeting_id ?? r.uuid ?? "")
+        if (id) idSet.add(id)
+      }
+      if (idSet.size > 0) {
+        const ids = Array.from(idSet)
+        fetch(`/api/zoom/meetings/tag-counts?ids=${ids.join(",")}`)
+          .then((r) => (r.ok ? r.json() : { counts: {} }))
+          .then((j) => setTagCounts(j.counts || {}))
+          .catch(() => setTagCounts({}))
       }
 
       // Fetch call history
@@ -176,6 +269,50 @@ export function ZoomDashboard() {
       console.error("Sync error:", error)
     } finally {
       setSyncing(false)
+    }
+  }
+
+  const handleSyncAccountRecordings = async () => {
+    setSyncingAccount(true)
+    try {
+      const response = await fetch("/api/zoom/recordings/sync-account", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ months: 6, includeMedia: false, tagParticipants: true }),
+      })
+      const data = await response.json().catch(() => ({}))
+
+      if (response.ok && data.ok) {
+        toast({
+          title: "Account recordings synced",
+          description: `Scanned ${data.usersScanned ?? 0} users · ${data.recordingsUpserted ?? 0} recordings · ${data.transcriptsParsed ?? 0} transcripts · ${data.clientLinksWritten ?? 0} client links.`,
+        })
+        setRecordingsRefreshKey((k) => k + 1)
+        await fetchData()
+      } else if (response.status === 403) {
+        toast({
+          title: "Admin access required",
+          description: "Only firm admins can run the account-wide recording sync.",
+          variant: "destructive",
+        })
+      } else {
+        toast({
+          title: "Account sync unavailable",
+          description:
+            data.error ||
+            "Zoom Server-to-Server credentials are not configured for this account.",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      console.error("[v0] Account recording sync error:", error)
+      toast({
+        title: "Account sync failed",
+        description: "Something went wrong while syncing account-wide recordings.",
+        variant: "destructive",
+      })
+    } finally {
+      setSyncingAccount(false)
     }
   }
 
@@ -271,7 +408,7 @@ export function ZoomDashboard() {
   const isMeetingTagged = (meetingId: number | string) => {
     const c = tagCounts[String(meetingId)]
     if (!c) return false
-    return c.clients > 0 || c.workItems > 0
+    return c.clients > 0 || c.workItems > 0 || c.deals > 0 || c.projects > 0
   }
   const isMeetingPast = (m: MasterMeeting) => {
     if (!m.start_time) return false
@@ -282,7 +419,8 @@ export function ZoomDashboard() {
   const untaggedPastMeetings = filteredMeetings.filter(
     (m) => isMeetingPast(m) && !isMeetingTagged(m.id),
   )
-  const untaggedTotal = filteredMeetings.filter((m) => !isMeetingTagged(m.id)).length
+  const untaggedMeetings = filteredMeetings.filter((m) => !isMeetingTagged(m.id))
+  const untaggedTotal = untaggedMeetings.length
 
   // Open the tag dialog for a given meeting. We only feed in the fields
   // the dialog (and the lazy-upsert in the API route) need, NOT the
@@ -412,6 +550,149 @@ export function ZoomDashboard() {
       minute: "2-digit",
       hour12: true,
     })
+  }
+
+  // Titles + helper copy for each stat detail dialog.
+  const statDetailConfig: Record<StatKey, { title: string; description: string }> = {
+    today: {
+      title: "Today's Meetings",
+      description: "Meetings scheduled across the team for the rest of today.",
+    },
+    week: {
+      title: "This Week",
+      description: "Every meeting on the team calendar over the next seven days.",
+    },
+    team: {
+      title: "Connected Team Members",
+      description: "Teammates whose Zoom accounts feed the master calendar.",
+    },
+    recordings: {
+      title: "Recordings",
+      description: "Cloud recordings available in the Hub.",
+    },
+    untagged: {
+      title: "Untagged Meetings",
+      description: "Meetings not yet linked to a client or work item.",
+    },
+  }
+
+  // Shared row renderer for the meeting-based detail dialogs (Today, This
+  // Week, Untagged). Sorted by start time. Each row deep-links to Join and
+  // opens the existing tag dialog — closing the stat dialog first so the
+  // two never stack.
+  const renderMeetingList = (list: MasterMeeting[]) => {
+    if (list.length === 0) {
+      return <p className="py-8 text-center text-sm text-muted-foreground">No meetings to show.</p>
+    }
+    return [...list]
+      .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())
+      .map((m) => {
+        const tc = tagCounts[String(m.id)]
+        const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
+        return (
+          <div key={m.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+            <div className="min-w-0 flex-1">
+              <p className="font-medium truncate">{m.topic || "Untitled meeting"}</p>
+              <p className="text-sm text-muted-foreground">
+                {formatDateTime(m.start_time)} · {formatDuration(m.duration)}
+              </p>
+              <p className="text-xs text-muted-foreground truncate">
+                Host: {m.host_name || m.host_email}
+              </p>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {m.join_url && (
+                <Button size="sm" variant="outline" asChild title="Join meeting">
+                  <a href={m.join_url} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant={tagged ? "outline" : "default"}
+                title={tagged ? "Edit tags" : "Tag meeting"}
+                onClick={() => {
+                  setStatDetail(null)
+                  openTagDialog(m)
+                }}
+              >
+                <Tag className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )
+      })
+  }
+
+  const renderTeamList = () => {
+    if (zoomUsers.length === 0) {
+      return (
+        <p className="py-8 text-center text-sm text-muted-foreground">No team members connected.</p>
+      )
+    }
+    return zoomUsers.map((u: any) => {
+      const upcoming = meetingsByHost[u.email]?.meetings.length ?? 0
+      const name = u.display_name || u.email || "Unknown"
+      return (
+        <div key={u.id ?? u.email} className="flex items-center gap-3 rounded-lg border p-3">
+          <Avatar className="h-9 w-9">
+            <AvatarImage src={u.pic_url || "/placeholder.svg"} />
+            <AvatarFallback>
+              {name
+                .split(" ")
+                .map((n: string) => n[0])
+                .join("")
+                .slice(0, 2)
+                .toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0 flex-1">
+            <p className="font-medium truncate">{name}</p>
+            <p className="text-sm text-muted-foreground truncate">{u.email}</p>
+          </div>
+          <Badge variant="secondary" className="shrink-0 font-normal">
+            {upcoming} upcoming
+          </Badge>
+        </div>
+      )
+    })
+  }
+
+  const renderRecordingsList = () => {
+    if (recordings.length === 0) {
+      return <p className="py-8 text-center text-sm text-muted-foreground">No recordings to show.</p>
+    }
+    return (
+      <>
+        {recordings.slice(0, 50).map((r: any) => (
+          <div
+            key={r.id ?? r.uuid ?? r.zoom_meeting_id}
+            className="flex items-center justify-between gap-3 rounded-lg border p-3"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="font-medium truncate">{r.topic || "Untitled recording"}</p>
+              {r.start_time && (
+                <p className="text-sm text-muted-foreground">{formatDateTime(r.start_time)}</p>
+              )}
+            </div>
+            <FileVideo className="h-4 w-4 text-muted-foreground shrink-0" />
+          </div>
+        ))}
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={() => {
+            setStatDetail(null)
+            setActiveTab("recordings")
+          }}
+        >
+          <FileVideo className="h-4 w-4 mr-2" />
+          Open Recordings library
+        </Button>
+      </>
+    )
   }
 
   if (loading) {
@@ -575,77 +856,63 @@ export function ZoomDashboard() {
         </Alert>
       )}
 
-      {/* Stats Cards */}
+      {/* Stats Cards — each tile opens a detail dialog listing the rows
+          behind the number (click or keyboard). Tiles with a count of 0
+          render inert. */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
-              <Video className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{todayMeetings.length}</p>
-              <p className="text-sm text-muted-foreground">Today&apos;s Meetings</p>
-            </div>
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-green-100 dark:bg-green-900 rounded-lg">
-              <Calendar className="h-5 w-5 text-green-600 dark:text-green-400" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{thisWeekMeetings.length}</p>
-              <p className="text-sm text-muted-foreground">This Week</p>
-            </div>
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-lg">
-              <Users className="h-5 w-5 text-purple-600 dark:text-purple-400" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{zoomUsers.length}</p>
-              <p className="text-sm text-muted-foreground">Team Members</p>
-            </div>
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-orange-100 dark:bg-orange-900 rounded-lg">
-              <FileVideo className="h-5 w-5 text-orange-600 dark:text-orange-400" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{recordings.length}</p>
-              <p className="text-sm text-muted-foreground">Recordings</p>
-            </div>
-          </div>
-        </Card>
+        <StatCard
+          icon={Video}
+          iconWrapClass="bg-blue-100 dark:bg-blue-900"
+          iconClass="text-blue-600 dark:text-blue-400"
+          value={todayMeetings.length}
+          label="Today's Meetings"
+          onClick={() => setStatDetail("today")}
+          disabled={todayMeetings.length === 0}
+        />
+        <StatCard
+          icon={Calendar}
+          iconWrapClass="bg-green-100 dark:bg-green-900"
+          iconClass="text-green-600 dark:text-green-400"
+          value={thisWeekMeetings.length}
+          label="This Week"
+          onClick={() => setStatDetail("week")}
+          disabled={thisWeekMeetings.length === 0}
+        />
+        <StatCard
+          icon={Users}
+          iconWrapClass="bg-purple-100 dark:bg-purple-900"
+          iconClass="text-purple-600 dark:text-purple-400"
+          value={zoomUsers.length}
+          label="Team Members"
+          onClick={() => setStatDetail("team")}
+          disabled={zoomUsers.length === 0}
+        />
+        <StatCard
+          icon={FileVideo}
+          iconWrapClass="bg-orange-100 dark:bg-orange-900"
+          iconClass="text-orange-600 dark:text-orange-400"
+          value={recordings.length}
+          label="Recordings"
+          onClick={() => setStatDetail("recordings")}
+          disabled={recordings.length === 0}
+        />
         {/* Tagging coverage tile -- the headline number is "Untagged" so
             users can see at-a-glance how much work is left to tag. */}
-        <Card className="p-4">
-          <div className="flex items-center gap-3">
-            <div
-              className={`p-2 rounded-lg ${
-                untaggedTotal > 0
-                  ? "bg-amber-100 dark:bg-amber-900"
-                  : "bg-emerald-100 dark:bg-emerald-900"
-              }`}
-            >
-              <Tag
-                className={`h-5 w-5 ${
-                  untaggedTotal > 0
-                    ? "text-amber-700 dark:text-amber-400"
-                    : "text-emerald-700 dark:text-emerald-400"
-                }`}
-              />
-            </div>
-            <div>
-              <p className="text-2xl font-bold">{untaggedTotal}</p>
-              <p className="text-sm text-muted-foreground">Untagged</p>
-            </div>
-          </div>
-        </Card>
+        <StatCard
+          icon={Tag}
+          iconWrapClass={
+            untaggedTotal > 0 ? "bg-amber-100 dark:bg-amber-900" : "bg-emerald-100 dark:bg-emerald-900"
+          }
+          iconClass={
+            untaggedTotal > 0
+              ? "text-amber-700 dark:text-amber-400"
+              : "text-emerald-700 dark:text-emerald-400"
+          }
+          value={untaggedTotal}
+          label="Untagged"
+          onClick={() => setStatDetail("untagged")}
+          disabled={untaggedTotal === 0}
+        />
       </div>
 
       {/* Search and View Toggle */}
@@ -688,7 +955,7 @@ export function ZoomDashboard() {
           </TabsTrigger>
           <TabsTrigger value="recordings">
             <FileVideo className="h-4 w-4 mr-2" />
-            Recordings ({filteredRecordings.length})
+            Recordings
           </TabsTrigger>
           <TabsTrigger value="calls">
             <Phone className="h-4 w-4 mr-2" />
@@ -709,10 +976,11 @@ export function ZoomDashboard() {
                 // Per-meeting derived state for the tagging UX. We intentionally
                 // compute these inline (cheap O(1) lookups) so the parent
                 // doesn't need a separate memoized map.
-                const tc = tagCounts[String(meeting.id)]
-                const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0)
-                const past = isMeetingPast(meeting)
-                return (
+                  const tc = tagCounts[String(meeting.id)]
+                  const tagged =
+                    !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
+                  const past = isMeetingPast(meeting)
+                  return (
                   <Card key={meeting.id} className="p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex items-start gap-4 min-w-0 flex-1">
@@ -769,6 +1037,15 @@ export function ZoomDashboard() {
                                     {tc!.workItems} work item
                                     {tc!.workItems === 1 ? "" : "s"}
                                   </Badge>
+                                )}
+                                {tc!.dealId && (
+                                  <Link
+                                    href={`/deals/${tc!.dealId}`}
+                                    className="inline-flex items-center gap-1 rounded-full border border-stone-300 px-2 py-0.5 text-xs font-medium text-stone-700 transition-colors hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+                                  >
+                                    <Briefcase className="h-3 w-3" />
+                                    View Deal
+                                  </Link>
                                 )}
                               </>
                             ) : past ? (
@@ -844,9 +1121,10 @@ export function ZoomDashboard() {
                   </div>
                   <div className="grid gap-2 pl-11">
                     {hostData.meetings.map((meeting) => {
-                      const tc = tagCounts[String(meeting.id)]
-                      const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0)
-                      const past = isMeetingPast(meeting)
+                    const tc = tagCounts[String(meeting.id)]
+                    const tagged =
+                      !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
+                    const past = isMeetingPast(meeting)
                       return (
                         <Card key={meeting.id} className="p-3">
                           <div className="flex items-center justify-between gap-2">
@@ -874,6 +1152,13 @@ export function ZoomDashboard() {
                               </p>
                             </div>
                             <div className="flex items-center gap-1 shrink-0">
+                              {tc?.dealId && (
+                                <Button size="sm" variant="ghost" asChild title="View Deal">
+                                  <Link href={`/deals/${tc.dealId}`}>
+                                    <Briefcase className="h-4 w-4" />
+                                  </Link>
+                                </Button>
+                              )}
                               <Button
                                 size="sm"
                                 variant={!tagged && past ? "default" : "ghost"}
@@ -906,96 +1191,61 @@ export function ZoomDashboard() {
 
         {/* Recordings Tab */}
         <TabsContent value="recordings" className="space-y-4">
-          {filteredRecordings.length === 0 ? (
-            <Card className="p-8 text-center">
-              <FileVideo className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground">No recordings found</p>
-            </Card>
-          ) : (
-            <div className="grid gap-4">
-              {filteredRecordings.map((recording) => {
-                // Recordings share their bigint id with the meeting,
-                // so the same tag counts apply. Treat a recording as
-                // "tagged" when its parent meeting has at least one
-                // client OR work item link.
-                const recordingId =
-                  recording.id ?? recording.zoom_meeting_id ?? recording.uuid
-                const tagged = isMeetingTagged(recordingId)
-                return (
-                  <Card key={recording.uuid} className="p-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-2 flex-wrap">
-                          <h3 className="font-semibold">{recording.topic}</h3>
-                          {/* Tag status indicator — matches the
-                              Meetings tab so the two tabs feel
-                              consistent. */}
-                          {tagged ? (
-                            <Badge variant="secondary" className="gap-1">
-                              <Tag className="h-3 w-3" />
-                              Tagged
-                            </Badge>
-                          ) : (
-                            <Badge
-                              variant="outline"
-                              className="gap-1 border-amber-500/40 text-amber-700 dark:text-amber-300"
-                            >
-                              <AlertTriangle className="h-3 w-3" />
-                              Untagged
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="space-y-1 text-sm text-muted-foreground">
-                          <div className="flex items-center gap-2">
-                            <Calendar className="h-4 w-4" />
-                            {formatDateTime(recording.start_time)}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Clock className="h-4 w-4" />
-                            {recording.duration} minutes
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex gap-2 flex-wrap justify-end shrink-0">
-                        {/* Tag action — opens the same client + work
-                            item picker the Meetings tab uses. Promoting
-                            this to the recordings tab is the whole
-                            point of this change: recordings should
-                            never sit unlinked. */}
-                        <Button
-                          size="sm"
-                          variant={tagged ? "outline" : "default"}
-                          onClick={() => openTagFromRecording(recording)}
-                        >
-                          <Tag className="h-4 w-4 mr-2" />
-                          {tagged ? "Edit tags" : "Tag"}
-                        </Button>
-                        {recording.recording_files?.map(
-                          (file: any, index: number) => (
-                            <Button
-                              key={index}
-                              size="sm"
-                              variant="outline"
-                              asChild
-                            >
-                              <a
-                                href={file.download_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                              >
-                                <Download className="h-4 w-4 mr-2" />
-                                {file.file_type}
-                              </a>
-                            </Button>
-                          ),
-                        )}
-                      </div>
-                    </div>
-                  </Card>
-                )
-              })}
+          {/* Account-wide recording sweep. The list below shows the
+              connected user's cloud recordings; this action pulls
+              recordings for EVERY teammate in the Zoom account (via
+              Server-to-Server OAuth), parses transcripts, and links them
+              to clients/work items. Admin-only — enforced server-side. */}
+          <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
+            <div className="flex items-start gap-3">
+              <div className="rounded-md bg-muted p-2 shrink-0">
+                <Users className="h-5 w-5 text-muted-foreground" />
+              </div>
+              <div>
+                <p className="text-sm font-medium">Account-wide recordings</p>
+                <p className="text-xs text-muted-foreground">
+                  Pull cloud recordings + transcripts for every teammate, not just connected
+                  accounts. Auto-links to clients and work items.
+                </p>
+              </div>
             </div>
-          )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSyncAccountRecordings}
+              disabled={syncingAccount}
+            >
+              {syncingAccount ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              {syncingAccount ? "Syncing account..." : "Sync account recordings"}
+            </Button>
+          </Card>
+
+          {/* DB-backed, in-Hub recordings library — playable by ANY
+              signed-in teammate. Replaces the old list of raw external
+              Zoom download links: each card now streams the recording
+              inside the Hub (via the authenticated stream proxy) and
+              lazy-loads its transcript. Tagging is delegated back to the
+              shared dialog via onTag. */}
+          <RecordingsLibrary
+            searchQuery={searchQuery}
+            tagCounts={tagCounts}
+            // The library row's `id` is the recording uuid, but the tag
+            // dialog + counts key on the bigint Zoom meeting id — map to it.
+            onTag={(rec) =>
+              openTagFromRecording({
+                id: rec.zoom_meeting_id,
+                topic: rec.topic,
+                start_time: rec.start_time,
+                duration: rec.duration,
+                share_url: null,
+              })
+            }
+            refreshKey={recordingsRefreshKey}
+          />
         </TabsContent>
 
         {/* Call History Tab */}
@@ -1045,6 +1295,27 @@ export function ZoomDashboard() {
         </TabsContent>
       </Tabs>
 
+      {/* Stat detail dialog — lists the rows behind whichever stat tile
+          was clicked. A single dialog is reused for all five stats; the
+          content switches on `statDetail`. */}
+      <Dialog open={statDetail !== null} onOpenChange={(open) => !open && setStatDetail(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{statDetail ? statDetailConfig[statDetail].title : ""}</DialogTitle>
+            <DialogDescription>
+              {statDetail ? statDetailConfig[statDetail].description : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="-mx-1 max-h-[60vh] space-y-2 overflow-y-auto px-1">
+            {statDetail === "today" && renderMeetingList(todayMeetings)}
+            {statDetail === "week" && renderMeetingList(thisWeekMeetings)}
+            {statDetail === "untagged" && renderMeetingList(untaggedMeetings)}
+            {statDetail === "team" && renderTeamList()}
+            {statDetail === "recordings" && renderRecordingsList()}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Tag dialog -- mounted once at the page level so opening/closing
           doesn't unmount the meeting list underneath. We pass tagCounts
           updates back through onTagsChanged so the badge on the card
@@ -1057,13 +1328,21 @@ export function ZoomDashboard() {
             if (!open) setTagDialogMeeting(null)
           }}
           onTagsChanged={(next) => {
-            setTagCounts((prev) => ({
-              ...prev,
-              [String(tagDialogMeeting.id)]: {
-                clients: next.clients.length,
-                workItems: next.workItems.length,
-              },
-            }))
+            setTagCounts((prev) => {
+              const key = String(tagDialogMeeting.id)
+              const dealId =
+                next.deals.find((d) => d.deal?.id)?.deal?.id ?? prev[key]?.dealId ?? null
+              return {
+                ...prev,
+                [key]: {
+                  clients: next.clients.length,
+                  workItems: next.workItems.length,
+                  deals: next.deals.length,
+                  projects: next.projects.length,
+                  dealId,
+                },
+              }
+            })
           }}
         />
       )}

@@ -8,11 +8,17 @@ import { createClient } from "@supabase/supabase-js"
 import { buildIntakeRow } from "./parse"
 import { buildFeedbackRow } from "./parse-feedback"
 import { autoLinkIntakeSubmission, autoLinkFeedbackSubmission } from "./match-client"
-import { findOrCreateClient } from "@/lib/karbon/client-sync"
+import { findOrCreateClient, pushHubOrganizationToKarbon } from "@/lib/karbon/client-sync"
+import {
+  findOrCreateHubContact,
+  findOrCreateHubOrganization,
+  linkContactToOrganization,
+} from "@/lib/hub/find-or-create-contact"
 import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
 import { resolvePreferredTeamMember } from "./assign"
 import { enrichIntakeSubmission } from "./enrich"
 import { researchProspectQuestions } from "./research-questions"
+import { estimateIntakeFees } from "./fee-estimate"
 import { notifyTeamOfNewIntake } from "./notify"
 import type { JotformSubmission } from "./client"
 
@@ -83,8 +89,46 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
       // First try the standard auto-link (Supabase-only)
       let result = await autoLinkIntakeSubmission(supabase, persisted.id, persisted)
 
-      // If no match found, use the enhanced Karbon search + create flow
+      // If no match found, use the enhanced Karbon search + create flow.
+      // Karbon stays the source of truth for billable client identity,
+      // but the Hub contact is created/matched FIRST so that:
+      //   1. A Karbon outage never blocks Master Hub Contact creation
+      //      (Hub-first invariant — Jotform/Calendly/Zoom always
+      //      produce a Hub contact regardless of downstream platform
+      //      health).
+      //   2. The Karbon push step has a stable contacts.id to mirror
+      //      onto, eliminating the race where parallel Jotform
+      //      submissions could each try to create the same Karbon
+      //      contact.
+      // We still preserve the existing behaviour of auto-pushing to
+      // Karbon for Jotform (per the user's intake-routing decision) —
+      // the Hub-first call is purely a safety net + dedupe key.
       if (!result?.link_method) {
+        let hubFallback: { contact_id: string | null; organization_id: string | null } = {
+          contact_id: null,
+          organization_id: null,
+        }
+        try {
+          const hub = await findOrCreateHubContact(
+            {
+              email: persisted.submitter_email ?? null,
+              fullName: persisted.submitter_full_name ?? null,
+              businessName: persisted.business_name ?? null,
+              phone: persisted.phone_number ?? null,
+            },
+            { source: "jotform_intake", supabase },
+          )
+          hubFallback = {
+            contact_id: hub.contact_id,
+            organization_id: hub.organization_id,
+          }
+        } catch (err) {
+          console.log(
+            "[Jotform] hub-first create failed (will still try Karbon):",
+            (err as Error).message,
+          )
+        }
+
         const karbonResult = await findOrCreateClient(
           {
             email: persisted.submitter_email || undefined,
@@ -95,14 +139,25 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
           { autoCreate: true, source: "Jotform Intake" }
         )
 
-        if (karbonResult.contact_id || karbonResult.organization_id) {
-          // Update the submission with the new link
-          const linkMethod = karbonResult.method === "karbon_created" ? "auto_karbon_created" : "auto_karbon_match"
+        // Karbon path won — use its IDs (it has Karbon keys attached).
+        // Karbon path failed — fall back to whatever the Hub-first
+        // call produced so we never leave the submission unlinked.
+        const finalContactId = karbonResult.contact_id ?? hubFallback.contact_id
+        const finalOrganizationId =
+          karbonResult.organization_id ?? hubFallback.organization_id
+
+        if (finalContactId || finalOrganizationId) {
+          const linkMethod =
+            karbonResult.method === "karbon_created"
+              ? "auto_karbon_created"
+              : karbonResult.contact_id || karbonResult.organization_id
+                ? "auto_karbon_match"
+                : "auto_hub_created"
           await supabase
             .from("jotform_intake_submissions")
             .update({
-              contact_id: karbonResult.contact_id,
-              organization_id: karbonResult.organization_id,
+              contact_id: finalContactId,
+              organization_id: finalOrganizationId,
               link_method: linkMethod,
               linked_at: new Date().toISOString(),
             })
@@ -119,7 +174,49 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
             }
           }
 
-          console.log(`[Jotform] Karbon ${karbonResult.method}: ${karbonResult.reason}`)
+          console.log(
+            `[Jotform] resolved intake: hub=${!!hubFallback.contact_id || !!hubFallback.organization_id} karbon=${karbonResult.method} reason=${karbonResult.reason ?? "n/a"}`,
+          )
+
+          // ── Business intake: guarantee the Person + Organization pair ──
+          // findOrCreateClient / findOrCreateHubContact each resolve only
+          // ONE entity, so a business prospect who also gave their personal
+          // name would otherwise be missing the company half. When we have a
+          // person contact AND a business name, find-or-create the org in the
+          // Hub, link it to the person (Owner), mirror it onto the intake row,
+          // and push it to Karbon. pushHubOrganizationToKarbon now searches
+          // Karbon first, so this never mints a duplicate org.
+          const businessName = persisted.business_name?.trim() || null
+          if (finalContactId && businessName && businessName.length >= 2) {
+            try {
+              const org = await findOrCreateHubOrganization(
+                {
+                  name: businessName,
+                  email: persisted.submitter_email ?? null,
+                  phone: persisted.phone_number ?? null,
+                  source: "jotform_intake",
+                },
+                supabase,
+              )
+              if (org.organization_id) {
+                await linkContactToOrganization(finalContactId, org.organization_id, { supabase })
+                await supabase
+                  .from("jotform_intake_submissions")
+                  .update({ organization_id: org.organization_id })
+                  .eq("id", persisted.id)
+                try {
+                  await pushHubOrganizationToKarbon(org.organization_id, { source: "Jotform Intake" })
+                } catch (err) {
+                  console.log("[Jotform] business org Karbon push failed:", (err as Error).message)
+                }
+                console.log(
+                  `[Jotform] linked business org ${org.organization_id} (${org.created ? "created" : "matched"}) to contact ${finalContactId}`,
+                )
+              }
+            } catch (err) {
+              console.log("[Jotform] business org create/link failed:", (err as Error).message)
+            }
+          }
         }
       } else {
         console.log(`[Jotform] auto-linked intake ${submission.id} via ${result.link_method}: ${result.reason}`)
@@ -227,8 +324,16 @@ export async function runIntakePostProcessing(
         "assigned_to_id",
         "contact_id",
         "organization_id",
+        "referral_source",
+        "referral_contact_id",
+        "referral_organization_id",
+        "behind_on_filings",
+        "pending_tax_notices",
+        "current_cpa_status",
+        "cpa_switch_reason",
         "enrichment",
         "question_research",
+        "fee_estimate",
         "notified_at",
       ].join(","),
     )
@@ -264,40 +369,127 @@ export async function runIntakePostProcessing(
     assigned_to_id: string | null
     contact_id: string | null
     organization_id: string | null
+    referral_source: string | null
+    referral_contact_id: string | null
+    referral_organization_id: string | null
+    behind_on_filings: string | null
+    pending_tax_notices: string | null
+    current_cpa_status: string | null
+    cpa_switch_reason: string | null
     enrichment: Record<string, unknown> | null
     question_research: Record<string, unknown> | null
+    fee_estimate: Record<string, unknown> | null
     notified_at: string | null
   }
 
-  // ── 1. Auto-assign ─────────────────────────────────────────────
-  // Only attempts a match when the row has a preferred name AND no
-  // human has already assigned the submission. This preserves a manual
-  // re-assignment if the webhook re-fires for the same submission.
+  // ── 1. Auto-assign + persist preferred-teammate FK ─────────────────
+  // The resolver runs whenever the prospect typed a preferred name,
+  // regardless of `assigned_to_id`. We split the two effects:
+  //
+  //   • `preferred_team_member_id` — the FK that powers the "Motta
+  //     Professional" column on the Intake list. Always written when
+  //     the resolver finds a match, even if a human has already
+  //     reassigned the row, because it's "who the prospect chose"
+  //     and shouldn't disappear behind a manual override.
+  //   • `assigned_to_id` — the queue ownership column. Only auto-set
+  //     when null, so a manual reassignment is never clobbered.
+  //
+  // This split lets Hub UIs surface both "the prospect asked for
+  // X" and "Y is currently working it" without conflict.
   let resolvedAssignee: { id: string; name: string | null } | null = null
-  if (submissionRow.preferred_team_member && !submissionRow.assigned_to_id) {
+  if (submissionRow.preferred_team_member) {
     try {
       const resolved = await resolvePreferredTeamMember(supabase, submissionRow.preferred_team_member)
       if (resolved.team_member_id) {
+        const updates: Record<string, unknown> = { preferred_team_member_id: resolved.team_member_id }
+        if (!submissionRow.assigned_to_id) {
+          updates.assigned_to_id = resolved.team_member_id
+        }
         const { error: assignErr } = await supabase
           .from("jotform_intake_submissions")
-          .update({ assigned_to_id: resolved.team_member_id })
+          .update(updates)
           .eq("id", submissionRow.id)
         if (assignErr) {
           console.log("[Jotform] auto-assign update error:", assignErr.message)
         } else {
-          submissionRow.assigned_to_id = resolved.team_member_id
+          if (!submissionRow.assigned_to_id) {
+            submissionRow.assigned_to_id = resolved.team_member_id
+          }
           resolvedAssignee = { id: resolved.team_member_id, name: resolved.team_member_name }
           console.log(
-            `[Jotform] auto-assigned intake ${jotformSubmissionId} to ${resolved.team_member_name ?? resolved.team_member_id} via ${resolved.method}`,
+            `[Jotform] resolved preferred teammate "${resolved.input}" → ${resolved.team_member_name ?? resolved.team_member_id} via ${resolved.method}`,
           )
         }
       } else {
         console.log(
-          `[Jotform] preferred team member "${submissionRow.preferred_team_member}" did not match any active teammate — leaving unassigned`,
+          `[Jotform] preferred team member "${submissionRow.preferred_team_member}" did not match any active teammate — leaving unlinked`,
         )
       }
     } catch (err) {
       console.log("[Jotform] auto-assign error:", (err as Error).message)
+    }
+  }
+
+  // ── 1b. Auto-resolve referral_source → contact/org FK ─────────────
+  // The "Who sent you our way?" answer is almost always the name of an
+  // existing client. Resolving it to a real Hub record at ingest time
+  // gives us:
+  //   • clickable referrer cells in the Intake list (deep-link to the
+  //     client profile),
+  //   • per-client referral counts on the client profile,
+  //   • a foundation for "auto-thank the referrer on conversion".
+  //
+  // Conservative match policy: only write the FK on a SINGLE exact
+  // (case-insensitive) name match. Ambiguous or unmatched strings are
+  // left for the triager to resolve manually in the detail sheet — a
+  // wrong link is worse than no link because it implies a referral
+  // relationship that doesn't exist.
+  if (
+    submissionRow.referral_source &&
+    !submissionRow.referral_contact_id &&
+    !submissionRow.referral_organization_id
+  ) {
+    try {
+      const needle = (submissionRow.referral_source || "")
+        .split(/[,/&]+/)[0]
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+      if (needle && needle.length >= 3) {
+        const { data: contacts } = await supabase
+          .from("contacts")
+          .select("id, full_name")
+          .ilike("full_name", needle)
+          .limit(2)
+        if (contacts && contacts.length === 1) {
+          await supabase
+            .from("jotform_intake_submissions")
+            .update({ referral_contact_id: contacts[0].id })
+            .eq("id", submissionRow.id)
+          submissionRow.referral_contact_id = contacts[0].id
+          console.log(
+            `[Jotform] resolved referral "${submissionRow.referral_source}" → contact ${contacts[0].id}`,
+          )
+        } else if (!contacts || contacts.length === 0) {
+          const { data: orgs } = await supabase
+            .from("organizations")
+            .select("id, name")
+            .ilike("name", needle)
+            .limit(2)
+          if (orgs && orgs.length === 1) {
+            await supabase
+              .from("jotform_intake_submissions")
+              .update({ referral_organization_id: orgs[0].id })
+              .eq("id", submissionRow.id)
+            submissionRow.referral_organization_id = orgs[0].id
+            console.log(
+              `[Jotform] resolved referral "${submissionRow.referral_source}" → organization ${orgs[0].id}`,
+            )
+          }
+        }
+      }
+    } catch (err) {
+      console.log("[Jotform] referral auto-resolve error:", (err as Error).message)
     }
   }
 
@@ -308,8 +500,13 @@ export async function runIntakePostProcessing(
   // belt-and-suspenders.
   const needsEnrichment = !submissionRow.enrichment
   const needsResearch = !submissionRow.question_research && !!submissionRow.questions_or_concerns
+  const needsFeeEstimate = !submissionRow.fee_estimate
 
-  const [enrichmentResult, researchResult] = await Promise.allSettled([
+  // All three calls are independent web/AI passes — running them
+  // concurrently shaves ~20s off the worst-case total. Each returns
+  // null on failure rather than throwing, so the email path always
+  // gets to render with whatever did land.
+  const [enrichmentResult, researchResult, feeResult] = await Promise.allSettled([
     needsEnrichment
       ? enrichIntakeSubmission(supabase, {
           id: submissionRow.id,
@@ -332,19 +529,35 @@ export async function runIntakePostProcessing(
           service_focus: submissionRow.service_focus,
         })
       : Promise.resolve(null),
+    needsFeeEstimate
+      ? estimateIntakeFees(supabase, {
+          service_focus: submissionRow.service_focus,
+          services_requested: submissionRow.services_requested,
+          entity_types: submissionRow.entity_types,
+          business_revenue_range: submissionRow.business_revenue_range,
+          business_tax_classification: null,
+          business_employee_count: null,
+          business_state: submissionRow.business_state,
+          business_summary: submissionRow.business_summary,
+          questions_or_concerns: submissionRow.questions_or_concerns,
+        })
+      : Promise.resolve(null),
   ])
 
   const enrichment =
     enrichmentResult.status === "fulfilled" ? enrichmentResult.value : null
   const questionResearch =
     researchResult.status === "fulfilled" ? researchResult.value : null
+  const feeEstimate =
+    feeResult.status === "fulfilled" ? feeResult.value : null
 
-  // Persist whatever we got. If both failed we still write the email
-  // out with what we have, but skip the wasted UPDATE.
-  if (enrichment || questionResearch) {
+  // Persist whatever we got. If all three failed we still write the
+  // email out with what we have, but skip the wasted UPDATE.
+  if (enrichment || questionResearch || feeEstimate) {
     const updates: Record<string, unknown> = {}
     if (enrichment) updates.enrichment = enrichment
     if (questionResearch) updates.question_research = questionResearch
+    if (feeEstimate) updates.fee_estimate = feeEstimate
     const { error: updErr } = await supabase
       .from("jotform_intake_submissions")
       .update(updates)
@@ -380,12 +593,23 @@ export async function runIntakePostProcessing(
         business_revenue_range: submissionRow.business_revenue_range,
         questions_or_concerns: submissionRow.questions_or_concerns,
         additional_notes: submissionRow.additional_notes,
+        behind_on_filings: submissionRow.behind_on_filings,
+        pending_tax_notices: submissionRow.pending_tax_notices,
+        current_cpa_status: submissionRow.current_cpa_status,
+        cpa_switch_reason: submissionRow.cpa_switch_reason,
         preferred_team_member: submissionRow.preferred_team_member,
         assigned_to_id: submissionRow.assigned_to_id,
         enrichment: enrichment
           ? { summary: enrichment.summary, websites: enrichment.websites }
           : null,
-        question_research: questionResearch ? { summary: questionResearch.summary } : null,
+        question_research: questionResearch
+          ? {
+              summary: questionResearch.summary,
+              key_points: questionResearch.key_points,
+              references: questionResearch.references,
+            }
+          : null,
+        fee_estimate: feeEstimate ?? null,
         jotform_created_at: submissionRow.jotform_created_at,
       })
       const { error: notifyErr } = await supabase

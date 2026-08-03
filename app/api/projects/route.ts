@@ -8,7 +8,7 @@
  * ----------------
  * The page wants to show a count of attached work items per project. Rather
  * than running N+1 queries we (a) pull the projects in one query, then
- * (b) issue ONE additional query against `work_items` that's filtered by the
+ * (b) issue batched, paged queries against `work_items` filtered by the
  * union of all the projects' clients, and count matches in JavaScript by
  * applying each project's `work_template_pattern` / `work_type_pattern`.
  * This is fast and keeps the API "rules-based" so newly-synced Karbon items
@@ -16,6 +16,7 @@
  */
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { fetchAllPaged, chunk } from "@/lib/supabase/fetch-all"
 
 export const dynamic = "force-dynamic"
 
@@ -46,13 +47,18 @@ export async function GET(request: Request) {
 
     const supabase = createAdminClient()
 
+    const typeKey = searchParams.get("typeKey")
+    const templateKey = searchParams.get("templateKey")
+
     let query = supabase
-      .from("projects")
+      .from("projects_enriched")
       .select("*")
       .order("name", { ascending: true })
       .limit(500)
 
     if (kind) query = query.eq("kind", kind)
+    if (typeKey) query = query.eq("project_type_key", typeKey)
+    if (templateKey) query = query.eq("project_template_key", templateKey)
     if (status && status !== "all") query = query.eq("status", status)
     if (search) query = query.ilike("name", `%${search}%`)
     if (clientId) query = query.or(`organization_id.eq.${clientId},contact_id.eq.${clientId}`)
@@ -60,38 +66,82 @@ export async function GET(request: Request) {
     const { data: projects, error } = await query
     if (error) throw error
 
-    const projectList = (projects || []) as Project[]
+    // If filtering by clientId, also include projects that have this client
+    // as a non-primary `project_clients` row. We do that with a separate
+    // query and merge — keeps the main view query simple.
+    let extraProjects: any[] = []
+    if (clientId) {
+      const { data: extraRows } = await supabase
+        .from("project_clients")
+        .select("project_id")
+        .or(`organization_id.eq.${clientId},contact_id.eq.${clientId}`)
+        .eq("is_primary", false)
+      const extraIds = Array.from(new Set((extraRows || []).map((r) => r.project_id))).filter(
+        (pid) => !(projects || []).some((p: any) => p.id === pid),
+      )
+      if (extraIds.length) {
+        const { data: extra } = await supabase
+          .from("projects_enriched")
+          .select("*")
+          .in("id", extraIds)
+        extraProjects = extra || []
+      }
+    }
 
-    // ── Enrich each project with client display name + work-item count ──
-    const orgIds = Array.from(new Set(projectList.map((p) => p.organization_id).filter(Boolean) as string[]))
-    const contactIds = Array.from(new Set(projectList.map((p) => p.contact_id).filter(Boolean) as string[]))
+    const projectList = ([...(projects || []), ...extraProjects]) as (Project & {
+      project_type_key: string | null
+      project_template_key: string | null
+      project_type_name: string | null
+      project_template_title: string | null
+      clients: Array<{
+        id: string
+        kind: "organization" | "contact"
+        client_id: string
+        name: string
+        role: string
+        is_primary: boolean
+        ownership_pct: number | null
+        karbon_url: string | null
+      }>
+    })[]
 
-    const [orgsRes, contactsRes] = await Promise.all([
-      orgIds.length
-        ? supabase.from("organizations").select("id, name, full_name, karbon_url").in("id", orgIds)
-        : Promise.resolve({ data: [], error: null }),
-      contactIds.length
-        ? supabase.from("contacts").select("id, full_name, primary_email, karbon_url").in("id", contactIds)
-        : Promise.resolve({ data: [], error: null }),
-    ])
-    const orgMap = new Map((orgsRes.data || []).map((o: any) => [o.id, o]))
-    const contactMap = new Map((contactsRes.data || []).map((c: any) => [c.id, c]))
-
-    // Single batched work-items fetch for ALL projects' clients.
+    // ── Work-item counts per project ──
+    // Build the union of client ids across ALL clients (primary + secondary)
+    // listed on each project, then issue ONE batched work_items query.
+    const orgIds = new Set<string>()
+    const contactIds = new Set<string>()
+    for (const p of projectList) {
+      for (const c of p.clients || []) {
+        if (c.kind === "organization") orgIds.add(c.client_id)
+        else contactIds.add(c.client_id)
+      }
+    }
     const allClientIds = [...orgIds, ...contactIds]
-    let workItems: any[] = []
+    const workItems: any[] = []
     if (allClientIds.length) {
-      const inList = allClientIds.map((id) => `"${id}"`).join(",")
-      const { data: wi, error: wiErr } = await supabase
-        .from("work_items")
-        .select(
-          "id, karbon_work_item_key, title, work_type, work_template_name, status, primary_status, secondary_status, due_date, organization_id, contact_id, completed_date, deleted_in_karbon_at",
+      // Chunk the id list (long .in() lists blow up the request URL) and
+      // page each chunk — PostgREST caps any single response at 1,000 rows
+      // regardless of .limit(), so a single .limit(5000) request would
+      // silently truncate the per-project counts. Dedupe by id since a
+      // work item can match on org id in one chunk and contact id in another.
+      const seenIds = new Set<string>()
+      for (const ids of chunk(allClientIds)) {
+        const inList = ids.map((id) => `"${id}"`).join(",")
+        const wi = await fetchAllPaged<any>(() =>
+          supabase
+            .from("work_items")
+            .select(
+              "id, karbon_work_item_key, title, work_type, work_template_name, status, primary_status, secondary_status, due_date, organization_id, contact_id, completed_date, deleted_in_karbon_at, assignee_id, assignee_name",
+            )
+            .or(`organization_id.in.(${inList}),contact_id.in.(${inList})`)
+            .is("deleted_in_karbon_at", null),
         )
-        .or(`organization_id.in.(${inList}),contact_id.in.(${inList})`)
-        .is("deleted_in_karbon_at", null)
-        .limit(5000)
-      if (wiErr) throw wiErr
-      workItems = wi || []
+        for (const w of wi) {
+          if (seenIds.has(w.id)) continue
+          seenIds.add(w.id)
+          workItems.push(w)
+        }
+      }
     }
 
     // Group work items by client id for fast lookup.
@@ -111,11 +161,19 @@ export async function GET(request: Request) {
     }
 
     const enriched = projectList.map((p) => {
-      const clientWis = p.organization_id
-        ? wiByOrg.get(p.organization_id) || []
-        : p.contact_id
-        ? wiByContact.get(p.contact_id) || []
-        : []
+      // Aggregate work items across every linked client. We dedupe by id
+      // since an item with both org and contact set could otherwise be
+      // double-counted.
+      const seen = new Set<string>()
+      const clientWis: any[] = []
+      for (const c of p.clients || []) {
+        const arr = c.kind === "organization" ? wiByOrg.get(c.client_id) : wiByContact.get(c.client_id)
+        for (const w of arr || []) {
+          if (seen.has(w.id)) continue
+          seen.add(w.id)
+          clientWis.push(w)
+        }
+      }
       const matched = clientWis.filter((w) => projectMatches(p, w))
       const open = matched.filter((w) => !isCompleted(w))
       const nextDue = open
@@ -123,22 +181,60 @@ export async function GET(request: Request) {
         .filter(Boolean)
         .sort()[0] || null
 
-      const org = p.organization_id ? orgMap.get(p.organization_id) : null
-      const contact = p.contact_id ? contactMap.get(p.contact_id) : null
-      const clientName: string =
-        (org && (org.name || org.full_name)) || (contact && contact.full_name) || "Unlinked client"
+      // Aggregate the distinct people actually assigned to this project's
+      // work items. `owner_team_member_id` is usually null in practice, so
+      // the work-item assignees are the real "who's working this" signal.
+      const teamMap = new Map<string, { id: string; name: string; open_count: number }>()
+      for (const w of matched) {
+        const name = (w.assignee_name || "").trim()
+        if (!name) continue
+        const key = w.assignee_id || name
+        const cur = teamMap.get(key) || { id: w.assignee_id || key, name, open_count: 0 }
+        if (!isCompleted(w)) cur.open_count += 1
+        teamMap.set(key, cur)
+      }
+      const team = Array.from(teamMap.values()).sort((a, b) => b.open_count - a.open_count)
+
+      const primary = (p.clients || []).find((c) => c.is_primary) || (p.clients || [])[0] || null
+      const clientName: string = primary?.name || "Unlinked client"
 
       return {
         ...p,
         client_name: clientName,
-        client_kind: org ? ("organization" as const) : ("contact" as const),
-        client_id: p.organization_id || p.contact_id,
-        karbon_url: (org?.karbon_url || contact?.karbon_url || null) as string | null,
+        client_kind: primary?.kind || ("organization" as const),
+        client_id: primary?.client_id || null,
+        karbon_url: primary?.karbon_url || null,
+        client_count: (p.clients || []).length,
         work_item_count: matched.length,
         open_work_item_count: open.length,
         next_due_date: nextDue,
+        team,
       }
     })
+
+    // ── Attach owner display name + avatar ──
+    // Batch-fetch team_members for every distinct owner so the UI can show a
+    // name/avatar without an N+1 lookup.
+    const ownerIds = Array.from(
+      new Set(enriched.map((p) => p.owner_team_member_id).filter(Boolean) as string[]),
+    )
+    if (ownerIds.length) {
+      const { data: members } = await supabase
+        .from("team_members")
+        .select("id, full_name, avatar_url")
+        .in("id", ownerIds)
+      const memberMap = new Map((members || []).map((m) => [m.id, m]))
+      for (const p of enriched as any[]) {
+        const m = p.owner_team_member_id ? memberMap.get(p.owner_team_member_id) : null
+        p.owner_name = m?.full_name || null
+        p.owner_avatar_url = m?.avatar_url || null
+      }
+    } else {
+      for (const p of enriched as any[]) {
+        p.owner_name = null
+        p.owner_avatar_url = null
+      }
+    }
 
     return NextResponse.json({ projects: enriched, total: enriched.length })
   } catch (err: any) {
@@ -169,6 +265,8 @@ export async function POST(request: Request) {
       description: body.description || null,
       organization_id: body.organization_id || null,
       contact_id: body.contact_id || null,
+      project_type_key: body.project_type_key || null,
+      project_template_key: body.project_template_key || null,
       work_type_pattern: body.work_type_pattern || null,
       work_template_pattern: body.work_template_pattern || null,
       start_date: body.start_date || null,
@@ -178,6 +276,17 @@ export async function POST(request: Request) {
 
     const { data, error } = await supabase.from("projects").insert(insert).select().single()
     if (error) throw error
+
+    // Mirror the primary client into the project_clients join row.
+    if (data && (insert.organization_id || insert.contact_id)) {
+      await supabase.from("project_clients").insert({
+        project_id: data.id,
+        organization_id: insert.organization_id,
+        contact_id: insert.contact_id,
+        role: "primary",
+        is_primary: true,
+      })
+    }
 
     return NextResponse.json({ project: data }, { status: 201 })
   } catch (err: any) {
@@ -192,7 +301,10 @@ function isCompleted(w: any): boolean {
   return s.includes("complete") || s.includes("cancel") || s.includes("archived")
 }
 
-export function projectMatches(p: Project, w: any): boolean {
+// NOTE: not exported — Next.js route files may only export route handlers
+// (GET/POST/etc.) and a fixed set of config fields. Exporting an arbitrary
+// helper from a route module fails the build under strict type checking.
+function projectMatches(p: Project, w: any): boolean {
   // If the project specifies neither pattern, we treat any work item for this
   // client as a match — useful for free-form "everything for this client"
   // engagement projects.

@@ -24,6 +24,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 export const runtime = "nodejs"
 
@@ -89,10 +90,15 @@ export async function GET() {
       .from("ignition_disbursals")
       .select("disbursal_id", { count: "exact", head: true }),
     // Match-method breakdown for the "How clients were matched" card.
-    supabase
-      .from("ignition_clients")
-      .select("match_method, match_confidence")
-      .not("match_method", "is", null),
+    // Matched rows already exceed PostgREST's 1,000-row response cap
+    // (~866 mapped orgs + ~948 mapped contacts), so page through them —
+    // an unbounded select would silently tally only the first 1,000.
+    fetchAllPaged<{ match_method: string | null; match_confidence: number | null }>(() =>
+      supabase
+        .from("ignition_clients")
+        .select("match_method, match_confidence")
+        .not("match_method", "is", null),
+    ),
     // Last 50 webhook archive entries for the activity feed. The Zapier
     // bridge is retired and the table is read-only now — new rows only
     // appear when a stale Zap still posts to the deprecated receiver, at
@@ -104,10 +110,9 @@ export async function GET() {
       .limit(50),
   ])
 
-  // Tally match methods client-side (the table is small — at most a few
-  // hundred rows total).
+  // Tally match methods client-side over the fully-paged row set.
   const breakdownMap = new Map<string, { count: number; sum: number }>()
-  for (const row of matchBreakdownRows.data || []) {
+  for (const row of matchBreakdownRows) {
     const method = row.match_method as string
     const conf = Number(row.match_confidence) || 0
     const existing = breakdownMap.get(method) || { count: 0, sum: 0 }

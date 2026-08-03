@@ -7,6 +7,37 @@
  */
 const KARBON_TENANT_PREFIX = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
+/**
+ * Split a Karbon `FullName` into { first, last } parts.
+ *
+ * Why this exists: the Karbon `/Contacts` LIST endpoint only returns
+ * `FullName` (no `FirstName`/`LastName`), while the single
+ * `/Contacts/{key}` endpoint returns the split fields. A bulk sync that
+ * falls back to list data (e.g. when a per-record $expand call is rate
+ * limited) would otherwise write NULL names and surface as "Unknown" in
+ * the UI. This is the safety net so we never lose the name.
+ *
+ * Handles both "First Last" and "Last, First" orderings.
+ */
+export function splitFullName(fullName: unknown): { first: string | null; last: string | null } {
+  if (typeof fullName !== "string") return { first: null, last: null }
+  const cleaned = fullName.replace(/\s+/g, " ").trim()
+  if (!cleaned) return { first: null, last: null }
+
+  // "Last, First Middle" → first token after the comma is the first name.
+  if (cleaned.includes(",")) {
+    const [lastPart, firstPart = ""] = cleaned.split(",")
+    const last = lastPart.trim() || null
+    const first = firstPart.trim().split(" ")[0] || null
+    return { first, last }
+  }
+
+  // "First [Middle...] Last"
+  const tokens = cleaned.split(" ")
+  if (tokens.length === 1) return { first: tokens[0], last: null }
+  return { first: tokens[0], last: tokens[tokens.length - 1] }
+}
+
 export function mapKarbonContactToSupabase(contact: any) {
   const businessCards = Array.isArray(contact.BusinessCards) ? contact.BusinessCards : []
   const businessCard = businessCards.find((bc: any) => bc.IsPrimaryCard) || businessCards[0] || {}
@@ -66,8 +97,12 @@ export function mapKarbonContactToSupabase(contact: any) {
     }
   }
 
-  const firstName = contact.FirstName || null
-  const lastName = contact.LastName || null
+  // Prefer the split fields from the single-contact endpoint; fall back to
+  // parsing FullName (only present on the list endpoint) so bulk/list-derived
+  // records never land with a NULL name (which renders as "Unknown").
+  const fromFullName = splitFullName(contact.FullName)
+  const firstName = contact.FirstName || fromFullName.first || null
+  const lastName = contact.LastName || fromFullName.last || null
   const middleName = contact.MiddleName || null
   // NOTE: contacts.full_name is a GENERATED ALWAYS column in Supabase
   // (TRIM(first_name || ' ' || last_name)) — we must NOT write to it. Postgres

@@ -33,6 +33,7 @@ import {
   zoomFetch,
   type ZoomConnection,
 } from "@/lib/zoom-auth"
+import { processRecentZoomParticipants } from "@/lib/zoom/process-meeting-participants"
 
 export interface SyncRecentZoomDataOptions {
   supabase: SupabaseClient
@@ -55,6 +56,20 @@ export interface SyncRecentZoomDataResult {
   connections: number
   meetingsUpserted: number
   recordingsUpserted: number
+  /**
+   * Aggregated stats from the participant → Hub-contact bridge that
+   * runs after meeting upserts. Zero when no new external participants
+   * were seen in the meetings we processed this run.
+   */
+  participantsScanned: number
+  hubContactsCreated: number
+  hubContactsMatched: number
+  /** Number of meetings the deterministic Calendly→Zoom bridge linked
+   *  this run. Each bridged meeting also had its Calendly event's
+   *  client + work-item tags copied over with link_source='calendly_bridge'. */
+  bridgedFromCalendly: number
+  /** Number of meetings ALFRED tagged this run (auto or needs_review). */
+  alfredTagged: number
   errors: Array<{ zoom_email: string; error: string }>
 }
 
@@ -65,6 +80,33 @@ export interface SyncRecentZoomDataResult {
  */
 function toZoomDateParam(d: Date): string {
   return d.toISOString().slice(0, 10)
+}
+
+/**
+ * Collapse rows that share a `zoom_meeting_id`, keeping the most recent
+ * occurrence by `start_time`. Recurring meetings come back from Zoom's
+ * list endpoints as one entry PER OCCURRENCE with the same meeting id,
+ * and `zoom_meetings` is keyed on `zoom_meeting_id` — feeding duplicates
+ * into a single upsert batch fails with Postgres's "ON CONFLICT DO
+ * UPDATE command cannot affect row a second time" (this broke the
+ * hourly sweep for every host with recurring meetings from May 12 to
+ * July 10, 2026).
+ */
+function dedupeByMeetingId<
+  T extends { zoom_meeting_id: unknown; start_time?: string | null },
+>(rows: T[]): T[] {
+  const byId = new Map<string, T>()
+  for (const row of rows) {
+    const key = String(row.zoom_meeting_id)
+    const existing = byId.get(key)
+    if (
+      !existing ||
+      (row.start_time ?? "") >= (existing.start_time ?? "")
+    ) {
+      byId.set(key, row)
+    }
+  }
+  return Array.from(byId.values())
 }
 
 export async function syncRecentZoomData(
@@ -81,9 +123,24 @@ export async function syncRecentZoomData(
   const errors: Array<{ zoom_email: string; error: string }> = []
   let meetingsUpserted = 0
   let recordingsUpserted = 0
+  let participantsScanned = 0
+  let hubContactsCreated = 0
+  let hubContactsMatched = 0
+  let bridgedFromCalendly = 0
+  let alfredTagged = 0
 
   if (connections.length === 0) {
-    return { connections: 0, meetingsUpserted, recordingsUpserted, errors }
+    return {
+      connections: 0,
+      meetingsUpserted,
+      recordingsUpserted,
+      participantsScanned,
+      hubContactsCreated,
+      hubContactsMatched,
+      bridgedFromCalendly,
+      alfredTagged,
+      errors,
+    }
   }
 
   const now = new Date()
@@ -130,7 +187,7 @@ export async function syncRecentZoomData(
           }
           const meetings = data.meetings ?? []
           if (meetings.length > 0) {
-            const rows = meetings.map((m) => ({
+            const rows = dedupeByMeetingId(meetings.map((m) => ({
               zoom_meeting_id: m.id,
               zoom_uuid: m.uuid,
               zoom_host_id: m.host_id,
@@ -152,7 +209,7 @@ export async function syncRecentZoomData(
               zoom_connection_id: conn.id,
               raw_data: m,
               synced_at: new Date().toISOString(),
-            }))
+            })))
             const { error } = await supabase
               .from("zoom_meetings")
               .upsert(rows, { onConflict: "zoom_meeting_id" })
@@ -208,9 +265,13 @@ export async function syncRecentZoomData(
               raw_data: rec,
               synced_at: new Date().toISOString(),
             }))
+            // Conflict on zoom_uuid (the per-instance UUID) to match the
+            // unique index added in migration 333. Keying on zoom_meeting_id
+            // would collapse recurring-meeting instances and previously failed
+            // outright because no unique constraint existed.
             const { error } = await supabase
               .from("zoom_recordings")
-              .upsert(rows, { onConflict: "zoom_meeting_id" })
+              .upsert(rows, { onConflict: "zoom_uuid" })
             if (error) throw new Error(`zoom_recordings upsert: ${error.message}`)
             recordingsUpserted += rows.length
 
@@ -218,7 +279,9 @@ export async function syncRecentZoomData(
             // the tag-counts view + the todo sweep can see it even
             // when Zoom's `meetings?type=previous_meetings` somehow
             // missed it (instant meetings, breakout rooms, etc).
-            const meetingRows = recs.map((rec) => ({
+            // Recurring meetings appear once per recorded occurrence
+            // with the same rec.id — dedupe before the keyed upsert.
+            const meetingRows = dedupeByMeetingId(recs.map((rec) => ({
               zoom_meeting_id: rec.id,
               zoom_uuid: rec.uuid,
               topic: rec.topic,
@@ -230,7 +293,7 @@ export async function syncRecentZoomData(
               status: "ended",
               raw_data: rec,
               synced_at: new Date().toISOString(),
-            }))
+            })))
             await supabase
               .from("zoom_meetings")
               .upsert(meetingRows, {
@@ -254,6 +317,38 @@ export async function syncRecentZoomData(
         .from("zoom_connections")
         .update({ last_synced_at: new Date().toISOString() })
         .eq("id", conn.id)
+
+      // ── Hub contact bridge ───────────────────────────────────
+      // After meetings are upserted, walk recently-ended meetings
+      // for this connection and turn each external participant into
+      // a Master Hub Contact (auto-created if none exists). The call
+      // is best-effort — Zoom participant fetches frequently 404 for
+      // instant meetings, and we don't want to fail the whole sync
+      // over it. Each connection processes up to 50 meetings per
+      // run; the watermark column ensures we eventually catch up.
+      try {
+        const partResult = await processRecentZoomParticipants(
+          supabase,
+          conn as ZoomConnection,
+          { sinceDays, maxMeetings: 50 },
+        )
+        participantsScanned += partResult.participantsSeen
+        hubContactsCreated += partResult.contactsCreated
+        hubContactsMatched += partResult.contactsMatched
+        bridgedFromCalendly += partResult.bridgedFromCalendly
+        alfredTagged += partResult.alfredTagged
+        if (partResult.errors.length > 0) {
+          console.warn(
+            `[v0] [Zoom Recent Sync] ${conn.zoom_email} participant errors:`,
+            partResult.errors,
+          )
+        }
+      } catch (err) {
+        console.error(
+          `[v0] [Zoom Recent Sync] ${conn.zoom_email} participant processor crashed (non-fatal):`,
+          err,
+        )
+      }
     } catch (err) {
       errors.push({
         zoom_email: conn.zoom_email,
@@ -270,6 +365,11 @@ export async function syncRecentZoomData(
     connections: connections.length,
     meetingsUpserted,
     recordingsUpserted,
+    participantsScanned,
+    hubContactsCreated,
+    hubContactsMatched,
+    bridgedFromCalendly,
+    alfredTagged,
     errors,
   }
 }

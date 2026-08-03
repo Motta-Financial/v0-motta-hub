@@ -1,0 +1,57 @@
+-- 356: pg_cron cleanup — APPLIED LIVE 2026-07-26 via MCP.
+-- This file documents what was removed and how to restore it; running
+-- it again is a no-op (unschedule of a missing job errors harmlessly).
+--
+-- WHAT WE FOUND (cron.job + cron.job_run_details):
+--   * Jobs 1-4 (karbon_*_sync, every 15 min / nightly) and job 5
+--     (karbon_staged_backfill_bootstrap, EVERY 2 MINUTES) called the
+--     karbon_sync edge function via net.http_post. Every recent run
+--     failed with "Out of memory" at the pg_net enqueue — the stack
+--     was dead weight. Karbon data is live via the Vercel crons
+--     (/api/cron/karbon-sync et al, work_items fresh within the hour).
+--   * Job 5's one-time cleanup (job 6) was scheduled as '53 05 07 01 *'
+--     — a YEARLY cron — so the "temporary" 2-minute backfill loop
+--     never got removed.
+--   * Job 8 (proconnect_token_refresh, every 45 min) POSTed to the
+--     proconnect-refresh-token edge function with the SERVICE-ROLE JWT
+--     EMBEDDED IN THE CRON COMMAND, and raced the Vercel app's own
+--     on-demand refresh (lib/proconnect/oauth.ts). Intuit rotates
+--     refresh tokens on use, so two independent refreshers can
+--     invalidate each other — a plausible cause of past ProConnect
+--     disconnects. The app is the single refresher now.
+--   * cron.job_run_details had 281k rows (163k failures) with no
+--     retention job.
+--
+-- WHAT WAS APPLIED:
+--   SELECT cron.unschedule('karbon_contacts_sync');
+--   SELECT cron.unschedule('karbon_orgs_sync');
+--   SELECT cron.unschedule('karbon_work_items_sync');
+--   SELECT cron.unschedule('karbon_tenant_settings_sync');
+--   SELECT cron.unschedule('karbon_staged_backfill_bootstrap');
+--   SELECT cron.unschedule('karbon_staged_backfill_cleanup');
+--   SELECT cron.unschedule('proconnect_token_refresh');
+--   DELETE FROM cron.job_run_details WHERE start_time < now() - interval '7 days';
+--   SELECT cron.schedule('cron_history_cleanup', '0 3 * * *',
+--     $$DELETE FROM cron.job_run_details WHERE start_time < now() - interval '7 days'$$);
+--
+-- EDGE FUNCTIONS (same date):
+--   * proconnect-refresh-token redeployed (v9) with an in-body guard
+--     requiring the service-role key as Bearer — it was previously
+--     callable by ANYONE (verify_jwt off + CORS *) and could be used
+--     to churn/invalidate the live Intuit token.
+--   * proconnect-sync-clients / -custom-statuses / -engagements
+--     redeployed as 410 stubs — superseded by the Vercel sync path;
+--     reference sources remain in supabase/functions/* (now with the
+--     same auth guard) and can be redeployed from there if needed.
+--
+-- RESTORE (only if the edge sync stack is ever revived — do NOT
+-- restore proconnect_token_refresh while the app refreshes on demand):
+--   SELECT cron.schedule('karbon_contacts_sync', '*/15 * * * *', $$select
+--     net.http_post(
+--       url:=concat(auth.jwt()->>'iss','/functions/v1/karbon_sync/karbon/sync?entity=contacts'),
+--       headers:=jsonb_build_object('Authorization', concat('Bearer ', current_setting('app.settings.service_role_key', true)))
+--     );$$);
+--   (orgs / work-items / tenant-settings variants identical but for
+--    the entity= query param; see git history of this file.)
+
+SELECT 1; -- documentation-only when re-run

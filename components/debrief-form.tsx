@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
+import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -35,6 +36,7 @@ import {
   Paperclip,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { pickOrgDisplayName } from "@/lib/karbon/org-display-name"
 import { MentionTextarea } from "@/components/mentions/mention-textarea"
 
 // Types
@@ -161,27 +163,86 @@ type FormData = {
 }
 
 export function DebriefForm() {
+  // Prefill from the meeting detail dialog / post-meeting ALFRED email.
+  // When launched from a specific meeting the URL carries the meeting row id
+  // plus best-guess defaults (date, host, primary contact) so the user only
+  // has to fill in substance. See lib/debriefs/meeting-link.ts.
+  const searchParams = useSearchParams()
+
+  // The meeting this debrief is being filed against (one or neither). Held in
+  // a ref because it never changes after mount and must be included in the
+  // POST body so the API can set the debriefs.calendly_event_id /
+  // zoom_meeting_id FK and stamp the meeting as handled.
+  const meetingLinkRef = useRef<{
+    calendly_event_id: string | null
+    zoom_meeting_id: string | null
+    meeting_id: string | null
+    deal_id: string | null
+  }>({
+    calendly_event_id: searchParams.get("calendly_event_id"),
+    zoom_meeting_id: searchParams.get("zoom_meeting_id"),
+    // When launched from a Deal, we carry the deal_id (and optionally the
+    // specific hub meeting row) so the debrief attaches to the opportunity.
+    meeting_id: searchParams.get("meeting_id"),
+    deal_id: searchParams.get("deal_id"),
+  })
+
+  // Build the initial form state, applying any prefill params once on mount.
+  const buildInitialFormData = (): FormData => {
+    const base: FormData = {
+      meeting_date: new Date(),
+      team_member_id: "",
+      team_member_name: "",
+      work_item_ids: [],
+      related_work_items: [],
+      primary_contact: null,
+      client_ids: [],
+      related_clients: [],
+      notes: "",
+      action_items: [],
+      services: [],
+      fee_adjustment: "",
+      fee_adjustment_reason: "",
+      research_topics: "",
+      notify_team: true,
+      follow_up_date: null,
+      notification_recipients: [],
+    }
+
+    const meetingDate = searchParams.get("meeting_date")
+    if (meetingDate) {
+      // Parse YYYY-MM-DD as a local date (avoid UTC shift to the prior day).
+      const [y, m, d] = meetingDate.split("-").map((n) => Number.parseInt(n, 10))
+      if (y && m && d) base.meeting_date = new Date(y, m - 1, d)
+    }
+
+    const teamMemberId = searchParams.get("team_member_id")
+    const teamMemberName = searchParams.get("team_member_name")
+    if (teamMemberId) base.team_member_id = teamMemberId
+    if (teamMemberName) base.team_member_name = teamMemberName
+
+    const contactId = searchParams.get("contact_id")
+    const contactType = searchParams.get("contact_type")
+    const contactName = searchParams.get("contact_name")
+    if (contactId && (contactType === "contact" || contactType === "organization") && contactName) {
+      const primary: Client = {
+        id: contactId,
+        name: contactName,
+        full_name: contactName,
+        type: contactType,
+        karbon_key: searchParams.get("karbon_key") || "",
+      }
+      base.primary_contact = primary
+      base.client_ids = [primary.id]
+      base.related_clients = [primary]
+    }
+
+    return base
+  }
+
   // Form state
   // Updated to use FormData type
-  const [formData, setFormData] = useState<FormData>({
-    meeting_date: new Date(),
-    team_member_id: "",
-    team_member_name: "",
-    work_item_ids: [],
-    related_work_items: [],
-    primary_contact: null,
-    client_ids: [],
-    related_clients: [],
-    notes: "",
-    action_items: [],
-    services: [],
-    fee_adjustment: "",
-    fee_adjustment_reason: "",
-    research_topics: "",
-    notify_team: true,
-    follow_up_date: null, // Initialize follow_up_date
-    notification_recipients: [], // Initialize notification_recipients
-  })
+  const [formData, setFormData] = useState<FormData>(buildInitialFormData)
 
   // Search states
   const [clientSearch, setClientSearch] = useState("")
@@ -263,7 +324,14 @@ export function DebriefForm() {
       })
 
       const orgClients: Client[] = (orgsData.organizations || []).map((o: any) => {
-        const orgName = o.name || o.full_name || o.trading_name || o.legal_name || o.primary_email || "Unknown Organization"
+        // pickOrgDisplayName skips the "Organization <KarbonKey>" placeholder
+        // that older sync runs wrote into organizations.name, so a row like
+        // { name: "Organization 257GlGDFgSHf", full_name: "ProConnect Tax" }
+        // displays its real name.
+        const orgName =
+          pickOrgDisplayName(o.name, o.full_name, o.trading_name, o.legal_name) ||
+          o.primary_email ||
+          "Unknown Organization"
         return {
           id: o.id,
           name: orgName,
@@ -433,11 +501,9 @@ export function DebriefForm() {
 
   /**
    * Build a Client object representing the work item's owning contact or
-   * organization. Returns null when the work item isn't yet linked to a
-   * client in our enriched view (rare — usually means Karbon hadn't synced
-   * the client when the work item was last pulled). The caller decides
-   * what to do with a null result; here we just leave the primary contact
-   * untouched.
+   * organization. Returns null only when the work item carries no client
+   * info at all. The caller decides what to do with a null result; here we
+   * just leave the primary contact untouched.
    */
   const deriveWorkItemPrimaryContact = (workItem: WorkItem): Client | null => {
     // Karbon's `client_type` is "Organization" or "Contact" (capitalized).
@@ -450,7 +516,13 @@ export function DebriefForm() {
       (workItem.client_type || "").toLowerCase().startsWith("org") ||
       !!workItem.organization_id
     if (isOrg && workItem.organization_id) {
-      const name = workItem.org_name || workItem.client_name || "Organization"
+      // org_name is organizations.name, which for rows written by older
+      // sync runs holds the "Organization <KarbonKey>" placeholder;
+      // client_name is Karbon's ClientName snapshot on the work item and
+      // is the reliable human-readable fallback.
+      const name =
+        pickOrgDisplayName(workItem.org_name, workItem.client_name) ||
+        "Organization"
       return {
         id: workItem.organization_id,
         name,
@@ -468,6 +540,20 @@ export function DebriefForm() {
         full_name: name,
         type: "contact",
         karbon_key: workItem.karbon_client_key || "",
+      }
+    }
+    // Client known to Karbon but not yet synced into our contacts/
+    // organizations tables (no local UUID). Still surface the name from
+    // the work item so the form and the Karbon note read like a client,
+    // not a raw key. id stays "" — the POST route knows an id-less
+    // primary can't be FK-linked but still uses name + karbon_key.
+    if (workItem.client_name && workItem.karbon_client_key) {
+      return {
+        id: "",
+        name: workItem.client_name,
+        full_name: workItem.client_name,
+        type: isOrg ? "organization" : "contact",
+        karbon_key: workItem.karbon_client_key,
       }
     }
     return null
@@ -741,6 +827,15 @@ export function DebriefForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           debrief_date: formData.meeting_date.toISOString().split("T")[0],
+          // Link this debrief to the specific meeting it covers, when launched
+          // from a meeting's detail dialog or the post-meeting ALFRED email.
+          calendly_event_id: meetingLinkRef.current.calendly_event_id,
+          zoom_meeting_id: meetingLinkRef.current.zoom_meeting_id,
+          // Deal-level debrief linkage. When launched from a Deal these
+          // attach the debrief to the opportunity (and optionally the
+          // specific meeting row within it).
+          meeting_id: meetingLinkRef.current.meeting_id,
+          deal_id: meetingLinkRef.current.deal_id,
           notes: formData.notes,
           fee_adjustment: formData.fee_adjustment, // Changed from fee_adjustments
           fee_adjustment_reason: formData.fee_adjustment_reason, // Added new field
@@ -860,6 +955,15 @@ export function DebriefForm() {
   follow_up_date: null,
   notification_recipients: [],
   })
+      // The meeting link was consumed by the debrief we just created — clear
+      // it so a second debrief filed from this same form isn't re-attached to
+      // the same meeting.
+      meetingLinkRef.current = {
+        calendly_event_id: null,
+        zoom_meeting_id: null,
+        meeting_id: null,
+        deal_id: null,
+      }
       // Clear queued attachments too — the previous batch is now
       // attached to the freshly-created debrief; the form is ready for
       // a new entry.

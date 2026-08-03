@@ -271,6 +271,14 @@ export function ClientsList() {
   const [workItemCounts, setWorkItemCounts] = useState<
     Map<string, { total: number; active: number }>
   >(new Map())
+  /**
+   * IDs of contacts/orgs that have a SIGNED proposal in Ignition. We
+   * derive `isProspect` from "no signed proposal" rather than the
+   * Karbon `contact_type` field — the Karbon designation goes stale
+   * the moment a client signs (sometimes for weeks), and Ignition is
+   * the canonical "have they actually become a client?" source.
+   */
+  const [signedClientIds, setSignedClientIds] = useState<Set<string>>(new Set())
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -279,7 +287,7 @@ export function ClientsList() {
   const [selectedTypes, setSelectedTypes] = useState<string[]>([])
   const [selectedServiceLines, setSelectedServiceLines] = useState<string[]>([])
   const [selectedClientGroups, setSelectedClientGroups] = useState<string[]>([])
-  const [statusTab, setStatusTab] = useState<StatusTab>("active")
+  const [statusTab, setStatusTab] = useState<StatusTab>("all")
 
   const [sortKey, setSortKey] = useState<SortKey>("name")
   const [sortDir, setSortDir] = useState<SortDir>("asc")
@@ -293,27 +301,35 @@ export function ClientsList() {
   const fetchData = async () => {
     try {
       setLoading(true)
-      const [orgsRes, contactsRes, groupsRes, serviceLinesRes, workItemsRes] = await Promise.all([
+      const [orgsRes, contactsRes, groupsRes, serviceLinesRes, workItemsRes, signedRes] = await Promise.all([
         fetch("/api/supabase/organizations"),
         fetch("/api/supabase/contacts"),
         fetch("/api/supabase/client-groups"),
         fetch("/api/supabase/service-lines"),
         fetch("/api/supabase/work-items/counts"),
+        fetch("/api/supabase/signed-proposal-clients"),
       ])
 
-      const [orgsData, contactsData, groupsData, serviceLinesData, workItemsData] =
+      const [orgsData, contactsData, groupsData, serviceLinesData, workItemsData, signedData] =
         await Promise.all([
           orgsRes.ok ? orgsRes.json() : { organizations: [] },
           contactsRes.ok ? contactsRes.json() : { contacts: [] },
           groupsRes.ok ? groupsRes.json() : { clientGroups: [] },
           serviceLinesRes.ok ? serviceLinesRes.json() : { serviceLines: [] },
           workItemsRes.ok ? workItemsRes.json() : { counts: [] },
+          signedRes.ok ? signedRes.json() : { contactIds: [], organizationIds: [] },
         ])
 
       setOrganizations(orgsData.organizations || [])
       setContacts(contactsData.contacts || [])
       setClientGroups(groupsData.clientGroups || [])
       setServiceLines(serviceLinesData.serviceLines || [])
+
+      const signedSet = new Set<string>([
+        ...(signedData.contactIds || []),
+        ...(signedData.organizationIds || []),
+      ])
+      setSignedClientIds(signedSet)
 
       const countsMap = new Map<string, { total: number; active: number }>()
       ;(workItemsData.counts || []).forEach((c: any) => {
@@ -370,7 +386,12 @@ export function ClientsList() {
         city: org.city,
         state: org.state,
         industry: org.industry,
-        isProspect: (org.contact_type || "").toLowerCase().includes("prospect"),
+        // Prospect = does NOT have a signed Ignition proposal. The
+        // Karbon `contact_type` is intentionally NOT consulted here —
+        // it's frequently stale (the bookkeeping team flips clients
+        // out of "Prospect" days/weeks after they sign), so we use
+        // Ignition's signed-proposal set as the source of truth.
+        isProspect: !signedClientIds.has(org.id),
         workItemCount: workItemCounts.get(org.karbon_organization_key)?.total || 0,
         activeWorkItems: workItemCounts.get(org.karbon_organization_key)?.active || 0,
         avatarUrl: null,
@@ -403,7 +424,10 @@ export function ClientsList() {
         city: c.city,
         state: c.state,
         industry: null,
-        isProspect: !!c.is_prospect || (c.contact_type || "").toLowerCase().includes("prospect"),
+        // See note on the org branch above: a client is a prospect
+        // iff they have no signed proposal. Karbon's `contact_type`
+        // and the legacy `is_prospect` boolean are no longer trusted.
+        isProspect: !signedClientIds.has(c.id),
         workItemCount: workItemCounts.get(c.karbon_contact_key)?.total || 0,
         activeWorkItems: workItemCounts.get(c.karbon_contact_key)?.active || 0,
         avatarUrl: c.avatar_url,
@@ -412,7 +436,7 @@ export function ClientsList() {
     })
 
     return [...orgClients, ...contactClients]
-  }, [organizations, contacts, workItemCounts])
+  }, [organizations, contacts, workItemCounts, signedClientIds])
 
   // ── Apply filters ────────────────────────────────────────────────────────
   const filteredClients = useMemo(() => {
@@ -666,6 +690,12 @@ export function ClientsList() {
       {/* ═════ Status tabs ═════ */}
       <div className="flex gap-2 border-b border-border">
         <StatusTabButton
+          label="All"
+          count={kpis.totalClients}
+          active={statusTab === "all"}
+          onClick={() => setStatusTab("all")}
+        />
+        <StatusTabButton
           label="Active"
           count={kpis.activeClients}
           active={statusTab === "active"}
@@ -676,12 +706,6 @@ export function ClientsList() {
           count={kpis.prospects}
           active={statusTab === "prospects"}
           onClick={() => setStatusTab("prospects")}
-        />
-        <StatusTabButton
-          label="All"
-          count={kpis.totalClients}
-          active={statusTab === "all"}
-          onClick={() => setStatusTab("all")}
         />
       </div>
 
