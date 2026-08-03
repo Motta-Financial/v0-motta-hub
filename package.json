@@ -9,6 +9,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.78",
     "@ai-sdk/react": "3.0.6",
     "@browserbasehq/sdk": "^2.10.0",
     "@dnd-kit/core": "^6.3.1",
