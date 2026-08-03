@@ -44,7 +44,7 @@ type LineValue = {
     scheduleRef: string | null
     notes: string | null
   }
-  source: "proconnect" | "computed" | "input"
+  source: "proconnect" | "computed" | "input" | "estimated"
 }
 
 type Form1040Response = {
@@ -444,7 +444,7 @@ export function Form1040Viewer({
               <span>Exported: {new Date(data.exportedAt).toLocaleString()}</span>
             )}
             <span>
-              Source: ProConnect Phase 1 API — {data.mappedLineCount} mapped input lines; Intuit-calculated amounts (tax, credits) are not available via the API yet
+              Source: ProConnect Phase 1 API — {data.mappedLineCount} mapped input lines. Amber “estimated” values are Hub-calculated from IRS worksheets, not from Intuit — verify against the filed return.
             </span>
           </div>
         </footer>
@@ -536,6 +536,15 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
           {line.isComputed && (
             <Badge variant="outline" className="text-[10px] px-1.5 py-0">
               computed
+            </Badge>
+          )}
+          {source === "estimated" && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 border-amber-300 bg-amber-50 text-amber-700"
+              title="Hub-calculated estimate (standard deduction / taxable SS / tax / CTC) — Intuit does not export calculated amounts. Verify against the filed return."
+            >
+              estimated
             </Badge>
           )}
           {line.scheduleRef && (

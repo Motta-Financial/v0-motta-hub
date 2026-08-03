@@ -19,6 +19,7 @@ import {
   type Form1040Data,
   type FieldCell,
 } from "@/lib/forms/form-1040"
+import { estimateDeterministicLines } from "@/lib/forms/form-1040-estimates"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -109,10 +110,15 @@ export async function GET(
 
   // 3. Render into Form 1040 structure, scoped to this return's type.
   const returnType = snapshot.return_type ?? "IND"
-  const form1040 = await renderForm1040(taxYear, cells, returnType)
+  const rendered = await renderForm1040(taxYear, cells, returnType)
 
   // 4. Load schema for metadata
   const schema = await loadSchema(taxYear, returnType)
+
+  // 5. Estimate the deterministic PTO-calculated lines (12a, 6b, 16, 19)
+  // from mapped inputs + constants. These carry source:"estimated" for the
+  // viewer badge and are never written back to ProConnect.
+  const form1040 = estimateDeterministicLines(rendered, cells, schema.lines, schema.constants)
 
   return NextResponse.json({
     returnId,
