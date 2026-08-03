@@ -22,6 +22,8 @@ import {
   OPENAI_GPT_4O,
   OPENAI_GPT_5,
   OPENAI_GPT_5_MINI,
+  OPENAI_GPT_5_5_PRO,
+  OPENAI_GPT_5_5,
   CLAUDE_OPUS,
   CLAUDE_SONNET,
   CLAUDE_HAIKU,
@@ -307,6 +309,8 @@ export const ALL_MODELS: ModelOption[] = [
   { id: OPENAI_GPT_4O, label: "GPT-4o", provider: "OpenAI" },
   { id: OPENAI_GPT_5, label: "GPT-5", provider: "OpenAI" },
   { id: OPENAI_GPT_5_MINI, label: "GPT-5 Mini", provider: "OpenAI" },
+  { id: OPENAI_GPT_5_5, label: "GPT-5.5", provider: "OpenAI" },
+  { id: OPENAI_GPT_5_5_PRO, label: "GPT-5.5 Pro", provider: "OpenAI" },
   // Anthropic
   { id: CLAUDE_SONNET, label: "Claude Sonnet 4.6", provider: "Anthropic" },
   { id: CLAUDE_OPUS, label: "Claude Opus 4.7", provider: "Anthropic" },
