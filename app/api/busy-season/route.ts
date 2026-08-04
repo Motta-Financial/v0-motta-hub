@@ -1,22 +1,22 @@
 import { createClient } from "@/lib/supabase/server"
 import { NextRequest, NextResponse } from "next/server"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 // GET - Fetch all busy season work items from Supabase
 export async function GET() {
   try {
     const supabase = await createClient()
-    
-    const { data: workItems, error } = await supabase
-      .from("busy_season_work_items")
-      .select("*")
-      .order("updated_at", { ascending: false })
-    
-    if (error) {
-      console.error("[v0] Supabase error:", error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-    
-    return NextResponse.json({ workItems: workItems || [], count: workItems?.length || 0 })
+
+    // Paged in 1,000-row windows — PostgREST caps every response at
+    // 1,000 rows, and the busy-season board exceeds that in season.
+    const workItems = await fetchAllPaged<Record<string, unknown>>(() =>
+      supabase
+        .from("busy_season_work_items")
+        .select("*")
+        .order("updated_at", { ascending: false }),
+    )
+
+    return NextResponse.json({ workItems, count: workItems.length })
   } catch (err) {
     console.error("[v0] API error:", err)
     return NextResponse.json({ 

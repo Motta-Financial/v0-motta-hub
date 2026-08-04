@@ -1,15 +1,21 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { requireAdmin } from "@/lib/auth/require-admin"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 /**
  * GET /api/admin/ai/usage
  *
  * Returns AI usage statistics for the admin dashboard.
+ * Admin-only — the route reads via the service-role client.
  * Query params:
  *   - range: "24h" | "7d" | "30d" | "all" (default: "7d")
  */
 export async function GET(request: Request) {
   try {
+    const auth = await requireAdmin()
+    if (!auth.ok) return auth.response
+
     const { searchParams } = new URL(request.url)
     const range = searchParams.get("range") || "7d"
 
@@ -33,26 +39,25 @@ export async function GET(request: Request) {
         startDate = null
     }
 
-    // Build the base query
-    let baseQuery = supabase.from("ai_usage_log").select("*")
-    if (startDate) {
-      baseQuery = baseQuery.gte("created_at", startDate.toISOString())
-    }
-
-    const { data: logs, error: logsError } = await baseQuery.order(
-      "created_at",
-      { ascending: false }
-    )
-
-    if (logsError) {
-      console.error("[api/admin/ai/usage] Query error:", logsError)
-      return NextResponse.json(
-        { error: "Failed to fetch usage data" },
-        { status: 500 }
-      )
-    }
-
-    const allLogs = logs ?? []
+    // Page through every matching row for the summary aggregates —
+    // PostgREST caps a single response at 1,000 rows (every chat
+    // request writes a row, so the log passes that quickly) — and
+    // select only the columns the aggregation reads.
+    const allLogs = await fetchAllPaged<{
+      use_case: string
+      model: string
+      success: boolean | null
+      total_tokens: number | null
+      latency_ms: number | null
+    }>(() => {
+      let baseQuery = supabase
+        .from("ai_usage_log")
+        .select("use_case, model, success, total_tokens, latency_ms")
+      if (startDate) {
+        baseQuery = baseQuery.gte("created_at", startDate.toISOString())
+      }
+      return baseQuery
+    })
 
     // Calculate summary stats
     const totalRequests = allLogs.length
@@ -142,8 +147,29 @@ export async function GET(request: Request) {
       }))
       .sort((a, b) => b.requests - a.requests)
 
-    // Recent activity (last 50)
-    const recentActivity = allLogs.slice(0, 50).map((log) => ({
+    // Recent activity (last 50) — a separate bounded query so the
+    // wider columns (error_message, user_email) aren't dragged along
+    // for every aggregated row above.
+    let recentQuery = supabase
+      .from("ai_usage_log")
+      .select(
+        "id, use_case, model, success, total_tokens, latency_ms, error_message, user_email, created_at"
+      )
+      .order("created_at", { ascending: false })
+      .limit(50)
+    if (startDate) {
+      recentQuery = recentQuery.gte("created_at", startDate.toISOString())
+    }
+    const { data: recentLogs, error: recentError } = await recentQuery
+    if (recentError) {
+      console.error("[api/admin/ai/usage] Recent activity query error:", recentError)
+      return NextResponse.json(
+        { error: "Failed to fetch usage data" },
+        { status: 500 }
+      )
+    }
+
+    const recentActivity = (recentLogs ?? []).map((log) => ({
       id: log.id,
       useCase: displayNameMap.get(log.use_case) ?? log.use_case,
       model: log.model,

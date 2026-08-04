@@ -27,7 +27,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/server"
-import { ingestRecordingFiles, type ZoomRecordingFile } from "@/lib/zoom/ingest-recording-files"
+import { ingestRecordingFiles, mergeBlobLinks, type ZoomRecordingFile } from "@/lib/zoom/ingest-recording-files"
 import type { ZoomWebhookPayload } from "@/lib/zoom-webhook"
 
 export type HandlerResult =
@@ -75,7 +75,18 @@ async function handleRecordingCompleted(payload: ZoomWebhookPayload): Promise<Ha
 
   const meetingIdNumeric = toBigInt(obj.id)
   const startTime = obj.start_time ? new Date(obj.start_time).toISOString() : null
-  const recordingFiles = Array.isArray(obj.recording_files) ? obj.recording_files : []
+
+  // Merge blob links from any prior row — a re-fired event must not clobber
+  // the archive markers (that would force a full media re-copy on next sync).
+  const { data: priorRec } = await admin
+    .from("zoom_recordings")
+    .select("recording_files")
+    .eq("zoom_uuid", obj.uuid)
+    .maybeSingle()
+  const recordingFiles = mergeBlobLinks(
+    (Array.isArray(obj.recording_files) ? obj.recording_files : []) as ZoomRecordingFile[],
+    priorRec?.recording_files as ZoomRecordingFile[] | null,
+  )
 
   const { error } = await admin.from("zoom_recordings").upsert(
     {
@@ -263,8 +274,20 @@ async function handleMeetingLifecycle(
  * exact shape we want to render.
  * ───────────────────────────────────────────────────────────────────── */
 async function handleSummaryCompleted(payload: ZoomWebhookPayload): Promise<HandlerResult> {
-  const obj = payload.payload?.object as ZoomRecordingObject | undefined
-  if (!obj?.uuid) return { ok: false, action: "meeting.summary_completed", error: "missing_uuid" }
+  // NOTE: meeting.summary_completed does NOT use the standard recording
+  // object shape. Zoom keys it `meeting_uuid` / `meeting_id` /
+  // `meeting_topic` / `meeting_host_email` rather than `uuid` / `id` /
+  // `topic` / `host_email`. Reading only `uuid` made every summary event
+  // bail out with "missing_uuid" — 133 AI Companion summaries (each
+  // carrying a recap plus per-person next steps) were silently dropped
+  // before this was fixed. The `uuid`/`id` fallbacks are kept in case
+  // Zoom ever normalizes the payload.
+  const raw = payload.payload?.object as (ZoomRecordingObject & ZoomSummaryObject) | undefined
+  const summaryUuid = raw?.meeting_uuid ?? raw?.uuid
+  const summaryMeetingId = raw?.meeting_id ?? raw?.id
+  if (!summaryUuid) return { ok: false, action: "meeting.summary_completed", error: "missing_uuid" }
+
+  const obj = { ...raw, uuid: summaryUuid, id: summaryMeetingId } as ZoomRecordingObject
 
   const admin = createAdminClient()
   const meetingIdNumeric = toBigInt(obj.id)
@@ -369,6 +392,21 @@ async function handleAppDeauthorized(payload: ZoomWebhookPayload): Promise<Handl
 /* ───────────────���─────────��───────────────────────────────────────────
  * Helpers
  * ───────────────────────────────────────────────────────────────────── */
+
+/**
+ * Field names unique to `meeting.summary_completed`. Zoom prefixes the
+ * meeting identifiers on this event instead of using the standard
+ * recording-object keys, so it needs its own shape.
+ */
+interface ZoomSummaryObject {
+  meeting_uuid?: string
+  meeting_id?: string | number
+  meeting_topic?: string
+  meeting_host_email?: string
+  summary_title?: string
+  summary_content?: string
+  summary_doc_url?: string
+}
 
 interface ZoomRecordingObject {
   id?: string | number

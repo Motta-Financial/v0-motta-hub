@@ -13,6 +13,7 @@ import {
   getCanonicalService,
 } from "@/lib/sales/service-catalog"
 import { normalizeState } from "@/lib/sales/us-geo"
+import { chunk, fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 /**
  * Sales Dashboard data endpoint.
@@ -74,78 +75,88 @@ export async function GET(req: Request) {
   )
 
   // ── Build proposals query with FK + service lines embedded ────────────
-  let q = supabase
-    .from("ignition_proposals")
-    .select(
-      `proposal_id, proposal_number, title, status, client_name, client_email,
-       organization_id, contact_id, ignition_client_id,
-       total_value, one_time_total, recurring_total, recurring_frequency, currency,
-       sent_at, accepted_at, completed_at, lost_at, lost_reason, archived_at,
-       client_manager, client_partner, proposal_sent_by,
-       billing_starts_on, effective_start_date, last_event_at, created_at, updated_at,
-       services:ignition_proposal_services (
-         id, service_name, description, quantity, unit_price, total_amount,
-         currency, billing_frequency, billing_type, status, ordinal
-       )`,
-    )
-    .limit(2000)
-
-  if (!includeArchived) q = q.is("archived_at", null)
-
-  // Apply server-side filters when provided. We deliberately skip state,
-  // value, and search filters here — they're computed against the *enriched*
-  // record (after joining state from contacts/orgs) and are cheap enough to
-  // do in JS once we have ~900 rows in memory.
-  //
-  // For the activity (any-date) mode we emit an .or() bundling the four
-  // lifecycle date columns so PostgREST treats them as a single
-  // predicate. Without this PostgREST would AND them together and zero
-  // rows would match.
-  if (dateField === "activity") {
-    if (startDate) {
-      q = q.or(
-        [
-          `accepted_at.gte.${startDate}`,
-          `lost_at.gte.${startDate}`,
-          `sent_at.gte.${startDate}`,
-          `created_at.gte.${startDate}`,
-        ].join(","),
+  // PostgREST caps every response at 1,000 rows regardless of .limit(), so
+  // we page through the full set with fetchAllPaged. The factory returns a
+  // fresh, fully-filtered builder on each call (required — .range() mutates
+  // the builder it's called on).
+  const buildProposalsQuery = () => {
+    let q = supabase
+      .from("ignition_proposals")
+      .select(
+        `proposal_id, proposal_number, title, status, client_name, client_email,
+         organization_id, contact_id, ignition_client_id,
+         total_value, one_time_total, recurring_total, recurring_frequency, currency,
+         sent_at, accepted_at, completed_at, lost_at, lost_reason, archived_at,
+         client_manager, client_partner, proposal_sent_by,
+         billing_starts_on, effective_start_date, last_event_at, created_at, updated_at,
+         services:ignition_proposal_services (
+           id, service_name, description, quantity, unit_price, total_amount,
+           currency, billing_frequency, billing_type, status, ordinal
+         )`,
       )
+
+    if (!includeArchived) q = q.is("archived_at", null)
+
+    // Apply server-side filters when provided. We deliberately skip state,
+    // value, and search filters here — they're computed against the *enriched*
+    // record (after joining state from contacts/orgs) and are cheap enough to
+    // do in JS once we have ~900 rows in memory.
+    //
+    // For the activity (any-date) mode we emit an .or() bundling the four
+    // lifecycle date columns so PostgREST treats them as a single
+    // predicate. Without this PostgREST would AND them together and zero
+    // rows would match.
+    if (dateField === "activity") {
+      if (startDate) {
+        q = q.or(
+          [
+            `accepted_at.gte.${startDate}`,
+            `lost_at.gte.${startDate}`,
+            `sent_at.gte.${startDate}`,
+            `created_at.gte.${startDate}`,
+          ].join(","),
+        )
+      }
+      if (endDate) {
+        const upper = endDate + "T23:59:59"
+        q = q.or(
+          [
+            `accepted_at.lte.${upper}`,
+            `lost_at.lte.${upper}`,
+            `sent_at.lte.${upper}`,
+            `created_at.lte.${upper}`,
+          ].join(","),
+        )
+      }
+    } else {
+      if (startDate) q = q.gte(dateField, startDate)
+      if (endDate) q = q.lte(dateField, endDate + "T23:59:59")
     }
-    if (endDate) {
-      const upper = endDate + "T23:59:59"
-      q = q.or(
-        [
-          `accepted_at.lte.${upper}`,
-          `lost_at.lte.${upper}`,
-          `sent_at.lte.${upper}`,
-          `created_at.lte.${upper}`,
-        ].join(","),
-      )
+    if (statusFilter.length) q = q.in("status", statusFilter)
+    if (partnerFilter.length) q = q.in("client_partner", partnerFilter)
+    if (managerFilter.length) q = q.in("client_manager", managerFilter)
+    if (sentByFilter.length) q = q.in("proposal_sent_by", sentByFilter)
+
+    // Order by the most recent activity touch for the activity mode so the
+    // proposal list reads chronologically regardless of which lifecycle
+    // event fired last (won, lost, sent, etc).
+    if (dateField === "activity") {
+      q = q.order("updated_at", { ascending: false, nullsFirst: false })
+    } else {
+      q = q.order(dateField, { ascending: false, nullsFirst: false })
     }
-  } else {
-    if (startDate) q = q.gte(dateField, startDate)
-    if (endDate) q = q.lte(dateField, endDate + "T23:59:59")
-  }
-  if (statusFilter.length) q = q.in("status", statusFilter)
-  if (partnerFilter.length) q = q.in("client_partner", partnerFilter)
-  if (managerFilter.length) q = q.in("client_manager", managerFilter)
-  if (sentByFilter.length) q = q.in("proposal_sent_by", sentByFilter)
-
-  // Order by the most recent activity touch for the activity mode so the
-  // proposal list reads chronologically regardless of which lifecycle
-  // event fired last (won, lost, sent, etc).
-  if (dateField === "activity") {
-    q = q.order("updated_at", { ascending: false, nullsFirst: false })
-  } else {
-    q = q.order(dateField, { ascending: false, nullsFirst: false })
+    return q
   }
 
-  const { data: proposals, error } = await q
-
-  if (error) {
+  let proposals: any[]
+  try {
+    proposals = await fetchAllPaged<any>(buildProposalsQuery)
+  } catch (error: any) {
     console.error("[sales-dashboard] proposals query failed:", error)
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json(
+      { error: error?.message || "proposals query failed" },
+      { status: 500 },
+    )
   }
 
   // ── Load curated recurring-revenue scrub set ──────────────────────────
@@ -212,47 +223,56 @@ export async function GET(req: Request) {
   const contactInfo = new Map<string, EntityInfo>()
   const igcInfo = new Map<string, { state: string | null; city: string | null; country: string | null }>()
 
+  // The id sets scale with proposal count (~1k each already), so chunk
+  // every .in() list — a single unchunked list blows past PostgREST's
+  // URL-length limit and silently fails the lookup.
   if (orgIds.size) {
-    const { data: orgs } = await supabase
-      .from("organizations")
-      .select("id, name, state, city, country")
-      .in("id", Array.from(orgIds))
-    for (const o of orgs ?? []) {
-      orgInfo.set(o.id, {
-        state: normalizeState(o.state),
-        city: o.city,
-        country: o.country,
-        name: o.name,
-      })
+    for (const ids of chunk(Array.from(orgIds))) {
+      const { data: orgs } = await supabase
+        .from("organizations")
+        .select("id, name, state, city, country")
+        .in("id", ids)
+      for (const o of orgs ?? []) {
+        orgInfo.set(o.id, {
+          state: normalizeState(o.state),
+          city: o.city,
+          country: o.country,
+          name: o.name,
+        })
+      }
     }
   }
   if (contactIds.size) {
-    const { data: contacts } = await supabase
-      .from("contacts")
-      .select("id, full_name, state, city, country, mailing_state, mailing_city")
-      .in("id", Array.from(contactIds))
-    for (const ct of contacts ?? []) {
-      contactInfo.set(ct.id, {
-        // contacts.state can be the residential or mailing — try residential
-        // first, then fall back to mailing
-        state: normalizeState(ct.state) ?? normalizeState(ct.mailing_state),
-        city: ct.city ?? ct.mailing_city,
-        country: ct.country,
-        name: ct.full_name,
-      })
+    for (const ids of chunk(Array.from(contactIds))) {
+      const { data: contacts } = await supabase
+        .from("contacts")
+        .select("id, full_name, state, city, country, mailing_state, mailing_city")
+        .in("id", ids)
+      for (const ct of contacts ?? []) {
+        contactInfo.set(ct.id, {
+          // contacts.state can be the residential or mailing — try residential
+          // first, then fall back to mailing
+          state: normalizeState(ct.state) ?? normalizeState(ct.mailing_state),
+          city: ct.city ?? ct.mailing_city,
+          country: ct.country,
+          name: ct.full_name,
+        })
+      }
     }
   }
   if (igcIds.size) {
-    const { data: igcs } = await supabase
-      .from("ignition_clients")
-      .select("ignition_client_id, state, city, country")
-      .in("ignition_client_id", Array.from(igcIds))
-    for (const ig of igcs ?? []) {
-      igcInfo.set(ig.ignition_client_id, {
-        state: normalizeState(ig.state),
-        city: ig.city,
-        country: ig.country,
-      })
+    for (const ids of chunk(Array.from(igcIds))) {
+      const { data: igcs } = await supabase
+        .from("ignition_clients")
+        .select("ignition_client_id, state, city, country")
+        .in("ignition_client_id", ids)
+      for (const ig of igcs ?? []) {
+        igcInfo.set(ig.ignition_client_id, {
+          state: normalizeState(ig.state),
+          city: ig.city,
+          country: ig.country,
+        })
+      }
     }
   }
 
@@ -700,17 +720,27 @@ export async function GET(req: Request) {
     paid_at: string | null
     ignition_client_id: string | null
   }
-  let payQ = supabase
-    .from("ignition_payments")
-    .select(
-      "ignition_payment_id, amount, fees, net_amount, paid_at, ignition_client_id",
-    )
-    .not("paid_at", "is", null)
-    .limit(5000)
-  if (startDate) payQ = payQ.gte("paid_at", startDate)
-  if (endDate) payQ = payQ.lte("paid_at", endDate + "T23:59:59")
-  const { data: paymentRows } = await payQ
-  const payments = (paymentRows ?? []) as PaymentRow[]
+  // The table already holds ~1.7k paid rows, past PostgREST's 1,000-row
+  // response cap — page through the window instead of trusting .limit().
+  const buildPaymentsQuery = () => {
+    let payQ = supabase
+      .from("ignition_payments")
+      .select(
+        "ignition_payment_id, amount, fees, net_amount, paid_at, ignition_client_id",
+      )
+      .not("paid_at", "is", null)
+    if (startDate) payQ = payQ.gte("paid_at", startDate)
+    if (endDate) payQ = payQ.lte("paid_at", endDate + "T23:59:59")
+    return payQ
+  }
+  let payments: PaymentRow[] = []
+  try {
+    payments = await fetchAllPaged<PaymentRow>(buildPaymentsQuery)
+  } catch (payErr) {
+    // Matches the previous error-ignoring destructure: a payments failure
+    // degrades the payouts card to zeros instead of failing the dashboard.
+    console.error("[sales-dashboard] payments query failed:", payErr)
+  }
 
   let payoutsGross = 0
   let payoutsFees = 0

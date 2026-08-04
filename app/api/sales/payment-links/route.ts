@@ -6,11 +6,12 @@ import { createPaymentRequest, markEmailed } from "@/lib/payments/requests"
 import { buildPayLinkEmailHtml, buildPayLinkEmailSubject } from "@/lib/payments/email"
 import { sendEmail } from "@/lib/email"
 import type { PaymentRequest } from "@/lib/payments/types"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 export const runtime = "nodejs"
 
 function payUrl(token: string): string {
-  const base = process.env.APP_BASE_URL || "https://hub.motta.cpa"
+  const base = firmConfigSync().hubUrl
   return `${base}/embed/pay/${token}`
 }
 

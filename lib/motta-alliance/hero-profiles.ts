@@ -220,6 +220,25 @@ export const HERO_PROFILES: HeroProfile[] = [
     ],
   },
   {
+    slug: "matthew-pereira",
+    name: "Matthew Pereira",
+    alias: "The Fastest Closer",
+    role: "Accounting Leadership. FP&A. The Lightning Close.",
+    quote: "Speed matters. Accuracy matters more. I bring both.",
+    variant: "primary",
+    imageUrl:
+      "https://vddv16ydsybbljnq.public.blob.vercel-storage.com/motta-alliance/heroes/MA_Matt_Pereira.png",
+    appearance:
+      "Adult man, Caucasian, short dark hair, trimmed beard, broad grin, dynamic forward-leaning pose. Black tactical suit with white lotus chest emblem, gold lightning-bolt accents and crackling green-gold lightning energy. Signature: 'BOOKS CLOSED' checkmark hologram and variance-analysis dashboards.",
+    aliases: [
+      "matthew pereira",
+      "matt pereira",
+      "the fastest closer",
+      "matthew.pereira@mottafinancial.com",
+      "matt",
+    ],
+  },
+  {
     slug: "shinika-shelley",
     name: "Shinika Shelley",
     alias: "The Control Tower",

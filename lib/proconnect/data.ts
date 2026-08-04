@@ -1,26 +1,32 @@
 /**
  * ProConnect Tax-Return Data API (Phase 1)
  *
- * Wraps the two new endpoints introduced in the Phase 1 spec:
+ * Wraps the two Data Service endpoints:
  *
- *   GET  /v2/clients/{clientId}/returns/{returnId}/data
- *   POST /v2/clients/{clientId}/returns/{returnId}/import/series/{seriesId}
+ *   Export: GET  /v2/clients/oii-client/{clientOiiId}/returns/{returnId}/data
+ *   Import: POST /v2/clients/{clientId}/returns/{returnId}/import/series/{seriesId}
  *
  * These live on https://protaxdata.api.intuit.com (the Data Service host —
  * NOT client.accountant, engagement.accountant, or the plain api.intuit.com
- * gateway) and require the scope `com.intuit.proconnect.taxreturns`, which
- * Intuit must explicitly allow-list for our app (Phase 1 doc §2.1 / §7).
- * Until that provisioning happens, the gateway rejects calls at the edge
- * with `403 insufficient_scope` / `AuthorizationFailed` (verified 2026-07-13
- * against realm 9130356180193146 with a freshly-minted, valid token) — even
- * though the same scope works on the Client + Engagement services. We surface
- * the 403 as `scope_missing` (see classify) so the dashboard can prompt
- * re-consent rather than silently failing.
+ * gateway) and require the scope `com.intuit.proconnect.taxreturns`.
  *
- * Reference: ProConnect Open API Doc — Phase 1.
+ * IMPORTANT — the Export path has an `oii-client/` segment that the original
+ * Phase 1 doc OMITTED; Intuit's corrected V2 doc includes it. Calling the
+ * doc's path (`/v2/clients/{id}/returns/{id}/data`, no `oii-client/`) returned
+ * `403 insufficient_scope` / `AuthorizationFailed` on every call from launch
+ * through 2026-07-27. That LOOKED like a scope/allow-list gap but was really a
+ * wrong URL — realm 9130356180193146 was provisioned all along. Confirmed
+ * 2026-07-27: the `oii-client/` path returns 200 with a full series map.
+ * (Fix per Steve @ Intuit.) `clientId` and `clientOiiId` are the same id.
+ *
+ * NOTE the asymmetry — Import does NOT use `oii-client/`. Don't "tidy up" the
+ * two paths to match; the gateway routes them differently.
+ *
+ * Reference: ProConnect Open API Doc — Phase 1 (V2).
  */
 
 import { getAccessToken, getRealmId } from "./oauth"
+import { acquireRateLimitSlot, newIntuitTid } from "./rate-limit"
 
 const TAX_RETURNS_BASE_URL =
   process.env.PROCONNECT_TAX_RETURNS_BASE_URL || "https://protaxdata.api.intuit.com"
@@ -177,6 +183,14 @@ function classify(status: number, body: string): ProconnectApiError {
     // §A.7: export uses `403 RETURN_LOCKED` (import uses 423).
     if (upstreamCode === "RETURN_LOCKED") return { kind: "locked", status: 403, body }
     if (upstreamCode === "ACCESS_DENIED") return { kind: "access_denied", status: 403, body }
+    // Gateway-level rejection. Observed on 100% of Import attempts (verified
+    // 2026-08-03) while Export succeeds on the same token — i.e. the app/token
+    // is not entitled to the Import operation, which per Phase 1 §2.1 requires
+    // the firm's PRIMARY ADMIN token. Classified as scope_missing so the UI
+    // surfaces the re-consent path rather than a generic failure.
+    if (upstreamCode === "AuthorizationFailed") {
+      return { kind: "scope_missing", status: 403, body }
+    }
     // Default: treat unattributed 403 as scope-missing (consent flow).
     return { kind: "scope_missing", status: 403, body }
   }
@@ -191,8 +205,21 @@ function classify(status: number, body: string): ProconnectApiError {
 function parseUpstreamErrorCode(body: string): string | null {
   if (!body) return null
   try {
-    const parsed = JSON.parse(body) as { errorCode?: string }
-    return typeof parsed.errorCode === "string" ? parsed.errorCode : null
+    // Two distinct error shapes reach us:
+    //   1. The ProConnect service, per the Phase 1 spec:
+    //        { "errorCode": "RETURN_LOCKED", "errorMessage": "..." }
+    //   2. The Intuit API *gateway*, which rejects before the request ever
+    //      reaches ProConnect and uses a different envelope entirely:
+    //        { "code": "AuthorizationFailed", "type": "INPUT", "message": null }
+    //      Verified live 2026-08-03: every Import call returns exactly this,
+    //      with or without the `oii-client/` path segment, while Export on the
+    //      same token returns 200. Reading only `errorCode` classified these as
+    //      an unattributed 403 and lost the one diagnostic string that explains
+    //      what happened.
+    const parsed = JSON.parse(body) as { errorCode?: string; code?: string }
+    if (typeof parsed.errorCode === "string") return parsed.errorCode
+    if (typeof parsed.code === "string") return parsed.code
+    return null
   } catch {
     return null
   }
@@ -211,6 +238,13 @@ async function fetchWithRetry(
 
   let res: Response
   try {
+    // Throttle before EVERY attempt, including retries. This path previously
+    // had backoff but no limiter, while client.ts had a limiter but no
+    // backoff — so the write path (Export/Import) could burst past Intuit's
+    // ~5 TPS cap. Both now share one counter (lib/proconnect/rate-limit.ts).
+    // Placing this inside the retry recursion means a backoff storm is
+    // rate-limited too, not just the first attempt.
+    await acquireRateLimitSlot()
     res = await fetch(url, init)
   } catch (err) {
     // Network / DNS / TLS — don't retry indefinitely; one retry only.
@@ -273,7 +307,7 @@ async function authedRequest<T>(
     intuit_realmid: realmId,
     // Generate a fresh `intuit-tid` per request so the server can
     // correlate logs back to a specific call. Doc strongly recommends.
-    "intuit-tid": cryptoRandomTid(),
+    "intuit-tid": newIntuitTid(),
   }
   if (init.body !== undefined) headers["Content-Type"] = "application/json"
 
@@ -321,13 +355,6 @@ async function authedRequest<T>(
   }
 }
 
-/** RFC 4122-style 8-char request id. */
-function cryptoRandomTid(): string {
-  const bytes = new Uint8Array(8)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -340,7 +367,7 @@ export async function exportReturnData(
   returnId: string
 ): Promise<Result<ReturnExport>> {
   return authedRequest<ReturnExport>(
-    `/v2/clients/${encodeURIComponent(clientId)}/returns/${encodeURIComponent(returnId)}/data`,
+    `/v2/clients/oii-client/${encodeURIComponent(clientId)}/returns/${encodeURIComponent(returnId)}/data`,
     { method: "GET" }
   )
 }

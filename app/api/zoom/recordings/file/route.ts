@@ -41,6 +41,8 @@ export async function GET(req: NextRequest) {
     // with a partial (206) response. This is what makes <video> seeking work.
     const result = await get(pathname, {
       access: "private",
+      // Recordings live in the dedicated private store, not the default one.
+      token: process.env.ZOOM_BLOB_READ_WRITE_TOKEN,
       ...(rangeHeader ? { headers: { range: rangeHeader } } : {}),
     })
 

@@ -21,7 +21,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { getS2SAccessToken, listAllZoomUsers, s2sFetch, isS2SConfigured } from "./s2s-auth"
-import { ingestRecordingFiles, type ZoomRecordingFile } from "./ingest-recording-files"
+import { ingestRecordingFiles, mergeBlobLinks, type ZoomRecordingFile } from "./ingest-recording-files"
 import { processOneMeeting, type ProcessResult } from "./process-meeting-participants"
 
 export interface AccountSyncOptions {
@@ -217,7 +217,17 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
           if (recs.length > 0) userHadRecordings = true
 
           for (const rec of recs) {
-            const files = (rec.recording_files ?? []) as ZoomRecordingFile[]
+            // Merge blob links from the prior row — Zoom's payload never has
+            // them, and overwriting them forces a full media re-copy.
+            const { data: prior } = await supabase
+              .from("zoom_recordings")
+              .select("recording_files")
+              .eq("zoom_uuid", rec.uuid)
+              .maybeSingle()
+            const files = mergeBlobLinks(
+              (rec.recording_files ?? []) as ZoomRecordingFile[],
+              prior?.recording_files as ZoomRecordingFile[] | null,
+            )
 
             const { data: upserted, error: recErr } = await supabase
               .from("zoom_recordings")

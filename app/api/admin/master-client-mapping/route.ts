@@ -21,6 +21,7 @@
  */
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -59,15 +60,19 @@ export async function GET(req: Request) {
     // Stats reflect the *unfiltered* universe so the KPI strip
     // remains a stable "what's in the hub" reading. The table below
     // narrates a filtered slice; the stats above narrate the whole.
-    // With ~2k clients, fetching all rows once and aggregating in JS
-    // is cheaper and simpler than a stored procedure — and keeps the
-    // stats definition co-located with the rest of this route.
-    const { data: all, error: allErr } = await supabase
-      .from("master_client_mapping")
-      .select("link_count, linked_systems, client_type")
-      .limit(10000)
-    if (allErr) throw allErr
-    const rows = all || []
+    // Aggregating in JS keeps the stats definition co-located with
+    // the rest of this route, but the rows must be PAGED: PostgREST
+    // caps every response at 1,000 rows regardless of .limit(), and
+    // the view already holds ~2k clients.
+    const rows = await fetchAllPaged<{
+      link_count: number | null
+      linked_systems: string[] | null
+      client_type: string | null
+    }>(() =>
+      supabase
+        .from("master_client_mapping")
+        .select("link_count, linked_systems, client_type"),
+    )
     const stats = {
       total_clients: rows.length,
       unlinked: rows.filter((r) => r.link_count === 0).length,

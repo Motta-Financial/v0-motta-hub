@@ -25,7 +25,7 @@ export async function GET(request: Request) {
     if (kind === "active-clients") {
       const { data, error } = await supabase
         .from("contacts")
-        .select("id, full_name, email, company, updated_at")
+        .select("id, full_name, primary_email, updated_at")
         .eq("status", "Active")
         .order("updated_at", { ascending: false })
         .limit(10)
@@ -35,8 +35,8 @@ export async function GET(request: Request) {
       return NextResponse.json({
         items: (data ?? []).map((c) => ({
           id: c.id,
-          title: c.full_name || c.company || "Unnamed contact",
-          subtitle: c.company || c.email || null,
+          title: c.full_name || "Unnamed contact",
+          subtitle: c.primary_email || null,
           meta: c.updated_at ? new Date(c.updated_at).toLocaleDateString() : null,
           href: `/clients/${c.id}`,
         })),

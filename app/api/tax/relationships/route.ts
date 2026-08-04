@@ -31,11 +31,11 @@ export async function GET(req: NextRequest) {
 
     let q = admin.from("tax_client_relationships_enriched").select("*").limit(limit)
     if (status !== "all") q = q.eq("status", status)
-    if (individual) q = q.eq("individual_proconnect_client_id", individual)
-    if (business) q = q.eq("business_proconnect_client_id", business)
+    if (individual) q = q.eq("person_client_id", individual)
+    if (business) q = q.eq("org_client_id", business)
     if (clientId) {
       q = q.or(
-        `individual_proconnect_client_id.eq.${clientId},business_proconnect_client_id.eq.${clientId}`,
+        `person_client_id.eq.${clientId},org_client_id.eq.${clientId}`,
       )
     }
     q = q.order("confidence", { ascending: false }).order("updated_at", { ascending: false })
@@ -62,8 +62,8 @@ export async function GET(req: NextRequest) {
  * Body shape A (manual link):
  *   {
  *     action: "manual",
- *     individual_proconnect_client_id: "...",
- *     business_proconnect_client_id: "...",
+ *     person_client_id: "...",
+ *     org_client_id: "...",
  *     relationship_type: "k1_issuer" | "owner" | ...,
  *     notes?: string
  *   }
@@ -87,8 +87,8 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => null)) as
       | {
           action: "manual"
-          individual_proconnect_client_id: string
-          business_proconnect_client_id: string
+          person_client_id: string
+          org_client_id: string
           relationship_type: string
           notes?: string
         }
@@ -102,8 +102,8 @@ export async function POST(req: NextRequest) {
 
     if (body.action === "manual") {
       if (
-        !body.individual_proconnect_client_id ||
-        !body.business_proconnect_client_id ||
+        !body.person_client_id ||
+        !body.org_client_id ||
         !body.relationship_type
       ) {
         return NextResponse.json(
@@ -115,18 +115,26 @@ export async function POST(req: NextRequest) {
         .from("tax_client_relationships")
         .upsert(
           {
-            individual_proconnect_client_id: body.individual_proconnect_client_id,
-            business_proconnect_client_id: body.business_proconnect_client_id,
+            person_client_id: body.person_client_id,
+            org_client_id: body.org_client_id,
             relationship_type: body.relationship_type,
             status: "confirmed",
             confidence: 1,
-            direction: "individual_to_business",
-            notes: body.notes ?? null,
+            // `link_source` is NOT NULL (check: auto|manual|alfred|hub_fallback).
+            // A human pressing "link" is exactly 'manual'.
+            link_source: "manual",
             reviewed_at: new Date().toISOString(),
+            // Removed: `direction` and `notes` — neither is a column on
+            // tax_client_relationships (scripts/170). They were producing a
+            // 42703 on every manual link. `body.notes` is still captured on the
+            // audit signal row appended below, which is where it belongs.
           },
           {
-            onConflict:
-              "individual_proconnect_client_id,business_proconnect_client_id,relationship_type",
+            // Must match the tax_client_relationships_unique constraint
+            // exactly — Postgres rejects an ON CONFLICT target with no
+            // matching unique index (42P10), and the constraint is on the
+            // person/org pair only, not the triple.
+            onConflict: "person_client_id,org_client_id",
           },
         )
         .select("id")
@@ -137,13 +145,18 @@ export async function POST(req: NextRequest) {
       }
 
       // Append a `manual` signal so the audit trail still has a record.
+      // Column names per scripts/170. `person_client_id` is NOT NULL and
+      // `confidence_contribution` is the real column (not `confidence`);
+      // signal_source / signal_kind / signal_value / raw do not exist.
+      // The reviewer's free-text note lands in matched_value, which is the
+      // only auditable text column on this table.
       await admin.from("tax_client_relationship_signals").insert({
         relationship_id: data!.id,
-        signal_source: "manual",
-        signal_kind: "hub_link",
-        signal_value: body.notes ?? null,
-        confidence: 1,
-        raw: { manual: true },
+        person_client_id: body.person_client_id,
+        org_client_id: body.org_client_id,
+        signal_type: "hub_link",
+        matched_value: body.notes ?? null,
+        confidence_contribution: 1,
       })
 
       return NextResponse.json({ ok: true, id: data!.id })

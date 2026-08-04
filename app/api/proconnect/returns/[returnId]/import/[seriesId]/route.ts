@@ -16,6 +16,12 @@
  * Phase 1 endpoint:
  *   POST https://api.intuit.com/v2/clients/{clientId}/returns/{returnId}/import/series/{seriesId}
  *
+ * Write safety:
+ *   Two independent gates stand in front of a commit. The return must be
+ *   on PROCONNECT_WRITE_ALLOWED_RETURN_IDS (fails closed when unset), and
+ *   a clean dry run of the same shape must have happened in the last 30
+ *   minutes. Dry runs bypass both — they persist nothing.
+ *
  * Audit policy:
  *   We record EVERY attempt — including dry runs and validation failures
  *   that never hit the network — into proconnect_import_jobs, with one
@@ -43,6 +49,14 @@ function admin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false },
   })
+}
+
+function isWriteAllowed(returnId: string) {
+  const allowed = (process.env.PROCONNECT_WRITE_ALLOWED_RETURN_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+  return allowed.includes(returnId.trim().toLowerCase())
 }
 
 type Body = {
@@ -87,11 +101,34 @@ export async function POST(
     return NextResponse.json({ error: "version must be string or null" }, { status: 400 })
   }
 
+  const dryRun = Boolean(body.dryRun)
+
+  // ------------------------------------------------------------------ write allowlist
+  // Intuit has no delete/clear in the Import API, so a wrong returnId is
+  // not recoverable through the API — the only fix is deleting the whole
+  // return in the PTO UI. Commits are therefore restricted to returns
+  // explicitly designated for testing. Fails CLOSED: an unset env var
+  // means no return may be committed to.
+  //
+  // Dry runs are exempt — they persist nothing, and their field-rule
+  // errors are a useful source of catalog facts on real returns.
+  if (!dryRun && !isWriteAllowed(returnId)) {
+    return NextResponse.json(
+      {
+        error:
+          "Return is not on the import write allowlist. Commits are restricted to " +
+          "returns designated for testing; set PROCONNECT_WRITE_ALLOWED_RETURN_IDS " +
+          "(comma-separated return UUIDs) to authorize one. Dry runs are unrestricted.",
+        returnId,
+      },
+      { status: 403 },
+    )
+  }
+
   // ------------------------------------------------------------------ dryRun-first gate
   // There is no ProConnect sandbox — a commit writes onto a live return.
   // A non-dry-run commit is only allowed when a CLEAN dry run (zero
   // errors) of the same shape ran recently for this (return, series).
-  const dryRun = Boolean(body.dryRun)
   if (!dryRun) {
     const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString()
     const { data: priorDry } = await sb

@@ -11,6 +11,7 @@
  * a noon-ET cron rather than by the chain, so the firm always receives
  * an email even if an upstream prep stage failed.
  */
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /** Stage route segments under /api/cron, in pipeline order. */
 export type PipelineStage = "tommy-podium-image" | "tommy-recap-pdf"
@@ -22,7 +23,7 @@ export type PipelineStage = "tommy-podium-image" | "tommy-recap-pdf"
  * row already exists, so a missed hand-off can be re-triggered manually.
  */
 export function triggerStage(stage: PipelineStage, weekId: string): void {
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+  const appUrl = firmConfigSync().hubUrl
   const triggerUrl = `${appUrl}/api/cron/${stage}`
   void fetch(triggerUrl, {
     method: "POST",

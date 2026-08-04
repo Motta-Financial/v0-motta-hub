@@ -31,6 +31,7 @@ import {
   syncSingleClient,
   prefetchClientList,
   refreshClientYearEngagements,
+  hydrateEngagementEfile,
   deleteClient,
 } from "@/lib/proconnect/sync"
 import { exportReturnData } from "@/lib/proconnect/data"
@@ -139,6 +140,47 @@ async function processClientEvent(
 }
 
 /**
+ * Re-read one engagement's e-file status from the single-engagement GET.
+ *
+ * Always non-fatal. A failure here costs at most one webhook's worth of
+ * freshness: the engagement stays in the stale set (efile_synced_at is only
+ * stamped on success) and the nightly hydration pass retries it. Failing the
+ * webhook instead would make Intuit redeliver the whole batch, re-running the
+ * export and relationship scan alongside it.
+ *
+ * missingRow is expected, not an error — a Create event can beat the
+ * engagement list sync that creates the row.
+ */
+async function refreshEfileStatus(engagementId: string): Promise<void> {
+  try {
+    const result = await hydrateEngagementEfile(engagementId)
+    if (result.ok) {
+      console.log(
+        `[ProConnect Webhook] e-file status for ${engagementId}: ${result.status ?? "(no filings)"}`
+      )
+    } else if (result.missingRow) {
+      console.log(
+        `[ProConnect Webhook] e-file hydrate skipped for ${engagementId}: engagement row not synced yet`
+      )
+    } else if (result.notFound) {
+      // Normal on a Delete event, and on an Update that races a deletion.
+      console.log(
+        `[ProConnect Webhook] e-file hydrate skipped for ${engagementId}: no longer in ProConnect`
+      )
+    } else {
+      console.warn(
+        `[ProConnect Webhook] e-file hydrate failed for ${engagementId}: ${result.error}`
+      )
+    }
+  } catch (err) {
+    console.warn(
+      "[ProConnect Webhook] e-file hydrate threw (non-fatal):",
+      err instanceof Error ? err.message : err
+    )
+  }
+}
+
+/**
  * Process a TaxReturn event.
  *
  * The webhook delivers the return UUID as `entity.id`. We map it to a
@@ -181,7 +223,16 @@ async function processTaxReturnEvent(
     return { success: true }
   }
 
-  // Create / Update: refresh the snapshot. Export failures must not
+  // Create / Update: pull e-file status first. This is the only path that
+  // gets it in near-real time — the nightly sync's list endpoint carries no
+  // filings, so its hydration step is a capped catch-up queue. During filing
+  // season the acceptance/rejection a preparer is waiting on arrives here.
+  // Deliberately ahead of the export below: an export failure returns early,
+  // and e-file status shouldn't be collateral damage of a 403 on a different
+  // service.
+  await refreshEfileStatus(entity.id)
+
+  // Refresh the snapshot. Export failures must not
   // 4xx/5xx the webhook response (Intuit would retry the whole batch),
   // but they DO mark the event row failed — the old warn-and-return-
   // success pattern hid months of scope_missing 403s behind "processed"
@@ -204,9 +255,17 @@ async function processTaxReturnEvent(
           )
         }
       }
+      // Capture Intuit's own response body alongside our classification.
+      // `scope_missing` is OUR label for an unattributed 403 (one whose
+      // errorCode is neither RETURN_LOCKED nor ACCESS_DENIED) — when
+      // raising a provisioning ticket, Intuit needs THEIR errorCode and
+      // the intuit-tid, not our inference. Truncated to 500 chars.
+      // PII-safe: Phase 1 error bodies carry {errorCode, errorMessage}
+      // only, and Intuit never echoes a failing SSN/EIN/TIN.
+      const upstream = result.error.body ? ` upstream=${result.error.body.slice(0, 500)}` : ""
       return {
         success: false,
-        error: `export failed: ${result.error.kind} ${result.error.status}${result.intuitTid ? ` (intuit-tid ${result.intuitTid})` : ""}`,
+        error: `export failed: ${result.error.kind} ${result.error.status}${result.intuitTid ? ` (intuit-tid ${result.intuitTid})` : ""}${upstream}`,
       }
     }
     await persistReturnSnapshot(sb, clientId, entity.id, result.data)
@@ -337,6 +396,13 @@ async function processTaxReturnWorkStatusEvent(
       `[ProConnect Webhook] work-status refresh failed for ${entity.id}: ${result.error}`
     )
   }
+
+  // The refresh above uses the engagement LIST endpoint, which has no
+  // filings — so it can't move e-file status even though a work-status
+  // change ("E-filed", "Accepted") is often exactly when it moved. One
+  // extra call for the engagement that actually changed.
+  await refreshEfileStatus(entity.id)
+
   return { success: true }
 }
 

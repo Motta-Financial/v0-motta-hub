@@ -28,6 +28,9 @@
 // historical attribution matters for tax engagements that go back years.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+// Relative import (not "@/lib/...") so operational scripts that pull this
+// module in via tsx (e.g. scripts/apply-proconnect-auto-link.ts) resolve it.
+import { fetchAllPaged } from "../supabase/fetch-all"
 
 export const MATCHER_VERSION = "v1"
 
@@ -77,6 +80,31 @@ export type OrganizationCandidate = {
 }
 
 export type Candidate = ContactCandidate | OrganizationCandidate
+
+/** Row shape used by the EIN exact-match signal. */
+export type OrgEinRow = {
+  id: string
+  name: string | null
+  ein: string | null
+  primary_email: string | null
+  state: string | null
+  status: string | null
+}
+
+/**
+ * Fetch every organization with a non-null EIN, paged past the PostgREST
+ * 1,000-row cap. Callers ranking many clients should call this ONCE per
+ * request and pass the result via `options.einOrgs` — otherwise
+ * rankHubCandidates re-downloads the organizations table for every client.
+ */
+export async function fetchOrgsWithEin(sb: SupabaseClient): Promise<OrgEinRow[]> {
+  return fetchAllPaged<OrgEinRow>(() =>
+    sb
+      .from("organizations")
+      .select("id, name, ein, primary_email, state, status")
+      .not("ein", "is", null),
+  )
+}
 
 const ENTITY_SUFFIX_RE =
   /\b(l\.?l\.?c|inc(orporated)?|corp(oration)?|co(mpany)?|l\.?p|l\.?l\.?p|ltd|p\.?l\.?l\.?c|p\.?c|p\.?a|trust|estate)\b\.?/gi
@@ -129,6 +157,9 @@ export async function rankHubCandidates(
   options: {
     limit?: number
     excludePairs?: Set<string>
+    /** Pre-fetched org EIN index (from fetchOrgsWithEin) — pass when
+     *  ranking many clients so the org table is only fetched once. */
+    einOrgs?: OrgEinRow[]
   } = {},
 ): Promise<Candidate[]> {
   const limit = options.limit ?? 5
@@ -157,14 +188,11 @@ export async function rankHubCandidates(
     // ── 1) EIN exact (digits only, ignores formatting) ──────────────
     const ein = digitsOnly(pc.tax_id)
     if (ein.length === 9) {
-      const { data } = await sb
-        .from("organizations")
-        .select("id, name, ein, primary_email, state, status")
-        .not("ein", "is", null)
-      for (const row of data || []) {
-        if (digitsOnly((row as { ein: string }).ein) === ein) {
+      const rows = options.einOrgs ?? (await fetchOrgsWithEin(sb))
+      for (const row of rows) {
+        if (digitsOnly(row.ein) === ein) {
           record(
-            { kind: "organization", ...(row as Record<string, unknown>), score: 0, signals: [] } as unknown as OrganizationCandidate,
+            { kind: "organization", ...row, score: 0, signals: [] } as OrganizationCandidate,
             "ein",
             1.0,
           )

@@ -19,11 +19,20 @@ import {
   buildTableCatalog,
   isAllowedTable,
 } from "@/lib/alfred/allowed-tables"
-import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
+import { getAlfredServiceAccount, ALFRED_EMAIL } from "@/lib/alfred/service-account"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { resolveAlfredUser, type ResolvedAlfredUser } from "@/lib/alfred/resolve-user"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { buildPolicy, type Audience } from "@/lib/alfred/policy"
-import { ALFRED_CHAT_MODEL, isClaudeModel, type ClaudeModelId } from "@/lib/ai/models"
+import { anthropic } from "@ai-sdk/anthropic"
+import { buildProjectContext } from "@/lib/alfred/project-context"
+import {
+  ALFRED_CHAT_MODEL,
+  getClaudeCapabilities,
+  isAnthropicGatewayModel,
+  isGatewayTextModel,
+  type GatewayTextModelId,
+} from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
 
 // Shape of the requesting user, sent from the client transport body.
@@ -38,6 +47,7 @@ interface CurrentUser {
 }
 
 export const maxDuration = 60
+
 
 /**
  * Escape user-supplied text before splicing it into a PostgREST `.or()`
@@ -270,17 +280,22 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ teamMemberId, includeCompleted = false }) => {
       try {
         const supabase = createAdminClient()
-        let query = supabase.from("work_items").select("assignee_name, status, due_date, title")
+        // Page through every matching row — PostgREST caps a single
+        // response at 1,000 rows, which would silently truncate the
+        // workload counts once active work items cross that. Select
+        // only the columns the grouping below reads.
+        const data = await fetchAllPaged<{
+          assignee_name: string | null
+          due_date: string | null
+        }>(() => {
+          let query = supabase.from("work_items").select("assignee_name, due_date")
 
-        if (!includeCompleted) {
-          query = query.not("status", "in", '("Completed","Cancelled")')
-        }
+          if (!includeCompleted) {
+            query = query.not("status", "in", '("Completed","Cancelled")')
+          }
 
-        const { data, error } = await query
-
-        if (error) {
-          return { success: false, error: error.message }
-        }
+          return query
+        })
 
         // Group by assignee
         const workload: Record<string, { total: number; overdue: number; upcoming: number }> = {}
@@ -512,16 +527,25 @@ Use this to answer questions about clients, work items, team members, finances, 
     execute: async ({ period = "month" }) => {
       try {
         const supabase = createAdminClient()
-        // Get invoice totals
-        const { data: invoices } = await supabase
-          .from("invoices")
-          .select("total_amount, amount_paid, status, invoice_date")
+        // Get invoice totals. Paged: PostgREST caps a single response
+        // at 1,000 rows, which would silently understate the totals
+        // once invoices pass that — and select only the columns the
+        // reduces below read.
+        const invoices = await fetchAllPaged<{
+          total_amount: number | null
+          amount_paid: number | null
+        }>(() => supabase.from("invoices").select("total_amount, amount_paid"))
 
-        // Get recurring revenue
-        const { data: recurring } = await supabase
-          .from("recurring_revenue")
-          .select("monthly_amount, annual_amount, is_active")
-          .eq("is_active", true)
+        // Get recurring revenue (paged for the same reason)
+        const recurring = await fetchAllPaged<{
+          monthly_amount: number | null
+          annual_amount: number | null
+        }>(() =>
+          supabase
+            .from("recurring_revenue")
+            .select("monthly_amount, annual_amount")
+            .eq("is_active", true),
+        )
 
         const totalInvoiced = invoices?.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) || 0
         const totalPaid = invoices?.reduce((sum, inv) => sum + (inv.amount_paid || 0), 0) || 0
@@ -887,14 +911,14 @@ Use this to answer questions about clients, work items, team members, finances, 
 function buildIdentityPreamble(currentUser: CurrentUser | null): string {
   if (!currentUser) {
     return `You operate under two identities:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — UNKNOWN. No team member identity was provided with this turn.
 
 Because the requesting user is unknown, do NOT answer "my work items" / "my deadlines" / "my clients" style questions as if you knew who is asking. Tell the user you couldn't resolve their identity and answer firm-wide instead. Do NOT call getMyWorkItems or getMyUpcomingDeadlines in this state.`
   }
 
   return `You operate under two identities at once:
-- The ALFRED service account (Info@mottafinancial.com) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
+- The ALFRED service account (${ALFRED_EMAIL}) — the firm-level identity that outbound emails, Karbon notes, and message-board posts originate from.
 - The requesting user — ${currentUser.fullName ?? currentUser.email} (${currentUser.role ?? "no role"}, ${currentUser.department ?? "no department"}), team_members.id ${currentUser.teamMemberId}, Karbon user key ${currentUser.karbonUserKey ?? "none"}.
 
 When you create or send anything externally visible, the sender/author is ALFRED, but you ALWAYS include "on behalf of ${currentUser.fullName ?? currentUser.email}" in the body and record ${currentUser.teamMemberId} as on_behalf_of_id in activity_log.
@@ -1015,24 +1039,33 @@ export async function POST(req: Request) {
     conversationId: incomingConversationId = null,
     audience = "staff",
     model: requestedModel = null,
+    think: requestedThink = null,
+    effort: requestedEffort = null,
   }: {
     messages: UIMessage[]
-    // currentUser is intentionally NOT typed/read here -- it is an
-    // untrusted hint only and is silently discarded.
     conversationId?: string | null
     audience?: Audience
     // Optional per-request model override sent by the alfred-chat
-    // client's model picker. Validated below via isClaudeModel() so
+    // client's model picker. Validated below via isGatewayTextModel() so
     // a malicious client can't ask for an arbitrary provider/model.
     model?: string | null
+    // Optional "Deep think" toggle from the client. Triggers Anthropic
+    // adaptive thinking when the resolved model supports it. Silently
+    // ignored on non-Anthropic models or models flagged as not
+    // supporting thinking in the catalog.
+    think?: boolean | null
+    // Optional thinking-effort hint. Constrained to the per-model
+    // effortLevels allowlist below.
+    effort?: "low" | "medium" | "high" | "xhigh" | "max" | null
   } = await req.json()
 
   // Resolve the per-request model override. We accept it only if it
-  // round-trips through the Claude allowlist; anything else (unknown
-  // string, OpenAI/Google id, etc.) silently falls through to
-  // aiConfig.model below. Logging the requested-vs-resolved pair so
-  // we can spot clients shipping stale ids after a model bump.
-  const overrideModel: ClaudeModelId | null = isClaudeModel(requestedModel)
+  // round-trips through the approved AI Gateway text-model allowlist;
+  // anything else (unknown string, image model, unsupported provider,
+  // etc.) silently falls through to aiConfig.model below. Logging the
+  // requested-vs-resolved pair so we can spot clients shipping stale ids
+  // after a model bump.
+  const overrideModel: GatewayTextModelId | null = isGatewayTextModel(requestedModel)
     ? requestedModel
     : null
   if (requestedModel && !overrideModel) {
@@ -1085,6 +1118,10 @@ export async function POST(req: Request) {
 
   let conversationId: string | null = incomingConversationId
   let conversationTitleAlreadySet = false
+  // Project the conversation is filed under, if any. Read from the row
+  // rather than the request body: the alfred-chat client sets project_id
+  // directly via its own RLS-scoped connection, and the body is untrusted.
+  let conversationProjectId: string | null = null
 
   if (currentUser) {
     if (conversationId) {
@@ -1092,13 +1129,14 @@ export async function POST(req: Request) {
       // If not, fall through and create a fresh one rather than 500ing.
       const { data: existing } = await adminAuthLookup
         .from("alfred_conversations")
-        .select("id, title, end_user_team_member_id")
+        .select("id, title, end_user_team_member_id, project_id")
         .eq("id", conversationId)
         .maybeSingle()
       if (!existing || existing.end_user_team_member_id !== currentUser.teamMemberId) {
         conversationId = null
       } else {
         conversationTitleAlreadySet = !!existing.title
+        conversationProjectId = existing.project_id ?? null
       }
     }
 
@@ -1338,20 +1376,170 @@ export async function POST(req: Request) {
         ? aiConfig.systemPrompt
         : `${buildIdentityPreamble(currentUser)}\n\n${BASE_SYSTEM_PROMPT}\n\n${policy.systemPromptSuffix}`
 
+      // ── Anthropic native capabilities ────────────────────────────
+      // We branch off the resolved model id rather than the user's
+      // request because the admin panel can pin ALFRED to a specific
+      // model. getClaudeCapabilities returns undefined for non-
+      // Anthropic ids (e.g. an OpenAI fallback in aiConfig.model), in
+      // which case we skip the whole block and ALFRED runs with the
+      // SDK's provider-agnostic defaults.
+      const isAnthropic = isAnthropicGatewayModel(effectiveModel)
+      const capabilities = isAnthropic
+        ? getClaudeCapabilities(effectiveModel)
+        : undefined
+
+      // Resolve "Deep think" -- only if the client asked for it AND
+      // the model supports it. Silent fallthrough on mismatch so a
+      // stale client doesn't block a request.
+      const thinkingEnabled = Boolean(
+        requestedThink && capabilities?.supportsThinking,
+      )
+      if (requestedThink && !thinkingEnabled) {
+        // Preserved from the implementation this block supersedes: a stale
+        // client can ask for Deep think on a model that doesn't support it (or
+        // on a non-Anthropic fallback pinned by the admin panel). We proceed
+        // without thinking rather than erroring the turn, but say so, because
+        // otherwise the toggle looks like it worked and silently didn't.
+        console.warn(
+          `[alfred] deep-think requested but not enabled for model ${effectiveModel} ` +
+            `(anthropic=${isAnthropic}, supportsThinking=${capabilities?.supportsThinking ?? "unknown"}). ` +
+            `Proceeding without it.`,
+        )
+      }
+
+      // Resolve effort: must be in the model's allowlist; otherwise
+      // null and we omit the option entirely.
+      const effortLevel =
+        requestedEffort &&
+        capabilities?.effortLevels.includes(requestedEffort)
+          ? requestedEffort
+          : null
+
+      // Anthropic provider options. We pass these on every request to
+      // an Anthropic model so caching / context management always run;
+      // thinking + effort are only attached when explicitly enabled
+      // because they change pricing and latency.
+      const anthropicProviderOptions = isAnthropic
+        ? {
+            anthropic: {
+              ...(thinkingEnabled
+                ? {
+                    // Adaptive thinking lets Claude decide how much to
+                    // reason. display: "summarized" ensures Opus 4.7
+                    // streams visible reasoning instead of pausing
+                    // silently for many seconds (default is "omitted"
+                    // on Opus 4.7).
+                    thinking: {
+                      type: "adaptive" as const,
+                      display: "summarized" as const,
+                    },
+                  }
+                : {}),
+              ...(effortLevel ? { effort: effortLevel } : {}),
+              // Trim old tool-use blocks once the conversation gets
+              // big. ALFRED can rack up 10+ DB / search rounds in a
+              // single turn; without this, follow-up turns pay full
+              // input cost on every prior tool call.
+              contextManagement: {
+                edits: [
+                  {
+                    type: "clear_tool_uses_20250919" as const,
+                    trigger: { type: "input_tokens" as const, value: 60_000 },
+                    keep: { type: "tool_uses" as const, value: 8 },
+                    clearAtLeast: {
+                      type: "input_tokens" as const,
+                      value: 2_000,
+                    },
+                    clearToolInputs: true,
+                  },
+                ],
+              },
+            },
+            // Gateway-level automatic caching. The Gateway adds
+            // cache_control: ephemeral markers to the static parts
+            // of the request (system prompt + tool definitions),
+            // which cuts input tokens by 80–90% on follow-up turns
+            // when the system prompt is the dominant cost.
+            gateway: {
+              caching: "auto" as const,
+            },
+          }
+        : undefined
+
+      // Wire Anthropic's hosted server tools when the model supports
+      // them. These run on Anthropic's side -- ALFRED gets the result
+      // back as a normal tool message but we don't have to implement
+      // or pay for the search/fetch ourselves. Audience-gated to
+      // staff-and-above via the existing policy.allowedTools list,
+      // matching how the local browsePage / webSearch tools work.
+      const serverWebTools =
+        isAnthropic &&
+        capabilities?.supportsServerWebTools &&
+        policy.allowedTools.includes("webSearch")
+          ? {
+              // Distinct keys so they don't collide with our own
+              // webSearch / browsePage tools. Either set may be
+              // present in filteredTools; the model will pick the
+              // best fit per turn.
+              anthropicWebSearch: anthropic.tools.webSearch_20250305({
+                maxUses: 5,
+              }),
+              anthropicWebFetch: anthropic.tools.webFetch_20250910({
+                maxUses: 5,
+              }),
+            }
+          : {}
+
+      // ── Project context ───────────────────────────────────────────
+      // If this conversation is filed under an ALFRED Project, append the
+      // project's standing instructions and attached knowledge. Appended
+      // AFTER the base prompt so firm policy and the identity preamble
+      // still take precedence over user-authored project instructions.
+      // Returns null (and changes nothing) when there's no project, the
+      // caller isn't entitled to it, or it's empty.
+      const projectContext = currentUser
+        ? await buildProjectContext(supabase, conversationProjectId, currentUser.teamMemberId)
+        : null
+      const systemPrompt = projectContext
+        ? `${baseSystemPrompt}\n\n---\n\n${projectContext.promptFragment}`
+        : baseSystemPrompt
+
       const result = streamText({
         // Resolution order: per-request override (validated against
-        // CLAUDE_MODELS) > admin-panel override > ALFRED_CHAT_MODEL.
+        // ALFRED_CHAT_MODELS) > admin-panel override > ALFRED_CHAT_MODEL.
         model: effectiveModel,
-        system: baseSystemPrompt,
+        system: systemPrompt,
         messages: modelMessages,
-        tools: filteredTools,
-        // 12 steps lets ALFRED chain webSearch → pick a result → browsePage →
-        // reply, with a couple DB lookups in the same turn if needed.
-        stopWhen: stepCountIs(12),
+        tools: {
+          ...filteredTools,
+          ...serverWebTools,
+        // Cast: the inferred schema types of our local Zod-typed tools
+        // and Anthropic's provider-defined tools have disjoint generic
+        // parameters (FlexibleSchema<{query: string}> vs FlexibleSchema<never>),
+        // so TS can't merge them into a single ToolSet shape. At runtime
+        // the AI SDK iterates the object, so the cast is safe.
+        } as Parameters<typeof streamText>[0]["tools"],
+        ...(anthropicProviderOptions
+          ? { providerOptions: anthropicProviderOptions }
+          : {}),
+        // 16 steps gives the model headroom for: webSearch -> fetch ->
+        // a few DB queries -> assemble the answer. Was 12 before we
+        // wired the Anthropic server tools.
+        stopWhen: stepCountIs(16),
         abortSignal: req.signal,
-        onFinish: async ({ usage }) => {
-          // Fire-and-forget usage logging for the admin stats dashboard
-          // AI SDK 6 uses inputTokens/outputTokens; we map to our DB schema names
+        onFinish: async ({ usage, providerMetadata }) => {
+          // Fire-and-forget usage logging for the admin stats dashboard.
+          // AI SDK 6 uses inputTokens/outputTokens; we map to our DB
+          // schema names. We also surface Anthropic-specific cache /
+          // thinking counters via metadata so the dashboard can show
+          // cache hit rates without a schema migration.
+          const anthropicMeta = providerMetadata?.anthropic as
+            | {
+                cacheCreationInputTokens?: number
+                cacheReadInputTokens?: number
+                thinkingTokens?: number
+              }
+            | undefined
           logAIUsage({
             useCase: "alfred_chat",
             model: effectiveModel,
@@ -1362,7 +1550,15 @@ export async function POST(req: Request) {
             success: true,
             userId: currentUser?.teamMemberId,
             userEmail: currentUser?.email,
-            metadata: { conversationId },
+            metadata: {
+              conversationId,
+              thinkingEnabled,
+              effortLevel,
+              cacheCreationInputTokens:
+                anthropicMeta?.cacheCreationInputTokens,
+              cacheReadInputTokens: anthropicMeta?.cacheReadInputTokens,
+              thinkingTokens: anthropicMeta?.thinkingTokens,
+            },
           })
         },
       })

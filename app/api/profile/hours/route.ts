@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -70,25 +71,13 @@ export async function GET(_request: NextRequest) {
 
     const karbonUserKey = teamMember.karbon_user_key
 
-    // Pull all timesheets for this user. The table only has ~3k rows total
-    // for the whole firm, so per-user is small enough to compute summaries
-    // in app code without a SQL view.
-    const { data: rows, error: tsError } = await supabase
-      .from("karbon_timesheets")
-      .select(
-        "karbon_timesheet_key,date,minutes,description,is_billable,billing_status,hourly_rate,billed_amount," +
-          "karbon_work_item_key,work_item_title,client_key,client_name,task_type_name,role_name,karbon_url",
-      )
-      .eq("user_key", karbonUserKey)
-      .order("date", { ascending: false })
-      .limit(5000)
-
-    if (tsError) {
-      console.error("[v0] hours: timesheets query failed", tsError.message)
-      return NextResponse.json({ error: "Failed to load timesheets" }, { status: 500 })
-    }
-
-    const entries = ((rows ?? []) as unknown) as Array<{
+    // Pull all timesheets for this user, paged in 1,000-row windows —
+    // PostgREST caps every response at 1,000 rows regardless of
+    // .limit(), so a single capped select would silently drop a
+    // long-tenured member's older entries from the allTime/YTD totals.
+    // The secondary order on the primary key keeps the pagination
+    // stable when many entries share the same date.
+    type TimesheetRow = {
       karbon_timesheet_key: string
       date: string | null
       minutes: number | null
@@ -104,7 +93,27 @@ export async function GET(_request: NextRequest) {
       task_type_name: string | null
       role_name: string | null
       karbon_url: string | null
-    }>
+    }
+    let entries: TimesheetRow[]
+    try {
+      entries = await fetchAllPaged<TimesheetRow>(() =>
+        supabase
+          .from("karbon_timesheets")
+          .select(
+            "karbon_timesheet_key,date,minutes,description,is_billable,billing_status,hourly_rate,billed_amount," +
+              "karbon_work_item_key,work_item_title,client_key,client_name,task_type_name,role_name,karbon_url",
+          )
+          .eq("user_key", karbonUserKey)
+          .order("date", { ascending: false })
+          .order("karbon_timesheet_key", { ascending: true }),
+      )
+    } catch (tsError) {
+      console.error(
+        "[v0] hours: timesheets query failed",
+        tsError instanceof Error ? tsError.message : String(tsError),
+      )
+      return NextResponse.json({ error: "Failed to load timesheets" }, { status: 500 })
+    }
 
     // ---- Date buckets (in user's local-ish ET; just use ISO date strings) ----
     const today = new Date()

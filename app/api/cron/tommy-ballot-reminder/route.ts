@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { buildTommyReminderHtml, sendCategoryEmail } from "@/lib/email"
 import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * Vercel Cron endpoint that emails every active team member a Tommy Awards
@@ -49,7 +50,7 @@ export async function GET(request: Request) {
 
   try {
     const supabase = createAdminClient()
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://hub.motta.cpa"
+    const appUrl = firmConfigSync().hubUrl
 
     // Compute this week's Friday date label (used in the reminder copy)
     const today = new Date()

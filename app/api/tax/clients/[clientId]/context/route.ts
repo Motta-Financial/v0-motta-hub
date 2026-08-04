@@ -40,13 +40,33 @@ export async function GET(
 
     const client = clientRes.data
 
-    // Fetch Hub contact linkage
-    const { data: hubContact } = await supabase
-      .from("contacts")
-      .select("id, karbon_contact_key, legacy_motta_client_id, primary_email, phone")
-      .or(`email.eq.${client.email || ""},karbon_contact_key.is.not.null`)
-      .limit(1)
-      .maybeSingle()
+    // Fetch Hub contact linkage — prefer the explicit hub_contact_id link
+    // written by the ProConnect↔Hub matcher; otherwise fall back to an
+    // exact email match. Never match on karbon_contact_key presence alone
+    // (that matches an arbitrary unrelated contact).
+    let hubContact: {
+      id: string
+      karbon_contact_key: string | null
+      legacy_motta_client_id: string | null
+      primary_email: string | null
+      phone: string | null
+    } | null = null
+    if (client.hub_contact_id) {
+      const { data } = await supabase
+        .from("contacts")
+        .select("id, karbon_contact_key, legacy_motta_client_id, primary_email, phone")
+        .eq("id", client.hub_contact_id)
+        .maybeSingle()
+      hubContact = data
+    } else if (client.email) {
+      const { data } = await supabase
+        .from("contacts")
+        .select("id, karbon_contact_key, legacy_motta_client_id, primary_email, phone")
+        .eq("primary_email", client.email)
+        .limit(1)
+        .maybeSingle()
+      hubContact = data
+    }
 
     // Fetch latest engagements for context
     const { data: recentEngagements } = await supabase

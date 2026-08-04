@@ -13,10 +13,12 @@ import { createClient } from "@supabase/supabase-js"
 import {
   rankHubCandidates,
   pickAutoApply,
+  fetchOrgsWithEin,
   MATCHER_VERSION,
   type ProconnectClientLite,
   type Candidate,
 } from "@/lib/tax/proconnect-client-match"
+import { fetchAllPaged, chunk } from "@/lib/supabase/fetch-all"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -59,20 +61,29 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  // Pull rejected pairs once so we don't re-suggest the same bad guesses
-  const { data: rejections } = await sb
-    .from("tax_proconnect_client_link_log")
-    .select("proconnect_client_id, hub_contact_id, hub_organization_id")
-    .eq("status", "rejected")
+  // Pull rejected pairs once so we don't re-suggest the same bad guesses.
+  // Paged — a bare select silently truncates at 1,000 rows, which would
+  // let previously-rejected matches back into the queue.
+  const rejections = await fetchAllPaged<{
+    proconnect_client_id: string
+    hub_contact_id: string | null
+    hub_organization_id: string | null
+  }>(() =>
+    sb
+      .from("tax_proconnect_client_link_log")
+      .select("proconnect_client_id, hub_contact_id, hub_organization_id")
+      .eq("status", "rejected"),
+  )
   const excludePairs = new Set(
-    (rejections || []).map(
+    rejections.map(
       (r) =>
-        `${(r as { proconnect_client_id: string }).proconnect_client_id}|${
-          (r as { hub_contact_id: string | null }).hub_contact_id ||
-          (r as { hub_organization_id: string | null }).hub_organization_id
-        }`,
+        `${r.proconnect_client_id}|${r.hub_contact_id || r.hub_organization_id}`,
     ),
   )
+
+  // Pre-fetch the org EIN index once — rankHubCandidates would otherwise
+  // re-download the organizations table for every client.
+  const einOrgs = await fetchOrgsWithEin(sb)
 
   const rows: Array<{
     proconnect: ProconnectClientLite
@@ -80,12 +91,16 @@ export async function GET(req: Request) {
     autoApply: Candidate | null
   }> = []
 
-  for (const c of (clients as ProconnectClientLite[] | null) || []) {
-    const candidates = await rankHubCandidates(sb, c, { excludePairs })
-    rows.push({
-      proconnect: c,
-      candidates,
-      autoApply: pickAutoApply(candidates),
+  for (const batch of chunk((clients as ProconnectClientLite[] | null) || [], 5)) {
+    const ranked = await Promise.all(
+      batch.map((c) => rankHubCandidates(sb, c, { excludePairs, einOrgs })),
+    )
+    batch.forEach((c, i) => {
+      rows.push({
+        proconnect: c,
+        candidates: ranked[i],
+        autoApply: pickAutoApply(ranked[i]),
+      })
     })
   }
 

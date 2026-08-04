@@ -118,25 +118,48 @@ export function FormBadge({ form }: { form: string }) {
   )
 }
 
+/**
+ * The subset of proconnect_engagements.efile_latest the badge needs.
+ * Full shape: lib/proconnect/sync.EfileLatest.
+ */
+export type EfileLatestBadge = {
+  status?: string | null
+  userMessage?: string | null
+  filingType?: string | null
+  filingLevel?: string | null
+  jurisdiction?: string | null
+}
+
 // Coloured efile status badge. ProConnect uses status strings like
-// "Accepted", "Rejected", "Pending", "Transmitted" — we map them to
+// "ACK_SUCCEEDED", "ACK_REJECTED", "PENDING_AGENCY" — we map them to
 // emerald/rose/amber/blue so the table reads at a glance. Unknown
 // strings get the neutral stone treatment instead of being hidden.
+//
+// `latest` is optional so callers that only have the scalar keep working,
+// but pass it wherever it exists: without it a rejected EXTENSION renders
+// as a bare red "Rejected" and reads as a rejected *return*. 9 of the 17
+// live rejections are extensions, so this is the common case, not an edge.
 export function EfileBadge({
   status,
+  latest,
 }: {
   status: string | null | undefined
+  latest?: EfileLatestBadge | null
 }) {
-  if (!status) {
+  const code = latest?.status || status
+  if (!code) {
     return (
       <Badge variant="outline" className="text-stone-500 border-stone-200">
         not filed
       </Badge>
     )
   }
-  const lower = status.toLowerCase()
+  // Tone comes from the raw code, which is stable, rather than the
+  // human label. `succeed` matters: ACK_SUCCEEDED contains none of
+  // accept/complete/filed and used to fall through to neutral stone.
+  const lower = code.toLowerCase()
   let tone = "bg-stone-100 text-stone-900 border-stone-200"
-  if (/accept|complete|filed/.test(lower))
+  if (/succeed|accept|complete|filed/.test(lower))
     tone = "bg-emerald-100 text-emerald-900 border-emerald-200"
   else if (/reject|fail|error/.test(lower))
     tone = "bg-rose-100 text-rose-900 border-rose-200"
@@ -144,9 +167,24 @@ export function EfileBadge({
     tone = "bg-amber-100 text-amber-900 border-amber-200"
   else if (/transmit|sent/.test(lower))
     tone = "bg-blue-100 text-blue-900 border-blue-200"
+
+  // Intuit's own wording ("Rejected") over the wire code ("ACK_REJECTED").
+  const label = latest?.userMessage || code
+  // Qualify only when the status is NOT the return's own federal filing —
+  // a plain accepted 1040 stays "Accepted" and the table stays scannable.
+  const isState = latest?.filingLevel === "flState"
+  const kind =
+    latest?.filingType && latest.filingType !== "REGULAR"
+      ? latest.filingType.toLowerCase()
+      : null
+  const scope = [isState ? latest?.jurisdiction || "state" : null, kind]
+    .filter(Boolean)
+    .join(" ")
+
   return (
     <Badge variant="outline" className={cn("text-[11px]", tone)}>
-      {status}
+      {label}
+      {scope ? <span className="ml-1 opacity-70">· {scope}</span> : null}
     </Badge>
   )
 }

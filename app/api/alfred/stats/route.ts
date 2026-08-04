@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
 import { requireAlfredAuth } from "@/lib/alfred/auth-guard"
+import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 export async function GET(request: NextRequest) {
   const authError = await requireAlfredAuth(request)
@@ -92,23 +93,30 @@ export async function GET(request: NextRequest) {
         .in("status", ["sent", "overdue"]),
     ])
 
-    // Calculate work items by assignee
-    const workByAssigneeResult = await supabase
-      .from("work_items")
-      .select("assignee_name")
-      .not("status", "in", '("Completed","Cancelled")')
+    // Calculate work items by assignee and by status. Both breakdowns
+    // are paged: PostgREST caps a single response at 1,000 rows and
+    // work_items is well past that, so an un-paged select would count
+    // only the first 1,000.
+    const [workByAssigneeRows, workByStatusRows] = await Promise.all([
+      fetchAllPaged<{ assignee_name: string | null }>(() =>
+        supabase
+          .from("work_items")
+          .select("assignee_name")
+          .not("status", "in", '("Completed","Cancelled")'),
+      ),
+      fetchAllPaged<{ status: string | null }>(() =>
+        supabase.from("work_items").select("status"),
+      ),
+    ])
 
     const workByAssignee: Record<string, number> = {}
-    workByAssigneeResult.data?.forEach((item) => {
+    workByAssigneeRows.forEach((item) => {
       const name = item.assignee_name || "Unassigned"
       workByAssignee[name] = (workByAssignee[name] || 0) + 1
     })
 
-    // Calculate work items by status
-    const workByStatusResult = await supabase.from("work_items").select("status")
-
     const workByStatus: Record<string, number> = {}
-    workByStatusResult.data?.forEach((item) => {
+    workByStatusRows.forEach((item) => {
       const status = item.status || "Unknown"
       workByStatus[status] = (workByStatus[status] || 0) + 1
     })

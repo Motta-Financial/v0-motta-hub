@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server"
+import { NextResponse, after } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import {
   calendlyListAll,
@@ -250,9 +250,12 @@ async function upsertInvitee(
         // the intake form) still land in Karbon. Existing contacts
         // already have a Karbon key or will be linked manually.
         if (wasNewContact) {
-          void pushHubContactToKarbon(contactId, { source: "Calendly Booking" }).catch((err) => {
-            console.error("[calendly] karbon push failed (non-blocking):", err)
-          })
+          const newContactId = contactId
+          after(() =>
+            pushHubContactToKarbon(newContactId, { source: "Calendly Booking" }).catch((err) => {
+              console.error("[calendly] karbon push failed (non-blocking):", err)
+            }),
+          )
         }
       }
     } catch (err) {
@@ -428,23 +431,25 @@ async function handleInviteeCreated(payload: any) {
   // durable record either way.
   for (const p of processed) {
     if (!p?.inviteeUuid) continue
-    void runAlfredCalendlyTriage(supabase, {
-      calendlyEventId: saved.id,
-      calendlyEventUuid: saved.calendly_uuid,
-      calendlyInviteeUuid: p.inviteeUuid,
-      eventName: event?.name ?? null,
-      eventTypeName: event?.name ?? null,
-      startTime: event?.start_time ?? null,
-      invitee: {
-        name: p.invitee?.name ?? null,
-        email: p.invitee?.email ?? null,
-        phone: extractPhoneFromInvitee(p.invitee),
-        questionsAndAnswers: p.invitee?.questions_and_answers ?? null,
-      },
-      deterministicMatch: p.deterministicMatch,
-    }).catch((err) => {
-      console.error("[calendly] alfred triage failed (non-blocking):", err)
-    })
+    after(() =>
+      runAlfredCalendlyTriage(supabase, {
+        calendlyEventId: saved.id,
+        calendlyEventUuid: saved.calendly_uuid,
+        calendlyInviteeUuid: p.inviteeUuid,
+        eventName: event?.name ?? null,
+        eventTypeName: event?.name ?? null,
+        startTime: event?.start_time ?? null,
+        invitee: {
+          name: p.invitee?.name ?? null,
+          email: p.invitee?.email ?? null,
+          phone: extractPhoneFromInvitee(p.invitee),
+          questionsAndAnswers: p.invitee?.questions_and_answers ?? null,
+        },
+        deterministicMatch: p.deterministicMatch,
+      }).catch((err) => {
+        console.error("[calendly] alfred triage failed (non-blocking):", err)
+      }),
+    )
   }
 
   await notifyTeamMembers(supabase, event, invitee, "created", connection)
@@ -456,24 +461,26 @@ async function handleInviteeCreated(payload: any) {
   // notifyTeamOfNewBooking via the team_notified_at column.
   const firstInvitee = processed[0]
   if (firstInvitee?.inviteeUuid) {
-    void notifyTeamOfNewBooking({
-      eventId: saved.id,
-      eventUuid: saved.calendly_uuid,
-      eventName: event?.name ?? "Meeting",
-      startTime: event?.start_time ?? new Date().toISOString(),
-      endTime: event?.end_time ?? new Date().toISOString(),
-      joinUrl: event?.location?.join_url ?? null,
-      hostName: connection?.calendly_user_name ?? null,
-      inviteeName: firstInvitee.invitee?.name ?? "Unknown",
-      inviteeEmail: firstInvitee.invitee?.email ?? "",
-      inviteePhone: extractPhoneFromInvitee(firstInvitee.invitee),
-      wasNewContact: firstInvitee.wasNewContact ?? false,
-      contactId: firstInvitee.deterministicMatch?.contactId ?? null,
-      karbonKey: null, // Karbon push is async; email goes out immediately
-      questionsAndAnswers: firstInvitee.invitee?.questions_and_answers ?? null,
-    }).catch((err) => {
-      console.error("[calendly] team email failed (non-blocking):", err)
-    })
+    after(() =>
+      notifyTeamOfNewBooking({
+        eventId: saved.id,
+        eventUuid: saved.calendly_uuid,
+        eventName: event?.name ?? "Meeting",
+        startTime: event?.start_time ?? new Date().toISOString(),
+        endTime: event?.end_time ?? new Date().toISOString(),
+        joinUrl: event?.location?.join_url ?? null,
+        hostName: connection?.calendly_user_name ?? null,
+        inviteeName: firstInvitee.invitee?.name ?? "Unknown",
+        inviteeEmail: firstInvitee.invitee?.email ?? "",
+        inviteePhone: extractPhoneFromInvitee(firstInvitee.invitee),
+        wasNewContact: firstInvitee.wasNewContact ?? false,
+        contactId: firstInvitee.deterministicMatch?.contactId ?? null,
+        karbonKey: null, // Karbon push is async; email goes out immediately
+        questionsAndAnswers: firstInvitee.invitee?.questions_and_answers ?? null,
+      }).catch((err) => {
+        console.error("[calendly] team email failed (non-blocking):", err)
+      }),
+    )
   }
 
   return { success: true, action: "invitee_created" }
@@ -506,13 +513,16 @@ async function handleNoShow(payload: any, isNoShow: boolean) {
   // payload; when un-marking we clear both the flag and the stored uri.
   const noShowUri = isNoShow ? (payload?.uri ?? null) : null
 
+  // Deliberately do NOT touch raw_data here: the no-show webhook payload
+  // is a tiny stub, and overwriting the stored invitee snapshot with it
+  // would destroy questions_and_answers/tracking/payment data that other
+  // code paths rely on. no_show_uri preserves the no-show resource.
   const { error } = await supabase
     .from("calendly_invitees")
     .update({
       status: isNoShow ? "no_show" : "active",
       no_show: isNoShow,
       no_show_uri: noShowUri,
-      raw_data: payload,
       updated_at: new Date().toISOString(),
     })
     .eq("calendly_uuid", inviteeUuid)

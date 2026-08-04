@@ -27,6 +27,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
+import { chunk, fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 export interface SyncHubMeetingsResult {
   calendlyProcessed: number
@@ -40,6 +41,30 @@ interface ClientLink {
   organization_id: string | null
   confidence: number | null
   needs_review: boolean | null
+}
+
+interface CalendlyEventRow {
+  id: string
+  name: string | null
+  status: string | null
+  start_time: string | null
+  end_time: string | null
+  location_type: string | null
+  join_url: string | null
+  team_member_id: string | null
+  event_type_name: string | null
+}
+
+interface ZoomMeetingRow {
+  id: string
+  zoom_meeting_id: string | null
+  topic: string | null
+  status: string | null
+  start_time: string | null
+  duration: number | null
+  join_url: string | null
+  team_member_id: string | null
+  calendly_event_id: string | null
 }
 
 /** Pick the best contact/org link: confirmed over needs_review, then highest confidence. */
@@ -105,37 +130,61 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
   }
 
   // ── 1. Load Calendly events + their client links + host ──────────────
-  const { data: calEvents, error: calErr } = await admin
-    .from("calendly_events")
-    .select("id, name, status, start_time, end_time, location_type, join_url, team_member_id, event_type_name")
-  if (calErr) errors.push(`calendly_events: ${calErr.message}`)
+  // Paged — PostgREST caps every response at 1,000 rows, so an un-ranged
+  // select would silently stop mirroring meetings past that.
+  let calEvents: CalendlyEventRow[] = []
+  try {
+    calEvents = await fetchAllPaged<CalendlyEventRow>(() =>
+      admin
+        .from("calendly_events")
+        .select("id, name, status, start_time, end_time, location_type, join_url, team_member_id, event_type_name"),
+    )
+  } catch (err) {
+    errors.push(`calendly_events: ${(err as Error).message}`)
+  }
 
-  const calEventIds = (calEvents ?? []).map((e) => e.id)
+  const calEventIds = calEvents.map((e) => e.id)
   const calLinksByEvent = new Map<string, ClientLink[]>()
-  if (calEventIds.length > 0) {
-    const { data: calLinks } = await admin
-      .from("calendly_event_clients")
-      .select("calendly_event_id, contact_id, organization_id, confidence, needs_review")
-      .in("calendly_event_id", calEventIds)
-    for (const l of calLinks ?? []) {
-      const arr = calLinksByEvent.get(l.calendly_event_id) ?? []
-      arr.push(l)
-      calLinksByEvent.set(l.calendly_event_id, arr)
+  // Chunk the .in() list (long lists blow up the request URL) and page each
+  // chunk — a truncated link set would overwrite previously-linked meetings
+  // with NULL contact/org on re-run.
+  for (const idBatch of chunk(calEventIds)) {
+    try {
+      const calLinks = await fetchAllPaged<ClientLink & { calendly_event_id: string }>(() =>
+        admin
+          .from("calendly_event_clients")
+          .select("calendly_event_id, contact_id, organization_id, confidence, needs_review")
+          .in("calendly_event_id", idBatch),
+      )
+      for (const l of calLinks) {
+        const arr = calLinksByEvent.get(l.calendly_event_id) ?? []
+        arr.push(l)
+        calLinksByEvent.set(l.calendly_event_id, arr)
+      }
+    } catch (err) {
+      errors.push(`calendly_event_clients: ${(err as Error).message}`)
     }
   }
 
   // Map of calendly internal id -> its bridged zoom meeting (internal id).
-  const { data: bridgedZoom } = await admin
-    .from("zoom_meetings")
-    .select("id, calendly_event_id")
-    .not("calendly_event_id", "is", null)
   const zoomByCalendly = new Map<string, string>()
-  for (const z of bridgedZoom ?? []) {
-    if (z.calendly_event_id) zoomByCalendly.set(z.calendly_event_id, z.id)
+  try {
+    const bridgedZoom = await fetchAllPaged<{ id: string; calendly_event_id: string | null }>(() =>
+      admin
+        .from("zoom_meetings")
+        .select("id, calendly_event_id")
+        .not("calendly_event_id", "is", null),
+    )
+    for (const z of bridgedZoom) {
+      if (z.calendly_event_id) zoomByCalendly.set(z.calendly_event_id, z.id)
+    }
+  } catch (err) {
+    errors.push(`zoom bridge: ${(err as Error).message}`)
   }
 
   // ── 2. Upsert one meeting per Calendly event ─────────────────────────
-  for (const ev of calEvents ?? []) {
+  const calRows: Record<string, unknown>[] = []
+  for (const ev of calEvents) {
     const { contactId, organizationId } = bestLink(calLinksByEvent.get(ev.id))
     const bridgedZoomId = zoomByCalendly.get(ev.id) ?? null
     const dealId = await resolveDealId(
@@ -144,7 +193,7 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
       ev.name ?? ev.event_type_name ?? null,
     )
 
-    const row: Record<string, unknown> = {
+    calRows.push({
       calendly_event_id: ev.id, // internal uuid as text
       zoom_meeting_id: bridgedZoomId, // attach bridged zoom → one Hub Meeting ID
       title: ev.name ?? ev.event_type_name ?? "Meeting",
@@ -159,38 +208,56 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
       deal_id: dealId,
       host_id: ev.team_member_id ?? null,
       updated_at: new Date().toISOString(),
-    }
+    })
+  }
 
+  // Batched upsert — one round trip per ~500 rows instead of one per meeting.
+  // Every event id is unique, so no batch conflicts with itself.
+  for (const batch of chunk(calRows, 500)) {
     const { error } = await admin
       .from("meetings")
-      .upsert(row, { onConflict: "calendly_event_id", ignoreDuplicates: false })
-    if (error) errors.push(`meeting (calendly ${ev.id}): ${error.message}`)
-    else upserts++
+      .upsert(batch, { onConflict: "calendly_event_id", ignoreDuplicates: false })
+    if (error) errors.push(`meetings (calendly batch of ${batch.length}): ${error.message}`)
+    else upserts += batch.length
   }
 
   // ── 3. Load Zoom meetings + their client links ───────────────────────
-  const { data: zoomMeetings, error: zoomErr } = await admin
-    .from("zoom_meetings")
-    .select("id, zoom_meeting_id, topic, status, start_time, duration, join_url, team_member_id, calendly_event_id")
-  if (zoomErr) errors.push(`zoom_meetings: ${zoomErr.message}`)
+  // Paged for the same reason as the Calendly reads above.
+  let zoomMeetings: ZoomMeetingRow[] = []
+  try {
+    zoomMeetings = await fetchAllPaged<ZoomMeetingRow>(() =>
+      admin
+        .from("zoom_meetings")
+        .select("id, zoom_meeting_id, topic, status, start_time, duration, join_url, team_member_id, calendly_event_id"),
+    )
+  } catch (err) {
+    errors.push(`zoom_meetings: ${(err as Error).message}`)
+  }
 
-  const zoomIds = (zoomMeetings ?? []).map((z) => z.id)
+  const zoomIds = zoomMeetings.map((z) => z.id)
   const zoomLinksByMeeting = new Map<string, ClientLink[]>()
-  if (zoomIds.length > 0) {
-    const { data: zoomLinks } = await admin
-      .from("zoom_meeting_clients")
-      .select("zoom_meeting_id, contact_id, organization_id, confidence, needs_review")
-      .in("zoom_meeting_id", zoomIds)
-    for (const l of zoomLinks ?? []) {
-      const arr = zoomLinksByMeeting.get(l.zoom_meeting_id) ?? []
-      arr.push(l)
-      zoomLinksByMeeting.set(l.zoom_meeting_id, arr)
+  for (const idBatch of chunk(zoomIds)) {
+    try {
+      const zoomLinks = await fetchAllPaged<ClientLink & { zoom_meeting_id: string }>(() =>
+        admin
+          .from("zoom_meeting_clients")
+          .select("zoom_meeting_id, contact_id, organization_id, confidence, needs_review")
+          .in("zoom_meeting_id", idBatch),
+      )
+      for (const l of zoomLinks) {
+        const arr = zoomLinksByMeeting.get(l.zoom_meeting_id) ?? []
+        arr.push(l)
+        zoomLinksByMeeting.set(l.zoom_meeting_id, arr)
+      }
+    } catch (err) {
+      errors.push(`zoom_meeting_clients: ${(err as Error).message}`)
     }
   }
 
   // ── 4. Upsert one meeting per UN-bridged Zoom meeting ────────────────
   // Bridged Zoom meetings were already attached to their Calendly row above.
-  for (const zm of zoomMeetings ?? []) {
+  const zoomRows: Record<string, unknown>[] = []
+  for (const zm of zoomMeetings) {
     if (zm.calendly_event_id) continue // already represented by the Calendly meeting
 
     const { contactId, organizationId } = bestLink(zoomLinksByMeeting.get(zm.id))
@@ -200,7 +267,7 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
         ? new Date(new Date(zm.start_time).getTime() + zm.duration * 60_000).toISOString()
         : null
 
-    const row: Record<string, unknown> = {
+    zoomRows.push({
       zoom_meeting_id: zm.id, // internal uuid as text
       title: zm.topic ?? "Zoom meeting",
       scheduled_start: zm.start_time,
@@ -214,18 +281,20 @@ export async function syncHubMeetings(admin: SupabaseClient): Promise<SyncHubMee
       deal_id: dealId,
       host_id: zm.team_member_id ?? null,
       updated_at: new Date().toISOString(),
-    }
+    })
+  }
 
+  for (const batch of chunk(zoomRows, 500)) {
     const { error } = await admin
       .from("meetings")
-      .upsert(row, { onConflict: "zoom_meeting_id", ignoreDuplicates: false })
-    if (error) errors.push(`meeting (zoom ${zm.id}): ${error.message}`)
-    else upserts++
+      .upsert(batch, { onConflict: "zoom_meeting_id", ignoreDuplicates: false })
+    if (error) errors.push(`meetings (zoom batch of ${batch.length}): ${error.message}`)
+    else upserts += batch.length
   }
 
   return {
-    calendlyProcessed: calEvents?.length ?? 0,
-    zoomProcessed: zoomMeetings?.length ?? 0,
+    calendlyProcessed: calEvents.length,
+    zoomProcessed: zoomMeetings.length,
     upserts,
     errors,
   }

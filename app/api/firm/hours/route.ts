@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
 import { requireLeadership } from "@/lib/auth/require-leadership"
+import { fetchAllPaged, chunk } from "@/lib/supabase/fetch-all"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -40,10 +41,10 @@ export const dynamic = "force-dynamic"
  *     because the table has no per-row policy distinguishing admins
  *     from rank-and-file. The gate above is the single source of truth
  *     for who's allowed to see firm-wide hours.
- *   - We pull at most 50,000 rows in one shot — the table has ~2,800
- *     today; even with several years of growth this stays well under
- *     PostgREST's hard limit. If the table ever blows past 50k we'll
- *     swap this for a SQL view.
+ *   - We page through the whole table in 1,000-row windows via
+ *     fetchAllPaged — PostgREST caps every response at 1,000 rows no
+ *     matter what .limit() asks for, so a single capped select would
+ *     silently truncate the allTime/YTD/byMember aggregates.
  */
 export async function GET(request: NextRequest) {
   const gate = await requireLeadership()
@@ -62,35 +63,38 @@ export async function GET(request: NextRequest) {
     { auth: { persistSession: false } },
   )
 
-  const { data: rows, error } = await supabase
-    .from("karbon_timesheets")
-    .select(
-      "karbon_timesheet_key,date,minutes,description,is_billable,billing_status,hourly_rate,billed_amount," +
-        "user_key,user_name,karbon_work_item_key,work_item_title,client_key,client_name,task_type_name,role_name",
-    )
-    .order("date", { ascending: false })
-    .limit(50000)
-
-  if (error) {
-    console.error("[v0] firm-hours: query failed", error.message)
-    return NextResponse.json({ error: "Failed to load timesheets" }, { status: 500 })
-  }
-
-  const entries = ((rows ?? []) as unknown) as Array<{
-    karbon_timesheet_key: string
+  type TimesheetRow = {
     date: string | null
     minutes: number | null
     is_billable: boolean | null
     billed_amount: number | null
     user_key: string | null
     user_name: string | null
-    karbon_work_item_key: string | null
-    work_item_title: string | null
     client_key: string | null
     client_name: string | null
     task_type_name: string | null
     role_name: string | null
-  }>
+  }
+
+  let entries: TimesheetRow[]
+  try {
+    // Only the columns the aggregations below actually read — the old
+    // wide select dragged description/work-item fields along for
+    // thousands of rows nobody used.
+    entries = await fetchAllPaged<TimesheetRow>(() =>
+      supabase
+        .from("karbon_timesheets")
+        .select(
+          "date,minutes,is_billable,billed_amount,user_key,user_name,client_key,client_name,task_type_name,role_name",
+        ),
+    )
+  } catch (error) {
+    console.error(
+      "[v0] firm-hours: query failed",
+      error instanceof Error ? error.message : String(error),
+    )
+    return NextResponse.json({ error: "Failed to load timesheets" }, { status: 500 })
+  }
 
   // ── Resolve Karbon keys → Hub records ──────────────────────────────
   // The /Timesheets $expand=TimeEntries payload from Karbon doesn't
@@ -141,17 +145,29 @@ export async function GET(request: NextRequest) {
     // Karbon's `ClientKey` is overloaded — it can point at either a
     // person (contact) or an entity (organization). We try contacts
     // first because that's the more common case for a tax/accounting
-    // firm; misses fall through to organizations.
-    const [{ data: contacts }, { data: orgs }] = await Promise.all([
-      supabase
-        .from("contacts")
-        .select("id, full_name, karbon_contact_key")
-        .in("karbon_contact_key", distinctClientKeys),
-      supabase
-        .from("organizations")
-        .select("id, name, karbon_organization_key")
-        .in("karbon_organization_key", distinctClientKeys),
+    // firm; misses fall through to organizations. The key list is
+    // chunked so the .in() filter can't blow past URL-length limits
+    // now that entries are fully paged.
+    const [contactPages, orgPages] = await Promise.all([
+      Promise.all(
+        chunk(distinctClientKeys).map((keys) =>
+          supabase
+            .from("contacts")
+            .select("id, full_name, karbon_contact_key")
+            .in("karbon_contact_key", keys),
+        ),
+      ),
+      Promise.all(
+        chunk(distinctClientKeys).map((keys) =>
+          supabase
+            .from("organizations")
+            .select("id, name, karbon_organization_key")
+            .in("karbon_organization_key", keys),
+        ),
+      ),
     ])
+    const contacts = contactPages.flatMap((page) => page.data ?? [])
+    const orgs = orgPages.flatMap((page) => page.data ?? [])
     for (const c of contacts ?? []) {
       const key = (c as any).karbon_contact_key as string | null
       if (!key) continue

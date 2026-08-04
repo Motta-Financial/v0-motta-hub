@@ -65,6 +65,14 @@ export interface IngestResult {
 const TRANSCRIPT_TYPES = new Set(["TRANSCRIPT", "CC", "CLOSED_CAPTION"])
 const MEDIA_TYPES = new Set(["MP4", "M4A"])
 
+/**
+ * Recording files live in the dedicated PRIVATE blob store (`zoom-recordings`),
+ * not the default public store that avatars/attachments use — `access: "private"`
+ * is rejected by a public store, so the default token can never work here.
+ * Read at call time so scripts that load env after import still work.
+ */
+const zoomBlobToken = () => process.env.ZOOM_BLOB_READ_WRITE_TOKEN
+
 /** Fetch a Zoom download URL with bearer auth, falling back to query token. */
 async function downloadZoomFile(url: string, token: string | null): Promise<Response> {
   if (token) {
@@ -83,6 +91,31 @@ async function downloadZoomFile(url: string, token: string | null): Promise<Resp
 function extForFile(file: ZoomRecordingFile): string {
   const e = (file.file_extension || file.file_type || "bin").toLowerCase()
   return e.replace(/[^a-z0-9]/g, "") || "bin"
+}
+
+/**
+ * Carry blob links from a previously stored `recording_files` array onto a
+ * fresh Zoom payload. Zoom never returns our blob_url/blob_pathname, so
+ * upserting a fresh payload verbatim clobbers the archive markers — and the
+ * next ingest re-downloads and re-uploads every file. Callers that upsert
+ * `recording_files` from a Zoom response MUST merge through this first.
+ */
+export function mergeBlobLinks(
+  fresh: ZoomRecordingFile[],
+  prior: ZoomRecordingFile[] | null | undefined,
+): ZoomRecordingFile[] {
+  if (!Array.isArray(fresh)) return []
+  if (!Array.isArray(prior) || prior.length === 0) return fresh
+  const linked = new Map<string, ZoomRecordingFile>()
+  for (const p of prior) {
+    if (p?.id && (p.blob_url || p.blob_pathname)) linked.set(String(p.id), p)
+  }
+  if (linked.size === 0) return fresh
+  return fresh.map((f) => {
+    const p = f?.id ? linked.get(String(f.id)) : undefined
+    if (!p || f.blob_url) return f
+    return { ...f, blob_url: p.blob_url, blob_pathname: p.blob_pathname }
+  })
 }
 
 /**
@@ -170,6 +203,7 @@ async function ingestTranscript(ctx: IngestContext, file: ZoomRecordingFile): Pr
         contentType: "text/vtt",
         addRandomSuffix: false,
         allowOverwrite: true,
+        token: zoomBlobToken(),
       })
       blobUrl = blob.url
       blobPathname = blob.pathname
@@ -263,6 +297,7 @@ async function copyMediaToBlob(
       access: "private",
       addRandomSuffix: false,
       allowOverwrite: true,
+      token: zoomBlobToken(),
     })
     return { blob_url: blob.url, blob_pathname: blob.pathname }
   } catch (err) {

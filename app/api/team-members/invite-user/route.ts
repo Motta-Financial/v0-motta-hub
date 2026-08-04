@@ -2,6 +2,7 @@ import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js
 import { NextResponse, type NextRequest } from "next/server"
 import { sendEmail, buildPasswordResetEmailHtml } from "@/lib/email"
 import { requireAdmin } from "@/lib/auth/require-admin"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * POST /api/team-members/invite-user
@@ -44,15 +45,7 @@ function createAdminClient() {
 function resolveSiteUrl(request: NextRequest): string {
   const origin = request.headers.get("origin")
   if (origin) return origin.replace(/\/$/, "")
-  const envUrl =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.APP_BASE_URL
-  if (envUrl) {
-    const normalized = envUrl.startsWith("http") ? envUrl : `https://${envUrl}`
-    return normalized.replace(/\/$/, "")
-  }
-  return "https://hub.motta.cpa"
+  return firmConfigSync().hubUrl
 }
 
 /**

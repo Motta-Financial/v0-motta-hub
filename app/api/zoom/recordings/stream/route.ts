@@ -82,6 +82,8 @@ export async function GET(req: NextRequest) {
     if (file.blob_pathname) {
       const result = await get(file.blob_pathname, {
         access: "private",
+        // Recordings live in the dedicated private store, not the default one.
+        token: process.env.ZOOM_BLOB_READ_WRITE_TOKEN,
         ...(rangeHeader ? { headers: { range: rangeHeader } } : {}),
       })
       if (result && result.statusCode === 200 && result.stream) {

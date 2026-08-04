@@ -13,6 +13,11 @@
  *   5. A "composer" that takes Form1040Data and produces the ProConnect
  *      Phase 1 import-series payload (entries array), routing each value
  *      to the correct leaf field (val / desc / tsj / src) via cell_field
+ *   6. Per-value conditional mappings (`condition` jsonb, scripts/373):
+ *      instance gates (route repeating-screen instances by a sibling
+ *      cell, e.g. 1099-R IRA vs pension) and value predicates (boolean
+ *      lines over one coded cell, e.g. filing status) — see
+ *      MappingCondition
  *
  * IMPORTANT — schema alignment:
  *   The DB columns are `line_code`, `label`, `data_type`, `section`,
@@ -38,6 +43,22 @@ function admin() {
 
 /** Default ProConnect module/return type for Phase 1 (Individual 1040). */
 export const DEFAULT_RETURN_TYPE = "IND"
+
+/**
+ * Wildcard prefix_id for mappings that aggregate across every instance of
+ * a repeating input screen (e.g. all W-2s on s11, where p1/p2/p3 are the
+ * first/second/third W-2). The renderer sums the mapped cell_field over
+ * all prefixes for numeric lines. The composer NEVER emits this value —
+ * "*" is not a real ProConnect prefix and would be rejected (or worse,
+ * misrouted) by the Import API, and a per-line total cannot be written
+ * back to a single instance anyway.
+ */
+export const AGGREGATE_PREFIX = "*"
+
+/** True when a mapping aggregates across all prefix instances. */
+export function isAggregateMapping(m: ProConnectMapping): boolean {
+  return m.prefixId === AGGREGATE_PREFIX
+}
 
 /**
  * Phase 1 spec caps a single import-series call at 500 entries
@@ -104,6 +125,8 @@ export interface Form1040Line {
   worksheetRef: string | null
   attachesForm: string | null
   isRefundPath: boolean
+  /** Line can never hold a value (e.g. 30 'Reserved', 12b N/A for the year). */
+  notApplicable: boolean
   notes: string | null
 }
 
@@ -117,6 +140,43 @@ export interface Form1040Constant {
 
 /** Which leaf property of a series-map cell holds the line's value. */
 export type CellField = "val" | "desc" | "src" | "tsj" | "scope" | "source" | "cityAbbrev"
+
+/**
+ * Per-value conditional on a mapping (form_1040_proconnect_map.condition,
+ * scripts/373). Two shapes, distinguished by the presence of `cell`:
+ *
+ *   INSTANCE GATE — `cell` present: the mapping only reads cells whose
+ *   sibling cell (same series + prefix, `cell.codeId`, `cell.suffixId`
+ *   defaulting to x1000) matches `equals` / `notEquals`. An absent sibling
+ *   compares as null, so `notEquals: "1"` passes for an unchecked checkbox
+ *   (checkbox cells are simply absent when clear). Composes with
+ *   AGGREGATE_PREFIX: each instance is gated first, survivors aggregate
+ *   (e.g. 1099-R gross sums IRA instances into 4a, pensions into 5a,
+ *   keyed on the per-instance s14/c2 IRA/SEP/SIMPLE checkbox).
+ *
+ *   VALUE PREDICATE — `cell` absent: the line renders the boolean result
+ *   of comparing the mapped cell's own value to `equals`, so several
+ *   boolean lines can share one coded cell (e.g. the five fs_* lines over
+ *   the s1/c1000100036 filing-status cell, 1=Single … 5=QSS).
+ */
+export interface MappingCondition {
+  cell?: { codeId: string; suffixId?: string }
+  equals?: string
+  notEquals?: string
+}
+
+/** True when the condition matches a raw cell value (null = cell absent/unset). */
+export function conditionMatches(cond: MappingCondition, raw: string | null): boolean {
+  const v = raw === null || raw === undefined || String(raw).trim() === "" ? null : String(raw).trim()
+  if (cond.equals !== undefined) return v !== null && v === cond.equals
+  if (cond.notEquals !== undefined) return v === null || v !== cond.notEquals
+  return true
+}
+
+/** True when a mapping renders as a boolean predicate over its own cell. */
+export function isValuePredicate(m: ProConnectMapping): boolean {
+  return m.condition !== null && m.condition.cell === undefined
+}
 
 export interface ProConnectMapping {
   lineCode: string
@@ -134,6 +194,7 @@ export interface ProConnectMapping {
    * surfaced as `Code <n>` with `decodeMissing` set by the API layer.
    */
   valueDecode: Record<string, string> | null
+  condition: MappingCondition | null
   notes: string | null
 }
 
@@ -171,7 +232,7 @@ export type Form1040Data = Record<
   {
     value: string | number | boolean | MaskedValue | null
     line: Form1040Line
-    source: "proconnect" | "computed" | "input"
+    source: "proconnect" | "computed" | "input" | "estimated"
     /** Mapping confidence from form_1040_proconnect_map (mapped lines only). */
     confidence?: "unknown" | "inferred" | "confirmed"
     /** Code→label map carried through from the mapping row, if any. */
@@ -206,7 +267,7 @@ export async function loadSchema(
     sb
       .from("form_1040_lines")
       .select(
-        "id, tax_year, line_code, parent_code, ordinal, section, label, short_label, data_type, enum_options, is_computed, computation, schedule_ref, worksheet_ref, attaches_form, is_refund_path, notes",
+        "id, tax_year, line_code, parent_code, ordinal, section, label, short_label, data_type, enum_options, is_computed, computation, schedule_ref, worksheet_ref, attaches_form, is_refund_path, not_applicable, notes",
       )
       .eq("tax_year", taxYear)
       .order("ordinal"),
@@ -217,7 +278,7 @@ export async function loadSchema(
     sb
       .from("form_1040_proconnect_map")
       .select(
-        "line_code, return_type, series_id, prefix_id, code_id, suffix_id, cell_field, confidence, value_decode, notes",
+        "line_code, return_type, series_id, prefix_id, code_id, suffix_id, cell_field, confidence, value_decode, condition, notes",
       )
       .eq("tax_year", taxYear)
       .eq("return_type", returnType),
@@ -244,6 +305,7 @@ export async function loadSchema(
     worksheetRef: r.worksheet_ref,
     attachesForm: r.attaches_form,
     isRefundPath: r.is_refund_path,
+    notApplicable: r.not_applicable ?? false,
     notes: r.notes,
   }))
 
@@ -268,6 +330,7 @@ export async function loadSchema(
       cellField: ((r.cell_field as CellField) ?? "val") as CellField,
       confidence: (r.confidence as ProConnectMapping["confidence"]) ?? "unknown",
       valueDecode: (r.value_decode as Record<string, string> | null) ?? null,
+      condition: (r.condition as MappingCondition | null) ?? null,
       notes: r.notes,
     }))
 
@@ -430,9 +493,48 @@ export async function renderForm1040(
     suffixId: string
   }) => `${c.seriesId}|${c.prefixId}|${c.codeId}|${c.suffixId}`
 
-  // (series,prefix,code,suffix) → mapping (carries cellField + lineCode)
-  const reverseMap = new Map<string, ProConnectMapping>()
-  for (const m of mappings) reverseMap.set(cellKey(m), m)
+  // (series,prefix,code,suffix) → mappings (carries cellField + lineCode).
+  // Plural: value-predicate mappings share one cell (all five fs_* lines
+  // read the single filing-status cell).
+  const reverseMap = new Map<string, ProConnectMapping[]>()
+  // (series,code,suffix) → aggregate mappings (prefix_id = "*"): these
+  // match a cell at ANY prefix instance of a repeating screen.
+  const aggregateKey = (c: { seriesId: string; codeId: string; suffixId: string }) =>
+    `${c.seriesId}|${c.codeId}|${c.suffixId}`
+  const aggregateMap = new Map<string, ProConnectMapping[]>()
+  for (const m of mappings) {
+    if (isAggregateMapping(m)) {
+      const arr = aggregateMap.get(aggregateKey(m)) ?? []
+      arr.push(m)
+      aggregateMap.set(aggregateKey(m), arr)
+    } else {
+      const arr = reverseMap.get(cellKey(m)) ?? []
+      arr.push(m)
+      reverseMap.set(cellKey(m), arr)
+    }
+  }
+
+  // Index every cell for sibling lookups (instance-gate conditions).
+  const cellByKey = new Map<string, FieldCell>()
+  for (const cell of cells) cellByKey.set(cellKey(cell), cell)
+
+  // Instance gate: a condition with a `cell` selector only admits cells
+  // whose sibling (same series + prefix) matches. Gates compare the
+  // sibling's `val` — checkbox/coded cells carry their state there, and
+  // an absent sibling compares as null (unchecked).
+  const gatePasses = (m: ProConnectMapping, cell: FieldCell): boolean => {
+    const cond = m.condition
+    if (!cond?.cell) return true
+    const sibling = cellByKey.get(
+      cellKey({
+        seriesId: cell.seriesId,
+        prefixId: cell.prefixId,
+        codeId: cond.cell.codeId,
+        suffixId: cond.cell.suffixId ?? "x1000",
+      }),
+    )
+    return conditionMatches(cond, sibling?.val ?? null)
+  }
 
   const lineByCode = new Map(lines.map((l) => [l.lineCode, l]))
 
@@ -444,17 +546,91 @@ export async function renderForm1040(
 
   // Populate from cells, reading the mapped leaf field.
   for (const cell of cells) {
-    const mapping = reverseMap.get(cellKey(cell))
-    if (!mapping) continue
-    const line = lineByCode.get(mapping.lineCode)
-    if (!line) continue
-    const raw = readCellField(cell, mapping.cellField)
-    data[line.lineCode] = {
-      value: coerceToLineType(raw, line.dataType),
-      line,
-      source: "proconnect",
-      confidence: mapping.confidence,
-      valueDecode: mapping.valueDecode,
+    const cellMappings = reverseMap.get(cellKey(cell))
+    if (!cellMappings) continue
+    for (const mapping of cellMappings) {
+      const line = lineByCode.get(mapping.lineCode)
+      if (!line) continue
+      if (!gatePasses(mapping, cell)) continue
+      const raw = readCellField(cell, mapping.cellField)
+      data[line.lineCode] = {
+        // Value predicates render the comparison result, not the raw
+        // coded value (fs_hoh = true, not "4").
+        value: isValuePredicate(mapping)
+          ? conditionMatches(mapping.condition!, raw)
+          : coerceToLineType(raw, line.dataType),
+        line,
+        source: "proconnect",
+        confidence: mapping.confidence,
+        valueDecode: mapping.valueDecode,
+      }
+    }
+  }
+
+  // Aggregate mappings: fold every prefix instance into the line. Numeric
+  // lines sum across instances (three W-2s → one wages total); non-numeric
+  // lines take the lowest-numbered instance, so a stray "*" on a text line
+  // degrades to first-instance behavior instead of garbage.
+  if (aggregateMap.size > 0) {
+    const numericAcc = new Map<string, number>()
+    const firstInstance = new Map<string, { prefixNum: number; raw: string }>()
+    // Carry mapping metadata (confidence / valueDecode) into the final
+    // aggregate assignments below.
+    const mappingByLine = new Map<string, ProConnectMapping>()
+    for (const cell of cells) {
+      const aggMappings = aggregateMap.get(aggregateKey(cell))
+      if (!aggMappings) continue
+      for (const mapping of aggMappings) {
+        const line = lineByCode.get(mapping.lineCode)
+        if (!line) continue
+        // Gate each instance before it contributes (e.g. only IRA-checked
+        // 1099-Rs feed 4a). Value predicates are undefined over "*" — a
+        // boolean has no cross-instance aggregate — so they're skipped.
+        if (isValuePredicate(mapping)) continue
+        if (!gatePasses(mapping, cell)) continue
+        const raw = readCellField(cell, mapping.cellField)
+        if (raw === null || raw === "") continue
+        mappingByLine.set(line.lineCode, mapping)
+        if (line.dataType === "currency" || line.dataType === "integer") {
+          const n = coerceToLineType(raw, line.dataType)
+          if (typeof n === "number") {
+            numericAcc.set(line.lineCode, (numericAcc.get(line.lineCode) ?? 0) + n)
+          }
+        } else {
+          const prefixNum = Number.parseInt(cell.prefixId.replace(/^p/, ""), 10)
+          const prev = firstInstance.get(line.lineCode)
+          if (!prev || (Number.isFinite(prefixNum) && prefixNum < prev.prefixNum)) {
+            firstInstance.set(line.lineCode, {
+              prefixNum: Number.isFinite(prefixNum) ? prefixNum : Number.MAX_SAFE_INTEGER,
+              raw,
+            })
+          }
+        }
+      }
+    }
+    for (const [lineCode, sum] of numericAcc) {
+      const line = lineByCode.get(lineCode)
+      if (!line) continue
+      const mapping = mappingByLine.get(lineCode)
+      data[lineCode] = {
+        value: sum,
+        line,
+        source: "proconnect",
+        confidence: mapping?.confidence,
+        valueDecode: mapping?.valueDecode ?? null,
+      }
+    }
+    for (const [lineCode, first] of firstInstance) {
+      const line = lineByCode.get(lineCode)
+      if (!line) continue
+      const mapping = mappingByLine.get(lineCode)
+      data[lineCode] = {
+        value: coerceToLineType(first.raw, line.dataType),
+        line,
+        source: "proconnect",
+        confidence: mapping?.confidence,
+        valueDecode: mapping?.valueDecode ?? null,
+      }
     }
   }
 
@@ -493,6 +669,17 @@ function buildEntry(
   mapping: ProConnectMapping,
   entry: Form1040Data[string],
 ): ImportEntry | null {
+  // Aggregate mappings ("*" prefix) are render-only: the value is a total
+  // across every instance of a repeating screen, and there is no single
+  // cell to write it to. Emitting "*" as a literal prefixId would corrupt
+  // the Import call.
+  if (isAggregateMapping(mapping)) return null
+
+  // Instance-gated mappings are render-only too: whether the write-target
+  // instance satisfies the sibling condition cannot be verified from here,
+  // and writing to the wrong instance would silently misroute the value.
+  if (mapping.condition?.cell) return null
+
   const value = entry.value
   if (value === null || value === undefined) return null
 
@@ -503,7 +690,14 @@ function buildEntry(
   if (typeof value === "object") return null
 
   let formatted: string
-  if (typeof value === "boolean") {
+  if (isValuePredicate(mapping)) {
+    // A true boolean resolves to the coded value the predicate tests for
+    // (fs_hoh = true → val "4" on the filing-status cell). False booleans
+    // are skipped — several lines share the cell and only the true one
+    // may write it.
+    if (value !== true || mapping.condition!.equals === undefined) return null
+    formatted = mapping.condition!.equals
+  } else if (typeof value === "boolean") {
     formatted = value ? "X" : ""
   } else if (typeof value === "number") {
     // ProConnect expects whole dollars for currency, no decimals.
@@ -556,9 +750,15 @@ export async function composeImportEntries(
 ): Promise<ComposedSeries[]> {
   const { mappings } = await loadSchema(taxYear, returnType)
 
-  // Group usable mappings by seriesId.
+  // Group usable mappings by seriesId. Aggregate ("*"-prefix) and
+  // instance-gated mappings are excluded up front — the former describe a
+  // cross-instance total, not a writable cell, and the latter's sibling
+  // condition cannot be verified on the write target (buildEntry also
+  // refuses both as a second guard). Value predicates stay in: they
+  // resolve to writing the coded value when the line is true.
   const bySeries = new Map<string, ProConnectMapping[]>()
   for (const m of mappings) {
+    if (isAggregateMapping(m) || m.condition?.cell) continue
     const arr = bySeries.get(m.seriesId) ?? []
     arr.push(m)
     bySeries.set(m.seriesId, arr)
