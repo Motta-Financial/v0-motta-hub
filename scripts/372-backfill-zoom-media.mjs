@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs"
 
 const BASE_URL = process.env.HUB_URL || "https://hub.motta.cpa"
-const MAX_PASSES_PER_WINDOW = 60
+const MAX_PASSES_PER_WINDOW = 120
 
 function loadEnvLocal() {
   let text
@@ -55,7 +55,9 @@ async function runPass(secret, from, to) {
         Authorization: `Bearer ${secret}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ from, to, includeMedia: true, tagParticipants: false }),
+      // Cap copies per invocation so the function exits cleanly before
+      // memory accumulates (sustained GB-scale copying OOMs otherwise).
+      body: JSON.stringify({ from, to, includeMedia: true, tagParticipants: false, maxMediaCopies: 8 }),
     })
     // 5xx = function timed out or crashed mid-run (e.g. OOM on one huge
     // file). Progress persists per-recording, so another pass resumes where
