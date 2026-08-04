@@ -325,7 +325,7 @@ export function Form1040Viewer({
   if (error) {
     const isNotFound = error.message.includes("not found") || error.message.includes("404")
     return (
-      <div className="min-h-screen bg-stone-50 p-6">
+      <div className="min-h-screen bg-background p-6">
         <Card className={isNotFound ? "border-amber-200 bg-amber-50" : "border-rose-200 bg-rose-50"}>
           <CardContent className="p-6 flex items-center gap-4">
             <AlertCircle className={cn("h-6 w-6", isNotFound ? "text-amber-700" : "text-rose-700")} />
@@ -372,7 +372,7 @@ export function Form1040Viewer({
 
   if (isLoading || !data) {
     return (
-      <div className="min-h-screen bg-stone-50 p-6 space-y-4">
+      <div className="min-h-screen bg-background p-6 space-y-4">
         <Skeleton className="h-12 w-96" />
         <Skeleton className="h-32" />
         <Skeleton className="h-64" />
@@ -382,13 +382,13 @@ export function Form1040Viewer({
   }
 
   return (
-    <div className="min-h-screen bg-stone-50">
+    <div className="min-h-screen bg-background">
       {/* Sticky header */}
-      <header className="sticky top-0 z-10 bg-white border-b border-stone-200 print:static print:border-none">
+      <header className="sticky top-0 z-10 bg-card border-b border-border print:static print:border-none">
         <div className="max-w-5xl mx-auto px-6 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-center gap-4">
-              <div className="p-3 rounded-lg bg-blue-100 text-blue-700 print:hidden">
+              <div className="p-3 rounded-lg bg-emerald-950 text-emerald-400 print:hidden">
                 <FileText className="h-6 w-6" />
               </div>
               <div>
@@ -441,11 +441,13 @@ export function Form1040Viewer({
         {/* Summary card */}
         {summaryValues && (
           <Card className="print:shadow-none print:border-none">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Return Summary</CardTitle>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                Return Summary
+              </CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+            <CardContent className="pt-0">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-px bg-border rounded-lg overflow-hidden">
                 <SummaryValue label="Total Income" value={summaryValues.totalIncome} line="9" />
                 <SummaryValue label="AGI" value={summaryValues.agi} line="11" />
                 <SummaryValue label="Taxable Income" value={summaryValues.taxableIncome} line="15" />
@@ -537,7 +539,7 @@ export function Form1040Viewer({
               <Card key={key} className="print:shadow-none print:border print:break-inside-avoid">
                 <Collapsible open={isExpanded} onOpenChange={() => toggleCategory(key)}>
                   <CollapsibleTrigger asChild>
-                    <CardHeader className="cursor-pointer hover:bg-stone-50 transition-colors py-3 print:cursor-default print:hover:bg-transparent">
+                    <CardHeader className="cursor-pointer hover:bg-muted/40 transition-colors py-3 print:cursor-default print:hover:bg-transparent">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           {isExpanded ? (
@@ -560,7 +562,7 @@ export function Form1040Viewer({
                   </CollapsibleTrigger>
                   <CollapsibleContent className="print:block">
                     <CardContent className="pt-0">
-                      <div className="divide-y divide-stone-100">
+                      <div className="divide-y divide-border/60">
                         {visibleLines.map((lineVal) => (
                           <LineRow
                             key={lineVal.line.lineCode}
@@ -581,7 +583,7 @@ export function Form1040Viewer({
         </div>
 
         {/* Footer / data provenance */}
-        <footer className="text-xs text-muted-foreground pt-4 border-t border-stone-200 print:border-none">
+        <footer className="text-xs text-muted-foreground pt-4 border-t border-border print:border-none">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span>Return ID: {data.returnId}</span>
             {data.version && <span>Version: {data.version}</span>}
@@ -612,19 +614,30 @@ function SummaryValue({
 }) {
   const hasValue = value !== null && value !== 0
   const toneClasses = {
-    stone: "",
-    emerald: hasValue ? "text-emerald-700" : "",
-    rose: hasValue ? "text-rose-700" : "",
+    stone: "text-foreground",
+    emerald: hasValue ? "text-emerald-500" : "text-muted-foreground",
+    rose: hasValue ? "text-rose-500" : "text-muted-foreground",
   }
 
   return (
-    <div>
-      <div className="text-xs text-muted-foreground uppercase tracking-wide">
-        {label}
-        <span className="ml-1 text-[10px] font-mono opacity-60">L{line}</span>
+    <div className="bg-card px-4 py-4 flex flex-col gap-1.5">
+      {/* Label row — always one line, truncated if necessary */}
+      <div className="flex items-center gap-1 h-4">
+        <span
+          className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide truncate"
+          title={label}
+        >
+          {label}
+        </span>
+        <span className="text-[10px] font-mono text-muted-foreground/50 flex-shrink-0">
+          L{line}
+        </span>
       </div>
-      <div className={cn("text-xl font-semibold tabular-nums", toneClasses[tone])}>
-        {hasValue ? fmtMoney(value) : "—"}
+      {/* Value row — always on its own line, never competing with the label */}
+      <div className={cn("text-2xl font-semibold tabular-nums leading-none", toneClasses[tone])}>
+        {hasValue ? fmtMoney(value) : (
+          <span className="text-muted-foreground/40 text-xl">—</span>
+        )}
       </div>
     </div>
   )
@@ -727,13 +740,13 @@ function LineRow({
   return (
     <div
       className={cn(
-        "flex items-start justify-between gap-4 py-2.5 hover:bg-stone-50 transition-colors",
-        !hasValue && "opacity-60"
+        "flex items-start justify-between gap-4 py-2.5 hover:bg-muted/40 transition-colors rounded-sm",
+        !hasValue && "opacity-50"
       )}
     >
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-muted-foreground w-8 flex-shrink-0">
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-mono text-muted-foreground/60 w-16 flex-shrink-0 truncate">
             {line.lineCode}
           </span>
           <span className="text-sm">{line.label}</span>
@@ -778,7 +791,7 @@ function LineRow({
           )}
         </div>
         {line.notes && (
-          <div className="text-xs text-muted-foreground mt-0.5 ml-10 line-clamp-1">
+          <div className="text-xs text-muted-foreground mt-0.5 ml-[76px] line-clamp-1">
             {line.notes}
           </div>
         )}
