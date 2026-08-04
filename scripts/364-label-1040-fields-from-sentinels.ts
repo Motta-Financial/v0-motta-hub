@@ -18,6 +18,13 @@
  *                  mapping rows. Nothing is written without --apply.
  *   4. --apply   — upsert confirmed mappings into form_1040_proconnect_map
  *                  (confidence "confirmed", notes record method + date).
+ *                  Lines whose existing map row carries a condition
+ *                  (scripts/373 instance gates / value predicates) or the
+ *                  '*' aggregate prefix (scripts/367) are SKIPPED with a
+ *                  warning: sentinel diffing observes a single cell and
+ *                  cannot express either, so the upsert would clobber
+ *                  prefix_id and strand a stale condition. Fix those rows
+ *                  by hand if the sentinel disagrees with them.
  *
  * Brand-new dummy return (no snapshot in the DB yet): the first `baseline`
  * saves 0 cells, so run `diff` once with no --manifest right after — it
@@ -207,7 +214,34 @@ async function main() {
     process.exit(1)
   }
 
-  for (const p of unambiguous) {
+  // Conditional (scripts/373) and '*'-aggregate (scripts/367) rows encode
+  // semantics a single observed cell can't: the upsert would rewrite
+  // prefix_id (e.g. '*' -> 'p1') while the old condition rides along on the
+  // new tuple, silently misrouting real returns. Skip them.
+  const { data: existing, error: exErr } = await sb
+    .from("form_1040_proconnect_map")
+    .select("line_code, prefix_id, condition")
+    .eq("tax_year", taxYear)
+    .eq("return_type", "IND")
+    .in("line_code", unambiguous.map((p) => p.line_code))
+  if (exErr) {
+    console.error(`\nexisting-map lookup failed: ${exErr.message}`)
+    console.error("cannot tell which lines carry conditions — aborting before any writes.")
+    process.exit(1)
+  }
+  const protectedRows = new Map(
+    (existing ?? [])
+      .filter((r) => r.condition != null || r.prefix_id === "*")
+      .map((r) => [r.line_code as string, r]),
+  )
+  const writable = unambiguous.filter((p) => !protectedRows.has(p.line_code))
+  if (protectedRows.size) {
+    console.warn(`\n${protectedRows.size} line(s) SKIPPED — existing map row is conditional/aggregate (scripts/373/367); edit by hand if the sentinel disagrees:`)
+    for (const [line, r] of protectedRows)
+      console.warn(`  ${line}: prefix_id=${r.prefix_id}${r.condition != null ? ` condition=${JSON.stringify(r.condition)}` : ""}`)
+  }
+
+  for (const p of writable) {
     const { error } = await sb.from("form_1040_proconnect_map").upsert(
       {
         tax_year: taxYear,
