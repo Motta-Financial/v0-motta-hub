@@ -46,6 +46,17 @@ import {
 const FS_CELL = { seriesId: "s1", prefixId: "p0", codeId: "c1000100036", suffixId: "x1000" }
 const DOB_CELL = { seriesId: "s1", prefixId: "p0", codeId: "c1000100010", suffixId: "x1000" }
 const DEP_CTC = { seriesId: "s2", codeId: "c1000200014", suffixId: "x1000" }
+const DEP_DOB_CODE = "c1000200002"
+const DEP_TYPE_CODE = "c1000200006"
+/**
+ * Dependent "Type" enum (s2/c1000200006, read off the PTO dropdown
+ * 2026-08-04): 1 = child living with taxpayer, 2 = child not living with
+ * taxpayer, 3 = other dependent living with taxpayer, 6 = other dependent
+ * not living with taxpayer, 4 = HOH/QSS qualifying person only (not a
+ * dependent), 5 = EIC only (not a dependent). CTC can only apply to types
+ * 1 and 2.
+ */
+const CTC_ELIGIBLE_TYPES = new Set([1, 2])
 
 type StatusKey = "single" | "mfj" | "mfs" | "hoh"
 
@@ -199,8 +210,24 @@ export function estimateDeterministicLines(
   if (isEmpty("19")) {
     const perChild = constNum(constants, "dependent_credit_ctc")
     const threshold = constNum(constants, fs === "mfj" ? "mfj_ctc_phaseout_start" : "other_ctc_phaseout_start")
-    const kids = cells.filter(
-      (c) => c.seriesId === DEP_CTC.seriesId && c.codeId === DEP_CTC.codeId && c.suffixId === DEP_CTC.suffixId && toNum(c.val) === 1,
+    // Per-instance eligibility: the c...14 flag means "when applicable",
+    // so gate on dependent Type (child) and age (< 17 at year-end).
+    const taxYear = lines[0]?.taxYear ?? 2025
+    const ctcDobFloor = new Date(`${taxYear - 16}-01-01T00:00:00Z`) // born on/after → under 17 at 12/31
+    const deps = new Map<string, { flag?: number; type?: number; dob?: Date }>()
+    for (const c of cells) {
+      if (c.seriesId !== "s2" || c.suffixId !== "x1000") continue
+      const d = deps.get(c.prefixId) ?? {}
+      if (c.codeId === DEP_CTC.codeId) d.flag = toNum(c.val)
+      if (c.codeId === DEP_TYPE_CODE) d.type = toNum(c.val)
+      if (c.codeId === DEP_DOB_CODE && c.val) {
+        const parsed = new Date(String(c.val))
+        if (!Number.isNaN(parsed.getTime())) d.dob = parsed
+      }
+      deps.set(c.prefixId, d)
+    }
+    const kids = [...deps.values()].filter(
+      (d) => d.flag === 1 && d.type !== undefined && CTC_ELIGIBLE_TYPES.has(d.type) && d.dob !== undefined && d.dob >= ctcDobFloor,
     ).length
     if (perChild !== null && threshold !== null && kids > 0) {
       let ctc = perChild * kids
