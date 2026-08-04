@@ -65,6 +65,14 @@ export interface IngestResult {
 const TRANSCRIPT_TYPES = new Set(["TRANSCRIPT", "CC", "CLOSED_CAPTION"])
 const MEDIA_TYPES = new Set(["MP4", "M4A"])
 
+/**
+ * Recording files live in the dedicated PRIVATE blob store (`zoom-recordings`),
+ * not the default public store that avatars/attachments use — `access: "private"`
+ * is rejected by a public store, so the default token can never work here.
+ * Read at call time so scripts that load env after import still work.
+ */
+const zoomBlobToken = () => process.env.ZOOM_BLOB_READ_WRITE_TOKEN
+
 /** Fetch a Zoom download URL with bearer auth, falling back to query token. */
 async function downloadZoomFile(url: string, token: string | null): Promise<Response> {
   if (token) {
@@ -170,6 +178,7 @@ async function ingestTranscript(ctx: IngestContext, file: ZoomRecordingFile): Pr
         contentType: "text/vtt",
         addRandomSuffix: false,
         allowOverwrite: true,
+        token: zoomBlobToken(),
       })
       blobUrl = blob.url
       blobPathname = blob.pathname
@@ -263,6 +272,7 @@ async function copyMediaToBlob(
       access: "private",
       addRandomSuffix: false,
       allowOverwrite: true,
+      token: zoomBlobToken(),
     })
     return { blob_url: blob.url, blob_pathname: blob.pathname }
   } catch (err) {
