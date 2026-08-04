@@ -388,7 +388,7 @@ export function Form1040Viewer({
         <div className="max-w-5xl mx-auto px-6 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-center gap-4">
-              <div className="p-3 rounded-lg bg-emerald-950 text-emerald-400 print:hidden">
+              <div className="p-3 rounded-lg print:hidden" style={{ backgroundColor: "#1e2010", color: "#9CA757" }}>
                 <FileText className="h-6 w-6" />
               </div>
               <div>
@@ -446,8 +446,9 @@ export function Form1040Viewer({
                 Return Summary
               </CardTitle>
             </CardHeader>
-            <CardContent className="pt-0">
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-px bg-border rounded-lg overflow-hidden">
+            <CardContent className="pt-0 px-0">
+              {/* Horizontal scroll so each tile always has room — no truncation */}
+              <div className="flex overflow-x-auto divide-x divide-border">
                 <SummaryValue label="Total Income" value={summaryValues.totalIncome} line="9" />
                 <SummaryValue label="AGI" value={summaryValues.agi} line="11" />
                 <SummaryValue label="Taxable Income" value={summaryValues.taxableIncome} line="15" />
@@ -457,7 +458,7 @@ export function Form1040Viewer({
                   label="Refund"
                   value={summaryValues.refund}
                   line="34"
-                  tone="emerald"
+                  tone="sage"
                 />
                 <SummaryValue
                   label="Amount Owed"
@@ -605,38 +606,41 @@ function SummaryValue({
   label,
   value,
   line,
-  tone = "stone",
+  tone = "neutral",
 }: {
   label: string
   value: number | null
   line: string
-  tone?: "stone" | "emerald" | "rose"
+  tone?: "neutral" | "sage" | "rose"
 }) {
   const hasValue = value !== null && value !== 0
-  const toneClasses = {
-    stone: "text-foreground",
-    emerald: hasValue ? "text-emerald-500" : "text-muted-foreground",
-    rose: hasValue ? "text-rose-500" : "text-muted-foreground",
-  }
+  // Motta olive/sage palette: #9CA757 (mid), #7E8845 (dark), #C4CB8B (light)
+  const valueClass =
+    tone === "sage"
+      ? hasValue
+        ? "text-[#9CA757]"
+        : "text-muted-foreground"
+      : tone === "rose"
+      ? hasValue
+        ? "text-rose-500"
+        : "text-muted-foreground"
+      : "text-foreground"
 
   return (
-    <div className="bg-card px-4 py-4 flex flex-col gap-1.5">
-      {/* Label row — always one line, truncated if necessary */}
-      <div className="flex items-center gap-1 h-4">
-        <span
-          className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide truncate"
-          title={label}
-        >
+    <div className="flex-shrink-0 min-w-[148px] px-5 py-4 flex flex-col gap-2">
+      {/* Label + line number on one row, never wraps */}
+      <div className="flex items-baseline gap-1.5 whitespace-nowrap">
+        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
           {label}
         </span>
-        <span className="text-[10px] font-mono text-muted-foreground/50 flex-shrink-0">
+        <span className="text-[10px] font-mono text-muted-foreground/45">
           L{line}
         </span>
       </div>
-      {/* Value row — always on its own line, never competing with the label */}
-      <div className={cn("text-2xl font-semibold tabular-nums leading-none", toneClasses[tone])}>
+      {/* Value always on its own line */}
+      <div className={cn("text-xl font-semibold tabular-nums leading-none", valueClass)}>
         {hasValue ? fmtMoney(value) : (
-          <span className="text-muted-foreground/40 text-xl">—</span>
+          <span className="text-muted-foreground/35">—</span>
         )}
       </div>
     </div>
