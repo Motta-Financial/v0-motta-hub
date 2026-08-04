@@ -187,17 +187,58 @@ export interface ProConnectMapping {
   suffixId: string
   cellField: CellField
   confidence: "unknown" | "inferred" | "confirmed"
+  /**
+   * Optional code→label translation for enum-coded ProConnect values
+   * (form_1040_proconnect_map.value_decode), e.g. 35c account type
+   * `{"2": "checking", "1": "savings"}`. Codes not in the map are
+   * surfaced as `Code <n>` with `decodeMissing` set by the API layer.
+   */
+  valueDecode: Record<string, string> | null
   condition: MappingCondition | null
   notes: string | null
+}
+
+/**
+ * Server-side masked placeholder for sensitive values (SSN / EIN /
+ * routing / account). The raw value never leaves the server on the
+ * GET render endpoint — only via the audited /reveal route.
+ */
+export interface MaskedValue {
+  masked: true
+  last4: string
+  length: number
+}
+
+/** Line data types whose values must be masked before leaving the server. */
+export const SENSITIVE_DATA_TYPES: ReadonlySet<string> = new Set([
+  "ssn",
+  "ein",
+  "routing",
+  "account",
+])
+
+/** Runtime guard for the masked placeholder shape. */
+export function isMaskedValue(value: unknown): value is MaskedValue {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { masked?: unknown }).masked === true
+  )
 }
 
 /** The result of rendering a return: line code → typed value */
 export type Form1040Data = Record<
   string,
   {
-    value: string | number | boolean | null
+    value: string | number | boolean | MaskedValue | null
     line: Form1040Line
     source: "proconnect" | "computed" | "input" | "estimated"
+    /** Mapping confidence from form_1040_proconnect_map (mapped lines only). */
+    confidence?: "unknown" | "inferred" | "confirmed"
+    /** Code→label map carried through from the mapping row, if any. */
+    valueDecode?: Record<string, string> | null
+    /** Set by the API layer when a coded value had no entry in valueDecode. */
+    decodeMissing?: boolean
   }
 >
 
@@ -237,7 +278,7 @@ export async function loadSchema(
     sb
       .from("form_1040_proconnect_map")
       .select(
-        "line_code, return_type, series_id, prefix_id, code_id, suffix_id, cell_field, confidence, condition, notes",
+        "line_code, return_type, series_id, prefix_id, code_id, suffix_id, cell_field, confidence, value_decode, condition, notes",
       )
       .eq("tax_year", taxYear)
       .eq("return_type", returnType),
@@ -288,6 +329,7 @@ export async function loadSchema(
       suffixId: (r.suffix_id as string) ?? "x1000",
       cellField: ((r.cell_field as CellField) ?? "val") as CellField,
       confidence: (r.confidence as ProConnectMapping["confidence"]) ?? "unknown",
+      valueDecode: (r.value_decode as Record<string, string> | null) ?? null,
       condition: (r.condition as MappingCondition | null) ?? null,
       notes: r.notes,
     }))
@@ -307,10 +349,14 @@ export function clearSchemaCache() {
 // ---------------------------------------------------------------------------
 
 /** Coerce any line value to a number for arithmetic. */
-function toNumber(value: string | number | boolean | null | undefined): number {
+function toNumber(
+  value: string | number | boolean | MaskedValue | null | undefined,
+): number {
   if (value === null || value === undefined) return 0
   if (typeof value === "number") return Number.isFinite(value) ? value : 0
   if (typeof value === "boolean") return value ? 1 : 0
+  // Masked placeholders (and any other object) carry no numeric meaning.
+  if (typeof value === "object") return 0
   const parsed = Number.parseFloat(String(value).replace(/[,$\s]/g, ""))
   return Number.isNaN(parsed) ? 0 : parsed
 }
@@ -515,6 +561,8 @@ export async function renderForm1040(
           : coerceToLineType(raw, line.dataType),
         line,
         source: "proconnect",
+        confidence: mapping.confidence,
+        valueDecode: mapping.valueDecode,
       }
     }
   }
@@ -526,6 +574,9 @@ export async function renderForm1040(
   if (aggregateMap.size > 0) {
     const numericAcc = new Map<string, number>()
     const firstInstance = new Map<string, { prefixNum: number; raw: string }>()
+    // Carry mapping metadata (confidence / valueDecode) into the final
+    // aggregate assignments below.
+    const mappingByLine = new Map<string, ProConnectMapping>()
     for (const cell of cells) {
       const aggMappings = aggregateMap.get(aggregateKey(cell))
       if (!aggMappings) continue
@@ -539,6 +590,7 @@ export async function renderForm1040(
         if (!gatePasses(mapping, cell)) continue
         const raw = readCellField(cell, mapping.cellField)
         if (raw === null || raw === "") continue
+        mappingByLine.set(line.lineCode, mapping)
         if (line.dataType === "currency" || line.dataType === "integer") {
           const n = coerceToLineType(raw, line.dataType)
           if (typeof n === "number") {
@@ -559,15 +611,25 @@ export async function renderForm1040(
     for (const [lineCode, sum] of numericAcc) {
       const line = lineByCode.get(lineCode)
       if (!line) continue
-      data[lineCode] = { value: sum, line, source: "proconnect" }
+      const mapping = mappingByLine.get(lineCode)
+      data[lineCode] = {
+        value: sum,
+        line,
+        source: "proconnect",
+        confidence: mapping?.confidence,
+        valueDecode: mapping?.valueDecode ?? null,
+      }
     }
     for (const [lineCode, first] of firstInstance) {
       const line = lineByCode.get(lineCode)
       if (!line) continue
+      const mapping = mappingByLine.get(lineCode)
       data[lineCode] = {
         value: coerceToLineType(first.raw, line.dataType),
         line,
         source: "proconnect",
+        confidence: mapping?.confidence,
+        valueDecode: mapping?.valueDecode ?? null,
       }
     }
   }
@@ -620,6 +682,12 @@ function buildEntry(
 
   const value = entry.value
   if (value === null || value === undefined) return null
+
+  // Masked placeholders ({ masked: true, last4, length }) are display
+  // artifacts from the GET renderer — they are NEVER importable values.
+  // Reject any object-shaped value outright so a round-tripped masked
+  // payload can't be written back to ProConnect.
+  if (typeof value === "object") return null
 
   let formatted: string
   if (isValuePredicate(mapping)) {

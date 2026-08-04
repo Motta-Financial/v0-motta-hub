@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import useSWR from "swr"
 import Link from "next/link"
 import {
@@ -9,21 +9,20 @@ import {
   ChevronDown,
   ChevronRight,
   User,
-  Building2,
   Calendar,
   Printer,
   Download,
   ExternalLink,
   CheckCircle2,
-  XCircle,
   Minus,
   Loader2,
+  Eye,
+  EyeOff,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Separator } from "@/components/ui/separator"
 import {
   Collapsible,
   CollapsibleContent,
@@ -32,8 +31,14 @@ import {
 import { fmtMoney, fmtNumber } from "@/components/tax/tax-shared"
 import { cn } from "@/lib/utils"
 
+type MaskedValue = {
+  masked: true
+  last4: string
+  length: number
+}
+
 type LineValue = {
-  value: string | number | boolean | null
+  value: string | number | boolean | MaskedValue | null
   line: {
     lineCode: string
     label: string
@@ -46,6 +51,8 @@ type LineValue = {
     notes: string | null
   }
   source: "proconnect" | "computed" | "input" | "estimated"
+  confidence?: "unknown" | "inferred" | "confirmed"
+  decodeMissing?: boolean
 }
 
 type Form1040Response = {
@@ -61,6 +68,27 @@ type Form1040Response = {
   estimatedLineCount?: number
   lines: Record<string, LineValue>
 }
+
+function isMasked(value: LineValue["value"]): value is MaskedValue {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as MaskedValue).masked === true
+  )
+}
+
+/** Masked display string per data type. Bullets sized from length, capped at 8. */
+function maskedDisplay(dataType: string, mv: MaskedValue): string {
+  if (dataType === "ssn") return `•••-••-${mv.last4}`
+  if (dataType === "ein") return `••-•••${mv.last4}`
+  const bulletCount = Math.min(Math.max((mv.length ?? 8) - mv.last4.length, 2), 8)
+  return `${"•".repeat(bulletCount)}${mv.last4}`
+}
+
+const INFERRED_TOOLTIP =
+  "Mapping inferred from Intuit field descriptions — not yet verified against a real return."
+
+const REVEAL_TIMEOUT_MS = 30_000
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -100,6 +128,94 @@ export function Form1040Viewer({
   )
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
+
+  // -------------------------------------------------------------------
+  // Sensitive-field reveal state. Revealed raw values live ONLY in this
+  // component's state — never in the SWR cache, never in localStorage.
+  // Each reveal is a POST to the audited /reveal endpoint and auto
+  // re-masks after 30 seconds.
+  // -------------------------------------------------------------------
+  const [revealedValues, setRevealedValues] = useState<Record<string, string>>({})
+  const [revealingLines, setRevealingLines] = useState<Set<string>>(new Set())
+  const [showSensitive, setShowSensitive] = useState(false)
+  const revealTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
+  const maskLine = useCallback((lineCode: string) => {
+    setRevealedValues((prev) => {
+      if (!(lineCode in prev)) return prev
+      const next = { ...prev }
+      delete next[lineCode]
+      return next
+    })
+    const timer = revealTimers.current.get(lineCode)
+    if (timer) {
+      clearTimeout(timer)
+      revealTimers.current.delete(lineCode)
+    }
+  }, [])
+
+  const revealLine = useCallback(
+    async (lineCode: string) => {
+      setRevealingLines((prev) => new Set(prev).add(lineCode))
+      try {
+        const res = await fetch(`/api/forms/1040/${returnId}/reveal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lineCode, taxYear }),
+        })
+        if (!res.ok) return
+        const payload = (await res.json()) as { value: string | number | null }
+        setRevealedValues((prev) => ({
+          ...prev,
+          [lineCode]: payload.value === null ? "" : String(payload.value),
+        }))
+        // Auto re-mask after 30s. Reset any existing timer.
+        const existing = revealTimers.current.get(lineCode)
+        if (existing) clearTimeout(existing)
+        revealTimers.current.set(
+          lineCode,
+          setTimeout(() => maskLine(lineCode), REVEAL_TIMEOUT_MS)
+        )
+      } catch {
+        // Leave the field masked on failure.
+      } finally {
+        setRevealingLines((prev) => {
+          const next = new Set(prev)
+          next.delete(lineCode)
+          return next
+        })
+      }
+    },
+    [returnId, taxYear, maskLine]
+  )
+
+  // Clear all pending re-mask timers on unmount.
+  useEffect(() => {
+    const timers = revealTimers.current
+    return () => {
+      for (const t of timers.values()) clearTimeout(t)
+      timers.clear()
+    }
+  }, [])
+
+  // All populated sensitive line codes (masked by the server).
+  const sensitiveLineCodes = useMemo(() => {
+    if (!data?.lines) return []
+    return Object.values(data.lines)
+      .filter((lv) => isMasked(lv.value))
+      .map((lv) => lv.line.lineCode)
+  }, [data])
+
+  const handleGlobalSensitiveToggle = () => {
+    if (!showSensitive) {
+      for (const code of sensitiveLineCodes) {
+        if (revealedValues[code] === undefined) void revealLine(code)
+      }
+    } else {
+      for (const code of sensitiveLineCodes) maskLine(code)
+    }
+    setShowSensitive(!showSensitive)
+  }
 
   // Trigger a Phase 1 export from ProConnect, persist the snapshot, then
   // re-render the 1040 from the freshly cached cells. Lives here (not just
@@ -353,7 +469,7 @@ export function Form1040Viewer({
         )}
 
         {/* View controls */}
-        <div className="flex items-center justify-between print:hidden">
+        <div className="flex flex-wrap items-center justify-between gap-3 print:hidden">
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
@@ -370,24 +486,43 @@ export function Form1040Viewer({
               Collapse All
             </Button>
           </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={showAllLines}
-              onChange={(e) => setShowAllLines(e.target.checked)}
-              className="rounded border-stone-300"
-            />
-            Show lines with no value
-          </label>
+          <div className="flex items-center gap-4">
+            {sensitiveLineCodes.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleGlobalSensitiveToggle}
+                aria-pressed={showSensitive}
+                aria-label={
+                  showSensitive ? "Hide sensitive data" : "Show sensitive data"
+                }
+              >
+                {showSensitive ? (
+                  <EyeOff className="h-3.5 w-3.5 mr-1.5" />
+                ) : (
+                  <Eye className="h-3.5 w-3.5 mr-1.5" />
+                )}
+                {showSensitive ? "Hide sensitive data" : "Show sensitive data"}
+              </Button>
+            )}
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={showAllLines}
+                onChange={(e) => setShowAllLines(e.target.checked)}
+                className="rounded border-stone-300"
+              />
+              Show lines with no value
+            </label>
+          </div>
         </div>
 
         {/* Line categories */}
         <div className="space-y-3">
           {CATEGORY_ORDER.map(({ key, label }) => {
             const lines = linesByCategory.get(key) || []
-            const visibleLines = showAllLines
-              ? lines
-              : lines.filter((l) => l.value !== null && l.value !== "")
+            const populatedLines = lines.filter((l) => l.value !== null && l.value !== "")
+            const visibleLines = showAllLines ? lines : populatedLines
             if (visibleLines.length === 0 && !showAllLines) return null
 
             const isExpanded = expandedCategories.has(key)
@@ -411,9 +546,9 @@ export function Form1040Viewer({
                             <ChevronRight className="h-4 w-4 text-muted-foreground print:hidden" />
                           )}
                           <CardTitle className="text-base">{label}</CardTitle>
-                          <Badge variant="outline" className="text-xs">
-                            {visibleLines.length} line{visibleLines.length !== 1 ? "s" : ""}
-                          </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            {populatedLines.length} of {lines.length} lines
+                          </span>
                         </div>
                         {categoryTotal !== 0 && (
                           <span className="text-sm font-medium tabular-nums">
@@ -427,7 +562,14 @@ export function Form1040Viewer({
                     <CardContent className="pt-0">
                       <div className="divide-y divide-stone-100">
                         {visibleLines.map((lineVal) => (
-                          <LineRow key={lineVal.line.lineCode} lineVal={lineVal} />
+                          <LineRow
+                            key={lineVal.line.lineCode}
+                            lineVal={lineVal}
+                            revealedValue={revealedValues[lineVal.line.lineCode]}
+                            isRevealing={revealingLines.has(lineVal.line.lineCode)}
+                            onReveal={revealLine}
+                            onMask={maskLine}
+                          />
                         ))}
                       </div>
                     </CardContent>
@@ -481,7 +623,7 @@ function SummaryValue({
         {label}
         <span className="ml-1 text-[10px] font-mono opacity-60">L{line}</span>
       </div>
-      <div className={cn("text-lg font-semibold tabular-nums", toneClasses[tone])}>
+      <div className={cn("text-xl font-semibold tabular-nums", toneClasses[tone])}>
         {hasValue ? fmtMoney(value) : "—"}
       </div>
     </div>
@@ -489,31 +631,88 @@ function SummaryValue({
 }
 
 // Individual line row
-function LineRow({ lineVal }: { lineVal: LineValue }) {
+function LineRow({
+  lineVal,
+  revealedValue,
+  isRevealing,
+  onReveal,
+  onMask,
+}: {
+  lineVal: LineValue
+  revealedValue: string | undefined
+  isRevealing: boolean
+  onReveal: (lineCode: string) => void
+  onMask: (lineCode: string) => void
+}) {
   const { line, value, source } = lineVal
   const hasValue = value !== null && value !== ""
+  const masked = isMasked(value)
+  const isRevealed = masked && revealedValue !== undefined
 
   const formatValue = () => {
     if (value === null || value === "") return <span className="text-stone-400">—</span>
+
+    if (masked) {
+      const maskedStr = maskedDisplay(line.dataType, value)
+      return (
+        <span className="inline-flex items-center gap-1.5 justify-end">
+          {/* Print always shows the masked form regardless of reveal state */}
+          <span className="font-mono text-sm hidden print:inline">{maskedStr}</span>
+          <span className="font-mono text-sm print:hidden">
+            {isRevealed ? revealedValue || "—" : maskedStr}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground focus-visible:ring-2 print:hidden"
+            aria-label={
+              isRevealed
+                ? `Hide ${line.label}`
+                : `Reveal ${line.label} (access is logged)`
+            }
+            title={
+              isRevealed
+                ? `Hide ${line.label}`
+                : `Reveal ${line.label} — access is logged`
+            }
+            disabled={isRevealing}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (isRevealed) onMask(line.lineCode)
+              else onReveal(line.lineCode)
+            }}
+          >
+            {isRevealing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : isRevealed ? (
+              <EyeOff className="h-3.5 w-3.5" />
+            ) : (
+              <Eye className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        </span>
+      )
+    }
 
     switch (line.dataType) {
       case "currency":
         return (
           <span className="font-medium tabular-nums">
-            {typeof value === "number" ? fmtMoney(value) : value}
+            {typeof value === "number" ? fmtMoney(value) : String(value)}
           </span>
         )
       case "integer":
         return (
           <span className="font-medium tabular-nums">
-            {typeof value === "number" ? fmtNumber(value) : value}
+            {typeof value === "number" ? fmtNumber(value) : String(value)}
           </span>
         )
       case "boolean":
         return value ? (
-          <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+          <CheckCircle2 className="h-4 w-4 text-emerald-600 inline-block" aria-label="Yes" />
         ) : (
-          <XCircle className="h-4 w-4 text-stone-400" />
+          <Minus className="h-4 w-4 text-stone-400 inline-block" aria-label="No" />
         )
       case "ssn":
       case "ein":
@@ -523,11 +722,13 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
     }
   }
 
+  const showInferredDot = hasValue && lineVal.confidence === "inferred"
+
   return (
     <div
       className={cn(
-        "flex items-start justify-between gap-4 py-2.5",
-        !hasValue && "opacity-50"
+        "flex items-start justify-between gap-4 py-2.5 hover:bg-stone-50 transition-colors",
+        !hasValue && "opacity-60"
       )}
     >
       <div className="flex-1 min-w-0">
@@ -537,7 +738,10 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
           </span>
           <span className="text-sm">{line.label}</span>
           {line.isComputed && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 text-stone-400 border-stone-200"
+            >
               computed
             </Badge>
           )}
@@ -556,8 +760,20 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
             </Badge>
           )}
           {line.scheduleRef && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 text-stone-400 border-stone-200"
+            >
               {line.scheduleRef}
+            </Badge>
+          )}
+          {lineVal.decodeMissing && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 text-stone-400 border-stone-200"
+              title="This coded value has no decode entry yet — showing the raw code."
+            >
+              undecoded
             </Badge>
           )}
         </div>
@@ -567,7 +783,19 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
           </div>
         )}
       </div>
-      <div className="flex-shrink-0 text-right min-w-[100px]">{formatValue()}</div>
+      <div className="flex-shrink-0 text-right min-w-[120px]">
+        {formatValue()}
+        {showInferredDot && (
+          <span
+            className="ml-1 text-stone-400 select-none cursor-help align-super text-[10px]"
+            title={INFERRED_TOOLTIP}
+            aria-label={INFERRED_TOOLTIP}
+            role="img"
+          >
+            *
+          </span>
+        )}
+      </div>
     </div>
   )
 }
