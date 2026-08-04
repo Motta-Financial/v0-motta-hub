@@ -753,20 +753,20 @@ function LineRow({
           {line.isComputed && (
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 py-0 text-stone-400 border-stone-200"
+              className="text-[10px] px-1.5 py-0 text-muted-foreground border-border"
             >
               computed
             </Badge>
           )}
           {line.notApplicable && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-stone-400">
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground border-border">
               N/A this year
             </Badge>
           )}
           {source === "estimated" && (
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 py-0 border-amber-300 bg-amber-50 text-amber-700"
+              className="text-[10px] px-1.5 py-0 border-amber-500/40 bg-amber-500/10 text-amber-500"
               title="Hub-calculated estimate (standard deduction / taxable SS / tax / CTC) — Intuit does not export calculated amounts. Verify against the filed return."
             >
               estimated
@@ -775,7 +775,7 @@ function LineRow({
           {line.scheduleRef && (
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 py-0 text-stone-400 border-stone-200"
+              className="text-[10px] px-1.5 py-0 text-muted-foreground border-border"
             >
               {line.scheduleRef}
             </Badge>
@@ -783,7 +783,7 @@ function LineRow({
           {lineVal.decodeMissing && (
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 py-0 text-stone-400 border-stone-200"
+              className="text-[10px] px-1.5 py-0 text-muted-foreground border-border"
               title="This coded value has no decode entry yet — showing the raw code."
             >
               undecoded
