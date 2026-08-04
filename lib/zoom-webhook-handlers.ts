@@ -27,7 +27,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/server"
-import { ingestRecordingFiles, type ZoomRecordingFile } from "@/lib/zoom/ingest-recording-files"
+import { ingestRecordingFiles, mergeBlobLinks, type ZoomRecordingFile } from "@/lib/zoom/ingest-recording-files"
 import type { ZoomWebhookPayload } from "@/lib/zoom-webhook"
 
 export type HandlerResult =
@@ -75,7 +75,18 @@ async function handleRecordingCompleted(payload: ZoomWebhookPayload): Promise<Ha
 
   const meetingIdNumeric = toBigInt(obj.id)
   const startTime = obj.start_time ? new Date(obj.start_time).toISOString() : null
-  const recordingFiles = Array.isArray(obj.recording_files) ? obj.recording_files : []
+
+  // Merge blob links from any prior row — a re-fired event must not clobber
+  // the archive markers (that would force a full media re-copy on next sync).
+  const { data: priorRec } = await admin
+    .from("zoom_recordings")
+    .select("recording_files")
+    .eq("zoom_uuid", obj.uuid)
+    .maybeSingle()
+  const recordingFiles = mergeBlobLinks(
+    (Array.isArray(obj.recording_files) ? obj.recording_files : []) as ZoomRecordingFile[],
+    priorRec?.recording_files as ZoomRecordingFile[] | null,
+  )
 
   const { error } = await admin.from("zoom_recordings").upsert(
     {

@@ -94,6 +94,31 @@ function extForFile(file: ZoomRecordingFile): string {
 }
 
 /**
+ * Carry blob links from a previously stored `recording_files` array onto a
+ * fresh Zoom payload. Zoom never returns our blob_url/blob_pathname, so
+ * upserting a fresh payload verbatim clobbers the archive markers — and the
+ * next ingest re-downloads and re-uploads every file. Callers that upsert
+ * `recording_files` from a Zoom response MUST merge through this first.
+ */
+export function mergeBlobLinks(
+  fresh: ZoomRecordingFile[],
+  prior: ZoomRecordingFile[] | null | undefined,
+): ZoomRecordingFile[] {
+  if (!Array.isArray(fresh)) return []
+  if (!Array.isArray(prior) || prior.length === 0) return fresh
+  const linked = new Map<string, ZoomRecordingFile>()
+  for (const p of prior) {
+    if (p?.id && (p.blob_url || p.blob_pathname)) linked.set(String(p.id), p)
+  }
+  if (linked.size === 0) return fresh
+  return fresh.map((f) => {
+    const p = f?.id ? linked.get(String(f.id)) : undefined
+    if (!p || f.blob_url) return f
+    return { ...f, blob_url: p.blob_url, blob_pathname: p.blob_pathname }
+  })
+}
+
+/**
  * Ingest every file in a recording set. Returns counts + the (possibly
  * mutated) recording_files array so the caller can persist blob links back to
  * `zoom_recordings.recording_files`.
