@@ -34,6 +34,7 @@ import {
   type ZoomConnection,
 } from "@/lib/zoom-auth"
 import { processRecentZoomParticipants } from "@/lib/zoom/process-meeting-participants"
+import { mergeBlobLinks, type ZoomRecordingFile } from "@/lib/zoom/ingest-recording-files"
 
 export interface SyncRecentZoomDataOptions {
   supabase: SupabaseClient
@@ -250,6 +251,16 @@ export async function syncRecentZoomData(
           }
           const recs = data.meetings ?? []
           if (recs.length > 0) {
+            // Merge blob links from existing rows — Zoom's payload never has
+            // them, and upserting it verbatim wipes the archive markers for
+            // every recording in the sweep window.
+            const { data: priorRows } = await supabase
+              .from("zoom_recordings")
+              .select("zoom_uuid, recording_files")
+              .in("zoom_uuid", recs.map((r) => r.uuid).filter(Boolean))
+            const priorByUuid = new Map(
+              (priorRows ?? []).map((p) => [p.zoom_uuid, p.recording_files as ZoomRecordingFile[]]),
+            )
             const rows = recs.map((rec) => ({
               zoom_meeting_id: rec.id,
               zoom_uuid: rec.uuid,
@@ -258,7 +269,10 @@ export async function syncRecentZoomData(
               duration: rec.duration,
               total_size: rec.total_size ?? null,
               recording_count: rec.recording_count ?? null,
-              recording_files: rec.recording_files ?? [],
+              recording_files: mergeBlobLinks(
+                (rec.recording_files ?? []) as ZoomRecordingFile[],
+                priorByUuid.get(rec.uuid),
+              ),
               share_url: rec.share_url ?? null,
               team_member_id: conn.team_member_id,
               zoom_connection_id: conn.id,
