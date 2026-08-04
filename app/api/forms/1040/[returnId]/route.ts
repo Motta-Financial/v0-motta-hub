@@ -127,7 +127,9 @@ export async function GET(
     returnType: snapshot.return_type,
     version: snapshot.version,
     exportedAt: snapshot.exported_at,
-    lineCount: schema.lines.length,
+    // Denominator excludes lines that can never hold a value (line 30
+    // "Reserved", 12b N/A for TY2025).
+    lineCount: schema.lines.filter((l) => !l.notApplicable).length,
     mappedLineCount: schema.mappings.length,
     // Lines the renderer derives from mapped inputs (sums, AGI, etc.) —
     // they populate without a mapping of their own, so raw

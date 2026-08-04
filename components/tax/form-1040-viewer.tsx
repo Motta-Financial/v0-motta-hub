@@ -41,6 +41,7 @@ type LineValue = {
     dataType: string
     section: string
     isComputed: boolean
+    notApplicable?: boolean
     scheduleRef: string | null
     notes: string | null
   }
@@ -538,6 +539,11 @@ function LineRow({ lineVal }: { lineVal: LineValue }) {
           {line.isComputed && (
             <Badge variant="outline" className="text-[10px] px-1.5 py-0">
               computed
+            </Badge>
+          )}
+          {line.notApplicable && (
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-stone-400">
+              N/A this year
             </Badge>
           )}
           {source === "estimated" && (
