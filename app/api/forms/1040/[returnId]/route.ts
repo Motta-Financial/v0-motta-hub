@@ -15,8 +15,11 @@ import {
   renderForm1040,
   composeImportEntries,
   evaluateComputedLines,
+  SENSITIVE_DATA_TYPES,
+  isMaskedValue,
   type Form1040Data,
   type FieldCell,
+  type MaskedValue,
 } from "@/lib/forms/form-1040"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
@@ -89,6 +92,40 @@ export async function GET(
   const returnType = snapshot.return_type ?? "IND"
   const form1040 = await renderForm1040(taxYear, cells, returnType)
 
+  // 3b. Post-process before anything leaves the server:
+  //     - Sensitive data types (ssn/ein/routing/account — incl. dep_ssn,
+  //       35b, 35d) are replaced with a masked placeholder. Raw values
+  //       are only obtainable via the audited /reveal route.
+  //     - Enum-coded values with a value_decode map are translated to
+  //       their label (e.g. 35c "2" → "checking"); unknown codes pass
+  //       through as "Code <n>" with decodeMissing set.
+  for (const entry of Object.values(form1040)) {
+    const { value, line } = entry
+    if (value === null || value === "" || isMaskedValue(value)) continue
+
+    if (SENSITIVE_DATA_TYPES.has(line.dataType)) {
+      const raw = String(value)
+      const masked: MaskedValue = {
+        masked: true,
+        last4: raw.slice(-4),
+        length: raw.length,
+      }
+      entry.value = masked
+      continue
+    }
+
+    if (entry.valueDecode && typeof value !== "object") {
+      const code = String(value)
+      const label = entry.valueDecode[code]
+      if (label !== undefined) {
+        entry.value = label
+      } else {
+        entry.value = `Code ${code}`
+        entry.decodeMissing = true
+      }
+    }
+  }
+
   // 4. Load schema for metadata
   const schema = await loadSchema(taxYear, returnType)
 
@@ -152,14 +189,22 @@ export async function POST(
     )
   }
 
-  // 2. Build Form1040Data from user input (keyed by IRS line_code)
+  // 2. Build Form1040Data from user input (keyed by IRS line_code).
+  //    Object-shaped values (e.g. a round-tripped masked placeholder
+  //    { masked: true, last4, length } from the GET renderer) are NEVER
+  //    user-supplied line values — skip them so they can't be composed
+  //    into an import payload. composeImportEntries guards again.
   const data: Form1040Data = {}
   for (const line of lines) {
     const userVal = body.lines[line.lineCode]
-    data[line.lineCode] =
-      userVal !== undefined && userVal !== null && userVal !== ""
-        ? { value: userVal, line, source: "input" }
-        : { value: null, line, source: "input" }
+    const usable =
+      userVal !== undefined &&
+      userVal !== null &&
+      userVal !== "" &&
+      typeof userVal !== "object"
+    data[line.lineCode] = usable
+      ? { value: userVal, line, source: "input" }
+      : { value: null, line, source: "input" }
   }
 
   // 3. Evaluate computed lines
