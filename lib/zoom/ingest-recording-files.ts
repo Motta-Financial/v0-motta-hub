@@ -298,6 +298,9 @@ async function copyMediaToBlob(
       addRandomSuffix: false,
       allowOverwrite: true,
       token: zoomBlobToken(),
+      // Stream in chunks — without this the SDK buffers the whole file in
+      // memory, and GB-scale MP4s OOM-kill the 300s serverless function.
+      multipart: true,
     })
     return { blob_url: blob.url, blob_pathname: blob.pathname }
   } catch (err) {
