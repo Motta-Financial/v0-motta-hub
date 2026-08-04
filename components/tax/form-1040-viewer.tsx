@@ -627,7 +627,7 @@ function SummaryValue({
       : "text-foreground"
 
   return (
-    <div className="flex-shrink-0 min-w-[148px] px-5 py-4 flex flex-col gap-2">
+    <div className="flex-shrink-0 min-w-[168px] px-5 py-5 flex flex-col gap-2.5">
       {/* Label + line number on one row, never wraps */}
       <div className="flex items-baseline gap-1.5 whitespace-nowrap">
         <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
@@ -667,7 +667,7 @@ function LineRow({
   const isRevealed = masked && revealedValue !== undefined
 
   const formatValue = () => {
-    if (value === null || value === "") return <span className="text-stone-400">—</span>
+    if (value === null || value === "") return <span className="text-muted-foreground/40">—</span>
 
     if (masked) {
       const maskedStr = maskedDisplay(line.dataType, value)
@@ -727,9 +727,9 @@ function LineRow({
         )
       case "boolean":
         return value ? (
-          <CheckCircle2 className="h-4 w-4 text-emerald-600 inline-block" aria-label="Yes" />
+          <CheckCircle2 className="h-4 w-4 inline-block" style={{ color: "#9CA757" }} aria-label="Yes" />
         ) : (
-          <Minus className="h-4 w-4 text-stone-400 inline-block" aria-label="No" />
+          <Minus className="h-4 w-4 text-muted-foreground/40 inline-block" aria-label="No" />
         )
       case "ssn":
       case "ein":
@@ -804,7 +804,7 @@ function LineRow({
         {formatValue()}
         {showInferredDot && (
           <span
-            className="ml-1 text-stone-400 select-none cursor-help align-super text-[10px]"
+            className="ml-1 text-muted-foreground/40 select-none cursor-help align-super text-[10px]"
             title={INFERRED_TOOLTIP}
             aria-label={INFERRED_TOOLTIP}
             role="img"
