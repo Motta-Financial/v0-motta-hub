@@ -125,6 +125,8 @@ export interface Form1040Line {
   worksheetRef: string | null
   attachesForm: string | null
   isRefundPath: boolean
+  /** Line can never hold a value (e.g. 30 'Reserved', 12b N/A for the year). */
+  notApplicable: boolean
   notes: string | null
 }
 
@@ -224,7 +226,7 @@ export async function loadSchema(
     sb
       .from("form_1040_lines")
       .select(
-        "id, tax_year, line_code, parent_code, ordinal, section, label, short_label, data_type, enum_options, is_computed, computation, schedule_ref, worksheet_ref, attaches_form, is_refund_path, notes",
+        "id, tax_year, line_code, parent_code, ordinal, section, label, short_label, data_type, enum_options, is_computed, computation, schedule_ref, worksheet_ref, attaches_form, is_refund_path, not_applicable, notes",
       )
       .eq("tax_year", taxYear)
       .order("ordinal"),
@@ -262,6 +264,7 @@ export async function loadSchema(
     worksheetRef: r.worksheet_ref,
     attachesForm: r.attaches_form,
     isRefundPath: r.is_refund_path,
+    notApplicable: r.not_applicable ?? false,
     notes: r.notes,
   }))
 
