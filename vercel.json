@@ -1,4 +1,12 @@
 {
+  "functions": {
+    "app/api/zoom/recordings/sync-account/route.ts": {
+      "memory": 3009
+    },
+    "app/api/zoom/recordings/backfill/route.ts": {
+      "memory": 3009
+    }
+  },
   "crons": [
     {
       "path": "/api/cron/karbon-sync",
