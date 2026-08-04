@@ -67,6 +67,7 @@ export interface AccountSyncResult {
   transcriptsParsed: number
   transcriptsFailed: number
   mediaCopied: number
+  mediaFailed: number
   meetingsTagged: number
   clientLinksWritten: number
   errors: string[]
@@ -159,6 +160,7 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
     transcriptsParsed: 0,
     transcriptsFailed: 0,
     mediaCopied: 0,
+    mediaFailed: 0,
     meetingsTagged: 0,
     clientLinksWritten: 0,
     errors: [],
@@ -381,6 +383,7 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
             result.transcriptsParsed += ingest.transcriptsParsed
             result.transcriptsFailed += ingest.transcriptsFailed
             result.mediaCopied += ingest.mediaCopied
+            result.mediaFailed += ingest.mediaFailed
 
             if (ingest.mediaCopied > 0) {
               await supabase

@@ -31,6 +31,7 @@ export interface BackfillResult {
   transcriptsParsed: number
   transcriptsFailed: number
   mediaCopied: number
+  mediaFailed: number
   errors: string[]
 }
 
@@ -49,6 +50,7 @@ export async function backfillZoomRecordings(opts: BackfillOptions): Promise<Bac
     transcriptsParsed: 0,
     transcriptsFailed: 0,
     mediaCopied: 0,
+    mediaFailed: 0,
     errors: [],
   }
 
@@ -164,6 +166,7 @@ export async function backfillZoomRecordings(opts: BackfillOptions): Promise<Bac
             result.transcriptsParsed += ingest.transcriptsParsed
             result.transcriptsFailed += ingest.transcriptsFailed
             result.mediaCopied += ingest.mediaCopied
+            result.mediaFailed += ingest.mediaFailed
 
             // Persist any per-file Blob links back into recording_files.
             if (ingest.mediaCopied > 0) {
