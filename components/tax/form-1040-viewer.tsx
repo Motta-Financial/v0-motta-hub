@@ -513,7 +513,7 @@ export function Form1040Viewer({
                 type="checkbox"
                 checked={showAllLines}
                 onChange={(e) => setShowAllLines(e.target.checked)}
-                className="rounded border-stone-300"
+                className="rounded border-border"
               />
               Show lines with no value
             </label>
