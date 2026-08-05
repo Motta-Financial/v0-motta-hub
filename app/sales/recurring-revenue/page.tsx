@@ -3,9 +3,9 @@ import { SalesRecurringRevenue } from "@/components/sales-recurring-revenue"
 import { DashboardLayout } from "@/components/dashboard-layout"
 
 export const metadata = {
-  title: "Recurring Revenue · Motta Hub",
+  title: "Recurring Revenue | ALFRED Hub",
   description:
-    "Curated monthly recurring revenue across Accounting and Tax, sourced from the partner-maintained CSV.",
+    "Live monthly recurring revenue across Accounting and Tax, sourced from the Ignition feed.",
 }
 
 export default function RecurringRevenuePage() {

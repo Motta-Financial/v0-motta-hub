@@ -63,6 +63,9 @@ export async function GET(req: Request) {
   const managerFilter = sp.get("manager")?.split(",").filter(Boolean) ?? []
   const sentByFilter = sp.get("sentBy")?.split(",").filter(Boolean) ?? []
   const stateFilter = sp.get("state")?.split(",").filter(Boolean) ?? []
+  // Ignition client tags (migration 377) — OR-match; "(untagged)" selects
+  // proposals whose client carries no tags.
+  const clientTagFilter = sp.get("clientTag")?.split(",").filter(Boolean) ?? []
   const minValue = sp.get("minValue") ? Number(sp.get("minValue")) : null
   const maxValue = sp.get("maxValue") ? Number(sp.get("maxValue")) : null
   const search = sp.get("search")?.trim() || ""
@@ -84,7 +87,7 @@ export async function GET(req: Request) {
       .from("ignition_proposals")
       .select(
         `proposal_id, proposal_number, title, status, client_name, client_email,
-         organization_id, contact_id, ignition_client_id, ignition_url,
+         organization_id, contact_id, ignition_client_id, ignition_url, client_tags,
          total_value, one_time_total, recurring_total, recurring_frequency, currency,
          sent_at, accepted_at, completed_at, lost_at, lost_reason, archived_at,
          client_manager, client_partner, proposal_sent_by,
@@ -328,6 +331,8 @@ export async function GET(req: Request) {
     ignition_client_id: string | null
     /** Deep link into the Ignition app for this proposal (migration 377). */
     ignition_url: string | null
+    /** Ignition client tags stamped on the proposal at sync time. */
+    client_tags: string[]
     total_value: number
     one_time_total: number
     recurring_total: number
@@ -516,6 +521,7 @@ export async function GET(req: Request) {
       state_source: stateSource,
       ignition_client_id: p.ignition_client_id ?? null,
       ignition_url: p.ignition_url ?? null,
+      client_tags: Array.isArray(p.client_tags) ? p.client_tags : [],
       total_value: totalValue,
       one_time_total: oneTime,
       recurring_total: recurring,
@@ -560,6 +566,13 @@ export async function GET(req: Request) {
       const st = p.state || "(unknown)"
       if (!stateFilter.includes(st)) return false
     }
+    if (clientTagFilter.length) {
+      const has =
+        p.client_tags.length === 0
+          ? clientTagFilter.includes("(untagged)")
+          : p.client_tags.some((t) => clientTagFilter.includes(t))
+      if (!has) return false
+    }
     if (minValue != null && p.total_value < minValue) return false
     if (maxValue != null && p.total_value > maxValue) return false
     if (lcSearch) {
@@ -592,6 +605,9 @@ export async function GET(req: Request) {
     new Set(enriched.map((p) => p.proposal_sent_by).filter(Boolean) as string[]),
   ).sort()
   const statuses = Array.from(new Set(enriched.map((p) => p.status))).sort()
+  const clientTags = Array.from(
+    new Set(enriched.flatMap((p) => p.client_tags)),
+  ).sort()
 
   // ── Service Line breakdown (only for accepted/completed proposals) ────
   const serviceLineMap = new Map<
@@ -1015,6 +1031,107 @@ export async function GET(req: Request) {
     byPaymentState: invByState,
   }
 
+  // ── Deals pipeline roll-up (ignition_deals, migration 377 fields) ─────
+  // The pre-proposal pipeline: open deals grouped by stage with Ignition's
+  // own stage win-likelihoods, so partners see what's brewing before a
+  // proposal even exists. Small table (~50 rows) so one unfiltered read is
+  // fine; deliberately NOT subject to the date-range filter because an
+  // open deal is "current state", not history.
+  type DealRow = {
+    ignition_deal_id: string
+    title: string | null
+    status: string | null
+    client_name: string | null
+    stage_name: string | null
+    stage_position: number | null
+    stage_win_likelihood: number | null
+    projected_value: number | null
+    value: number | null
+    owner_name: string | null
+    current_stage_started_at: string | null
+    ignition_url: string | null
+  }
+  let dealRows: DealRow[] = []
+  try {
+    const { data: deals } = await supabase
+      .from("ignition_deals")
+      .select(
+        "ignition_deal_id, title, status, client_name, stage_name, stage_position, stage_win_likelihood, projected_value, value, owner_name, current_stage_started_at, ignition_url",
+      )
+      .eq("status", "open")
+    dealRows = (deals ?? []) as DealRow[]
+  } catch (dealErr) {
+    // Degrade to an empty pipeline rather than failing the dashboard.
+    console.error("[sales-dashboard] deals query failed:", dealErr)
+  }
+
+  type DealStageBucket = {
+    stage: string
+    position: number
+    winLikelihood: number | null
+    count: number
+    projectedValue: number
+    /** projectedValue × the stage's win likelihood (0–1). */
+    weightedValue: number
+    deals: Array<{
+      ignition_deal_id: string
+      title: string | null
+      client_name: string | null
+      projected_value: number
+      owner_name: string | null
+      in_stage_since: string | null
+      ignition_url: string | null
+    }>
+  }
+  const dealStageMap = new Map<string, DealStageBucket>()
+  for (const d of dealRows) {
+    const stage = d.stage_name || "(no stage)"
+    // stage_win_likelihood arrives as either a 0–1 fraction or a percent
+    // depending on API vintage — normalize to a fraction.
+    const rawWl = d.stage_win_likelihood
+    const winLikelihood =
+      rawWl == null ? null : rawWl > 1 ? Number(rawWl) / 100 : Number(rawWl)
+    const projected = Number(d.projected_value ?? d.value) || 0
+    const bucket = dealStageMap.get(stage) ?? {
+      stage,
+      position: d.stage_position ?? 999,
+      winLikelihood,
+      count: 0,
+      projectedValue: 0,
+      weightedValue: 0,
+      deals: [],
+    }
+    bucket.count += 1
+    bucket.projectedValue += projected
+    bucket.weightedValue += projected * (winLikelihood ?? 0)
+    bucket.deals.push({
+      ignition_deal_id: d.ignition_deal_id,
+      title: d.title,
+      client_name: d.client_name,
+      projected_value: projected,
+      owner_name: d.owner_name,
+      in_stage_since: d.current_stage_started_at,
+      ignition_url: d.ignition_url,
+    })
+    dealStageMap.set(stage, bucket)
+  }
+  const dealStages = Array.from(dealStageMap.values())
+    .sort((a, b) => a.position - b.position)
+    .map((b) => ({
+      ...b,
+      projectedValue: round2(b.projectedValue),
+      weightedValue: round2(b.weightedValue),
+      deals: b.deals.sort((x, y) => y.projected_value - x.projected_value),
+    }))
+  const dealsSummary = {
+    openCount: dealRows.length,
+    projectedValue: round2(
+      dealStages.reduce((s, b) => s + b.projectedValue, 0),
+    ),
+    weightedValue: round2(dealStages.reduce((s, b) => s + b.weightedValue, 0)),
+    stages: dealStages,
+  }
+
   // ── Client mapping coverage ────────────────────────────────────────────
   // Surfaced in the dashboard header so a partner can see at a glance
   // whether every proposal is attributed to a Hub client — and jump to
@@ -1038,6 +1155,7 @@ export async function GET(req: Request) {
       managers,
       sentBy: sentByList,
       statuses,
+      clientTags,
     },
     serviceLines,
     stateBreakdown,
@@ -1053,6 +1171,10 @@ export async function GET(req: Request) {
     // Billed / collected / outstanding roll-up from ignition_invoices'
     // payment-lifecycle fields, same window as the proposals.
     invoiceSummary,
+    // Open pre-proposal pipeline from ignition_deals, grouped by stage
+    // with Ignition's stage win-likelihoods. Current-state snapshot —
+    // not subject to the date filter.
+    dealsSummary,
     // How many proposals resolve to a Hub client (directly or via the
     // ignition_clients fallback) — drives the header coverage indicator.
     clientCoverage,

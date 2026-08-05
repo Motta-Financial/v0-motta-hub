@@ -11,7 +11,7 @@
  * date range/field, sort) so the view is shareable and reload-stable.
  */
 
-import { useMemo, useState } from "react"
+import { Fragment, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams, usePathname } from "next/navigation"
 import useSWR from "swr"
@@ -33,8 +33,10 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  CreditCard,
   ExternalLink,
   X,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   RefreshCcw,
@@ -68,6 +70,16 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 import { US_STATE_NAMES } from "@/lib/sales/us-geo"
 
+interface InvoiceItem {
+  description?: string | null
+  quantity?: number | null
+  unit_price?: number | null
+  discount?: number | null
+  total?: number | null
+  currency?: string | null
+  origin_type?: string | null
+  origin_identifier?: string | null
+}
 interface Invoice {
   ignition_invoice_id: string
   invoice_number: string | null
@@ -90,6 +102,21 @@ interface Invoice {
   /** Geographic state resolved via org → contact → ignition_client. */
   state: string | null
   city: string | null
+  /** Ignition payment lifecycle (migration 377): unpaid | partially_paid
+   *  | paid, plus how/where/when the payment actually happened. Null on
+   *  legacy CSV-imported rows. */
+  payment_state: string | null
+  payment_date: string | null
+  payment_method_type: string | null
+  payment_source: string | null
+  issued_by_name: string | null
+  memo: string | null
+  /** Invoice line items straight from the Reporting API. */
+  items: InvoiceItem[] | null
+  /** Payout status of the disbursal the payment landed in. */
+  disbursal_state: string | null
+  /** Direct link to the invoice in the Ignition web app. */
+  ignition_url: string | null
 }
 interface AgingBucket {
   count: number
@@ -125,10 +152,16 @@ interface InvoicesResponse {
       d61to90: AgingBucket
       d90plus: AgingBucket
     }
+    /** How collected revenue arrives, keyed by Ignition's
+     *  payment_method_type enum (credit_card / bank_account / …).
+     *  `amount` is the paid dollars attributed to that method. */
+    byPaymentMethod: Record<string, { count: number; amount: number }>
   }
   dimensions: {
     statuses: string[]
     states: string[]
+    paymentStates: string[]
+    paymentMethods: string[]
   }
   /** Last 12 months bucketed on invoice_date. Always 12 entries (zero-
    *  filled for inactive months) so the chart spans a stable window. */
@@ -245,6 +278,27 @@ function titleCase(s: string | null | undefined) {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+// Friendly labels for Ignition's payment_method_type enum. Anything not
+// listed falls back to title-cased raw value so new enum members still
+// render sensibly.
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  credit_card: "Credit card",
+  bank_account: "Bank (ACH)",
+  check: "Check",
+  credit_note: "Credit note",
+  other: "Other",
+  "(none)": "(not recorded)",
+}
+function paymentMethodLabel(m: string | null | undefined): string {
+  if (!m) return "—"
+  return PAYMENT_METHOD_LABELS[m] ?? titleCase(m)
+}
+
+// Keyed wrapper for the main row + its optional expanded detail row.
+// A plain alias of Fragment — exists purely so the map callback reads
+// as "one group per invoice".
+const InvoiceRowGroup = Fragment
+
 export function SalesInvoices() {
   const router = useRouter()
   const pathname = usePathname()
@@ -261,6 +315,9 @@ export function SalesInvoices() {
   // selector — see resolution in `effectiveStatusFilter` below).
   const bucket = (searchParams.get("bucket") || "all") as BucketKey
   const state = (searchParams.get("state") || "").split(",").filter(Boolean)
+  const paymentMethod = (searchParams.get("paymentMethod") || "")
+    .split(",")
+    .filter(Boolean)
   const minAmount = searchParams.get("minAmount") || ""
   const maxAmount = searchParams.get("maxAmount") || ""
   // Default to YTD on invoice_date. With 1,051 invoices in the database
@@ -281,6 +338,9 @@ export function SalesInvoices() {
 
   const [searchInput, setSearchInput] = useState(search)
   const [editing, setEditing] = useState<Invoice | null>(null)
+  // Which invoice row is expanded to show its Ignition line items /
+  // payment detail. One at a time keeps the table scannable.
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   // Resolve the active bucket to a status-list that the API understands.
   // When the user picks a chip, we forward those statuses to the server
@@ -302,6 +362,7 @@ export function SalesInvoices() {
     if (effectiveStatusFilter.length)
       sp.set("status", (effectiveStatusFilter as readonly string[]).join(","))
     if (state.length) sp.set("state", state.join(","))
+    if (paymentMethod.length) sp.set("paymentMethod", paymentMethod.join(","))
     if (minAmount) sp.set("minAmount", minAmount)
     if (maxAmount) sp.set("maxAmount", maxAmount)
     // Server defaults to invoice_date too, but we send it explicitly
@@ -317,6 +378,7 @@ export function SalesInvoices() {
     search,
     effectiveStatusFilter,
     state,
+    paymentMethod,
     minAmount,
     maxAmount,
     dateField,
@@ -357,6 +419,7 @@ export function SalesInvoices() {
     // double-count: the bucket overrides status when set.
     (bucket !== "all" ? 1 : status.length) +
     state.length +
+    paymentMethod.length +
     (minAmount || maxAmount ? 1 : 0) +
     (userSetDateRange ? 1 : 0)
 
@@ -506,6 +569,17 @@ export function SalesInvoices() {
             }
             onChange={(v) => updateParams({ state: v.length ? v.join(",") : null })}
           />
+          <MultiSelectChip
+            label="Pay method"
+            // Ignition's payment_method_type enum plus "(none)" for rows
+            // where no method was recorded (unpaid + legacy imports).
+            options={[...(data?.dimensions?.paymentMethods || []), "(none)"]}
+            value={paymentMethod}
+            formatLabel={paymentMethodLabel}
+            onChange={(v) =>
+              updateParams({ paymentMethod: v.length ? v.join(",") : null })
+            }
+          />
           <RangeChip
             label="Amount"
             min={minAmount}
@@ -647,6 +721,16 @@ export function SalesInvoices() {
                     onSort={toggleSort}
                     align="right"
                   />
+                  {/* Payment method + date synced from the Reporting API
+                      (migration 377). Sorts on payment_date so "most
+                      recently collected" is one click away. */}
+                  <SortableHeader
+                    field="payment_date"
+                    label="Payment"
+                    sortBy={sortBy}
+                    sortDir={sortDir}
+                    onSort={toggleSort}
+                  />
                   <SortableHeader
                     field="invoice_date"
                     label="Date"
@@ -668,20 +752,20 @@ export function SalesInvoices() {
                 {isLoading && !data ? (
                   Array.from({ length: 10 }).map((_, i) => (
                     <tr key={i} className="border-b">
-                      <td colSpan={9} className="px-3 py-3">
+                      <td colSpan={10} className="px-3 py-3">
                         <Skeleton className="h-5 w-full" />
                       </td>
                     </tr>
                   ))
                 ) : error ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-center text-rose-600">
+                    <td colSpan={10} className="px-3 py-6 text-center text-rose-600">
                       Failed to load invoices.
                     </td>
                   </tr>
                 ) : data && data.invoices.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">
+                    <td colSpan={10} className="px-3 py-10 text-center text-muted-foreground">
                       <FilterIcon className="h-6 w-6 mx-auto mb-2 opacity-40" />
                       No invoices match the current filters.
                     </td>
@@ -695,10 +779,41 @@ export function SalesInvoices() {
                         ? `/clients/${inv.contact_id}`
                         : null
                     const tone = STATUS_TONE[inv.status || ""] || "bg-stone-100 text-stone-700 border-stone-200"
+                    const isExpanded = expandedId === inv.ignition_invoice_id
+                    const hasDetail =
+                      (inv.items?.length ?? 0) > 0 ||
+                      !!inv.payment_source ||
+                      !!inv.issued_by_name ||
+                      !!inv.memo
                     return (
-                      <tr key={inv.ignition_invoice_id} className="border-b hover:bg-stone-50/60">
+                      <InvoiceRowGroup key={inv.ignition_invoice_id}>
+                      <tr className="border-b hover:bg-stone-50/60">
                         <td className="px-3 py-2 font-mono text-xs">
-                          {inv.invoice_number || inv.ignition_invoice_id.slice(0, 8)}
+                          <div className="flex items-center gap-1">
+                            {hasDetail ? (
+                              // Expand toggle — reveals the Ignition line
+                              // items + payment detail sub-row.
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedId(isExpanded ? null : inv.ignition_invoice_id)
+                                }
+                                className="text-stone-400 hover:text-stone-900 -ml-1"
+                                title={isExpanded ? "Hide line items" : "Show line items"}
+                                aria-expanded={isExpanded}
+                              >
+                                <ChevronDown
+                                  className={cn(
+                                    "h-3.5 w-3.5 transition-transform",
+                                    isExpanded ? "" : "-rotate-90",
+                                  )}
+                                />
+                              </button>
+                            ) : (
+                              <span className="w-2.5" />
+                            )}
+                            {inv.invoice_number || inv.ignition_invoice_id.slice(0, 8)}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-2">
@@ -734,6 +849,27 @@ export function SalesInvoices() {
                         <td className="px-3 py-2 text-right tabular-nums text-amber-700">
                           {fmtMoney(inv.amount_outstanding, inv.currency || "USD")}
                         </td>
+                        <td className="px-3 py-2 text-xs whitespace-nowrap">
+                          {inv.payment_method_type || inv.payment_date ? (
+                            <>
+                              <div className="text-stone-700">
+                                {paymentMethodLabel(inv.payment_method_type)}
+                              </div>
+                              <div className="text-muted-foreground">
+                                {fmtDate(inv.payment_date)}
+                                {inv.disbursal_state === "started" ? (
+                                  // Money collected but the payout to the
+                                  // firm's bank hasn't landed yet.
+                                  <span className="ml-1 text-amber-700">· payout pending</span>
+                                ) : null}
+                              </div>
+                            </>
+                          ) : inv.payment_state === "unpaid" ? (
+                            <span className="text-muted-foreground">Unpaid</span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
                           {fmtDate(inv.invoice_date)}
                         </td>
@@ -762,9 +898,26 @@ export function SalesInvoices() {
                                 <ExternalLink className="h-3.5 w-3.5" />
                               </a>
                             ) : null}
+                            {inv.ignition_url ? (
+                              // Direct jump to the invoice in Ignition's
+                              // web app (synced via migration 377).
+                              <a
+                                href={inv.ignition_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-stone-500 hover:text-stone-900 p-1"
+                                title="Open invoice in Ignition"
+                              >
+                                <Receipt className="h-3.5 w-3.5" />
+                              </a>
+                            ) : null}
                           </div>
                         </td>
                       </tr>
+                      {isExpanded ? (
+                        <InvoiceDetailRow invoice={inv} />
+                      ) : null}
+                      </InvoiceRowGroup>
                     )
                   })
                 )}
@@ -1195,7 +1348,142 @@ function InvoiceCharts({
           )}
         </CardContent>
       </Card>
+
+      {/* How clients pay — collected dollars by Ignition payment method
+          (migration 377). Plain CSS bars instead of a chart: with 2–5
+          methods a labelled bar list is easier to read than a donut. */}
+      <Card className="lg:col-span-3">
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <CreditCard className="h-4 w-4 text-stone-500" />
+            <h3 className="text-sm font-semibold text-stone-900">How clients pay</h3>
+            <span className="ml-auto text-xs text-muted-foreground">
+              collected $ by payment method
+            </span>
+          </div>
+          {Object.keys(data.stats.byPaymentMethod || {}).length === 0 ? (
+            <div className="py-4 text-center text-sm text-muted-foreground">
+              No payment methods recorded yet.
+            </div>
+          ) : (
+            (() => {
+              const entries = Object.entries(data.stats.byPaymentMethod).sort(
+                (a, b) => b[1].amount - a[1].amount,
+              )
+              const totalCollected = entries.reduce((s, [, v]) => s + v.amount, 0)
+              return (
+                <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2">
+                  {entries.map(([method, v]) => {
+                    const share = totalCollected > 0 ? v.amount / totalCollected : 0
+                    return (
+                      <li key={method} className="text-sm">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="font-medium text-stone-800">
+                            {paymentMethodLabel(method)}
+                          </span>
+                          <span className="tabular-nums text-stone-700">
+                            {fmtMoneyCompact(v.amount)}
+                            <span className="text-xs text-muted-foreground">
+                              {" "}
+                              · {v.count.toLocaleString()} inv · {fmtPct(share)}
+                            </span>
+                          </span>
+                        </div>
+                        <div className="h-1.5 mt-1 rounded bg-stone-100 overflow-hidden">
+                          <div
+                            className="h-full rounded bg-emerald-600"
+                            style={{ width: `${Math.max(2, share * 100)}%` }}
+                          />
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )
+            })()
+          )}
+        </CardContent>
+      </Card>
     </div>
+  )
+}
+
+// ── Expanded invoice detail ────────────────────────────────────────────
+// Sub-row revealed by the chevron in the Invoice # cell. Shows the
+// Ignition line items (description / qty / unit price / discount /
+// total) plus the payment provenance fields synced by migration 377.
+function InvoiceDetailRow({ invoice }: { invoice: Invoice }) {
+  const items = invoice.items ?? []
+  const currency = invoice.currency || "USD"
+  const metaParts: Array<{ label: string; value: string }> = []
+  if (invoice.payment_state)
+    metaParts.push({ label: "Payment state", value: titleCase(invoice.payment_state) })
+  if (invoice.payment_source)
+    metaParts.push({ label: "Recorded via", value: titleCase(invoice.payment_source) })
+  if (invoice.issued_by_name)
+    metaParts.push({ label: "Issued by", value: invoice.issued_by_name })
+  if (invoice.disbursal_state)
+    metaParts.push({ label: "Payout", value: titleCase(invoice.disbursal_state) })
+  return (
+    <tr className="border-b bg-stone-50/60">
+      <td colSpan={10} className="px-4 py-3">
+        <div className="flex flex-col gap-2 max-w-3xl">
+          {metaParts.length > 0 ? (
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
+              {metaParts.map((m) => (
+                <span key={m.label}>
+                  <span className="text-muted-foreground">{m.label}: </span>
+                  <span className="text-stone-800 font-medium">{m.value}</span>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {invoice.memo ? (
+            <div className="text-xs text-stone-700 italic">“{invoice.memo}”</div>
+          ) : null}
+          {items.length > 0 ? (
+            <table className="text-xs w-full">
+              <thead>
+                <tr className="text-muted-foreground border-b border-stone-200">
+                  <th className="text-left py-1 pr-3 font-medium">Line item</th>
+                  <th className="text-right py-1 px-3 font-medium">Qty</th>
+                  <th className="text-right py-1 px-3 font-medium">Unit price</th>
+                  <th className="text-right py-1 px-3 font-medium">Discount</th>
+                  <th className="text-right py-1 pl-3 font-medium">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it, i) => (
+                  <tr key={i} className="border-b border-stone-100 last:border-b-0">
+                    <td className="py-1 pr-3 text-stone-800">
+                      {it.description || "(no description)"}
+                    </td>
+                    <td className="py-1 px-3 text-right tabular-nums">
+                      {it.quantity ?? "—"}
+                    </td>
+                    <td className="py-1 px-3 text-right tabular-nums">
+                      {fmtMoney(it.unit_price, it.currency || currency)}
+                    </td>
+                    <td className="py-1 px-3 text-right tabular-nums">
+                      {Number(it.discount) > 0
+                        ? `−${fmtMoney(it.discount, it.currency || currency)}`
+                        : "—"}
+                    </td>
+                    <td className="py-1 pl-3 text-right tabular-nums font-medium">
+                      {fmtMoney(it.total, it.currency || currency)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="text-xs text-muted-foreground">
+              No line items synced for this invoice.
+            </div>
+          )}
+        </div>
+      </td>
+    </tr>
   )
 }
 

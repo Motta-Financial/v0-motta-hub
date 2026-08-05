@@ -27,6 +27,7 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  ExternalLink,
   X,
   RefreshCcw,
   Filter as FilterIcon,
@@ -63,6 +64,22 @@ interface CatalogRow {
   default_price: number | null
   currency: string
   is_active: boolean
+  /** Ignition lifecycle state: active | new | deleted | ledger | … */
+  state: string | null
+  /** Pricing model: fixed | unit | included | minimum | range. */
+  price_type: string | null
+  /** automatic (auto-invoiced) vs manual billing. */
+  billing_mode: string | null
+  /** Unit label for unit-priced services ("per return", "hour", …). */
+  unit_name: string | null
+  /** Bounds for range/minimum-priced services. */
+  min_price: number | null
+  max_price: number | null
+  tax_rate: string | null
+  /** Where the catalog entry came from (QuickBooks import, template…). */
+  service_origin: string | null
+  /** Direct link to the service in the Ignition web app. */
+  ignition_url: string | null
   proposalCount: number
   acceptedCount: number
   lostCount: number
@@ -92,6 +109,13 @@ interface CanonicalRow {
     is_active: boolean
     category: string | null
     billing_type: string | null
+    state: string | null
+    price_type: string | null
+    billing_mode: string | null
+    unit_name: string | null
+    min_price: number | null
+    max_price: number | null
+    ignition_url: string | null
   }>
   proposalNameVariants: Array<{ name: string; count: number }>
   catalogCount: number
@@ -118,6 +142,7 @@ interface ServicesResponse {
   dimensions: {
     categories: string[]
     billingTypes: string[]
+    priceTypes: string[]
     serviceLines: ServiceLine[]
   }
   stats: {
@@ -151,6 +176,43 @@ function titleCase(s: string | null | undefined) {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+/**
+ * Price display that understands Ignition's pricing model (migration
+ * 377). A bare number only tells the truth for `fixed` services —
+ * unit/minimum/range/included services each need their own framing.
+ */
+function fmtServicePrice(row: {
+  price_type?: string | null
+  default_price: number | null
+  min_price?: number | null
+  max_price?: number | null
+  unit_name?: string | null
+  currency: string
+}): string {
+  const { price_type, default_price, min_price, max_price, unit_name, currency } = row
+  switch (price_type) {
+    case "included":
+      return "Included"
+    case "unit":
+      return default_price !== null
+        ? `${fmtMoney(default_price, currency)} / ${unit_name || "unit"}`
+        : "—"
+    case "minimum":
+      return default_price !== null
+        ? `from ${fmtMoney(default_price, currency)}`
+        : min_price !== null && min_price !== undefined
+          ? `from ${fmtMoney(min_price, currency)}`
+          : "—"
+    case "range":
+    case "price range":
+      if (min_price != null && max_price != null)
+        return `${fmtMoney(min_price, currency)}–${fmtMoney(max_price, currency)}`
+      return default_price !== null ? fmtMoney(default_price, currency) : "—"
+    default:
+      return default_price !== null ? fmtMoney(default_price, currency) : "—"
+  }
+}
+
 // ── Component ─────────────────────────────────────────────────────────
 
 export function SalesServices() {
@@ -164,6 +226,9 @@ export function SalesServices() {
   const search = searchParams.get("search") || ""
   const category = (searchParams.get("category") || "").split(",").filter(Boolean)
   const billingType = (searchParams.get("billingType") || "")
+    .split(",")
+    .filter(Boolean)
+  const priceType = (searchParams.get("priceType") || "")
     .split(",")
     .filter(Boolean)
   const serviceLine = (searchParams.get("serviceLine") || "")
@@ -186,6 +251,7 @@ export function SalesServices() {
     if (search) sp.set("search", search)
     if (category.length) sp.set("category", category.join(","))
     if (billingType.length) sp.set("billingType", billingType.join(","))
+    if (priceType.length) sp.set("priceType", priceType.join(","))
     if (serviceLine.length) sp.set("serviceLine", serviceLine.join(","))
     if (activeOnly) sp.set("activeOnly", "true")
     sp.set("sortBy", sortBy)
@@ -196,6 +262,7 @@ export function SalesServices() {
     search,
     category,
     billingType,
+    priceType,
     serviceLine,
     activeOnly,
     sortBy,
@@ -248,6 +315,7 @@ export function SalesServices() {
     (search ? 1 : 0) +
     category.length +
     billingType.length +
+    priceType.length +
     serviceLine.length +
     (activeOnly ? 1 : 0) +
     (pitchedOnly ? 1 : 0)
@@ -388,6 +456,17 @@ export function SalesServices() {
             value={billingType}
             onChange={(v) =>
               updateParams({ billingType: v.length ? v.join(",") : null })
+            }
+          />
+          <MultiSelectChip
+            label="Price type"
+            // Ignition pricing model (fixed / unit / included / minimum /
+            // range) synced by migration 377.
+            options={data?.dimensions?.priceTypes || []}
+            value={priceType}
+            formatLabel={titleCase}
+            onChange={(v) =>
+              updateParams({ priceType: v.length ? v.join(",") : null })
             }
           />
 
@@ -747,16 +826,34 @@ function CanonicalVariantPanel({ row }: { row: CanonicalRow }) {
                 <span className="flex-1">{v.name}</span>
                 <span className="text-muted-foreground">
                   {titleCase(v.billing_type) || "—"}
+                  {v.billing_mode === "manual" ? " · manual" : ""}
                 </span>
                 <span className="tabular-nums text-stone-900">
-                  {v.default_price !== null
-                    ? fmtMoney(v.default_price, v.currency)
-                    : "—"}
+                  {fmtServicePrice(v)}
                 </span>
                 {!v.is_active ? (
-                  <Badge variant="outline" className="text-[10px] h-4 px-1">
-                    inactive
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[10px] h-4 px-1",
+                      v.state === "deleted"
+                        ? "border-rose-200 bg-rose-50 text-rose-700"
+                        : "",
+                    )}
+                  >
+                    {v.state && v.state !== "active" ? v.state : "inactive"}
                   </Badge>
+                ) : null}
+                {v.ignition_url ? (
+                  <a
+                    href={v.ignition_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-stone-400 hover:text-stone-900"
+                    title="Open service in Ignition"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
                 ) : null}
               </li>
             ))}
@@ -921,9 +1018,31 @@ function CatalogTable({
                       {s.name}
                     </span>
                     {!s.is_active ? (
-                      <Badge variant="outline" className="text-[10px] h-4 px-1">
-                        inactive
+                      // Show Ignition's actual lifecycle state when we
+                      // have it ("deleted" reads very differently from
+                      // "inactive" when auditing the catalog).
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "text-[10px] h-4 px-1",
+                          s.state === "deleted"
+                            ? "border-rose-200 bg-rose-50 text-rose-700"
+                            : "",
+                        )}
+                      >
+                        {s.state && s.state !== "active" ? s.state : "inactive"}
                       </Badge>
+                    ) : null}
+                    {s.ignition_url ? (
+                      <a
+                        href={s.ignition_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-stone-400 hover:text-stone-900 shrink-0"
+                        title="Open service in Ignition"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
                     ) : null}
                   </div>
                   <div className="flex flex-wrap items-center gap-1 mt-0.5">
@@ -946,6 +1065,13 @@ function CatalogTable({
                         <Link2 className="h-3 w-3" /> {s.canonicalLabel}
                       </span>
                     ) : null}
+                    {s.service_origin ? (
+                      // Where the entry came from (QuickBooks import,
+                      // Ignition template…) — pure catalog-audit context.
+                      <span className="text-[10px] text-muted-foreground border rounded px-1 py-0.5">
+                        {s.service_origin}
+                      </span>
+                    ) : null}
                     {s.description ? (
                       <span className="text-xs text-muted-foreground truncate">
                         {s.description}
@@ -960,6 +1086,11 @@ function CatalogTable({
                   <div className="flex flex-col gap-0.5">
                     <span className="text-stone-700">
                       {titleCase(s.billing_type) || "—"}
+                      {s.billing_mode === "manual" ? (
+                        // Automatic billing is the norm — flag the manual
+                        // ones since they need a human to raise invoices.
+                        <span className="text-amber-700"> · manual</span>
+                      ) : null}
                     </span>
                     {s.billingFrequencies.length > 0 ? (
                       <span className="text-muted-foreground">
@@ -969,9 +1100,12 @@ function CatalogTable({
                   </div>
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">
-                  {s.default_price !== null
-                    ? fmtMoney(s.default_price, s.currency)
-                    : "—"}
+                  <div className="whitespace-nowrap">{fmtServicePrice(s)}</div>
+                  {s.price_type && s.price_type !== "fixed" ? (
+                    <div className="text-[10px] text-muted-foreground">
+                      {titleCase(s.price_type)}
+                    </div>
+                  ) : null}
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
                   {s.avgPrice !== null ? fmtMoney(s.avgPrice, s.currency) : "—"}

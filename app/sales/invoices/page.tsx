@@ -3,7 +3,7 @@ import { DashboardLayout } from "@/components/dashboard-layout"
 import { SalesInvoices } from "@/components/sales-invoices"
 
 export const metadata = {
-  title: "Invoices | Motta Hub",
+  title: "Invoices | ALFRED Hub",
   description: "Billed amounts, payments collected, and outstanding balances",
 }
 

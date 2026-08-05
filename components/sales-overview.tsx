@@ -22,6 +22,9 @@ import {
   Hourglass,
   CircleDollarSign,
   Repeat,
+  Wallet,
+  Inbox,
+  MessageSquareHeart,
 } from "lucide-react"
 
 import { Card, CardContent } from "@/components/ui/card"
@@ -141,7 +144,7 @@ export function SalesOverview() {
     {
       title: "Recurring Revenue",
       description:
-        "Curated MRR for Accounting and Tax. Sourced from the partner-maintained CSV — Ignition one-time engagements are excluded.",
+        "Live MRR for Accounting and Tax, read straight from the Ignition feed. One-time engagements are excluded.",
       href: "/sales/recurring-revenue",
       icon: Repeat,
       tone: "emerald",
@@ -154,6 +157,36 @@ export function SalesOverview() {
             },
           ]
         : null,
+    },
+    // The three tiles below have no headline stats (their numbers live on
+    // the pages themselves) — `stats: undefined` renders no stat strip,
+    // while `null` above means "still loading, show skeletons".
+    {
+      title: "Payment Links",
+      description:
+        "Create and send secure Stripe payment links for fixed service packages.",
+      href: "/sales/payment-links",
+      icon: Wallet,
+      tone: "blue",
+      stats: undefined,
+    },
+    {
+      title: "Intake",
+      description:
+        "Triage prospects from the embedded intake form and track pipeline analytics.",
+      href: "/sales/intake",
+      icon: Inbox,
+      tone: "amber",
+      stats: undefined,
+    },
+    {
+      title: "Client Feedback",
+      description:
+        "Ratings, referrals, and detractor recovery from the Feedback & Referral form.",
+      href: "/sales/feedback",
+      icon: MessageSquareHeart,
+      tone: "stone",
+      stats: undefined,
     },
   ]
 
@@ -242,12 +275,14 @@ export function SalesOverview() {
                       </div>
                     ))}
                   </div>
-                ) : (
+                ) : section.stats === null ? (
+                  // null = the SWR fetch for this tile's stats is still in
+                  // flight; undefined = the tile intentionally has none.
                   <div className="grid grid-cols-2 gap-2 pt-3 border-t">
                     <Skeleton className="h-8" />
                     <Skeleton className="h-8" />
                   </div>
-                )}
+                ) : null}
               </CardContent>
             </Card>
           </Link>

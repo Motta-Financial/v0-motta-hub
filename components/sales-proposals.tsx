@@ -119,6 +119,16 @@ interface Proposal {
    *  than the proposal-level `recurring_total` column which is populated
    *  on only ~2% of rows. */
   has_recurring_line: boolean
+  /** Contract framing from the Ignition Reporting API (migration 377). */
+  contract_term: string | null
+  minimum_contract_length: number | null
+  proposal_start_type: string | null
+  proposal_start_date: string | null
+  proposal_end_date: string | null
+  /** Ignition user who created the proposal (may differ from sender). */
+  created_by: string | null
+  /** Ignition client tags stamped on the proposal at sync time. */
+  client_tags: string[]
 }
 interface ProposalsResponse {
   proposals: Proposal[]
@@ -184,6 +194,9 @@ interface ProposalsResponse {
      * the user picks in the dropdown.
      */
     canonicalServices: { id: string; label: string; serviceLine: string }[]
+    /** Ignition client tags seen across the proposal set (short list —
+     *  partner-maintained, 13 distinct today). */
+    clientTags: string[]
   }
 }
 
@@ -271,6 +284,9 @@ export function SalesProposals() {
   const canonicalService = (searchParams.get("canonicalService") || "")
     .split(",")
     .filter(Boolean)
+  const clientTag = (searchParams.get("clientTag") || "")
+    .split(",")
+    .filter(Boolean)
   const minValue = searchParams.get("minValue") || ""
   const maxValue = searchParams.get("maxValue") || ""
   // Defaults: YTD on `accepted_at`. Sales partners read this page on a
@@ -307,6 +323,7 @@ export function SalesProposals() {
     if (serviceLine.length) sp.set("serviceLine", serviceLine.join(","))
     if (canonicalService.length)
       sp.set("canonicalService", canonicalService.join(","))
+    if (clientTag.length) sp.set("clientTag", clientTag.join(","))
     if (minValue) sp.set("minValue", minValue)
     if (maxValue) sp.set("maxValue", maxValue)
     // Always pass the resolved dateField — the server defaults to
@@ -327,6 +344,7 @@ export function SalesProposals() {
     state,
     serviceLine,
     canonicalService,
+    clientTag,
     minValue,
     maxValue,
     dateField,
@@ -371,6 +389,7 @@ export function SalesProposals() {
     state.length +
     serviceLine.length +
     canonicalService.length +
+    clientTag.length +
     (minValue || maxValue ? 1 : 0) +
     // Only the user-set date range counts toward the "active filter"
     // tally — the YTD default doesn't, otherwise the page would load
@@ -542,6 +561,15 @@ export function SalesProposals() {
             // ("Tax", "Accounting", "Advisory", "Other").
             formatLabel={(v) => v}
             onChange={(v) => updateParams({ serviceLine: v.length ? v.join(",") : null })}
+          />
+          <MultiSelectChip
+            label="Tag"
+            // Ignition client tags synced from the Reporting API. The
+            // "(untagged)" sentinel matches proposals whose client
+            // carries no tags at all.
+            options={[...(data?.dimensions?.clientTags || []), "(untagged)"]}
+            value={clientTag}
+            onChange={(v) => updateParams({ clientTag: v.length ? v.join(",") : null })}
           />
           <MultiSelectChip
             label="Partner"
@@ -754,9 +782,46 @@ export function SalesProposals() {
                               {p.client_email}
                             </div>
                           ) : null}
+                          {p.client_tags.length > 0 ? (
+                            // Ignition client tags — show the first two and
+                            // fold the rest into a "+n" pill whose tooltip
+                            // lists everything.
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {p.client_tags.slice(0, 2).map((t) => (
+                                <span
+                                  key={t}
+                                  className="text-[10px] px-1.5 py-0.5 rounded border bg-violet-50 text-violet-800 border-violet-200"
+                                >
+                                  {t}
+                                </span>
+                              ))}
+                              {p.client_tags.length > 2 ? (
+                                <span
+                                  title={p.client_tags.slice(2).join(", ")}
+                                  className="text-[10px] px-1.5 py-0.5 rounded border bg-stone-50 text-stone-600 border-stone-200"
+                                >
+                                  +{p.client_tags.length - 2}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-3 py-2 max-w-[260px] text-stone-700">
                           <div className="truncate">{p.title || "—"}</div>
+                          {p.proposal_start_date ? (
+                            // Engagement period from the Ignition contract
+                            // fields (migration 377). ~65% of proposals
+                            // carry an explicit start date; the end date is
+                            // open-ended for ongoing engagements.
+                            <div className="text-[10px] text-muted-foreground mt-0.5 whitespace-nowrap">
+                              {fmtDate(p.proposal_start_date)}
+                              {" – "}
+                              {p.proposal_end_date ? fmtDate(p.proposal_end_date) : "ongoing"}
+                              {p.minimum_contract_length
+                                ? ` · ${p.minimum_contract_length} mo min`
+                                : ""}
+                            </div>
+                          ) : null}
                           {p.service_lines.length > 0 ? (
                             <div className="flex flex-wrap gap-1 mt-1">
                               {p.service_lines.map((line) => {
