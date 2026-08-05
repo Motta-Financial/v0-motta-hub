@@ -734,7 +734,9 @@ function LineRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-xs font-mono text-muted-foreground w-8 flex-shrink-0">
-            {line.lineCode}
+            {/* Internal slugs (fs_hoh, dep_name, digital_assets) are DB keys,
+                not IRS line numbers — show them as blank, keep alignment. */}
+            {/^\d{1,2}[a-z]?$/.test(line.lineCode) ? line.lineCode : ""}
           </span>
           <span className="text-sm">{line.label}</span>
           {line.isComputed && (
