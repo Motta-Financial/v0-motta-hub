@@ -446,18 +446,26 @@ export async function processOneMeeting(
       // Link to zoom_meeting_clients with link_source='auto'. The
       // table mirrors `calendly_event_clients` so the existing tag UI
       // renders these the same way.
-      const { error: linkErr } = await supabase
-        .from("zoom_meeting_clients")
-        .upsert(
-          {
-            zoom_meeting_id: meeting.id,
-            contact_id: created.contact_id,
-            link_source: "auto",
-            match_method: matchMethod,
-          },
-          { onConflict: "zoom_meeting_id,contact_id", ignoreDuplicates: true },
+      //
+      // Plain INSERT, not upsert: the table's unique indexes are PARTIAL
+      // (WHERE contact_id IS NOT NULL), which PostgREST's ON CONFLICT
+      // (cols) inference cannot match — the old upsert failed 42P10 on
+      // EVERY call and was silently swallowed, which is why zero 'auto'
+      // links ever existed. A duplicate (23505) means already linked.
+      const { error: linkErr } = await supabase.from("zoom_meeting_clients").insert({
+        zoom_meeting_id: meeting.id,
+        contact_id: created.contact_id,
+        link_source: "auto",
+        match_method: matchMethod,
+      })
+      if (!linkErr) {
+        result.linksWritten += 1
+      } else if (linkErr.code !== "23505") {
+        console.warn(
+          `[v0] [zoom participants] client link failed for ${email ?? name}:`,
+          linkErr.message,
         )
-      if (!linkErr) result.linksWritten += 1
+      }
 
       enrichedParticipants.push({
         name,
