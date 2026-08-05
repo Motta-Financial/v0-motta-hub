@@ -75,9 +75,31 @@ select
     (case when ma.proconnect_client_id is not null then 1 else 0 end)
   )                                         as link_count,
   ct.created_at                             as created_at,
-  ct.updated_at                             as updated_at
+  ct.updated_at                             as updated_at,
+  -- ── Ignition enrichment (migration 377) ─────────────────────────
+  -- Everything below rides along from ignition_clients via the
+  -- ignition link. New cross-system identity keys first: the
+  -- practice-assigned external id and the Xero/QBO ledger ids that
+  -- Ignition itself holds — these let the Hub join to QuickBooks /
+  -- Xero records without any fuzzy matching.
+  ig.state                                  as ignition_state,
+  ig.external_client_id                     as ignition_external_client_id,
+  ig.xero_contact_id                        as xero_contact_id,
+  ig.qbo_customer_id                        as qbo_customer_id,
+  ig.manager_name                           as ignition_manager_name,
+  ig.manager_email                          as ignition_manager_email,
+  ig.partner_name                           as ignition_partner_name,
+  ig.partner_email                          as ignition_partner_email,
+  ig.tags                                   as ignition_tags,
+  ig.group_name                             as ignition_group_name,
+  ig.ignition_url                           as ignition_url,
+  -- Karbon's user-assigned identifier — a practice-managed external
+  -- key, same idea as Ignition's external_client_id.
+  ct.user_defined_identifier                as karbon_user_defined_identifier
 from public.contacts ct
 left join mapping_agg ma on ma.internal_client_id = ct.id
+left join public.ignition_clients ig
+  on ig.ignition_client_id = ma.ignition_client_id
 
 union all
 
@@ -104,14 +126,29 @@ select
     (case when ma.proconnect_client_id   is not null then 1 else 0 end)
   )                                         as link_count,
   o.created_at                              as created_at,
-  o.updated_at                              as updated_at
+  o.updated_at                              as updated_at,
+  ig.state                                  as ignition_state,
+  ig.external_client_id                     as ignition_external_client_id,
+  ig.xero_contact_id                        as xero_contact_id,
+  ig.qbo_customer_id                        as qbo_customer_id,
+  ig.manager_name                           as ignition_manager_name,
+  ig.manager_email                          as ignition_manager_email,
+  ig.partner_name                           as ignition_partner_name,
+  ig.partner_email                          as ignition_partner_email,
+  ig.tags                                   as ignition_tags,
+  ig.group_name                             as ignition_group_name,
+  ig.ignition_url                           as ignition_url,
+  o.user_defined_identifier                 as karbon_user_defined_identifier
 from public.organizations o
-left join mapping_agg ma on ma.internal_client_id = o.id;
+left join mapping_agg ma on ma.internal_client_id = o.id
+left join public.ignition_clients ig
+  on ig.ignition_client_id = ma.ignition_client_id;
 
 comment on view public.master_client_mapping is
   'One row per Motta Hub client (contacts + organizations, anchored on the uuid). '
-  'Surfaces every external-system identifier: Karbon (native column), '
-  'Ignition + ProConnect (pivoted from client_mapping). '
+  'Surfaces every external-system identifier: Karbon (native column + user_defined_identifier), '
+  'Ignition + ProConnect (pivoted from client_mapping), and the Ignition-side '
+  'enrichment fields (state, manager/partner, tags, group, Xero/QBO ledger ids). '
   'See scripts/create-master-client-mapping-view.ts.';
 `
 
