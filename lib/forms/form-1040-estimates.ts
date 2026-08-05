@@ -29,6 +29,11 @@
  *   - 16 treats line 7 (capital gain distributions) + 3a as LTCG/qualified,
  *     which matches how those mapped inputs behave on real returns.
  *   - 19 ignores ODC (dep_odc not yet mappable) and the refundable ACTC.
+ *   - 10 omits every self-employment adjustment and the IRA deduction, so
+ *     self-employed returns understate it (their income lines are equally
+ *     incomplete). An HSA cell holding exactly 1 means "maximum" and is
+ *     skipped rather than read as one dollar.
+ *   - 8 is still partial: prizes, jury duty and hobby income are unlabeled.
  *   - 27 approximates earned income by line 1z (SE earnings unmapped) and
  *     cannot see full-time-student/disabled qualifying children 19+.
  *   - 23 covers NIIT + Additional Medicare only; NII treats line-7 losses
@@ -55,6 +60,21 @@ const DEP_CTC = { seriesId: "s2", codeId: "c1000200014", suffixId: "x1000" }
 const DEP_DOB_CODE = "c1000200002"
 const DEP_TYPE_CODE = "c1000200006"
 const DEP_EIC_CODE = "c1000200007"
+
+/**
+ * Schedule 1 component cells, all sentinel-verified (round 4, 2026-08-04;
+ * gambling in round 2). Recorded durably in form_1040_line_inputs — these
+ * constants are the estimator's working copy.
+ */
+const LINE8_COMPONENTS = [
+  { seriesId: "s15", codeId: "c2", suffixId: "x1000" },     // unemployment (1099-G)
+  { seriesId: "s200M", codeId: "c5", suffixId: "x1" },      // alimony received (note suffix)
+  { seriesId: "s19", codeId: "c3", suffixId: "x1000" },     // gambling winnings (W-2G box 1)
+] as const
+const EDUCATOR_CELL = { seriesId: "s300", codeId: "c28", suffixId: "x1000" }
+const STUDENT_LOAN_CELL = { seriesId: "s300", codeId: "c23", suffixId: "x1000" }
+const HSA_CELL = { seriesId: "s2800", codeId: "c5", suffixId: "x1000" }
+const EARLY_WITHDRAWAL_CELL = { seriesId: "s12", codeId: "c18", suffixId: "x1000" }
 /**
  * Dependent "Type" enum (s2/c1000200006, read off the PTO dropdown
  * 2026-08-04): 1 = child living with taxpayer, 2 = child not living with
@@ -132,6 +152,20 @@ function bracketTax(brackets: Array<[number, number | null]>, taxable: number): 
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x))
 
+/** Sum one cell address across every prefix instance (payers, employers). */
+function sumCells(
+  cells: FieldCell[],
+  sel: { seriesId: string; codeId: string; suffixId: string },
+): number {
+  let total = 0
+  for (const c of cells) {
+    if (c.seriesId === sel.seriesId && c.codeId === sel.codeId && c.suffixId === sel.suffixId) {
+      total += toNum(c.val)
+    }
+  }
+  return total
+}
+
 /**
  * Fill estimable lines in-place-ish (returns a new Form1040Data). Runs
  * evaluateComputedLines between stages so downstream totals absorb each
@@ -157,6 +191,65 @@ export function estimateDeterministicLines(
     if (!line) return
     d[lc] = { value: Math.round(value), line, source: "estimated" }
     d = evaluateComputedLines(d, lines, constants)
+  }
+
+  // ── 8: Schedule 1 other income (rollup) ─────────────────────────────
+  // The single mapped cell is only the "Other income" component. Returns
+  // with unemployment, alimony received, or gambling winnings render too
+  // low, so sum every verified component and take the larger figure.
+  // Still partial: prizes, jury duty, and hobby income are unlabeled.
+  {
+    const mapped = num("8")
+    let rollup = mapped
+    for (const sel of LINE8_COMPONENTS) rollup += sumCells(cells, sel)
+    if (rollup > mapped) setEstimate("8", rollup)
+  }
+
+  // ── 10: Schedule 1 adjustments (rollup, PARTIAL) ─────────────────────
+  // Only the components we have verified. Self-employment adjustments (SE
+  // tax, SE retirement, SE health insurance) and the IRA deduction are
+  // unlabeled, so self-employed returns understate this line — but their
+  // income lines are already incomplete for the same reason, so this does
+  // not introduce a new class of error.
+  if (isEmpty("10")) {
+    let adjustments = 0
+
+    // Educator expenses: statutory cap per return.
+    const educator = sumCells(cells, EDUCATOR_CELL)
+    if (educator > 0) {
+      const cap = constNum(constants, fs === "mfj" ? "educator_expense_cap_mfj" : "educator_expense_cap")
+      adjustments += cap === null ? 0 : Math.min(educator, cap)
+    }
+
+    // Student loan interest: capped, then MAGI-phased. MAGI is approximated
+    // by total income (line 9), which slightly overstates it and therefore
+    // errs toward more phaseout.
+    const studentLoan = sumCells(cells, STUDENT_LOAN_CELL)
+    if (studentLoan > 0) {
+      const cap = constNum(constants, "student_loan_interest_max")
+      const range = constJson<number[]>(constants, fs === "mfj" ? "student_loan_phaseout_mfj" : "student_loan_phaseout_single")
+      if (cap !== null && range?.length === 2) {
+        const capped = Math.min(studentLoan, cap)
+        const [start, end] = range
+        const magi = num("9")
+        const phasedOut = magi <= start ? capped : magi >= end ? 0 : capped * (1 - (magi - start) / (end - start))
+        adjustments += phasedOut
+      }
+    }
+
+    // HSA: a value of exactly 1 means "compute the maximum" on this screen,
+    // not one dollar — we cannot resolve the max without the coverage type,
+    // so that case contributes nothing rather than a wrong figure.
+    const hsa = sumCells(cells, HSA_CELL)
+    if (hsa > 1) {
+      const cap = constNum(constants, "hsa_contribution_cap")
+      adjustments += cap === null ? hsa : Math.min(hsa, cap)
+    }
+
+    // Early withdrawal penalty: no statutory cap; sums across payers.
+    adjustments += sumCells(cells, EARLY_WITHDRAWAL_CELL)
+
+    if (adjustments > 0) setEstimate("10", adjustments)
   }
 
   // ── 6b: taxable Social Security (worksheet) ──────────────────────────

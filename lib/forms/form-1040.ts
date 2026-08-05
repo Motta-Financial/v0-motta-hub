@@ -697,6 +697,14 @@ function buildEntry(
     // may write it.
     if (value !== true || mapping.condition!.equals === undefined) return null
     formatted = mapping.condition!.equals
+  } else if (mapping.valueDecode && typeof value === "string") {
+    // Reverse a decoded label back to ProConnect's code ("savings" -> "1").
+    // The API layer hands out labels, so a caller round-tripping a rendered
+    // value would otherwise write the label into a code-only cell. An
+    // unrecognized label is refused rather than written through raw.
+    const code = Object.entries(mapping.valueDecode).find(([, label]) => label === value)?.[0]
+    if (code === undefined) return null
+    formatted = code
   } else if (typeof value === "boolean") {
     formatted = value ? "X" : ""
   } else if (typeof value === "number") {
