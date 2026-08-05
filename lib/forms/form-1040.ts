@@ -188,6 +188,12 @@ export interface ProConnectMapping {
   cellField: CellField
   confidence: "unknown" | "inferred" | "confirmed"
   condition: MappingCondition | null
+  /**
+   * Optional raw-cell-value -> label map for coded cells
+   * (e.g. {"1":"savings","2":"checking"} on 35c). Applied by the renderer
+   * so the viewer shows the label rather than ProConnect's code.
+   */
+  valueDecode: Record<string, string> | null
   notes: string | null
 }
 
@@ -237,7 +243,7 @@ export async function loadSchema(
     sb
       .from("form_1040_proconnect_map")
       .select(
-        "line_code, return_type, series_id, prefix_id, code_id, suffix_id, cell_field, confidence, condition, notes",
+        "line_code, return_type, series_id, prefix_id, code_id, suffix_id, cell_field, confidence, condition, value_decode, notes",
       )
       .eq("tax_year", taxYear)
       .eq("return_type", returnType),
@@ -289,6 +295,7 @@ export async function loadSchema(
       cellField: ((r.cell_field as CellField) ?? "val") as CellField,
       confidence: (r.confidence as ProConnectMapping["confidence"]) ?? "unknown",
       condition: (r.condition as MappingCondition | null) ?? null,
+      valueDecode: (r.value_decode as Record<string, string> | null) ?? null,
       notes: r.notes,
     }))
 
@@ -421,8 +428,15 @@ function readCellField(cell: FieldCell, field: CellField): string | null {
 function coerceToLineType(
   raw: string | null,
   dataType: string,
+  valueDecode?: Record<string, string> | null,
 ): string | number | boolean | null {
   if (raw === null || raw === undefined) return null
+  // Coded cells decode to their label before any type coercion, so an
+  // enum line renders "savings" rather than ProConnect's "1".
+  if (valueDecode) {
+    const label = valueDecode[String(raw).trim()]
+    if (label !== undefined) return label
+  }
   if (dataType === "currency" || dataType === "integer") {
     const parsed = Number.parseFloat(String(raw).replace(/[,$\s]/g, ""))
     return Number.isNaN(parsed) ? 0 : parsed
@@ -512,7 +526,7 @@ export async function renderForm1040(
         // coded value (fs_hoh = true, not "4").
         value: isValuePredicate(mapping)
           ? conditionMatches(mapping.condition!, raw)
-          : coerceToLineType(raw, line.dataType),
+          : coerceToLineType(raw, line.dataType, mapping.valueDecode),
         line,
         source: "proconnect",
       }
@@ -540,7 +554,7 @@ export async function renderForm1040(
         const raw = readCellField(cell, mapping.cellField)
         if (raw === null || raw === "") continue
         if (line.dataType === "currency" || line.dataType === "integer") {
-          const n = coerceToLineType(raw, line.dataType)
+          const n = coerceToLineType(raw, line.dataType, mapping.valueDecode)
           if (typeof n === "number") {
             numericAcc.set(line.lineCode, (numericAcc.get(line.lineCode) ?? 0) + n)
           }
@@ -629,6 +643,13 @@ function buildEntry(
     // may write it.
     if (value !== true || mapping.condition!.equals === undefined) return null
     formatted = mapping.condition!.equals
+  } else if (mapping.valueDecode && typeof value === "string") {
+    // Reverse a decoded label back to ProConnect's code ("savings" -> "1").
+    // An unrecognized label is refused rather than written through raw: the
+    // cell only accepts codes, so a stray label would be a silent bad write.
+    const code = Object.entries(mapping.valueDecode).find(([, label]) => label === value)?.[0]
+    if (code === undefined) return null
+    formatted = code
   } else if (typeof value === "boolean") {
     formatted = value ? "X" : ""
   } else if (typeof value === "number") {
