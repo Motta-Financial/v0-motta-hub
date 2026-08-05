@@ -12,6 +12,7 @@ import {
   canonicalIdFor,
   getCanonicalService,
 } from "@/lib/sales/service-catalog"
+import { computeInvoiceAnchoredRecurring } from "@/lib/sales/invoice-recurring"
 import { normalizeState, US_STATE_NAMES } from "@/lib/sales/us-geo"
 import { chunk, fetchAllPaged } from "@/lib/supabase/fetch-all"
 
@@ -170,41 +171,37 @@ export async function GET(req: Request) {
   // recurring_total shifted into one-time so MRR/ARR calculations are correct.
   const curatedRecurring = await loadRecurringScrubSet()
 
-  // ── Authoritative MRR/ARR roll-up from the curated table ──────────────
-  // The dashboard's "Annualized Recurring" KPI used to sum
-  // `recurring_total × 12` across every accepted Ignition proposal, which
-  // double-counted clients with multiple historical renewals AND
-  // mis-classified annual engagements that Ignition exports as monthly
-  // billing schedules. We now mirror /api/sales/recurring-revenue and pull
-  // the curated CSV totals so both pages quote the same number.
-  // Quarterly fees contribute fee/3 to MRR and fee*4 to ARR.
-  const { data: curatedRows } = await supabase
-    .from("motta_recurring_revenue")
-    .select("normalized_name, cadence, service_fee, one_time_fee")
-  let curatedMrr = 0
-  let curatedArr = 0
-  let curatedOneTime = 0
-  const curatedClientSet = new Set<string>()
-  for (const r of curatedRows ?? []) {
-    const fee = Number(r.service_fee) || 0
-    const oneTime = Number(r.one_time_fee) || 0
-    curatedClientSet.add(r.normalized_name)
-    curatedOneTime += oneTime
-    if (r.cadence === "Monthly") {
-      curatedMrr += fee
-      curatedArr += fee * 12
-    } else if (r.cadence === "Quarterly") {
-      curatedMrr += fee / 3
-      curatedArr += fee * 4
-    }
-  }
+  // ── Authoritative MRR/ARR roll-up (invoice-anchored) ──────────────────
+  // The dashboard's "Annualized Recurring" KPI mirrors
+  // /api/sales/recurring-revenue exactly: both call
+  // `computeInvoiceAnchoredRecurring`, which counts a service line once
+  // it is actually billing monthly/quarterly, at its most recent
+  // invoiced amount. Earlier iterations quoted the partner CSV here and
+  // proposal service lines on the Recurring Revenue page — the two
+  // surfaces disagreed, and the proposal-based number was ~24% high
+  // (ended/superseded engagements never leave status "accepted").
   const round2 = (n: number) => Math.round(n * 100) / 100
-  const recurringSummary = {
-    mrr: round2(curatedMrr),
-    arr: round2(curatedArr),
-    one_time_total: round2(curatedOneTime),
-    distinct_clients: curatedClientSet.size,
-    service_lines: curatedRows?.length ?? 0,
+  let recurringSummary = {
+    mrr: 0,
+    arr: 0,
+    one_time_total: 0,
+    distinct_clients: 0,
+    service_lines: 0,
+  }
+  try {
+    const invoiceRecurring = await computeInvoiceAnchoredRecurring(supabase)
+    recurringSummary = {
+      mrr: invoiceRecurring.totals.mrr,
+      arr: invoiceRecurring.totals.arr,
+      // Not meaningful for the invoice-anchored book; the KPI only
+      // renders mrr / arr / distinct_clients.
+      one_time_total: 0,
+      distinct_clients: invoiceRecurring.totals.distinct_clients,
+      service_lines: invoiceRecurring.totals.lines,
+    }
+  } catch (recErr) {
+    // Degrade the KPI to zeros rather than failing the dashboard.
+    console.error("[sales-dashboard] recurring computation failed:", recErr)
   }
 
   // ── Resolve states via the linked org/contact, with ignition_clients
@@ -1159,10 +1156,10 @@ export async function GET(req: Request) {
     },
     serviceLines,
     stateBreakdown,
-    // Authoritative recurring-revenue roll-up from the curated CSV table.
-    // The dashboard's ARR KPI reads this so it matches /sales/recurring-revenue
-    // exactly. It is intentionally not subject to the date-range filter
-    // because the curated CSV is a current-state snapshot, not history.
+    // Invoice-anchored recurring roll-up — same computation as
+    // /sales/recurring-revenue so the two surfaces always agree. Not
+    // subject to the date-range filter: it's a current-state snapshot of
+    // what's actually billing.
     recurringSummary,
     // Payouts (collected cash) roll-up for the same date window as the
     // proposals — see comment block above for why this comes from

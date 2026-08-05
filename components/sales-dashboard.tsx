@@ -178,11 +178,11 @@ interface DashboardResponse {
   serviceLines: ServiceLineData[]
   stateBreakdown: StateData[]
   /**
-   * Authoritative MRR/ARR roll-up from the curated `motta_recurring_revenue`
-   * table — same source as the dedicated /sales/recurring-revenue page.
-   * Used by the "Annualized Recurring" KPI so the two surfaces never disagree.
-   * Always reflects the current snapshot (not subject to the dashboard's
-   * date filter), since the curated CSV represents engagements in force today.
+   * Invoice-anchored MRR/ARR roll-up — the same computation the dedicated
+   * /sales/recurring-revenue page uses (a line counts once it's actually
+   * billing monthly/quarterly, at its most recent invoiced amount), so
+   * the two surfaces never disagree. Always reflects the current snapshot
+   * (not subject to the dashboard's date filter).
    */
   recurringSummary: {
     mrr: number
@@ -448,10 +448,10 @@ export function SalesDashboard() {
   // historical renewals AND mis-classified annual engagements that
   // Ignition exports as monthly billing schedules ($300/mo × 12 priced
   // engagements showed as $300/mo recurring). The authoritative number
-  // comes from `motta_recurring_revenue` via `data.recurringSummary` so
-  // the dashboard and the dedicated /sales/recurring-revenue page always
-  // agree. We still keep `oneTimeAccepted` here because that's a true
-  // sum-of-proposals metric.
+  // is the invoice-anchored roll-up in `data.recurringSummary` (same
+  // computation as the dedicated /sales/recurring-revenue page) so the
+  // two surfaces always agree. We still keep `oneTimeAccepted` here
+  // because that's a true sum-of-proposals metric.
   const kpis = useMemo(() => {
     let totalCount = 0
     let acceptedCount = 0
@@ -915,11 +915,10 @@ export function SalesDashboard() {
           icon={<Repeat2 className="h-4 w-4" />}
           label="Annualized Recurring"
           value={fmtMoney(data?.recurringSummary?.arr ?? 0)}
-          // Pull the authoritative MRR/client count from the curated
-          // `motta_recurring_revenue` table (same source as the
+          // Invoice-anchored MRR/client count (same computation as the
           // /sales/recurring-revenue page) so the two surfaces never
           // disagree. Date filters do NOT apply — this is a current
-          // snapshot of engagements in force.
+          // snapshot of what's actually billing.
           sub={
             data?.recurringSummary
               ? `${fmtMoneyCompact(data.recurringSummary.mrr)}/mo · ${fmtCount(

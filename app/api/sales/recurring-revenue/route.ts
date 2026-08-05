@@ -10,6 +10,7 @@ import {
   type IgnitionBillingFrequency,
   type ServiceRateInput,
 } from "@/lib/sales/ignition-recurring"
+import { computeInvoiceAnchoredRecurring } from "@/lib/sales/invoice-recurring"
 import { normalizeState } from "@/lib/sales/us-geo"
 
 /**
@@ -54,56 +55,35 @@ const ACCEPTED_STATUSES = ["accepted"]
 /**
  * Sales > Recurring Revenue (live from Ignition)
  * ────────────────────────────────────────────────────────────────────────
- * MRR / ARR / Onboarding totals computed from CURRENTLY-ACCEPTED Ignition
- * proposals via the normalized `ignition_proposal_services` table.
+ * Two computation modes, chosen per lifecycle:
  *
- * Scoping policy (firm rule):
- *   - The live recurring book counts ONLY proposals with
- *     `status = "accepted"` AND `accepted_at IS NOT NULL` AND
- *     `revoked_at IS NULL` AND `lost_at IS NULL` AND `archived_at IS NULL`.
- *   - We deliberately exclude `status = "completed"` — those engagements
- *     have ENDED. Ignition records `recurring_total = NULL` on them as
- *     a positive signal that no recurring revenue is flowing. Including
- *     them was double-counting clients who had re-signed onto a newer
- *     accepted proposal that supersedes the old one (e.g. a bookkeeping
- *     client who rolled onto a fresh annual engagement — the old proposal
- *     moves to "completed", the new one is "accepted").
- *   - Alternative anchor: when cash-payout reconciliation is needed,
- *     the same accepted-only set agrees to within rounding with
- *     `ignition_invoices` for the trailing 90 days. Completed proposals
- *     stop generating invoices the moment they close, which is the
- *     external proof the above filter is correct.
+ * ACCEPTED (the live recurring book — the page default):
+ *   MRR / ARR are INVOICE-ANCHORED via `computeInvoiceAnchoredRecurring`:
+ *   a service line counts once it is actually billing on a monthly or
+ *   quarterly cadence, at the amount on its most recent invoice. The
+ *   previous proposal-based sum overstated MRR ~24% because Ignition
+ *   never flips a proposal off "accepted" when its engagement ends or is
+ *   superseded, keeps list rates after renegotiations, and missed real
+ *   billing with no counted proposal line behind it (reconciled against
+ *   live invoices, Nov 2026 — see lib/sales/invoice-recurring.ts for the
+ *   full case list). One-time and Onboarding & Optimization totals are
+ *   still proposal-based — they represent signed contract value, which
+ *   proposals state correctly — and accepted proposals still enrich each
+ *   client row (partner, manager, proposal numbers, state).
  *
- * As of the latest Ignition services import, the normalized services
- * table is fully populated for every active proposal — see
- * `scripts/audit-recurring-revenue-import.ts` for the parity audit.
+ * PIPELINE / LOST / ALL:
+ *   Proposal-based, unchanged: these views are questions about
+ *   proposals ("what recurring revenue could close / did we lose?"),
+ *   so proposal service lines ARE the right source. Rates come from
+ *   `servicePeriodRate`, cadence policy from `effectiveBillingFrequency`
+ *   (Tax is never recurring — installment-billed returns are common).
  *
- * Algorithm:
- *   1. Pull every proposal matching the lifecycle filter (small column
- *      set — we no longer need the multi-KB `payload` JSON on each row).
- *   2. Pull every `ignition_proposal_services` row keyed to those
- *      proposal_ids. Each row carries `unit_price`, `quantity`,
- *      `total_amount`, `billing_frequency`, plus the raw Ignition
- *      service payload (used as a fallback rate source via
- *      `servicePeriodRate` — `total_amount / billing_events` is the
- *      preferred per-cycle rate because it already reflects any
- *      partner-applied discount).
- *   3. For each service line:
- *        • classify into Department + service_type via the catalog
- *        • apply firm policy via `effectiveBillingFrequency` — Tax is
- *          never recurring, even when Ignition records monthly cadence
- *          (installment billing for one-time returns is common)
- *        • monthly / annual contributions via `serviceMonthly` /
- *          `serviceAnnual`
- *        • one-time contribution: `total_amount` when the effective
- *          frequency is one-time (captures Onboarding & Optimization,
- *          billed-on-acceptance fees, and similar one-shot lines)
- *   4. Roll up by department, service_type, and client (grouped by
- *      organization_id when present, else normalized client name).
+ * Roll-ups (department, service_type, client) share one shape across
+ * both modes so the page renders identically regardless of lifecycle.
  *
  * The partner-curated `motta_recurring_revenue` table is still consulted
  * for the "Not in Ignition yet" gap callout — curated clients with no
- * active Ignition proposal — so the team can see which clients still
+ * live recurring billing — so the team can see which clients still
  * need a proposal sent through Ignition.
  */
 
@@ -422,7 +402,16 @@ export async function GET(req: NextRequest) {
     )
   }
 
-  // ── 2. Aggregate every service line in every proposal ────────────────
+  // ── 2. Aggregate service lines ───────────────────────────────────────
+  // In the accepted lifecycle, recurring dollars come from the invoice-
+  // anchored computation (`invoiceAnchored` below) and the proposal walk
+  // contributes only one-time / onboarding dollars + client metadata.
+  // In every other lifecycle the proposal walk contributes everything.
+  const invoiceAnchored =
+    lifecycle === "accepted"
+      ? await computeInvoiceAnchoredRecurring(supabase)
+      : null
+
   const byDepartment = new Map<Department, DeptAgg>()
   const byService = new Map<string, ServiceAgg>()
   const byClient = new Map<string, ClientAgg>()
@@ -471,8 +460,10 @@ export async function GET(req: NextRequest) {
 
       const rateInput = rateInputOf(svc)
       const periodRate = servicePeriodRate(rateInput)
-      const m = monthlyContribution(freq, periodRate)
-      const a = annualContribution(freq, periodRate)
+      // Invoice-anchored mode: proposal lines contribute NO recurring
+      // dollars — those come from actual billing (merged in below).
+      const m = invoiceAnchored ? 0 : monthlyContribution(freq, periodRate)
+      const a = invoiceAnchored ? 0 : annualContribution(freq, periodRate)
 
       // One-time bucket: when the effective frequency is one-time we
       // attribute the full contract amount via `total_amount` (Ignition's
@@ -480,7 +471,10 @@ export async function GET(req: NextRequest) {
       const oneTime = freq === "one-time" ? oneTimeAmount(svc) : 0
       const onboarding = isOnboarding && freq === "one-time" ? oneTime : 0
 
-      totalServiceLines += 1
+      // Invoice-anchored mode replaces proposal recurring lines with
+      // billing lines, so only one-time proposal lines count here (the
+      // recurring line count is added in the merge below).
+      if (!invoiceAnchored || freq === "one-time") totalServiceLines += 1
 
       // ── Department roll-up ─────────────────────────────────────────
       const deptRoll = byDepartment.get(dept) ?? {
@@ -566,8 +560,13 @@ export async function GET(req: NextRequest) {
       // clients have mixed Tax + Accounting proposals — the page tabs
       // are scoped to where the recurring revenue actually sits).
       if (m > 0 || a > 0) cRoll.department = dept
-      if (freq === "monthly") cRoll.cadences.add("Monthly")
-      if (freq === "quarterly") cRoll.cadences.add("Quarterly")
+      // Cadence chips come from actual billing in invoice-anchored mode
+      // (added in the merge below) — a proposal line that stopped
+      // billing shouldn't tag the client "Monthly" forever.
+      if (!invoiceAnchored) {
+        if (freq === "monthly") cRoll.cadences.add("Monthly")
+        if (freq === "quarterly") cRoll.cadences.add("Quarterly")
+      }
       // Effective lifecycle date for the client roll-up. Prefer
       // billing_starts_on / effective_start_date when set (these come
       // directly from the new Ignition import and represent when the
@@ -592,7 +591,9 @@ export async function GET(req: NextRequest) {
       byClient.set(clientKey, cRoll)
 
       // ── Raw row for the page expand view (recurring lines only) ────
-      if (freq === "monthly" || freq === "quarterly") {
+      // Skipped in invoice-anchored mode — billing lines feed this list
+      // in the merge below instead.
+      if (!invoiceAnchored && (freq === "monthly" || freq === "quarterly")) {
         rawRows.push({
           id: `${p.proposal_id}::${svc.ordinal ?? svcIdx}`,
           department: dept,
@@ -604,6 +605,128 @@ export async function GET(req: NextRequest) {
         })
       }
       svcIdx += 1
+    }
+  }
+
+  // ── 2b. Merge invoice-anchored recurring lines (accepted lifecycle) ──
+  // Each line is a service that is ACTUALLY billing monthly/quarterly,
+  // at its most recent invoiced amount. Lines merge into the same client
+  // buckets the proposal walk created (so partner/manager/proposal-number
+  // enrichment is preserved); clients billing recurring work with no
+  // accepted proposal on file get a fresh bucket so their revenue is
+  // never dropped.
+  if (invoiceAnchored) {
+    // Resolve each billing line to the proposal walk's client keys.
+    const keyByIgc = new Map<string, string>()
+    const keyByOrg = new Map<string, string>()
+    for (const p of proposals) {
+      const fallbackName =
+        p.organizations?.name?.trim() || p.client_name?.trim() || "Unknown Client"
+      const normalized = normalizeClientName(fallbackName)
+      const clientKey = p.organization_id
+        ? `org::${p.organization_id}`
+        : normalized
+          ? `name::${normalized}`
+          : `proposal::${p.proposal_id}`
+      if (p.ignition_client_id && !keyByIgc.has(p.ignition_client_id)) {
+        keyByIgc.set(p.ignition_client_id, clientKey)
+      }
+      if (p.organization_id && !keyByOrg.has(p.organization_id)) {
+        keyByOrg.set(p.organization_id, clientKey)
+      }
+    }
+
+    for (const line of invoiceAnchored.lines) {
+      const dept = line.department
+      const m = line.mrr
+      const a = line.arr
+      const normalized = normalizeClientName(line.client_name)
+      const clientKey =
+        (line.ignition_client_id && keyByIgc.get(line.ignition_client_id)) ||
+        (line.organization_id && keyByOrg.get(line.organization_id)) ||
+        (line.organization_id ? `org::${line.organization_id}` : null) ||
+        (normalized ? `name::${normalized}` : `igc::${line.ignition_client_id ?? "unknown"}`)
+
+      totalServiceLines += 1
+
+      const deptRoll = byDepartment.get(dept) ?? {
+        department: dept,
+        mrr: 0,
+        arr: 0,
+        one_time_total: 0,
+        onboarding_total: 0,
+        service_lines: 0,
+        clients: new Set<string>(),
+      }
+      deptRoll.mrr += m
+      deptRoll.arr += a
+      deptRoll.service_lines += 1
+      deptRoll.clients.add(clientKey)
+      byDepartment.set(dept, deptRoll)
+
+      const sKey = `${dept}::${line.service_type}`
+      const sRoll = byService.get(sKey) ?? {
+        department: dept,
+        service_type: line.service_type,
+        mrr: 0,
+        arr: 0,
+        one_time_total: 0,
+        onboarding_total: 0,
+        service_lines: 0,
+        clients: new Set<string>(),
+      }
+      sRoll.mrr += m
+      sRoll.arr += a
+      sRoll.service_lines += 1
+      sRoll.clients.add(clientKey)
+      byService.set(sKey, sRoll)
+
+      const cRoll = byClient.get(clientKey) ?? {
+        client_key: clientKey,
+        department: dept,
+        client_name: line.client_name,
+        normalized_name: normalized,
+        organization_id: line.organization_id,
+        contact_id: line.contact_id,
+        ignition_client_id: line.ignition_client_id,
+        mrr: 0,
+        arr: 0,
+        one_time_total: 0,
+        onboarding_total: 0,
+        service_lines: 0,
+        proposals: new Set<string>(),
+        proposal_numbers: new Set<string>(),
+        service_types: new Set<string>(),
+        cadences: new Set<string>(),
+        partners: new Set<string>(),
+        managers: new Set<string>(),
+        sent_by: new Set<string>(),
+        state: null as string | null,
+        earliest_accepted_at: null as string | null,
+      }
+      cRoll.mrr += m
+      cRoll.arr += a
+      cRoll.service_lines += 1
+      cRoll.department = dept
+      cRoll.service_types.add(line.service_type)
+      cRoll.cadences.add(line.cadence === "monthly" ? "Monthly" : "Quarterly")
+      // Backstop state resolution for billing-only clients via their
+      // Ignition client record (proposal-walk clients already have it).
+      if (!cRoll.state && line.ignition_client_id) {
+        const s = igcState.get(line.ignition_client_id)
+        if (s) cRoll.state = s
+      }
+      byClient.set(clientKey, cRoll)
+
+      rawRows.push({
+        id: `inv::${clientKey}::${line.description.toLowerCase()}`,
+        department: dept,
+        service_type: line.service_type,
+        client_name: cRoll.client_name,
+        cadence: line.cadence === "monthly" ? "Monthly" : "Quarterly",
+        service_fee: line.period_amount,
+        one_time_fee: 0,
+      })
     }
   }
 
@@ -738,7 +861,10 @@ export async function GET(req: NextRequest) {
   if (lifecycle === "accepted") {
     const ignitionKeys = new Set<string>()
     for (const c of clients) {
-      if (c.normalized_name) ignitionKeys.add(c.normalized_name)
+      // Only clients with live MRR count as "in Ignition" for the gap
+      // callout — a client whose engagement stopped billing should
+      // resurface here if the CSV still tracks them as recurring.
+      if (c.normalized_name && c.mrr > 0) ignitionKeys.add(c.normalized_name)
     }
     const { data: curatedRaw } = await supabase
       .from("motta_recurring_revenue_by_client")
@@ -828,17 +954,27 @@ export async function GET(req: NextRequest) {
     lifecycle,
     lifecycleCounts,
     lastSyncedAt,
-    totals: {
-      mrr: round2(totalMrr),
-      arr: round2(totalArr),
-      one_time_total: round2(totalOneTime),
-      onboarding_total: round2(totalOnboarding),
-      distinct_clients: clients.length,
-      service_lines: totalServiceLines,
-      avg_mrr_per_client:
-        clients.length > 0 ? round2(totalMrr / clients.length) : 0,
-      active_proposals: proposals.length,
-    },
+    totals: (() => {
+      // "Recurring Clients" means clients actually carrying MRR. In the
+      // invoice-anchored accepted view a client can appear in the table
+      // with one-time-only work (or an engagement that stopped billing)
+      // at $0 MRR — those shouldn't inflate the headline client count.
+      const recurringClients =
+        lifecycle === "accepted"
+          ? clients.filter((c) => c.mrr > 0).length
+          : clients.length
+      return {
+        mrr: round2(totalMrr),
+        arr: round2(totalArr),
+        one_time_total: round2(totalOneTime),
+        onboarding_total: round2(totalOnboarding),
+        distinct_clients: recurringClients,
+        service_lines: totalServiceLines,
+        avg_mrr_per_client:
+          recurringClients > 0 ? round2(totalMrr / recurringClients) : 0,
+        active_proposals: proposals.length,
+      }
+    })(),
     departments,
     serviceBreakdown,
     clients,

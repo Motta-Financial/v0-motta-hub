@@ -3,12 +3,13 @@
 /**
  * Sales > Recurring Revenue
  * ────────────────────────────────────────────────────────────────────────
- * Live MRR / ARR view for Accounting and Tax sourced directly from the
- * Ignition feed via the raw `payload.services` JSON on `ignition_proposals`
- * — not the normalized `ignition_proposal_services` table, which is
- * populated by an incomplete sync and drops services for ~460 of the
- * firm's active proposals. Reading from the payload guarantees the page
- * shows the same line items partners see inside Ignition.
+ * Live MRR / ARR view for Accounting and Tax. The default (Accepted)
+ * view is INVOICE-ANCHORED: the API counts a service line once it is
+ * actually billing on a monthly/quarterly cadence, at the amount on its
+ * most recent invoice — see `lib/sales/invoice-recurring.ts`. Proposals
+ * still supply one-time / onboarding totals and per-client enrichment
+ * (partner, manager, proposal numbers). The Pipeline / Lost / All tabs
+ * remain proposal-based, since those views are questions about proposals.
  *
  * The classification + frequency policy lives in
  * `lib/sales/ignition-recurring.ts`. Tax engagements are treated as
@@ -18,7 +19,7 @@
  *
  * The partner-maintained `motta_recurring_revenue` CSV is still queried
  * by the API for a "Not in Ignition yet" gap callout — clients the team
- * tracks as recurring but who haven't been moved onto Ignition yet. The
+ * tracks as recurring but who aren't billing through Ignition yet. The
  * CSV is reference data, not the source of truth for MRR.
  */
 
@@ -103,7 +104,7 @@ const LIFECYCLE_META: Record<
     label: "Accepted",
     pageTitle: "Recurring Revenue",
     description:
-      "Live MRR / ARR across Accounting and Tax, aggregated from accepted Ignition proposals at the service-line level. Monthly fees roll into MRR; quarterly fees contribute fee ÷ 3.",
+      "Live MRR / ARR anchored to actual Ignition invoicing — a service counts once it's really billing monthly or quarterly, at its most recently invoiced amount, so ended or renegotiated engagements never inflate the book. Monthly fees roll into MRR; quarterly fees contribute fee ÷ 3.",
     mrrLabel: (dept) => (dept === "All" ? "Combined MRR" : `${dept} MRR`),
     arrLabel: "Annualized (ARR)",
     clientsLabel: "Recurring Clients",
