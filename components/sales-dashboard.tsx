@@ -137,6 +137,8 @@ interface Proposal {
   /** Where state came from — drives which table the inline editor writes to. */
   state_source: "organization" | "contact" | "ignition_client" | null
   ignition_client_id: string | null
+  /** Deep link to this proposal in the Ignition app (null on pre-377 rows). */
+  ignition_url: string | null
   total_value: number
   one_time_total: number
   recurring_total: number
@@ -213,6 +215,24 @@ interface DashboardResponse {
       net: number
     }>
   }
+  /**
+   * Billed vs collected vs outstanding roll-up from the Ignition invoice
+   * payment-lifecycle fields (payment_state / amount_outstanding), scoped
+   * to the dashboard's date window. Voided invoices excluded.
+   */
+  invoiceSummary: {
+    count: number
+    billed: number
+    collected: number
+    outstanding: number
+    overdue: number
+    overdueCount: number
+    byPaymentState: { paid: number; partially_paid: number; unpaid: number }
+  }
+  /** Proposal→Hub-client attribution coverage for the header indicator. */
+  clientCoverage: { total: number; linked: number; unlinked: number }
+  /** Server timestamp when this payload was computed. */
+  generatedAt: string
 }
 
 const fetcher = (url: string): Promise<DashboardResponse> =>
@@ -371,7 +391,15 @@ export function SalesDashboard() {
   const { data, error, isLoading, mutate } = useSWR<DashboardResponse>(
     `/api/sales/dashboard?${queryString}`,
     fetcher,
-    { keepPreviousData: true },
+    {
+      keepPreviousData: true,
+      // Match the Ignition sync cadence (Vercel cron runs */15) so the
+      // dashboard picks up freshly-synced proposals/payments/invoices
+      // without anyone touching the Refresh button. Focus revalidation
+      // gives instant freshness when a partner tabs back in.
+      refreshInterval: 15 * 60 * 1000,
+      revalidateOnFocus: true,
+    },
   )
 
   const proposals = data?.proposals ?? []
@@ -646,8 +674,28 @@ export function SalesDashboard() {
             Won, in-flight, and lost proposals plus collected payouts across{" "}
             {fmtCount(data?.totalUnfiltered ?? 0)} active proposals
           </p>
+          {data?.clientCoverage ? (
+            <p className="text-xs text-stone-500 mt-0.5">
+              {data.clientCoverage.unlinked === 0 ? (
+                <>All {fmtCount(data.clientCoverage.total)} proposals linked to Hub clients</>
+              ) : (
+                <>
+                  {fmtCount(data.clientCoverage.linked)} of {fmtCount(data.clientCoverage.total)}{" "}
+                  proposals linked to Hub clients ·{" "}
+                  <Link href="/admin/ignition" className="underline hover:text-stone-800">
+                    match the remaining {fmtCount(data.clientCoverage.unlinked)}
+                  </Link>
+                </>
+              )}
+            </p>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
+          {data?.generatedAt ? (
+            <span className="text-xs text-stone-500">
+              Updated {format(parseISO(data.generatedAt), "h:mm a")} · refreshes every 15 min
+            </span>
+          ) : null}
           {activeFilterCount > 0 && (
             <Button variant="ghost" size="sm" onClick={clearAllFilters} className="text-stone-600">
               <X className="h-3.5 w-3.5 mr-1" />
@@ -855,7 +903,11 @@ export function SalesDashboard() {
       </div>
 
       {/* ── Payouts (collected cash from clients in the same window) ──── */}
-      <PayoutsSection payouts={data?.payouts} loading={isLoading} />
+      <PayoutsSection
+        payouts={data?.payouts}
+        invoices={data?.invoiceSummary}
+        loading={isLoading}
+      />
 
       {/* ── Service Line KPIs ─────────────────────────────────────────── */}
       <ServiceLineSection
@@ -1466,8 +1518,19 @@ function ProposalTable({
                       <tr key={p.proposal_id} className="hover:bg-stone-50/60 transition-colors">
                         <td className="px-4 py-2.5">
                           <div className="flex flex-col">
-                            <span className="font-medium text-stone-900 text-xs">
+                            <span className="font-medium text-stone-900 text-xs inline-flex items-center gap-1">
                               {p.proposal_number || "(unnumbered)"}
+                              {p.ignition_url ? (
+                                <a
+                                  href={p.ignition_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="Open in Ignition"
+                                  className="text-stone-400 hover:text-stone-700"
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                </a>
+                              ) : null}
                             </span>
                             <span className="text-stone-500 text-[11px] truncate max-w-[260px]">
                               {p.title || "—"}
@@ -2050,9 +2113,11 @@ void Cell
 // days" they see proposals AND collections for the same window.
 function PayoutsSection({
   payouts,
+  invoices,
   loading,
 }: {
   payouts: DashboardResponse["payouts"] | undefined
+  invoices: DashboardResponse["invoiceSummary"] | undefined
   loading: boolean
 }) {
   if (loading || !payouts) {
@@ -2136,6 +2201,46 @@ function PayoutsSection({
                 }
               />
             </div>
+
+            {/* Invoice payment-lifecycle tiles (billed vs outstanding).
+                Sourced from ignition_invoices' payment_state /
+                amount_outstanding fields for the same date window, so
+                partners see A/R next to collections. */}
+            {invoices && invoices.count > 0 ? (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <PayoutTile
+                  icon={<FileText className="h-4 w-4" />}
+                  label="Invoiced"
+                  value={fmtMoney(invoices.billed)}
+                  sub={`${fmtCount(invoices.count)} invoices`}
+                />
+                <PayoutTile
+                  icon={<Banknote className="h-4 w-4" />}
+                  label="Invoices paid"
+                  value={fmtCount(invoices.byPaymentState.paid)}
+                  sub={
+                    invoices.byPaymentState.partially_paid > 0
+                      ? `+ ${fmtCount(invoices.byPaymentState.partially_paid)} partially paid`
+                      : `${fmtCount(invoices.byPaymentState.unpaid)} unpaid`
+                  }
+                  tone="emerald"
+                />
+                <PayoutTile
+                  icon={<Hourglass className="h-4 w-4" />}
+                  label="Outstanding"
+                  value={fmtMoney(invoices.outstanding)}
+                  sub={`${fmtCount(invoices.byPaymentState.unpaid + invoices.byPaymentState.partially_paid)} open invoices`}
+                  tone="amber"
+                />
+                <PayoutTile
+                  icon={<XCircle className="h-4 w-4" />}
+                  label="Overdue"
+                  value={fmtMoney(invoices.overdue)}
+                  sub={`${fmtCount(invoices.overdueCount)} past due date`}
+                  tone={invoices.overdue > 0 ? "rose" : undefined}
+                />
+              </div>
+            ) : null}
 
             {/* Trend + Top clients */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
