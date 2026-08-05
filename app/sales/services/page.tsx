@@ -3,7 +3,7 @@ import { DashboardLayout } from "@/components/dashboard-layout"
 import { SalesServices } from "@/components/sales-services"
 
 export const metadata = {
-  title: "Services | Motta Hub",
+  title: "Services | ALFRED Hub",
   description: "Ignition service catalog with usage and revenue metrics",
 }
 

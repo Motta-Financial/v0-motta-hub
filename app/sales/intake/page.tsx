@@ -17,7 +17,7 @@ import { IntakeTabs } from "@/components/intake/intake-tabs"
  * Supports ?search= URL param for deep-linking from Daily Briefing.
  */
 export const metadata = {
-  title: "Intake | Motta Hub",
+  title: "Intake | ALFRED Hub",
   description:
     "Triage prospects from the embedded intake form and view pipeline analytics.",
 }

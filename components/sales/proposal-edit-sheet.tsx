@@ -46,6 +46,15 @@ interface Proposal {
   client_name: string | null
   organization_id: string | null
   organizations: { id: string; name: string } | null
+  /** Read-only contract framing synced from the Ignition Reporting API
+   *  (migration 377). Optional so older callers keep compiling. */
+  contract_term?: string | null
+  minimum_contract_length?: number | null
+  proposal_start_type?: string | null
+  proposal_start_date?: string | null
+  proposal_end_date?: string | null
+  created_by?: string | null
+  client_tags?: string[]
 }
 
 interface Props {
@@ -55,6 +64,19 @@ interface Props {
   onOpenChange: (open: boolean) => void
   /** Called after a successful save so the parent can re-fetch. */
   onSaved: (updated: any) => void
+}
+
+function fmtSheetDate(s: string | null | undefined): string {
+  if (!s) return "—"
+  try {
+    return new Date(s).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    })
+  } catch {
+    return s
+  }
 }
 
 export function ProposalEditSheet({ proposal, statuses, open, onOpenChange, onSaved }: Props) {
@@ -224,6 +246,70 @@ export function ProposalEditSheet({ proposal, statuses, open, onOpenChange, onSa
               />
             </div>
           </div>
+
+          {/* Read-only contract details synced from Ignition. These are
+              Ignition's source-of-truth fields (contract term, engagement
+              period, creator, client tags) — they can't be edited here
+              because the next sync would overwrite any local change. */}
+          {proposal &&
+          (proposal.contract_term ||
+            proposal.proposal_start_date ||
+            proposal.created_by ||
+            (proposal.client_tags?.length ?? 0) > 0) ? (
+            <div className="rounded-md border bg-stone-50 p-3 flex flex-col gap-1.5">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                From Ignition (read-only)
+              </div>
+              <dl className="text-sm grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                {proposal.contract_term ? (
+                  <>
+                    <dt className="text-muted-foreground">Contract term</dt>
+                    <dd className="capitalize">
+                      {proposal.contract_term}
+                      {proposal.minimum_contract_length
+                        ? ` · ${proposal.minimum_contract_length} mo minimum`
+                        : ""}
+                    </dd>
+                  </>
+                ) : null}
+                {proposal.proposal_start_date ? (
+                  <>
+                    <dt className="text-muted-foreground">Engagement</dt>
+                    <dd>
+                      {fmtSheetDate(proposal.proposal_start_date)} –{" "}
+                      {proposal.proposal_end_date
+                        ? fmtSheetDate(proposal.proposal_end_date)
+                        : "ongoing"}
+                      {proposal.proposal_start_type === "acceptance"
+                        ? " (starts on acceptance)"
+                        : ""}
+                    </dd>
+                  </>
+                ) : null}
+                {proposal.created_by ? (
+                  <>
+                    <dt className="text-muted-foreground">Created by</dt>
+                    <dd>{proposal.created_by}</dd>
+                  </>
+                ) : null}
+                {(proposal.client_tags?.length ?? 0) > 0 ? (
+                  <>
+                    <dt className="text-muted-foreground">Client tags</dt>
+                    <dd className="flex flex-wrap gap-1">
+                      {proposal.client_tags!.map((t) => (
+                        <span
+                          key={t}
+                          className="text-[10px] px-1.5 py-0.5 rounded border bg-violet-50 text-violet-800 border-violet-200"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </dd>
+                  </>
+                ) : null}
+              </dl>
+            </div>
+          ) : null}
 
           <div className="flex flex-col gap-2">
             <Label>Recurring Frequency</Label>

@@ -12,7 +12,7 @@ import { FeedbackList } from "@/components/feedback/feedback-list"
  * Supports ?search= URL param for deep-linking from Daily Briefing.
  */
 export const metadata = {
-  title: "Client Feedback | Motta Hub",
+  title: "Client Feedback | ALFRED Hub",
   description: "Triage client feedback submissions from the Jotform Feedback & Referral form.",
 }
 

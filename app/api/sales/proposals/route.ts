@@ -77,6 +77,12 @@ export async function GET(req: Request) {
     const canonicalServiceFilter = (sp.get("canonicalService") || "")
       .split(",")
       .filter(Boolean)
+    // Client-tag filter: OR-match against the Ignition client tags stamped
+    // on the proposal at sync time (migration 377). "(untagged)" is the
+    // sentinel for proposals whose client carries no tags.
+    const clientTagFilter = (sp.get("clientTag") || "")
+      .split(",")
+      .filter(Boolean)
 
     const minValue =
       sp.get("minValue") !== null && sp.get("minValue") !== ""
@@ -135,6 +141,8 @@ export async function GET(req: Request) {
            client_partner, client_manager, proposal_sent_by, billing_starts_on,
            sent_at, accepted_at, completed_at, lost_at, lost_reason, created_at, updated_at,
            organization_id, contact_id, ignition_client_id, signed_url, payload,
+           contract_term, minimum_contract_length, proposal_start_type,
+           proposal_start_date, proposal_end_date, created_by, client_tags, ignition_url,
            organizations(id, name)`,
         )
         .is("archived_at", null)
@@ -258,6 +266,19 @@ export async function GET(req: Request) {
       service_count: number
       /** Whether ANY line item has billing_frequency != 'one-time'. */
       has_recurring_line: boolean
+      /** Ignition contract framing (migration 377): "fixed" | "ongoing". */
+      contract_term: string | null
+      /** Minimum contract length in months (when Ignition enforces one). */
+      minimum_contract_length: number | null
+      /** How the engagement starts: "acceptance" | "date". */
+      proposal_start_type: string | null
+      /** Engagement period as recorded on the Ignition proposal. */
+      proposal_start_date: string | null
+      proposal_end_date: string | null
+      /** Ignition user who created the proposal (distinct from sender). */
+      created_by: string | null
+      /** Ignition client tags stamped on the proposal at sync time. */
+      client_tags: string[]
     }
 
     const enriched: EnrichedProposal[] = proposals.map((p: any) => {
@@ -385,7 +406,10 @@ export async function GET(req: Request) {
         typeof p.payload?.link === "string" && p.payload.link.length > 0
           ? p.payload.link
           : null
+      // Prefer the materialised column (populated by migration 377 +
+      // every sync since), then the raw payload, then synthesize.
       const ignitionUrl =
+        p.ignition_url ??
         payloadLink ??
         (p.proposal_id?.startsWith("prop_")
           ? `https://go.ignitionapp.com/proposals/${p.proposal_id}`
@@ -437,6 +461,14 @@ export async function GET(req: Request) {
         ignition_client_id: igClientSlug ?? null,
         service_count: serviceCount,
         has_recurring_line: hasRecurringLine,
+        contract_term: p.contract_term ?? null,
+        minimum_contract_length:
+          p.minimum_contract_length != null ? Number(p.minimum_contract_length) : null,
+        proposal_start_type: p.proposal_start_type ?? null,
+        proposal_start_date: p.proposal_start_date ?? null,
+        proposal_end_date: p.proposal_end_date ?? null,
+        created_by: p.created_by ?? null,
+        client_tags: Array.isArray(p.client_tags) ? p.client_tags : [],
       }
     })
 
@@ -450,6 +482,10 @@ export async function GET(req: Request) {
       serviceLines: SERVICE_LINES.filter((line) =>
         enriched.some((p) => p.service_lines.includes(line)),
       ) as string[],
+      // Every Ignition client tag seen across the proposal set. Tags are
+      // partner-maintained in Ignition (13 distinct today) so the list
+      // stays short enough for a filter chip.
+      clientTags: uniqueSorted(enriched.flatMap((p) => p.client_tags)),
       // Only emit canonical services that actually appear on at least
       // one proposal — keeps the dropdown short and relevant. The UI
       // displays the label but submits the id back as the filter value.
@@ -492,6 +528,15 @@ export async function GET(req: Request) {
         const has = p.canonical_services.some((id) =>
           canonicalServiceFilter.includes(id),
         )
+        if (!has) return false
+      }
+      if (clientTagFilter.length) {
+        // OR-match, with "(untagged)" as an explicit choice for proposals
+        // whose client has no Ignition tags.
+        const has =
+          p.client_tags.length === 0
+            ? clientTagFilter.includes("(untagged)")
+            : p.client_tags.some((t) => clientTagFilter.includes(t))
         if (!has) return false
       }
       if (minValue !== null && !Number.isNaN(minValue) && p.total_value < minValue)

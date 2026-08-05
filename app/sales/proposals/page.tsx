@@ -3,7 +3,7 @@ import { DashboardLayout } from "@/components/dashboard-layout"
 import { SalesProposals } from "@/components/sales-proposals"
 
 export const metadata = {
-  title: "Proposals | Motta Hub",
+  title: "Proposals | ALFRED Hub",
   description: "Browse, filter, and search every Ignition proposal",
 }
 
