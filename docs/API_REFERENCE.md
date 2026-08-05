@@ -306,6 +306,7 @@ record the change in `karbon_outbound_changes`.
 | `/api/calendly/events/[uuid]/comments` | GET, POST, DELETE | session | Event comments |
 | `/api/calendly/invitees` | GET | session | Invitees |
 | `/api/calendly/availability` | GET | session | Availability |
+| `/api/calendly/book` | GET, POST | session | Scheduling API: available times + book on a client's behalf |
 | `/api/calendly/scheduling-links` | POST | session | Single-use links |
 | `/api/calendly/routing-forms` | GET | session | Routing forms |
 | `/api/calendly/master-calendar` | GET, POST | session | Firm-wide calendar |

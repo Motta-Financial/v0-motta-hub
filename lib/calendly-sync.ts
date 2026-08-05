@@ -1,7 +1,12 @@
 import { createAdminClient } from "@/lib/supabase/server"
 import {
   calendlyListAll,
+  calendlyRequest,
+  ensureOrgWebhookSubscription,
+  ensureWebhookSubscription,
   extractUuid,
+  fetchMe,
+  getAppBaseUrl,
   type CalendlyConnectionRow,
 } from "@/lib/calendly-api"
 import {
@@ -32,7 +37,15 @@ export interface SyncBody {
 export interface SyncResult {
   success: boolean
   message?: string
-  synced: { events: number; invitees: number; eventTypes: number }
+  synced: {
+    events: number
+    invitees: number
+    eventTypes: number
+    orgEvents: number
+    routingForms: number
+    routingFormSubmissions: number
+  }
+  webhookHealth?: { orgSubscribed: boolean; userSubscriptions: number; error?: string }
   dateRange?: { from: string; to: string }
   connectionsProcessed: number
   errors?: string[]
@@ -48,6 +61,14 @@ type AdminSupabase = ReturnType<typeof createAdminClient>
  * shared library), so the sync works across an entire organization
  * with one team member per connection — no static access token
  * required.
+ *
+ * Beyond the per-connection pass, each run also:
+ *   · self-heals webhook subscriptions (org-scope preferred) so the
+ *     real-time path can never silently die again;
+ *   · runs an org-wide catch-all so bookings hosted by team members
+ *     whose OAuth connection lapsed still land in Supabase;
+ *   · syncs routing forms + submissions;
+ *   · refreshes the unified Hub `meetings` mirror.
  */
 export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> {
   const supabase = createAdminClient()
@@ -82,7 +103,7 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
     return {
       success: false,
       message: connErr.message,
-      synced: { events: 0, invitees: 0, eventTypes: 0 },
+      synced: emptyCounts(),
       connectionsProcessed: 0,
       errors: [connErr.message],
     }
@@ -97,10 +118,19 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
     return {
       success: true,
       message: "No active Calendly connections to sync",
-      synced: { events: 0, invitees: 0, eventTypes: 0 },
+      synced: emptyCounts(),
       connectionsProcessed: 0,
     }
   }
+
+  const activeConnections = connections as CalendlyConnectionRow[]
+  const errors: string[] = []
+
+  // Webhook self-healing runs FIRST so the real-time path comes back to
+  // life even if the rest of the sync errors out. This is what repairs
+  // subscriptions registered without (or with a rotated) signing key —
+  // the failure mode that silently 401'd every delivery.
+  const webhookHealth = await ensureWebhookHealth(supabase, activeConnections, errors)
 
   const now = new Date()
   const minStartTime = syncPast
@@ -111,9 +141,8 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
   let totalEvents = 0
   let totalInvitees = 0
   let totalEventTypes = 0
-  const errors: string[] = []
 
-  for (const connection of connections as CalendlyConnectionRow[]) {
+  for (const connection of activeConnections) {
     const tag = connection.calendly_user_email || connection.team_member_id
     try {
       if (syncEventTypes) {
@@ -150,6 +179,24 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
     }
   }
 
+  // Org-wide catch-all: bookings hosted by team members WITHOUT an
+  // active connection (expired token, never connected) are invisible to
+  // the per-connection loops above but still belong in the Hub. Any
+  // active connection in the same org can list them.
+  let orgEvents = 0
+  if (!teamMemberId) {
+    orgEvents = await syncOrgWideEvents(
+      supabase,
+      activeConnections,
+      minStartTime,
+      maxStartTime,
+      errors,
+    )
+  }
+
+  // Routing forms + submissions (org-level resources, one pass per run).
+  const routing = await syncRoutingForms(supabase, activeConnections, errors)
+
   await closeLog(
     supabase,
     syncLog?.id,
@@ -159,6 +206,12 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
       invitees_synced: totalInvitees,
       event_types_synced: totalEventTypes,
       errors: errors.length > 0 ? errors : null,
+      details: {
+        org_events: orgEvents,
+        routing_forms: routing.forms,
+        routing_form_submissions: routing.submissions,
+        webhook_health: webhookHealth,
+      },
     },
   )
 
@@ -191,10 +244,29 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
 
   return {
     success: true,
-    synced: { events: totalEvents, invitees: totalInvitees, eventTypes: totalEventTypes },
+    synced: {
+      events: totalEvents,
+      invitees: totalInvitees,
+      eventTypes: totalEventTypes,
+      orgEvents,
+      routingForms: routing.forms,
+      routingFormSubmissions: routing.submissions,
+    },
+    webhookHealth,
     dateRange: { from: minStartTime, to: maxStartTime },
-    connectionsProcessed: connections.length,
+    connectionsProcessed: activeConnections.length,
     errors: errors.length > 0 ? errors : undefined,
+  }
+}
+
+function emptyCounts(): SyncResult["synced"] {
+  return {
+    events: 0,
+    invitees: 0,
+    eventTypes: 0,
+    orgEvents: 0,
+    routingForms: 0,
+    routingFormSubmissions: 0,
   }
 }
 
@@ -210,6 +282,95 @@ async function closeLog(
     .update({ status, completed_at: new Date().toISOString(), ...fields })
     .eq("id", id)
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Webhook self-healing
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Keeps exactly one healthy delivery path alive, preferring a single
+ * ORG-scope subscription (covers every host in the org and is the only
+ * scope Calendly allows for routing-form events). Falls back to per-user
+ * subscriptions when no connection has the role to create org webhooks.
+ *
+ * When the org subscription is healthy, redundant user-scope
+ * subscriptions pointing at our callback are deleted — otherwise every
+ * booking would be delivered twice (the receiver's dedupe ledger would
+ * absorb it, but there's no reason to pay double deliveries).
+ */
+async function ensureWebhookHealth(
+  supabase: AdminSupabase,
+  connections: CalendlyConnectionRow[],
+  errors: string[],
+): Promise<{ orgSubscribed: boolean; userSubscriptions: number; error?: string }> {
+  try {
+    const org = await ensureOrgWebhookSubscription(supabase)
+
+    if (org.webhook) {
+      // Prune redundant user-scope subscriptions at our callback.
+      for (const conn of connections) {
+        try {
+          await ensureNoUserScopeSubscription(conn, supabase)
+        } catch (err) {
+          // Non-fatal: worst case the dedupe ledger absorbs dual delivery.
+          console.error(
+            `[calendly-sync] user-scope webhook prune failed (${conn.calendly_user_email}):`,
+            err,
+          )
+        }
+      }
+      return { orgSubscribed: true, userSubscriptions: 0 }
+    }
+
+    // No org-capable connection — fall back to per-user subscriptions so
+    // at least each connected host's bookings arrive in real time.
+    let userSubs = 0
+    for (const conn of connections) {
+      const res = await ensureWebhookSubscription(conn, supabase, { scope: "user" })
+      if (res.webhook) userSubs += 1
+      else if (res.error) errors.push(`webhook (${conn.calendly_user_email}): ${res.error}`)
+    }
+    return { orgSubscribed: false, userSubscriptions: userSubs, error: org.error }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    errors.push(`webhook health: ${msg}`)
+    return { orgSubscribed: false, userSubscriptions: 0, error: msg }
+  }
+}
+
+/** Deletes any user-scope subscription for `connection` that points at our callback. */
+async function ensureNoUserScopeSubscription(
+  connection: CalendlyConnectionRow,
+  supabase: AdminSupabase,
+) {
+  const callbackUrl = `${getAppBaseUrl()}/api/calendly/webhook`
+  const me = await fetchMe(connection, supabase)
+  if (!me) return
+  const list = await calendlyRequest<{ collection: any[] }>(
+    connection,
+    supabase,
+    "/webhook_subscriptions",
+    { query: { scope: "user", user: me.uri, organization: me.current_organization, count: 100 } },
+  )
+  for (const sub of list?.collection ?? []) {
+    if (sub.callback_url !== callbackUrl || sub.state !== "active") continue
+    await calendlyRequest(connection, supabase, sub.uri, {
+      method: "DELETE",
+      allowNotFound: true,
+    })
+    await supabase
+      .from("calendly_webhook_subscriptions")
+      .delete()
+      .eq("calendly_webhook_uri", sub.uri)
+    console.log(
+      `[calendly-sync] removed redundant user-scope webhook for ${connection.calendly_user_email}`,
+    )
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Event types
+ * ─────────────────────────────────────────────────────────────────────── */
 
 async function syncEventTypesForConnection(
   connection: CalendlyConnectionRow,
@@ -276,6 +437,180 @@ async function syncEventTypesForConnection(
   return synced
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * Scheduled events + invitees
+ * ─────────────────────────────────────────────────────────────────────── */
+
+interface KnownEventState {
+  calendlyUpdatedAt: string | null
+  hasInvitees: boolean
+}
+
+/**
+ * Loads what we already know about a batch of Calendly event uuids so the
+ * per-event loop can skip the expensive invitee round-trip for events
+ * that haven't changed since the last run. This is the difference between
+ * ~2 API calls per event per 30-minute run and ~2 API calls per CHANGED
+ * event — on a steady-state book of ~230 events that removes hundreds of
+ * Calendly requests per run.
+ */
+async function loadKnownEventStates(
+  supabase: AdminSupabase,
+  uuids: string[],
+): Promise<Map<string, KnownEventState>> {
+  const known = new Map<string, KnownEventState>()
+  for (let i = 0; i < uuids.length; i += 100) {
+    const batch = uuids.slice(i, i + 100)
+    const [{ data: events }, { data: invitees }] = await Promise.all([
+      supabase
+        .from("calendly_events")
+        .select("calendly_uuid, calendly_updated_at")
+        .in("calendly_uuid", batch),
+      supabase
+        .from("calendly_invitees")
+        .select("calendly_event_uuid")
+        .in("calendly_event_uuid", batch),
+    ])
+    const withInvitees = new Set((invitees ?? []).map((r: any) => r.calendly_event_uuid))
+    for (const row of events ?? []) {
+      known.set(row.calendly_uuid, {
+        calendlyUpdatedAt: row.calendly_updated_at,
+        hasInvitees: withInvitees.has(row.calendly_uuid),
+      })
+    }
+  }
+  return known
+}
+
+/**
+ * Upserts one scheduled event + (when needed) its invitees.
+ *
+ * `attribution` controls connection/team-member linkage: per-connection
+ * sync attributes the event to the owning connection; the org-wide
+ * catch-all passes nulls and lets the host identity come from
+ * `event_memberships` (mapped by the shared field mapper + overrides).
+ */
+async function processScheduledEvent(
+  connection: CalendlyConnectionRow,
+  supabase: AdminSupabase,
+  event: any,
+  known: Map<string, KnownEventState>,
+  errors: string[],
+  attribution: {
+    connectionId: string | null
+    teamMemberId: string | null
+    userUri: string | null
+    userName: string | null
+    userEmail: string | null
+  },
+): Promise<{ eventSaved: boolean; invitees: number }> {
+  const uuid = extractUuid(event.uri)
+  if (!uuid) return { eventSaved: false, invitees: 0 }
+
+  const prior = known.get(uuid)
+  const unchanged =
+    !!prior &&
+    !!prior.calendlyUpdatedAt &&
+    !!event.updated_at &&
+    new Date(prior.calendlyUpdatedAt).getTime() === new Date(event.updated_at).getTime() &&
+    prior.hasInvitees
+
+  const { data: savedEvent, error: evErr } = await supabase
+    .from("calendly_events")
+    .upsert(
+      {
+        // Shared full-capture mapper (identical to the webhook). The
+        // sync provides `status` directly from the list query and the
+        // host identity from the attribution the caller resolved.
+        ...mapCalendlyEventFields(event),
+        calendly_uuid: uuid,
+        calendly_uri: event.uri,
+        // Attribution columns are only written when the caller resolved
+        // them — the org-wide catch-all passes nulls for events it can't
+        // attribute, and overwriting would erase attribution recorded
+        // back when the host's connection was still active.
+        ...(attribution.connectionId ? { calendly_connection_id: attribution.connectionId } : {}),
+        ...(attribution.teamMemberId ? { team_member_id: attribution.teamMemberId } : {}),
+        ...(attribution.userUri ? { calendly_user_uri: attribution.userUri } : {}),
+        ...(attribution.userName ? { calendly_user_name: attribution.userName } : {}),
+        ...(attribution.userEmail ? { calendly_user_email: attribution.userEmail } : {}),
+        status: event.status,
+        raw_data: event,
+        synced_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "calendly_uuid" },
+    )
+    .select("id")
+    .single()
+
+  if (evErr) {
+    errors.push(`event ${uuid}: ${evErr.message}`)
+    return { eventSaved: false, invitees: 0 }
+  }
+
+  // Unchanged event with invitees already on file → the Calendly-side
+  // invitee list cannot have changed (any invitee mutation bumps the
+  // event's updated_at), so skip the round-trip and the re-matching.
+  if (unchanged) return { eventSaved: true, invitees: 0 }
+
+  let inviteeCount = 0
+  // Invitees are paginated separately — Calendly tops out at 100 per
+  // page and a group event can exceed that.
+  try {
+    const invitees = await calendlyListAll<any>(
+      connection,
+      supabase,
+      `${event.uri}/invitees`,
+      { query: { count: 100 } },
+    )
+    for (const invitee of invitees) {
+      const inviteeUuid = extractUuid(invitee.uri)
+      if (!inviteeUuid) continue
+
+      // Best-effort link to existing CRM contact using email →
+      // name+phone → unique-name fallback. When a match is found we
+      // also persist a `calendly_event_clients` auto-link so the
+      // Team Calendar can render the meeting as belonging to the
+      // matched client without a separate manual tagging step.
+      const match = await matchInviteeToContact(supabase, {
+        email: invitee.email,
+        name: invitee.name,
+        phone: extractPhoneFromInvitee(invitee),
+      })
+      const contactId = match?.contactId ?? null
+      if (match?.contactId && savedEvent?.id) {
+        await upsertAutoClientLink(supabase, {
+          calendlyEventId: savedEvent.id,
+          contactId: match.contactId,
+          matchMethod: match.matchMethod,
+        })
+      }
+
+      const { error: invErr } = await supabase.from("calendly_invitees").upsert(
+        {
+          ...mapCalendlyInviteeFields(invitee),
+          calendly_uuid: inviteeUuid,
+          calendly_uri: invitee.uri,
+          calendly_event_id: savedEvent?.id,
+          calendly_event_uuid: uuid,
+          contact_id: contactId,
+          raw_data: invitee,
+          synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "calendly_uuid" },
+      )
+      if (invErr) errors.push(`invitee ${invitee.email}: ${invErr.message}`)
+      else inviteeCount += 1
+    }
+  } catch (err) {
+    errors.push(`invitees ${uuid}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  return { eventSaved: true, invitees: inviteeCount }
+}
+
 async function syncEventsForConnection(
   connection: CalendlyConnectionRow,
   supabase: AdminSupabase,
@@ -310,115 +645,227 @@ async function syncEventsForConnection(
       continue
     }
 
+    const known = await loadKnownEventStates(
+      supabase,
+      events.map((e) => extractUuid(e.uri)).filter(Boolean) as string[],
+    )
+
     for (const event of events) {
-      const uuid = extractUuid(event.uri)
-      if (!uuid) continue
-      const location = event.location || {}
-
-      const { data: savedEvent, error: evErr } = await supabase
-        .from("calendly_events")
-        .upsert(
-          {
-            // Shared full-capture mapper (identical to the webhook). The
-            // sync provides `status` directly from the list query and the
-            // host identity from the connection that owns this fetch.
-            ...mapCalendlyEventFields(event),
-            calendly_uuid: uuid,
-            calendly_uri: event.uri,
-            calendly_connection_id: connection.id,
-            team_member_id: connection.team_member_id,
-            status: event.status,
-            calendly_user_uri: connection.calendly_user_uri,
-            calendly_user_name: connection.calendly_user_name,
-            calendly_user_email: connection.calendly_user_email,
-            raw_data: event,
-            synced_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "calendly_uuid" },
-        )
-        .select("id")
-        .single()
-
-      if (evErr) {
-        errors.push(`event ${uuid}: ${evErr.message}`)
-        continue
-      }
-      eventCount += 1
-
-      // Invitees are paginated separately — Calendly tops out at 100 per
-      // page and a group event can exceed that.
-      try {
-        const invitees = await calendlyListAll<any>(
-          connection,
-          supabase,
-          `${event.uri}/invitees`,
-          { query: { count: 100 } },
-        )
-        for (const invitee of invitees) {
-          const inviteeUuid = extractUuid(invitee.uri)
-          if (!inviteeUuid) continue
-
-          // Best-effort link to existing CRM contact using email →
-          // name+phone → unique-name fallback. When a match is found we
-          // also persist a `calendly_event_clients` auto-link so the
-          // Team Calendar can render the meeting as belonging to the
-          // matched client without a separate manual tagging step.
-          const match = await matchInviteeToContact(supabase, {
-            email: invitee.email,
-            name: invitee.name,
-            phone: extractPhoneFromInvitee(invitee),
-          })
-          const contactId = match?.contactId ?? null
-          if (match?.contactId && savedEvent?.id) {
-            await upsertAutoClientLink(supabase, {
-              calendlyEventId: savedEvent.id,
-              contactId: match.contactId,
-              matchMethod: match.matchMethod,
-            })
-          }
-
-          const { error: invErr } = await supabase.from("calendly_invitees").upsert(
-            {
-              ...mapCalendlyInviteeFields(invitee),
-              calendly_uuid: inviteeUuid,
-              calendly_uri: invitee.uri,
-              calendly_event_id: savedEvent?.id,
-              calendly_event_uuid: uuid,
-              contact_id: contactId,
-              raw_data: invitee,
-              synced_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: "calendly_uuid" },
-          )
-          if (invErr) errors.push(`invitee ${invitee.email}: ${invErr.message}`)
-          else inviteeCount += 1
-        }
-      } catch (err) {
-        errors.push(
-          `invitees ${uuid}: ${err instanceof Error ? err.message : String(err)}`,
-        )
-      }
-
-      // Mirror into the unified `meetings` table so other surfaces
-      // (notifications, reporting) get a consistent view.
-      await supabase.from("meetings").upsert(
-        {
-          calendly_event_id: uuid,
-          title: event.name,
-          scheduled_start: event.start_time,
-          scheduled_end: event.end_time,
-          status: event.status === "active" ? "scheduled" : "cancelled",
-          location_type: location.type || "virtual",
-          video_link: location.join_url,
-          meeting_type: "client_meeting",
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "calendly_event_id", ignoreDuplicates: false },
-      )
+      const result = await processScheduledEvent(connection, supabase, event, known, errors, {
+        connectionId: connection.id,
+        teamMemberId: connection.team_member_id,
+        userUri: connection.calendly_user_uri,
+        userName: connection.calendly_user_name,
+        userEmail: connection.calendly_user_email,
+      })
+      if (result.eventSaved) eventCount += 1
+      inviteeCount += result.invitees
     }
   }
 
   return { events: eventCount, invitees: inviteeCount }
+}
+
+/**
+ * Org-wide catch-all pass: lists the organization's scheduled events with
+ * one healthy connection and ingests any event whose host has NO active
+ * connection of their own (expired token / never connected). Those
+ * bookings were previously invisible to the Hub until the host
+ * reauthorized — real bookings from real clients, silently missing.
+ */
+async function syncOrgWideEvents(
+  supabase: AdminSupabase,
+  connections: CalendlyConnectionRow[],
+  minStart: string,
+  maxStart: string,
+  errors: string[],
+): Promise<number> {
+  const lens = connections.find((c) => c.calendly_organization_uri)
+  if (!lens?.calendly_organization_uri) return 0
+
+  const coveredUserUris = new Set(connections.map((c) => c.calendly_user_uri))
+  let ingested = 0
+
+  // Uncovered hosts can still be Hub team members (their OAuth token
+  // lapsed) — resolve by email so their meetings keep proper attribution.
+  const teamMemberByEmail = new Map<string, string>()
+  const { data: teamMembers } = await supabase
+    .from("team_members")
+    .select("id, email")
+    .eq("status", "active")
+  for (const tm of teamMembers ?? []) {
+    if (tm.email) teamMemberByEmail.set(String(tm.email).toLowerCase(), tm.id)
+  }
+
+  for (const status of ["active", "canceled"]) {
+    let events: any[] = []
+    try {
+      events = await calendlyListAll<any>(lens, supabase, "/scheduled_events", {
+        query: {
+          organization: lens.calendly_organization_uri,
+          min_start_time: minStart,
+          max_start_time: maxStart,
+          status,
+          count: 100,
+          sort: "start_time:asc",
+        },
+      })
+    } catch (err) {
+      errors.push(
+        `org events fetch ${status}: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      continue
+    }
+
+    const uncovered = events.filter((event) => {
+      const memberships: any[] = event?.event_memberships ?? []
+      return (
+        memberships.length > 0 && !memberships.some((m) => coveredUserUris.has(m?.user))
+      )
+    })
+    if (uncovered.length === 0) continue
+
+    const known = await loadKnownEventStates(
+      supabase,
+      uncovered.map((e) => extractUuid(e.uri)).filter(Boolean) as string[],
+    )
+
+    for (const event of uncovered) {
+      const host = event.event_memberships?.[0] ?? {}
+      const hostEmail = host.user_email ? String(host.user_email).toLowerCase() : null
+      const result = await processScheduledEvent(lens, supabase, event, known, errors, {
+        connectionId: null,
+        teamMemberId: hostEmail ? (teamMemberByEmail.get(hostEmail) ?? null) : null,
+        userUri: host.user ?? null,
+        userName: host.user_name ?? null,
+        userEmail: host.user_email ?? null,
+      })
+      if (result.eventSaved) ingested += 1
+    }
+  }
+
+  return ingested
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Routing forms + submissions
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Syncs routing form definitions and their submissions (org-level
+ * resources) into `calendly_routing_forms` / `_submissions`. Submissions
+ * are linked back to the Hub contact through the invitee that the
+ * submission produced (calendly_invitees.routing_form_submission_uri),
+ * so routing answers become queryable per client.
+ */
+async function syncRoutingForms(
+  supabase: AdminSupabase,
+  connections: CalendlyConnectionRow[],
+  errors: string[],
+): Promise<{ forms: number; submissions: number }> {
+  const lens = connections.find((c) => c.calendly_organization_uri)
+  if (!lens?.calendly_organization_uri) return { forms: 0, submissions: 0 }
+
+  let forms = 0
+  let submissions = 0
+
+  let formList: any[] = []
+  try {
+    formList = await calendlyListAll<any>(lens, supabase, "/routing_forms", {
+      query: { organization: lens.calendly_organization_uri, count: 100 },
+    })
+  } catch (err) {
+    errors.push(`routing_forms fetch: ${err instanceof Error ? err.message : String(err)}`)
+    return { forms: 0, submissions: 0 }
+  }
+
+  for (const form of formList) {
+    const formUuid = extractUuid(form.uri)
+    if (!formUuid) continue
+
+    const { data: savedForm, error: formErr } = await supabase
+      .from("calendly_routing_forms")
+      .upsert(
+        {
+          calendly_uuid: formUuid,
+          calendly_uri: form.uri,
+          organization_uri: form.organization ?? lens.calendly_organization_uri,
+          name: form.name ?? null,
+          status: form.status ?? null,
+          questions: Array.isArray(form.questions) ? form.questions : null,
+          raw_data: form,
+          calendly_created_at: form.created_at ?? null,
+          calendly_updated_at: form.updated_at ?? null,
+          synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "calendly_uuid" },
+      )
+      .select("id")
+      .single()
+
+    if (formErr) {
+      errors.push(`routing_form ${form.name ?? formUuid}: ${formErr.message}`)
+      continue
+    }
+    forms += 1
+
+    let subs: any[] = []
+    try {
+      subs = await calendlyListAll<any>(lens, supabase, "/routing_form_submissions", {
+        query: { form: form.uri, count: 100 },
+      })
+    } catch (err) {
+      errors.push(
+        `routing_form_submissions ${formUuid}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+      continue
+    }
+
+    for (const sub of subs) {
+      const subUuid = extractUuid(sub.uri)
+      if (!subUuid) continue
+
+      // Link the submission to a Hub contact through the invitee it
+      // produced, when the visitor completed the booking it routed to.
+      let contactId: string | null = null
+      if (sub.submitter) {
+        const { data: invitee } = await supabase
+          .from("calendly_invitees")
+          .select("contact_id")
+          .eq("routing_form_submission_uri", sub.uri)
+          .not("contact_id", "is", null)
+          .limit(1)
+          .maybeSingle()
+        contactId = invitee?.contact_id ?? null
+      }
+
+      const { error: subErr } = await supabase.from("calendly_routing_form_submissions").upsert(
+        {
+          calendly_uuid: subUuid,
+          calendly_uri: sub.uri,
+          routing_form_uri: sub.routing_form ?? form.uri,
+          routing_form_id: savedForm?.id ?? null,
+          submitter_uri: sub.submitter ?? null,
+          submitter_type: sub.submitter_type ?? null,
+          questions_and_answers: sub.questions_and_answers ?? null,
+          tracking: sub.tracking ?? null,
+          result: sub.result ?? null,
+          contact_id: contactId,
+          raw_data: sub,
+          calendly_created_at: sub.created_at ?? null,
+          calendly_updated_at: sub.updated_at ?? null,
+          synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "calendly_uuid" },
+      )
+      if (subErr) errors.push(`routing_submission ${subUuid}: ${subErr.message}`)
+      else submissions += 1
+    }
+  }
+
+  return { forms, submissions }
 }

@@ -597,6 +597,21 @@ export interface EnsureWebhookResult {
 }
 
 /**
+ * SHA-256 fingerprint of the webhook signing key currently configured in
+ * the environment. Calendly never returns a subscription's signing key,
+ * so this fingerprint — persisted on `calendly_webhook_subscriptions` at
+ * creation time — is the only way to later prove that a live subscription
+ * signs with the key our receiver verifies against. A missing or
+ * mismatched fingerprint means deliveries would be rejected 401, which is
+ * exactly the failure mode that silently killed the real-time path.
+ */
+export function webhookSigningKeyFingerprint(): string | null {
+  const key = process.env.CALENDLY_WEBHOOK_SIGNING_KEY
+  if (!key) return null
+  return crypto.createHash("sha256").update(key).digest("hex")
+}
+
+/**
  * Ensures a Calendly webhook subscription exists for `connection`,
  * persisting the subscription URI to the connection row so the rest
  * of the app can rely on the cached state.
@@ -610,15 +625,23 @@ export async function ensureWebhookSubscription(
   options: {
     scope?: "user" | "organization"
     events?: readonly string[]
+    /**
+     * When false, a failure does not stomp the connection's cached
+     * webhook flags — used by the org-scope loop that probes several
+     * connections until one has permission to create an org webhook.
+     */
+    updateConnectionFlags?: boolean
   } = {},
 ): Promise<EnsureWebhookResult> {
   const scope = options.scope ?? "user"
+  const updateConnectionFlags = options.updateConnectionFlags ?? true
   // Default events depend on scope: org-scope can include routing forms,
   // user-scope cannot (Calendly rejects the request otherwise).
   const events =
     options.events ??
     (scope === "organization" ? ORG_SCOPE_WEBHOOK_EVENTS : USER_SCOPE_WEBHOOK_EVENTS)
   const callbackUrl = `${getAppBaseUrl()}/api/calendly/webhook`
+  const fingerprint = webhookSigningKeyFingerprint()
 
   try {
     const me = await fetchMe(connection, supabase)
@@ -653,7 +676,34 @@ export async function ensureWebhookSubscription(
     let webhook = existing
     let reused = !!existing
 
-    if (!existing) {
+    // Signing-key proof: Calendly never returns a subscription's signing
+    // key, so an existing subscription is only trustworthy if OUR ledger
+    // says it was created with the key the receiver currently verifies
+    // against. Without that proof every delivery gets rejected 401 —
+    // silently, since Calendly retries then gives up. Recreate on any
+    // doubt: unknown subscription, missing fingerprint, or key rotation.
+    if (existing && fingerprint) {
+      const { data: known } = await supabase
+        .from("calendly_webhook_subscriptions")
+        .select("id, signing_key_fingerprint")
+        .eq("calendly_webhook_uri", existing.uri)
+        .maybeSingle()
+      if (!known || known.signing_key_fingerprint !== fingerprint) {
+        console.log(
+          `[calendly] recreating webhook ${existing.uri} (${scope}): signing key unproven`,
+        )
+        await calendlyRequest(connection, supabase, existing.uri, {
+          method: "DELETE",
+          allowNotFound: true,
+        }).catch((err) =>
+          console.error("[calendly] stale webhook delete failed (continuing):", err),
+        )
+        webhook = null
+        reused = false
+      }
+    }
+
+    if (!webhook) {
       const created = await calendlyRequest<{ resource: any }>(
         connection,
         supabase,
@@ -676,29 +726,199 @@ export async function ensureWebhookSubscription(
       webhook = created?.resource ?? null
     }
 
+    // Persist the subscription itself so the fingerprint check above has
+    // something to verify against on the next pass, and prune ledger rows
+    // for subscriptions that no longer exist at this callback + scope.
+    if (webhook?.uri) {
+      await supabase.from("calendly_webhook_subscriptions").upsert(
+        {
+          connection_id: connection.id,
+          calendly_webhook_uri: webhook.uri,
+          callback_url: callbackUrl,
+          scope,
+          state: webhook.state ?? "active",
+          organization_uri: me.current_organization,
+          user_uri: scope === "user" ? me.uri : null,
+          events: (webhook.events ?? events) as string[],
+          signing_key_fingerprint: reused ? undefined : fingerprint,
+          last_verified_at: new Date().toISOString(),
+          raw_payload: webhook,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "calendly_webhook_uri" },
+      )
+      await supabase
+        .from("calendly_webhook_subscriptions")
+        .delete()
+        .eq("connection_id", connection.id)
+        .eq("callback_url", callbackUrl)
+        .eq("scope", scope)
+        .neq("calendly_webhook_uri", webhook.uri)
+    }
+
     // Persist cached state so /diagnostics doesn't have to roundtrip.
-    await supabase
-      .from("calendly_connections")
-      .update({
-        webhook_subscribed: !!webhook,
-        webhook_subscription_uri: webhook?.uri ?? null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", connection.id)
+    if (updateConnectionFlags) {
+      await supabase
+        .from("calendly_connections")
+        .update({
+          webhook_subscribed: !!webhook,
+          webhook_subscription_uri: webhook?.uri ?? null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", connection.id)
+    }
 
     return { webhook, callbackUrl, reused }
   } catch (err: any) {
     const message = err?.message || String(err)
     console.error("[calendly] ensureWebhookSubscription failed:", message)
     // Cache the failure so the dashboard can show a precise error.
-    await supabase
-      .from("calendly_connections")
-      .update({
-        webhook_subscribed: false,
-        last_sync_error: `Webhook subscribe failed: ${message.slice(0, 200)}`,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", connection.id)
+    if (updateConnectionFlags) {
+      await supabase
+        .from("calendly_connections")
+        .update({
+          webhook_subscribed: false,
+          last_sync_error: `Webhook subscribe failed: ${message.slice(0, 200)}`,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", connection.id)
+    }
     return { webhook: null, callbackUrl, reused: false, error: message }
   }
+}
+
+/**
+ * Ensures ONE organization-scope webhook subscription exists, probing
+ * active connections until one has the Calendly role required to create
+ * org webhooks (owner/admin). Org scope is strictly better than per-user
+ * subscriptions for the Hub: it covers every host in the org — including
+ * team members whose OAuth connection lapsed — and it is the only scope
+ * Calendly allows for `routing_form_submission.created`.
+ *
+ * On success the cached webhook flags on every active connection are
+ * updated, since an org-scope subscription covers them all.
+ */
+export async function ensureOrgWebhookSubscription(
+  supabase: SupabaseClient,
+): Promise<EnsureWebhookResult & { connectionId?: string }> {
+  const { data: connections } = await supabase
+    .from("calendly_connections")
+    .select("*")
+    .eq("is_active", true)
+    .eq("sync_enabled", true)
+    .order("created_at", { ascending: true })
+
+  const callbackUrl = `${getAppBaseUrl()}/api/calendly/webhook`
+  const errors: string[] = []
+
+  for (const conn of (connections ?? []) as CalendlyConnectionRow[]) {
+    const result = await ensureWebhookSubscription(conn, supabase, {
+      scope: "organization",
+      updateConnectionFlags: false,
+    })
+    if (result.webhook) {
+      await supabase
+        .from("calendly_connections")
+        .update({
+          webhook_subscribed: true,
+          webhook_subscription_uri: result.webhook.uri,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("is_active", true)
+      return { ...result, connectionId: conn.id }
+    }
+    errors.push(`${conn.calendly_user_email}: ${result.error ?? "unknown"}`)
+  }
+
+  return {
+    webhook: null,
+    callbackUrl,
+    reused: false,
+    error: `No connection could establish an org-scope webhook — ${errors.join("; ") || "no active connections"}`,
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Scheduling API (programmatic booking)
+ * ───────────────────────────────────────────────────────────────────────
+ * Calendly's Scheduling API lets the Hub book meetings on behalf of a
+ * client with no redirect to Calendly-hosted UI: pick a slot from
+ * GET /event_type_available_times, then POST /invitees.
+ *
+ * https://developer.calendly.com/api-docs/p3ghrxrwbl8kqe-create-event-invitee-scheduling-api
+ */
+
+export interface AvailableTime {
+  status: string
+  start_time: string
+  invitees_remaining: number
+  scheduling_url: string
+}
+
+/**
+ * Available start times for an event type in [startTime, endTime].
+ * Calendly caps the window at 31 days per request.
+ */
+export async function getEventTypeAvailableTimes(
+  connection: CalendlyConnectionRow,
+  supabase: SupabaseClient,
+  eventTypeUri: string,
+  startTime: string,
+  endTime: string,
+): Promise<AvailableTime[]> {
+  const res = await calendlyRequest<{ collection: AvailableTime[] }>(
+    connection,
+    supabase,
+    "/event_type_available_times",
+    { query: { event_type: eventTypeUri, start_time: startTime, end_time: endTime } },
+  )
+  return res?.collection ?? []
+}
+
+export interface CreateEventInviteeRequest {
+  /** Event type URI (https://api.calendly.com/event_types/<uuid>). */
+  event_type: string
+  /** UTC start time matching an open slot, e.g. 2026-08-10T18:30:00Z. */
+  start_time: string
+  invitee: {
+    name?: string
+    first_name?: string
+    last_name?: string
+    email: string
+    /** IANA timezone, e.g. America/New_York. */
+    timezone?: string
+    text_reminder_number?: string
+  }
+  /**
+   * Required when the event type specifies a location; must be OMITTED
+   * when it doesn't. `kind` mirrors the event type's location kind.
+   */
+  location?: { kind: string; location?: string; [key: string]: unknown }
+  event_guests?: string[]
+  questions_and_answers?: Array<{ question?: string; answer: string; position: number }>
+  tracking?: {
+    utm_source?: string
+    utm_medium?: string
+    utm_campaign?: string
+    utm_term?: string
+    utm_content?: string
+    salesforce_uuid?: string
+  }
+}
+
+/**
+ * Books a meeting via the Scheduling API. Returns the created invitee
+ * resource (including the scheduled `event` URI, cancel/reschedule URLs).
+ * Requires `scheduled_events:write` — already in the Hub's granted scopes.
+ */
+export async function createEventInvitee(
+  connection: CalendlyConnectionRow,
+  supabase: SupabaseClient,
+  body: CreateEventInviteeRequest,
+): Promise<any | null> {
+  const res = await calendlyRequest<{ resource: any }>(connection, supabase, "/invitees", {
+    method: "POST",
+    body,
+  })
+  return res?.resource ?? null
 }
