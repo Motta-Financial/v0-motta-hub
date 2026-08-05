@@ -3,14 +3,43 @@
  */
 const KARBON_TENANT_PREFIX = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
+/** True when a Karbon business-card address carries any real content. */
+function addressHasContent(a: any): boolean {
+  return Boolean(
+    (a?.StateProvinceCounty ?? a?.StateProvince ?? a?.State) ||
+      a?.City ||
+      (a?.ZipCode ?? a?.PostCode ?? a?.PostalCode) ||
+      (typeof a?.AddressLines === "string" && a.AddressLines.trim()) ||
+      a?.AddressLine1 ||
+      a?.Street,
+  )
+}
+
 export function mapKarbonOrganizationToSupabase(org: any) {
   const businessCards = Array.isArray(org.BusinessCards) ? org.BusinessCards : []
   const primaryCard = businessCards.find((bc: any) => bc.IsPrimaryCard) || businessCards[0] || {}
 
-  const postalAddresses = Array.isArray(primaryCard.PostalAddresses) ? primaryCard.PostalAddresses : []
+  // Karbon organization business cards use the SAME shape as contacts:
+  // `Addresses[]` with `Label` / `StateProvinceCounty` / `ZipCode` /
+  // `AddressLines`. This mapper previously read `PostalAddresses[]` with
+  // `Type` / `StateProvince` — fields Karbon never sends — so org
+  // addresses were silently dropped on every sync (71 orgs had a state
+  // sitting unread in the stored business_cards JSON). The legacy names
+  // are kept as fallbacks in case older stored payloads used them.
+  const rawAddresses = primaryCard.Addresses ?? primaryCard.PostalAddresses
+  const postalAddresses = Array.isArray(rawAddresses)
+    ? rawAddresses
+    : rawAddresses
+      ? [rawAddresses]
+      : []
+  // Prefer the Physical address, but only when it actually has content —
+  // Karbon often returns an empty Physical entry next to a populated
+  // Legal/Mailing one (an empty pick would null out the org's address).
   const primaryAddress =
-    postalAddresses.find((a: any) => a.Type === "Physical" || a.Type === "Business" || a.IsPrimary) ||
-    postalAddresses[0] ||
+    postalAddresses.find(
+      (a: any) => (a.Label === "Physical" || a.Type === "Physical" || a.IsPrimary) && addressHasContent(a),
+    ) ||
+    postalAddresses.find(addressHasContent) ||
     {}
 
   const phoneNumbers = Array.isArray(primaryCard.PhoneNumbers) ? primaryCard.PhoneNumbers : []
@@ -85,12 +114,31 @@ export function mapKarbonOrganizationToSupabase(org: any) {
     primary_email: typeof primaryEmail === "string" ? primaryEmail : null,
     phone: workPhone?.Number || null,
     website: typeof primaryWebsite === "string" ? primaryWebsite : null,
-    address_line1: primaryAddress.AddressLine1 || primaryAddress.Street || null,
-    address_line2: primaryAddress.AddressLine2 || null,
-    city: primaryAddress.City || null,
-    state: primaryAddress.StateProvince || primaryAddress.State || null,
-    zip_code: primaryAddress.PostCode || primaryAddress.PostalCode || primaryAddress.ZipCode || null,
-    country: primaryAddress.Country || null,
+    // Address fields are only included when Karbon actually has an
+    // address on file. An unconditional `state: null` here would clobber
+    // values filled from other integrations (ProConnect tax-return
+    // addresses via propagate_proconnect_addresses(), or manual edits
+    // from the Sales Dashboard's inline state editor) on the next
+    // webhook/sync upsert.
+    ...(addressHasContent(primaryAddress)
+      ? {
+          address_line1:
+            (typeof primaryAddress.AddressLines === "string" && primaryAddress.AddressLines.trim()) ||
+            primaryAddress.AddressLine1 ||
+            primaryAddress.Street ||
+            null,
+          address_line2: primaryAddress.AddressLine2 || null,
+          city: primaryAddress.City || null,
+          state:
+            primaryAddress.StateProvinceCounty ||
+            primaryAddress.StateProvince ||
+            primaryAddress.State ||
+            null,
+          zip_code:
+            primaryAddress.ZipCode || primaryAddress.PostCode || primaryAddress.PostalCode || null,
+          country: primaryAddress.CountryCode || primaryAddress.Country || null,
+        }
+      : {}),
     linkedin_url: primaryCard.LinkedInUrl || primaryCard.LinkedIn || null,
     twitter_handle: primaryCard.TwitterUrl || primaryCard.Twitter || null,
     facebook_url: primaryCard.FacebookUrl || primaryCard.Facebook || null,

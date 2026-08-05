@@ -171,6 +171,24 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
     console.error("[calendly-sync] hub meetings refresh failed:", err)
   }
 
+  // Apply client-provided intake/Calendly data to Hub contacts
+  // (migration 384, superset of 383's state propagation): missing
+  // email/phone/state fill automatically; values that CONFLICT with the
+  // Hub record are queued in contact_update_suggestions for staff review
+  // at /admin/contact-updates. Non-fatal.
+  try {
+    const { data: leadSync, error: leadErr } = await supabase.rpc(
+      "sync_lead_contact_updates",
+    )
+    if (leadErr) {
+      console.error("[calendly-sync] lead contact sync failed (non-fatal):", leadErr.message)
+    } else if (leadSync?.[0]) {
+      console.log("[calendly-sync] lead contact sync:", leadSync[0])
+    }
+  } catch (err) {
+    console.error("[calendly-sync] lead contact sync crashed (non-fatal):", err)
+  }
+
   return {
     success: true,
     synced: { events: totalEvents, invitees: totalInvitees, eventTypes: totalEventTypes },
