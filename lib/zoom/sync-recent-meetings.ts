@@ -200,6 +200,13 @@ export async function syncRecentZoomData(
               timezone: m.timezone,
               agenda: m.agenda,
               join_url: m.join_url,
+              // When Zoom includes them on the list payload (it does for
+              // detail-shaped rows), keep the meeting's creation time and
+              // the host's PMI. Null-safe: these are constant per meeting,
+              // so a null overwrite only happens when Zoom stopped sending
+              // the field entirely.
+              zoom_created_at: m.created_at ?? null,
+              pmi: m.pmi != null ? String(m.pmi) : null,
               host_email: conn.zoom_email,
               // The original POST in master-meetings forgot to
               // populate this — without it the todo sweep can't
@@ -301,6 +308,7 @@ export async function syncRecentZoomData(
               topic: rec.topic,
               start_time: rec.start_time,
               duration: rec.duration,
+              zoom_account_id: rec.account_id ?? null,
               host_email: conn.zoom_email,
               team_member_id: conn.team_member_id,
               zoom_connection_id: conn.id,

@@ -57,6 +57,14 @@ function pickNum(obj: Record<string, any> | null | undefined, ...keys: string[])
   return Number.isFinite(n) ? n : null
 }
 
+/** Returns a string[] when the value is an array; coerces members to
+ *  strings and drops null/undefined entries. Used for Ignition tag lists. */
+function pickStrArray(obj: Record<string, any> | null | undefined, ...keys: string[]): string[] | null {
+  const v = pick(obj, ...keys)
+  if (!Array.isArray(v)) return null
+  return v.filter((x) => x !== null && x !== undefined).map((x) => String(x))
+}
+
 function pickBool(obj: Record<string, any> | null | undefined, ...keys: string[]): boolean | null {
   const v = pick(obj, ...keys)
   if (v == null) return null
@@ -217,6 +225,9 @@ function buildProposalServiceRow(
     proposal_id: proposalId,
     ignition_service_id:
       serviceSlug && knownServiceIds.has(serviceSlug) ? serviceSlug : null,
+    // Per-line slug (unique per proposal line, distinct from the catalog
+    // service_slug). Lets webhooks/API updates target a specific line.
+    line_slug: pickStr(raw, "slug"),
     service_name: serviceName,
     description: pickStr(raw, "description"),
     quantity,
@@ -225,6 +236,17 @@ function buildProposalServiceRow(
     currency,
     billing_frequency: billingFrequency,
     billing_type: pickStr(raw, "billing.mode"),
+    // Full billing/pricing detail (migration 377).
+    invoice_strategy: pickStr(raw, "invoice_strategy"),
+    price_type: pickStr(raw, "pricing.price_type"),
+    is_add_on: pickBool(raw, "is_add_on"),
+    is_selected_for_acceptance: pickBool(raw, "is_selected_for_acceptance"),
+    is_recurring: pickBool(raw, "billing.is_recurring"),
+    billing_summary: pickStr(raw, "billing.summary"),
+    billing_schedules: Array.isArray(raw?.billing?.schedules) ? raw.billing.schedules : null,
+    position: pickNum(raw, "position"),
+    service_category_slug: pickStr(raw, "service_category.slug"),
+    service_category_name: pickStr(raw, "service_category.name"),
     // Ignition can mark a line as deselected at acceptance (the client
     // removed it from the package). Surface that in `status` so the
     // sales views can filter to actually-accepted lines when needed.
@@ -416,14 +438,30 @@ export async function syncClients(
         name: pickStr(raw, "name"),
         email: pickStr(raw, "email"),
         phone: pickStr(raw, "phone"),
-        // `state` is one of "lead" / "client" / "archived" / "deleted" —
-        // store it in client_type which is free-text on our side.
+        // `state` is one of "lead" / "active" / "inactive" / "archived".
+        // Kept mirrored into client_type (free-text, legacy consumers) AND
+        // stored verbatim in the dedicated `state` column (migration 377).
         client_type: pickStr(raw, "state"),
+        state: pickStr(raw, "state"),
         // Ignition's `business_name` doesn't exist on /reporting/clients;
         // names like "Last, First" denote individuals while plain corporate
         // names live in `name`. We leave business_name null and let the
         // matcher decide based on group_name and external_client_id.
         business_name: pickStr(raw, "group_name"),
+        group_name: pickStr(raw, "group_name"),
+        // Cross-system identity keys (migration 377) — these are the
+        // strongest join signals the Reporting API offers: the practice's
+        // own external id plus the Xero/QBO ledger ids Ignition holds.
+        external_client_id: pickStr(raw, "external_client_id"),
+        xero_contact_id: pickStr(raw, "xero_contact_id"),
+        qbo_customer_id: pickNum(raw, "qbo_customer_id"),
+        // Servicing assignments: job manager + account manager/partner.
+        manager_name: pickStr(raw, "manager.name"),
+        manager_email: pickStr(raw, "manager.email"),
+        partner_name: pickStr(raw, "partner.name"),
+        partner_email: pickStr(raw, "partner.email"),
+        tags: pickStrArray(raw, "tags"),
+        ignition_url: pickStr(raw, "link"),
         ignition_created_at: pickIso(raw, "created_at"),
         ignition_updated_at: pickIso(raw, "updated_at"),
         last_event_at: pickIso(raw, "updated_at", "created_at"),
@@ -462,13 +500,23 @@ export async function syncContacts(
       const { first, last } = splitName(fullName)
       return {
         ignition_contact_id: slug,
+        ignition_numeric_id: pickNum(raw, "id"),
         ignition_client_id: pickStr(raw, "client.slug"),
         first_name: first,
         last_name: last,
         full_name: fullName,
         email: pickStr(raw, "email"),
         phone: pickStr(raw, "phone", "mobile"),
+        mobile: pickStr(raw, "mobile"),
+        salutation: pickStr(raw, "salutation"),
+        addressee: pickStr(raw, "addressee"),
         role: pickStr(raw, "position"),
+        // Contact-role flags (migration 377) — these drive who signs
+        // engagement letters and who receives invoices.
+        is_primary: pickBool(raw, "is_primary"),
+        is_signatory: pickBool(raw, "is_signatory"),
+        is_invoice_recipient: pickBool(raw, "is_invoice_recipient"),
+        ignition_url: pickStr(raw, "link"),
         raw_payload: raw,
         ignition_created_at: pickIso(raw, "created_at"),
         ignition_updated_at: pickIso(raw, "updated_at"),
@@ -502,22 +550,30 @@ export async function syncDealStages(
       const slug = pickStr(raw, "slug")
       if (!slug) return null
       const winLikelihood = pickNum(raw, "win_likelihood")
+      // The spec documents win_likelihood as a 0–1 decimal, while early live
+      // probes observed percent-style values. Normalize to a fraction for
+      // the is_won/is_lost derivations; the raw value is stored verbatim in
+      // the win_likelihood column so nothing is lost either way.
+      const winFraction =
+        winLikelihood == null ? null : winLikelihood > 1 ? winLikelihood / 100 : winLikelihood
       return {
         ignition_stage_id: slug,
         name: pickStr(raw, "name"),
         // Ignition doesn't expose pipeline grouping on /reporting/deal_stages,
         // so we leave this null. UI code should not depend on it for now.
         pipeline_name: null,
-        // Derive is_won/is_lost from win_likelihood: 100 → won, 0 → lost,
+        // Derive is_won/is_lost from win_likelihood: 1.0 → won, 0 → lost,
         // anything between → in-flight. This matches Ignition's UX where
         // stages at the ends of the pipeline get those probabilities.
-        is_won: winLikelihood == null ? null : winLikelihood >= 100,
+        is_won: winFraction == null ? null : winFraction >= 1,
         is_lost:
-          winLikelihood == null
+          winFraction == null
             ? null
-            : winLikelihood === 0 && /lost|dead|won't proceed/i.test(pickStr(raw, "name") ?? ""),
+            : winFraction === 0 && /lost|dead|won't proceed/i.test(pickStr(raw, "name") ?? ""),
         is_active: true,
         sort_order: pickNum(raw, "position"),
+        win_likelihood: winLikelihood,
+        inactive_threshold_days: pickNum(raw, "inactive_threshold_days"),
         raw_payload: raw,
         ignition_created_at: pickIso(raw, "created_at"),
         ignition_updated_at: pickIso(raw, "updated_at"),
@@ -557,8 +613,14 @@ export async function syncDeals(
         // quick rendering without a join to ignition_deal_stages.
         pipeline_name: null,
         stage_name: pickStr(raw, "stage_name"),
+        stage_position: pickNum(raw, "stage_position"),
+        stage_win_likelihood: pickNum(raw, "stage_win_likelihood"),
         title: pickStr(raw, "name"),
         status: pickStr(raw, "state"),
+        priority: pickStr(raw, "priority"),
+        client_name: pickStr(raw, "client_name"),
+        external_client_id: pickStr(raw, "external_client_id"),
+        linked_proposal_slug: pickStr(raw, "linked_proposal_slug"),
         owner_name: pickStr(raw, "owner.name"),
         owner_email: pickStr(raw, "owner.email"),
         // Ignition returns `value` and a separate `projected_value` object.
@@ -571,11 +633,20 @@ export async function syncDeals(
           pickStr(raw, "currency") ??
           pickStr(raw, "projected_value.currency") ??
           null,
+        // Projected value is stored separately from the realised `value` —
+        // it's what Ignition uses for pipeline reporting, along with the
+        // source flag saying whether it came from the deal or its proposal.
+        projected_value: pickNum(raw, "projected_value.amount"),
+        projected_value_currency: pickStr(raw, "projected_value.currency"),
+        projected_value_source: pickStr(raw, "projected_value_source"),
         // `expected_close_date` isn't on this endpoint; closed_at is when it
         // was actually closed. We still try the canonical name in case the
         // field shape changes.
         expected_close_date: pickDate(raw, "expected_close_date"),
         closed_at: pickIso(raw, "closed_at"),
+        current_stage_started_at: pickIso(raw, "current_stage_started_at"),
+        seconds_to_close: pickNum(raw, "seconds_to_close"),
+        ignition_url: pickStr(raw, "link"),
         raw_payload: raw,
         ignition_created_at: pickIso(raw, "created_at"),
         ignition_updated_at: pickIso(raw, "updated_at"),
@@ -612,13 +683,33 @@ export async function syncServices(
         ignition_service_id: slug,
         name: pickStr(raw, "name"),
         description: pickStr(raw, "description"),
-        category: pickStr(raw, "service_group_name", "service_group"),
-        // Ignition exposes `state` ("active" / "archived"). Anything other
-        // than archived counts as active for our purposes.
+        category: pickStr(raw, "service_group_name", "service_group.name"),
+        // Full lifecycle state ("active" / "new" / "deleted" / "ledger" /
+        // "system" / "placeholder") stored verbatim; is_active keeps its
+        // legacy boolean semantics for existing consumers.
+        state: pickStr(raw, "state"),
         is_active: (pickStr(raw, "state") ?? "active").toLowerCase() === "active",
         default_price: pickNum(raw, "price"),
         currency: null,
         billing_type: pickStr(raw, "billing_mode", "price_type"),
+        // Full pricing model (migration 377): how the price is structured,
+        // per-unit naming, and range bounds for range-priced services.
+        price_type: pickStr(raw, "price_type"),
+        billing_mode: pickStr(raw, "billing_mode"),
+        unit_name: pickStr(raw, "unit_name"),
+        min_price: pickNum(raw, "min_price"),
+        max_price: pickNum(raw, "max_price"),
+        tax_rate: pickStr(raw, "tax_rate"),
+        // Catalog display group vs service-library category — Ignition
+        // models these separately; we store both.
+        service_group_slug: pickStr(raw, "service_group.slug"),
+        service_group_name: pickStr(raw, "service_group_name", "service_group.name"),
+        service_category_slug: pickStr(raw, "service_category.slug"),
+        service_category_name: pickStr(raw, "service_category.name"),
+        service_origin: pickStr(raw, "service_origin"),
+        ignition_url: pickStr(raw, "link"),
+        ignition_created_at: pickIso(raw, "created_at"),
+        ignition_updated_at: pickIso(raw, "updated_at"),
         raw_payload: raw,
         updated_at: new Date().toISOString(),
       }
@@ -743,9 +834,20 @@ export async function syncProposals(
         // Those stay null here and pick up their Zapier-fed values via the
         // partial-merge upsert. We intentionally do NOT write them as null.
         proposal_sent_by: pickStr(raw, "sender.name", "creator.name"),
+        created_by: pickStr(raw, "creator.name"),
         recurring_frequency: pickStr(raw, "contract_term"),
+        // Contract framing (migration 377): canonical term type, minimum
+        // length in months, and how/when the engagement starts and ends.
+        contract_term: pickStr(raw, "contract_term"),
+        minimum_contract_length: pickNum(raw, "minimum_contract_length"),
+        proposal_start_type: pickStr(raw, "proposal_start_type"),
+        proposal_start_date: pickDate(raw, "proposal_start_date"),
+        proposal_end_date: pickDate(raw, "proposal_end_date"),
+        external_client_id: pickStr(raw, "external_client_id"),
+        client_tags: pickStrArray(raw, "client_tags"),
         currency,
         signed_url: pickStr(raw, "pdf_url"),
+        ignition_url: pickStr(raw, "link"),
         amount,
         total_value: amount,
         sent_at: pickIso(raw, "sent_at"),
@@ -811,12 +913,36 @@ export async function syncInvoices(
           clientCandidate && knownClientIds.has(clientCandidate) ? clientCandidate : null,
         proposal_id: proposalId,
         invoice_number: pickStr(raw, "reference_number"),
+        reference: pickStr(raw, "reference"),
+        billing_reference: pickStr(raw, "billing_reference"),
         status: pickStr(raw, "state"),
+        // Payment lifecycle (migration 377): unpaid | partially_paid | paid,
+        // plus how/where/when the payment happened.
+        payment_state: pickStr(raw, "payment_state"),
+        payment_date: pickDate(raw, "payment_date"),
+        payment_method_type: pickStr(raw, "payment_method_type"),
+        payment_source: pickStr(raw, "payment_source"),
+        payment_reference: pickStr(raw, "payment_reference"),
         currency: pickStr(raw, "amount.currency"),
         amount: pickNum(raw, "amount.total"),
+        surcharge: pickNum(raw, "amount.surcharge"),
         invoice_date: pickDate(raw, "date"),
         due_date: pickDate(raw, "due_date"),
         paid_at: pickIso(raw, "payment.collection_date", "payment_date"),
+        // Line items + accounting-system deployment info, stored as JSONB —
+        // items[].origin_identifier links lines back to proposals/services.
+        items: Array.isArray(raw?.items) ? raw.items : null,
+        deployment:
+          raw?.deployment && typeof raw.deployment === "object" ? raw.deployment : null,
+        issued_by_name: pickStr(raw, "issued_by.name"),
+        issued_by_email: pickStr(raw, "issued_by.email"),
+        source: pickStr(raw, "source"),
+        memo: pickStr(raw, "memo"),
+        disbursal_id: pickStr(raw, "disbursal.id"),
+        disbursal_state: pickStr(raw, "disbursal.state"),
+        ignition_url: pickStr(raw, "link"),
+        ignition_created_at: pickIso(raw, "created_at"),
+        ignition_updated_at: pickIso(raw, "updated_at"),
         last_event_at: pickIso(raw, "updated_at", "date"),
         raw_payload: raw,
         updated_at: new Date().toISOString(),
@@ -867,21 +993,39 @@ export async function syncPayments(
       const clientCandidate = pickStr(raw, "client.slug")
       const amount = pickNum(raw, "amount.amount", "amount.total")
       const fee = pickNum(raw, "collection.fee_amount.amount", "collection.fee.amount")
+      // Every invoice slug linked to this payment — a payment can span
+      // multiple invoices, so the single-FK ignition_invoice_id column only
+      // captures the first. invoice_slugs keeps the complete set.
+      const invoiceSlugs = Array.isArray(raw?.invoices)
+        ? raw.invoices
+            .map((inv: any) => pickStr(inv, "slug"))
+            .filter((s: string | null): s is string => !!s)
+        : null
       return {
         ignition_payment_id: slug,
         ignition_client_id:
           clientCandidate && knownClientIds.has(clientCandidate) ? clientCandidate : null,
         ignition_invoice_id:
           invoiceSlug && knownInvoiceIds.has(invoiceSlug) ? invoiceSlug : null,
+        invoice_slugs: invoiceSlugs && invoiceSlugs.length > 0 ? invoiceSlugs : null,
         payment_status: pickStr(raw, "state", "collection.state"),
-        payment_method: null, // Ignition doesn't expose this on /reporting/payments.
+        // The collection object's `type` is the closest thing the Reporting
+        // API exposes to a payment method ("credit card" / "bank account").
+        payment_method: pickStr(raw, "collection.type"),
+        collection_type: pickStr(raw, "collection.type"),
         amount,
         // Stripe-style net = gross - fees. Only compute when we have both;
         // otherwise leave null and let the UI handle it.
         net_amount: amount != null && fee != null ? amount - fee : null,
         fees: fee,
+        surcharge: pickNum(raw, "amount.surcharge"),
         currency: pickStr(raw, "amount.currency"),
         paid_at: pickIso(raw, "collection.completed_at", "created_at"),
+        available_on: pickDate(raw, "available_on"),
+        disbursal_id: pickStr(raw, "disbursal.id"),
+        disbursal_state: pickStr(raw, "disbursal.state"),
+        ignition_url: pickStr(raw, "link"),
+        ignition_created_at: pickIso(raw, "created_at"),
         raw_payload: raw,
         updated_at: new Date().toISOString(),
       }
@@ -943,11 +1087,27 @@ export async function syncCollections(
           disbursalCandidate && knownDisbursalIds.has(disbursalCandidate)
             ? disbursalCandidate
             : null,
+        // Disbursal state/dates stored flat (migration 377) — even when the
+        // disbursal row itself isn't in ignition_disbursals (frozen archive),
+        // the payout status is preserved here.
+        disbursal_state: pickStr(raw, "disbursal.state"),
+        disbursal_submitted_date: pickDate(raw, "disbursal.submitted_date"),
+        disbursal_arrival_date: pickDate(raw, "disbursal.arrival_date"),
         client_name: pickStr(raw, "client.name"),
+        // Real join keys (migration 377) — previously only the free-text
+        // client name was kept, which made linking transactions to clients
+        // a fuzzy-match problem. The slug is exact.
+        client_slug: pickStr(raw, "client.slug"),
+        external_client_id: pickStr(raw, "client.external_client_id"),
+        invoice_slug: pickStr(raw, "invoice.slug"),
         client_email: null, // not provided on this endpoint
         invoice_number: pickStr(raw, "invoice.number"),
         proposal_name: null, // not provided directly; would require join
         service_name: null,
+        // Fee detail from the PaymentDetails object.
+        fee_description: pickStr(raw, "payment.fee_description"),
+        fee_invoice_date: pickDate(raw, "payment.fee_invoice_date"),
+        raw_payload: raw,
         updated_at: new Date().toISOString(),
       }
     },
