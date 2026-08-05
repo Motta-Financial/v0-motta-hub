@@ -29,6 +29,8 @@
  *   - 16 treats line 7 (capital gain distributions) + 3a as LTCG/qualified,
  *     which matches how those mapped inputs behave on real returns.
  *   - 19 ignores ODC (dep_odc not yet mappable) and the refundable ACTC.
+ *   - 27 approximates earned income by line 1z (SE earnings unmapped) and
+ *     cannot see full-time-student/disabled qualifying children 19+.
  *   - 23 covers NIIT + Additional Medicare only; NII treats line-7 losses
  *     as zero (slightly overstates), MAGI approximated by AGI, and
  *     Medicare wages come from W-2 box 5 cells (falls back to line 1a).
@@ -51,6 +53,7 @@ const DOB_CELL = { seriesId: "s1", prefixId: "p0", codeId: "c1000100010", suffix
 const DEP_CTC = { seriesId: "s2", codeId: "c1000200014", suffixId: "x1000" }
 const DEP_DOB_CODE = "c1000200002"
 const DEP_TYPE_CODE = "c1000200006"
+const DEP_EIC_CODE = "c1000200007"
 /**
  * Dependent "Type" enum (s2/c1000200006, read off the PTO dropdown
  * 2026-08-04): 1 = child living with taxpayer, 2 = child not living with
@@ -60,6 +63,8 @@ const DEP_TYPE_CODE = "c1000200006"
  * 1 and 2.
  */
 const CTC_ELIGIBLE_TYPES = new Set([1, 2])
+/** EIC qualifying child can also be Type 5 ("EIC only, not a dependent"). */
+const EIC_ELIGIBLE_TYPES = new Set([1, 2, 5])
 
 type StatusKey = "single" | "mfj" | "mfs" | "hoh"
 
@@ -243,35 +248,104 @@ export function estimateDeterministicLines(
     }
   }
 
+  // ── Dependent census (shared by stages 19, 27, 28) ──────────────────
+  // The credit flags are "1 = when applicable" preparer inputs, so
+  // eligibility is derived here: Type + age gates per credit.
+  const taxYear = lines[0]?.taxYear ?? 2025
+  const ctcDobFloor = new Date(`${taxYear - 16}-01-01T00:00:00Z`) // under 17 at 12/31
+  const eicDobFloor = new Date(`${taxYear - 18}-01-01T00:00:00Z`) // under 19 at 12/31
+  const deps = new Map<string, { ctcFlag?: number; eicFlag?: number; type?: number; dob?: Date }>()
+  for (const c of cells) {
+    if (c.seriesId !== "s2" || c.suffixId !== "x1000") continue
+    const d = deps.get(c.prefixId) ?? {}
+    if (c.codeId === DEP_CTC.codeId) d.ctcFlag = toNum(c.val)
+    if (c.codeId === DEP_EIC_CODE) d.eicFlag = toNum(c.val)
+    if (c.codeId === DEP_TYPE_CODE) d.type = toNum(c.val)
+    if (c.codeId === DEP_DOB_CODE && c.val) {
+      const parsed = new Date(String(c.val))
+      if (!Number.isNaN(parsed.getTime())) d.dob = parsed
+    }
+    deps.set(c.prefixId, d)
+  }
+  const ctcKids = [...deps.values()].filter(
+    (d) => d.ctcFlag === 1 && d.type !== undefined && CTC_ELIGIBLE_TYPES.has(d.type) && d.dob !== undefined && d.dob >= ctcDobFloor,
+  ).length
+  // EIC qualifying child: flag set, Type child (1/2) or EIC-only (5), and
+  // under 19 at year-end. Full-time students 19-23 and disabled children
+  // are invisible to us — undercounts those households (caveated).
+  const eicKids = Math.min(
+    3,
+    [...deps.values()].filter(
+      (d) => d.eicFlag === 1 && d.type !== undefined && EIC_ELIGIBLE_TYPES.has(d.type) && d.dob !== undefined && d.dob >= eicDobFloor,
+    ).length,
+  )
+
   // ── 19: child tax credit (nonrefundable, phaseout, limited to tax) ───
-  if (isEmpty("19")) {
+  // potentialCtc (post-phaseout, pre-tax-limit) is reused by stage 28.
+  let potentialCtc = 0
+  {
     const perChild = constNum(constants, "dependent_credit_ctc")
     const threshold = constNum(constants, fs === "mfj" ? "mfj_ctc_phaseout_start" : "other_ctc_phaseout_start")
-    // Per-instance eligibility: the c...14 flag means "when applicable",
-    // so gate on dependent Type (child) and age (< 17 at year-end).
-    const taxYear = lines[0]?.taxYear ?? 2025
-    const ctcDobFloor = new Date(`${taxYear - 16}-01-01T00:00:00Z`) // born on/after → under 17 at 12/31
-    const deps = new Map<string, { flag?: number; type?: number; dob?: Date }>()
-    for (const c of cells) {
-      if (c.seriesId !== "s2" || c.suffixId !== "x1000") continue
-      const d = deps.get(c.prefixId) ?? {}
-      if (c.codeId === DEP_CTC.codeId) d.flag = toNum(c.val)
-      if (c.codeId === DEP_TYPE_CODE) d.type = toNum(c.val)
-      if (c.codeId === DEP_DOB_CODE && c.val) {
-        const parsed = new Date(String(c.val))
-        if (!Number.isNaN(parsed.getTime())) d.dob = parsed
-      }
-      deps.set(c.prefixId, d)
-    }
-    const kids = [...deps.values()].filter(
-      (d) => d.flag === 1 && d.type !== undefined && CTC_ELIGIBLE_TYPES.has(d.type) && d.dob !== undefined && d.dob >= ctcDobFloor,
-    ).length
-    if (perChild !== null && threshold !== null && kids > 0) {
-      let ctc = perChild * kids
+    if (perChild !== null && threshold !== null && ctcKids > 0) {
+      let ctc = perChild * ctcKids
       const agi = num("11")
       if (agi > threshold) ctc -= Math.ceil((agi - threshold) / 1000) * 50
-      ctc = Math.max(0, ctc)
-      if (ctc > 0) setEstimate("19", Math.min(ctc, num("18")))
+      potentialCtc = Math.max(0, ctc)
+      if (isEmpty("19") && potentialCtc > 0) setEstimate("19", Math.min(potentialCtc, num("18")))
+    }
+  }
+
+  // ── 27: earned income credit (worksheet over the TY parameter table) ─
+  // MFS is generally ineligible (the separated-spouse exception is
+  // invisible to us). Earned income approximated by line 1z — SE earnings
+  // are unmapped, so self-employed households are not estimated correctly
+  // and simply fall out via the income limits in most cases.
+  if (isEmpty("27") && fs !== "mfs") {
+    const eic = constJson<{
+      rate: number[]
+      earnedAmount: number[]
+      maxCredit: number[]
+      phaseoutRate: number[]
+      phaseoutStart: number[]
+      phaseoutStartMfj: number[]
+      investmentIncomeLimit: number
+    }>(constants, "eic_params")
+    if (eic) {
+      const invIncome = Math.max(0, num("2a")) + Math.max(0, num("2b")) + Math.max(0, num("3b")) + Math.max(0, num("7"))
+      const earned = num("1z")
+      const agi = num("11")
+      // Childless claimants must be 25-64 at year-end (taxpayer DOB only;
+      // a qualifying spouse age is invisible).
+      let ageOk = true
+      if (eicKids === 0) {
+        const dobRaw = findCell(cells, DOB_CELL)?.val
+        const dob = dobRaw ? new Date(String(dobRaw)) : null
+        const age = dob && !Number.isNaN(dob.getTime()) ? taxYear - dob.getUTCFullYear() : null
+        ageOk = age !== null && age >= 25 && age <= 64
+      }
+      if (earned > 0 && invIncome <= eic.investmentIncomeLimit && ageOk) {
+        const i = eicKids
+        const plateau = Math.min(eic.rate[i] * Math.min(earned, eic.earnedAmount[i]), eic.maxCredit[i])
+        const start = (fs === "mfj" ? eic.phaseoutStartMfj : eic.phaseoutStart)[i]
+        const reduction = eic.phaseoutRate[i] * Math.max(0, Math.max(agi, earned) - start)
+        const credit = Math.max(0, plateau - reduction)
+        if (credit > 0) setEstimate("27", credit)
+      }
+    }
+  }
+
+  // ── 28: additional (refundable) child tax credit — Schedule 8812 ─────
+  // min(CTC not used against tax, per-child refundable cap, 15% of earned
+  // income over the threshold).
+  if (isEmpty("28") && potentialCtc > 0) {
+    const refundableCap = constNum(constants, "ctc_refundable_limit")
+    const earnedThreshold = constNum(constants, "earned_income_threshold_ctc")
+    if (refundableCap !== null && earnedThreshold !== null) {
+      const used = num("19")
+      const remaining = potentialCtc - used
+      const earned = num("1z")
+      const actc = Math.min(remaining, refundableCap * ctcKids, 0.15 * Math.max(0, earned - earnedThreshold))
+      if (actc > 0) setEstimate("28", actc)
     }
   }
 
