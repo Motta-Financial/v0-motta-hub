@@ -341,6 +341,7 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
                     zoom_meeting_id: String(rec.id),
                     topic: rec.topic ?? null,
                     start_time: rec.start_time ?? null,
+                    duration: typeof rec.duration === "number" ? rec.duration : null,
                     host_email: user.email ?? null,
                     team_member_id: attribution.teamMemberId,
                   },

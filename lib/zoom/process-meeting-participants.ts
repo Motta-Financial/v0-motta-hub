@@ -253,6 +253,7 @@ export async function processOneMeeting(
     topic?: string | null
     agenda?: string | null
     start_time?: string | null
+    duration?: number | null
     host_email?: string | null
     team_member_id?: string | null
     alfred_triage_at?: string | null
@@ -260,6 +261,23 @@ export async function processOneMeeting(
   result: ProcessResult,
 ): Promise<void> {
   if (!meeting.zoom_uuid) return
+
+  // Never process a meeting that hasn't plausibly ENDED. Zoom's
+  // /past_meetings endpoints 404 for future/ongoing meetings, and the
+  // 404 path below stamps the done-watermark — which permanently skips
+  // the meeting once it actually happens. Meetings sync into the Hub
+  // days ahead of their start, so without this guard the hourly sweeps
+  // burned every scheduled meeting's watermark before it ever ran
+  // (found 2026-08-05: 74 of 148 watermarks were stamped pre-end and
+  // zero participant rows had ever been written). Skip WITHOUT
+  // stamping so the sweep retries after the meeting ends.
+  if (meeting.start_time) {
+    const startMs = new Date(meeting.start_time).getTime()
+    const endedByMs = startMs + (meeting.duration ?? 60) * 60_000 + 10 * 60_000
+    if (Number.isFinite(startMs) && Date.now() < endedByMs) {
+      return
+    }
+  }
 
   // The participant fetch can fail for reasons that should NOT block the
   // rest of tagging: e.g. the S2S token is missing the
@@ -578,16 +596,21 @@ export async function processRecentZoomParticipants(
   const sinceIso = new Date(
     Date.now() - sinceDays * 24 * 60 * 60 * 1000,
   ).toISOString()
+  // Only meetings that plausibly ended — future/ongoing meetings 404 at
+  // the participants endpoint (processOneMeeting guards per-row against
+  // long meetings still running past this coarse cutoff).
+  const endedIso = new Date(Date.now() - 30 * 60 * 1000).toISOString()
 
   const { data: meetings, error } = await supabase
     .from("zoom_meetings")
     .select(
-      "id, zoom_uuid, zoom_meeting_id, start_time, topic, agenda, host_email, team_member_id, alfred_triage_at",
+      "id, zoom_uuid, zoom_meeting_id, start_time, duration, topic, agenda, host_email, team_member_id, alfred_triage_at",
     )
     .eq("zoom_connection_id", conn.id)
     .is("participants_processed_at", null)
     .not("zoom_uuid", "is", null)
     .gte("start_time", sinceIso)
+    .lt("start_time", endedIso)
     // Process oldest unprocessed first so a backlog drains in order
     // rather than starving the bottom of the queue.
     .order("start_time", { ascending: true })
