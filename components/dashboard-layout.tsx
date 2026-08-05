@@ -389,6 +389,7 @@ const navigation = [
             icon: Network,
           },
           { name: "Unlinked Records", href: "/admin/unlinked-records", icon: Link2 },
+          { name: "Contact Updates", href: "/admin/contact-updates", icon: ClipboardList },
           { name: "Broadcast", href: "/admin/broadcast", icon: Radio },
           { name: "Migrate Orgs", href: "/admin/migrate-orgs", icon: ArrowRightLeft },
           { name: "Work Statuses", href: "/admin/work-statuses", icon: ListChecks },
