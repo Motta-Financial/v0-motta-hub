@@ -354,6 +354,16 @@ async function runResource<T>(
   upsertBatch: (rows: T[]) => Promise<{ upserted: number; error?: string }>,
   mapRow: (raw: any) => T | null,
   options: ResourceSyncOptions = {},
+  // Per-resource query params merged onto every page request. Two critical
+  // uses discovered by probing the live API against the OpenAPI spec:
+  //   1. /reporting/invoices DEFAULTS date_from/date_to to the CURRENT
+  //      MONTH and /reporting/collections to the CURRENT WEEK — without an
+  //      explicit window, "full" backfills silently return only recent
+  //      rows (observed: 35 invoices instead of the full history).
+  //   2. Several endpoints exclude terminal states by default (archived
+  //      clients/proposals, deleted services, cancelled payments); a
+  //      second pass with an explicit `state` param pulls those in.
+  extraQuery: Record<string, string | undefined | null> = {},
 ): Promise<ResourceSyncResult> {
   const start = Date.now()
   const errors: string[] = []
@@ -364,7 +374,7 @@ async function runResource<T>(
 
   try {
     for await (const page of ignitionPaginate<any>(connection, supabase, path, {
-      query: { updated_from: options.updatedSince ?? undefined },
+      query: { updated_from: options.updatedSince ?? undefined, ...extraQuery },
     })) {
       pages += 1
       const pageData = page.data ?? []
@@ -402,6 +412,35 @@ async function runResource<T>(
   }
 }
 
+/** YYYY-MM-DD for the Ignition date-window params. */
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
+/** A date floor safely before any data this practice could have in Ignition
+ *  (Ignition itself launched in 2013). Used to widen the invoices /
+ *  collections report windows so full history comes back. */
+const DATE_FLOOR = "2013-01-01"
+
+/** Upper bound for the invoice-date window. Invoices can be future-dated
+ *  (scheduled billing), so "today" would clip them — pad by ~13 months. */
+function invoiceDateCeiling(): string {
+  return isoDay(new Date(Date.now() + 400 * 86_400_000))
+}
+
+/** Collapse multiple per-pass results (e.g. the default pass + an
+ *  archived-state pass) into a single per-resource result row. */
+function mergeResults(resource: ResourceName, parts: ResourceSyncResult[]): ResourceSyncResult {
+  return {
+    resource,
+    fetched: parts.reduce((s, r) => s + r.fetched, 0),
+    upserted: parts.reduce((s, r) => s + r.upserted, 0),
+    pages: parts.reduce((s, r) => s + r.pages, 0),
+    durationMs: parts.reduce((s, r) => s + r.durationMs, 0),
+    errors: parts.flatMap((r) => r.errors),
+  }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Per-resource sync functions.
  *
@@ -417,7 +456,8 @@ export async function syncClients(
   supabase: SupabaseClient,
   options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
-  return runResource(
+  const runPass = (extraQuery: Record<string, string> = {}) =>
+    runResource(
     "clients",
     connection,
     supabase,
@@ -470,7 +510,16 @@ export async function syncClients(
       }
     },
     options,
+    extraQuery,
   )
+
+  // The API EXCLUDES archived clients unless `state` is passed explicitly.
+  // On full backfills, run a second pass for them — archived clients still
+  // matter for the master mapping (their invoices/proposals reference them).
+  // Incremental ticks skip the extra pass to stay cheap.
+  const passes = [await runPass()]
+  if (!options.updatedSince) passes.push(await runPass({ state: "archived" }))
+  return mergeResults("clients", passes)
 }
 
 export async function syncContacts(
@@ -663,7 +712,8 @@ export async function syncServices(
   supabase: SupabaseClient,
   options: ResourceSyncOptions = {},
 ): Promise<ResourceSyncResult> {
-  return runResource(
+  const runPass = (extraQuery: Record<string, string> = {}) =>
+    runResource(
     "services",
     connection,
     supabase,
@@ -715,7 +765,14 @@ export async function syncServices(
       }
     },
     options,
+    extraQuery,
   )
+
+  // Deleted services are excluded by default; pull them on full backfills so
+  // historical proposal lines can still resolve their catalog service.
+  const passes = [await runPass()]
+  if (!options.updatedSince) passes.push(await runPass({ state: "deleted" }))
+  return mergeResults("services", passes)
 }
 
 export async function syncProposals(
@@ -741,7 +798,8 @@ export async function syncProposals(
     loadKnownIds(supabase, "ignition_services", "ignition_service_id"),
   ])
 
-  return runResource(
+  const runPass = (extraQuery: Record<string, string> = {}) =>
+    runResource(
     "proposals",
     connection,
     supabase,
@@ -866,7 +924,14 @@ export async function syncProposals(
       }
     },
     options,
+    extraQuery,
   )
+
+  // Archived proposals are excluded by default — pull them on full
+  // backfills so historical engagements stay queryable.
+  const passes = [await runPass()]
+  if (!options.updatedSince) passes.push(await runPass({ state: "archived" }))
+  return mergeResults("proposals", passes)
 }
 
 export async function syncInvoices(
@@ -883,6 +948,14 @@ export async function syncInvoices(
     loadKnownIds(supabase, "ignition_clients", "ignition_client_id"),
   ])
 
+  // CRITICAL: /reporting/invoices defaults its date window to the CURRENT
+  // MONTH ("date_from ... Defaults to beginning of current month"). Without
+  // an explicit window a "full" backfill only returns this month's invoices
+  // (observed live: 35 rows instead of years of history), and incremental
+  // ticks silently MISS updates to invoices dated in prior months (e.g. an
+  // old invoice getting paid). Verified live: the endpoint happily accepts
+  // a 2013→future window with normal cursor pagination. So we always widen
+  // the window; updated_from still bounds the volume on incremental ticks.
   return runResource(
     "invoices",
     connection,
@@ -949,6 +1022,7 @@ export async function syncInvoices(
       }
     },
     options,
+    { date_from: DATE_FLOOR, date_to: invoiceDateCeiling() },
   )
 }
 
@@ -965,7 +1039,8 @@ export async function syncPayments(
     loadKnownIds(supabase, "ignition_clients", "ignition_client_id"),
   ])
 
-  return runResource(
+  const runPass = (extraQuery: Record<string, string> = {}) =>
+    runResource(
     "payments",
     connection,
     supabase,
@@ -1031,7 +1106,14 @@ export async function syncPayments(
       }
     },
     options,
+    extraQuery,
   )
+
+  // Cancelled payments are excluded by default — pull them on full
+  // backfills so refund/cancellation history is complete.
+  const passes = [await runPass()]
+  if (!options.updatedSince) passes.push(await runPass({ state: "cancelled" }))
+  return mergeResults("payments", passes)
 }
 
 export async function syncCollections(
@@ -1051,6 +1133,25 @@ export async function syncCollections(
   // so we only set it when we already have that disbursal on disk — otherwise
   // the upsert would fail the entire batch.
   const knownDisbursalIds = await loadKnownIds(supabase, "ignition_disbursals", "disbursal_id")
+
+  // CRITICAL: /reporting/collections defaults its window to the CURRENT
+  // WEEK ("date_from ... Defaults to beginning of current week", date_to =
+  // date_from + 8 days) and — unlike the other endpoints — accepts NO
+  // updated_from param at all. Every previous run therefore only ever saw
+  // one week of transactions, silently discarding history (the live API
+  // holds transactions back to at least May 2025; the table had only the
+  // current week). Verified live: a multi-year window returns 200 with
+  // cursor pagination, it's just slower to build (~10-25s first page).
+  //   * Full backfill → whole-history window.
+  //   * Incremental tick → trailing 14 days (cheap, still catches
+  //     late-arriving/clawed-back transactions across week boundaries).
+  const today = new Date()
+  const collectionsWindow = options.updatedSince
+    ? {
+        date_from: isoDay(new Date(today.getTime() - 14 * 86_400_000)),
+        date_to: isoDay(new Date(today.getTime() + 86_400_000)),
+      }
+    : { date_from: DATE_FLOOR, date_to: isoDay(new Date(today.getTime() + 86_400_000)) }
 
   return runResource(
     "collections",
@@ -1112,6 +1213,7 @@ export async function syncCollections(
       }
     },
     options,
+    collectionsWindow,
   )
 }
 
