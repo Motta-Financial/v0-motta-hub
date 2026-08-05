@@ -14,12 +14,28 @@ function mapKarbonOrganizationToSupabase(org: any) {
   const primaryCard = businessCards.find((bc: any) => bc.IsPrimaryCard) || businessCards[0] || {}
 
   // ============================================
-  // POSTAL ADDRESSES from BusinessCard
+  // ADDRESSES from BusinessCard
+  // Karbon org cards use the same shape as contacts: `Addresses[]` with
+  // `Label` / `StateProvinceCounty` / `ZipCode` / `AddressLines`. The old
+  // `PostalAddresses` / `Type` / `StateProvince` names are kept as
+  // fallbacks for older stored payloads.
   // ============================================
-  const postalAddresses = Array.isArray(primaryCard.PostalAddresses) ? primaryCard.PostalAddresses : []
+  const rawAddresses = primaryCard.Addresses ?? primaryCard.PostalAddresses
+  const postalAddresses = Array.isArray(rawAddresses) ? rawAddresses : rawAddresses ? [rawAddresses] : []
+  const addressHasContent = (a: any): boolean =>
+    Boolean(
+      (a?.StateProvinceCounty ?? a?.StateProvince ?? a?.State) ||
+        a?.City ||
+        (a?.ZipCode ?? a?.PostCode ?? a?.PostalCode) ||
+        (typeof a?.AddressLines === "string" && a.AddressLines.trim()) ||
+        a?.AddressLine1 ||
+        a?.Street,
+    )
   const primaryAddress =
-    postalAddresses.find((a: any) => a.Type === "Physical" || a.Type === "Business" || a.IsPrimary) ||
-    postalAddresses[0] ||
+    postalAddresses.find(
+      (a: any) => (a.Label === "Physical" || a.Type === "Physical" || a.IsPrimary) && addressHasContent(a),
+    ) ||
+    postalAddresses.find(addressHasContent) ||
     {}
 
   // ============================================
@@ -121,12 +137,23 @@ function mapKarbonOrganizationToSupabase(org: any) {
     primary_email: typeof primaryEmail === "string" ? primaryEmail : null,
     phone: workPhone?.Number || null,
     website: typeof primaryWebsite === "string" ? primaryWebsite : null,
-    address_line1: primaryAddress.AddressLine1 || primaryAddress.Street || null,
-    address_line2: primaryAddress.AddressLine2 || null,
-    city: primaryAddress.City || null,
-    state: primaryAddress.StateProvince || primaryAddress.State || null,
-    zip_code: primaryAddress.PostCode || primaryAddress.PostalCode || primaryAddress.ZipCode || null,
-    country: primaryAddress.Country || null,
+    // Only included when Karbon has an address — unconditional nulls
+    // would clobber ProConnect-propagated or manually entered values.
+    ...(addressHasContent(primaryAddress)
+      ? {
+          address_line1:
+            (typeof primaryAddress.AddressLines === "string" && primaryAddress.AddressLines.trim()) ||
+            primaryAddress.AddressLine1 ||
+            primaryAddress.Street ||
+            null,
+          address_line2: primaryAddress.AddressLine2 || null,
+          city: primaryAddress.City || null,
+          state:
+            primaryAddress.StateProvinceCounty || primaryAddress.StateProvince || primaryAddress.State || null,
+          zip_code: primaryAddress.ZipCode || primaryAddress.PostCode || primaryAddress.PostalCode || null,
+          country: primaryAddress.CountryCode || primaryAddress.Country || null,
+        }
+      : {}),
     linkedin_url: linkedInUrl,
     twitter_handle: twitterHandle,
     facebook_url: facebookUrl,
@@ -316,14 +343,17 @@ export async function GET(request: NextRequest) {
       const ind = org.Industry || "Unknown"
       industries[ind] = (industries[ind] || 0) + 1
 
-      // Get address from BusinessCard if available
+      // Get address from BusinessCard if available (same Addresses[] shape
+      // as contacts — PostalAddresses kept as a legacy fallback).
       const businessCards = Array.isArray(org.BusinessCards) ? org.BusinessCards : []
       const primaryCard = businessCards.find((bc: any) => bc.IsPrimaryCard) || businessCards[0] || {}
-      const postalAddresses = Array.isArray(primaryCard.PostalAddresses) ? primaryCard.PostalAddresses : []
+      const rawAddrs = primaryCard.Addresses ?? primaryCard.PostalAddresses
+      const postalAddresses = Array.isArray(rawAddrs) ? rawAddrs : rawAddrs ? [rawAddrs] : []
       const primaryAddress = postalAddresses[0] || {}
 
-      const country = primaryAddress.Country || org.Country
-      const state = primaryAddress.StateProvince || primaryAddress.State || org.State
+      const country = primaryAddress.CountryCode || primaryAddress.Country || org.Country
+      const state =
+        primaryAddress.StateProvinceCounty || primaryAddress.StateProvince || primaryAddress.State || org.State
 
       if (country) countries.add(country)
       if (state) states.add(state)
