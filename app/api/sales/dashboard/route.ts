@@ -12,7 +12,7 @@ import {
   canonicalIdFor,
   getCanonicalService,
 } from "@/lib/sales/service-catalog"
-import { normalizeState } from "@/lib/sales/us-geo"
+import { normalizeState, US_STATE_NAMES } from "@/lib/sales/us-geo"
 import { chunk, fetchAllPaged } from "@/lib/supabase/fetch-all"
 
 /**
@@ -63,6 +63,9 @@ export async function GET(req: Request) {
   const managerFilter = sp.get("manager")?.split(",").filter(Boolean) ?? []
   const sentByFilter = sp.get("sentBy")?.split(",").filter(Boolean) ?? []
   const stateFilter = sp.get("state")?.split(",").filter(Boolean) ?? []
+  // Ignition client tags (migration 377) — OR-match; "(untagged)" selects
+  // proposals whose client carries no tags.
+  const clientTagFilter = sp.get("clientTag")?.split(",").filter(Boolean) ?? []
   const minValue = sp.get("minValue") ? Number(sp.get("minValue")) : null
   const maxValue = sp.get("maxValue") ? Number(sp.get("maxValue")) : null
   const search = sp.get("search")?.trim() || ""
@@ -84,7 +87,7 @@ export async function GET(req: Request) {
       .from("ignition_proposals")
       .select(
         `proposal_id, proposal_number, title, status, client_name, client_email,
-         organization_id, contact_id, ignition_client_id,
+         organization_id, contact_id, ignition_client_id, ignition_url, client_tags,
          total_value, one_time_total, recurring_total, recurring_frequency, currency,
          sent_at, accepted_at, completed_at, lost_at, lost_reason, archived_at,
          client_manager, client_partner, proposal_sent_by,
@@ -221,7 +224,23 @@ export async function GET(req: Request) {
   type EntityInfo = { state: string | null; city: string | null; country: string | null; name: string }
   const orgInfo = new Map<string, EntityInfo>()
   const contactInfo = new Map<string, EntityInfo>()
-  const igcInfo = new Map<string, { state: string | null; city: string | null; country: string | null }>()
+  const igcInfo = new Map<
+    string,
+    {
+      state: string | null
+      city: string | null
+      country: string | null
+      /**
+       * Org/contact links carried on the ignition_clients row itself.
+       * Proposals synced before the client was matched have null FKs of
+       * their own — falling back to these makes the dashboard self-heal
+       * as soon as the matcher links the client, without waiting for a
+       * proposal re-sync or another backfill migration.
+       */
+      organization_id: string | null
+      contact_id: string | null
+    }
+  >()
 
   // The id sets scale with proposal count (~1k each already), so chunk
   // every .in() list — a single unchunked list blows past PostgREST's
@@ -264,13 +283,23 @@ export async function GET(req: Request) {
     for (const ids of chunk(Array.from(igcIds))) {
       const { data: igcs } = await supabase
         .from("ignition_clients")
-        .select("ignition_client_id, state, city, country")
+        .select("ignition_client_id, state, city, country, organization_id, contact_id")
         .in("ignition_client_id", ids)
       for (const ig of igcs ?? []) {
+        // Since the Reporting API cutover, ignition_clients.state holds the
+        // LIFECYCLE state (lead/active/inactive/archived) — the Reporting
+        // API exposes no client address at all. normalizeState() passes
+        // unknown strings through as-is, so without the US_STATE_NAMES
+        // guard those lifecycle values would surface as bogus "ARCHIVED" /
+        // "LEAD" states in the filter list and map. Only the handful of
+        // legacy Zapier-era rows still carry a real address state.
+        const geoState = normalizeState(ig.state)
         igcInfo.set(ig.ignition_client_id, {
-          state: normalizeState(ig.state),
+          state: geoState && US_STATE_NAMES[geoState] ? geoState : null,
           city: ig.city,
           country: ig.country,
+          organization_id: ig.organization_id,
+          contact_id: ig.contact_id,
         })
       }
     }
@@ -300,6 +329,10 @@ export async function GET(req: Request) {
      */
     state_source: "organization" | "contact" | "ignition_client" | null
     ignition_client_id: string | null
+    /** Deep link into the Ignition app for this proposal (migration 377). */
+    ignition_url: string | null
+    /** Ignition client tags stamped on the proposal at sync time. */
+    client_tags: string[]
     total_value: number
     one_time_total: number
     recurring_total: number
@@ -345,14 +378,72 @@ export async function GET(req: Request) {
     }>
   }
 
+  // Second lookup pass for links that only exist on the ignition_clients
+  // row (proposal synced before its client was matched). We collect the
+  // extra org/contact ids and hydrate their names/states in one batch so
+  // the fallback rows render identically to directly-linked ones.
+  const fallbackOrgIds = new Set<string>()
+  const fallbackContactIds = new Set<string>()
+  for (const p of proposals ?? []) {
+    if (p.organization_id || p.contact_id || !p.ignition_client_id) continue
+    const igc = igcInfo.get(p.ignition_client_id)
+    if (igc?.organization_id && !orgInfo.has(igc.organization_id)) {
+      fallbackOrgIds.add(igc.organization_id)
+    } else if (igc?.contact_id && !contactInfo.has(igc.contact_id)) {
+      fallbackContactIds.add(igc.contact_id)
+    }
+  }
+  if (fallbackOrgIds.size) {
+    for (const ids of chunk(Array.from(fallbackOrgIds))) {
+      const { data: orgs } = await supabase
+        .from("organizations")
+        .select("id, name, state, city, country")
+        .in("id", ids)
+      for (const o of orgs ?? []) {
+        orgInfo.set(o.id, {
+          state: normalizeState(o.state),
+          city: o.city,
+          country: o.country,
+          name: o.name,
+        })
+      }
+    }
+  }
+  if (fallbackContactIds.size) {
+    for (const ids of chunk(Array.from(fallbackContactIds))) {
+      const { data: contacts } = await supabase
+        .from("contacts")
+        .select("id, full_name, state, city, country, mailing_state, mailing_city")
+        .in("id", ids)
+      for (const ct of contacts ?? []) {
+        contactInfo.set(ct.id, {
+          state: normalizeState(ct.state) ?? normalizeState(ct.mailing_state),
+          city: ct.city ?? ct.mailing_city,
+          country: ct.country,
+          name: ct.full_name,
+        })
+      }
+    }
+  }
+
   const enriched: EnrichedProposal[] = (proposals ?? []).map((p: any) => {
+    // Self-healing linkage: when the proposal row itself has no FK, fall
+    // back to the links on its ignition_clients row. Newly matched clients
+    // (auto-matcher or /admin/ignition) flow through on the next 15-min
+    // refresh without waiting for a proposal re-sync.
+    const igcLinks = p.ignition_client_id ? igcInfo.get(p.ignition_client_id) : null
+    const orgId: string | null =
+      p.organization_id ?? (p.contact_id ? null : igcLinks?.organization_id ?? null)
+    const contactId: string | null =
+      p.contact_id ?? (orgId ? null : igcLinks?.contact_id ?? null)
+
     const linked =
-      (p.organization_id && orgInfo.get(p.organization_id)) ||
-      (p.contact_id && contactInfo.get(p.contact_id)) ||
+      (orgId && orgInfo.get(orgId)) ||
+      (contactId && contactInfo.get(contactId)) ||
       null
-    const entity_kind: EnrichedProposal["entity_kind"] = p.organization_id
+    const entity_kind: EnrichedProposal["entity_kind"] = orgId
       ? "organization"
-      : p.contact_id
+      : contactId
       ? "contact"
       : null
 
@@ -361,14 +452,14 @@ export async function GET(req: Request) {
     // the value came from an editable CRM record (org/contact) or from a
     // read-only Ignition import (fallback) so the inline edit can target
     // the right table.
-    const igc = p.ignition_client_id ? igcInfo.get(p.ignition_client_id) : null
+    const igc = igcLinks
     let resolvedState: string | null = linked?.state ?? null
     let resolvedCity: string | null = linked?.city ?? null
     let resolvedCountry: string | null = linked?.country ?? null
     let stateSource: "organization" | "contact" | "ignition_client" | null = null
-    if (resolvedState && p.organization_id && linked === orgInfo.get(p.organization_id)) {
+    if (resolvedState && orgId && linked === orgInfo.get(orgId)) {
       stateSource = "organization"
-    } else if (resolvedState && p.contact_id && linked === contactInfo.get(p.contact_id)) {
+    } else if (resolvedState && contactId && linked === contactInfo.get(contactId)) {
       stateSource = "contact"
     }
     if (!resolvedState && igc?.state) {
@@ -421,14 +512,16 @@ export async function GET(req: Request) {
       client_name: p.client_name,
       client_email: p.client_email,
       client_display: linked?.name || p.client_name || "(Unknown)",
-      organization_id: p.organization_id,
-      contact_id: p.contact_id,
+      organization_id: orgId,
+      contact_id: contactId,
       entity_kind,
       state: resolvedState,
       city: resolvedCity,
       country: resolvedCountry,
       state_source: stateSource,
       ignition_client_id: p.ignition_client_id ?? null,
+      ignition_url: p.ignition_url ?? null,
+      client_tags: Array.isArray(p.client_tags) ? p.client_tags : [],
       total_value: totalValue,
       one_time_total: oneTime,
       recurring_total: recurring,
@@ -473,6 +566,13 @@ export async function GET(req: Request) {
       const st = p.state || "(unknown)"
       if (!stateFilter.includes(st)) return false
     }
+    if (clientTagFilter.length) {
+      const has =
+        p.client_tags.length === 0
+          ? clientTagFilter.includes("(untagged)")
+          : p.client_tags.some((t) => clientTagFilter.includes(t))
+      if (!has) return false
+    }
     if (minValue != null && p.total_value < minValue) return false
     if (maxValue != null && p.total_value > maxValue) return false
     if (lcSearch) {
@@ -505,6 +605,9 @@ export async function GET(req: Request) {
     new Set(enriched.map((p) => p.proposal_sent_by).filter(Boolean) as string[]),
   ).sort()
   const statuses = Array.from(new Set(enriched.map((p) => p.status))).sort()
+  const clientTags = Array.from(
+    new Set(enriched.flatMap((p) => p.client_tags)),
+  ).sort()
 
   // ── Service Line breakdown (only for accepted/completed proposals) ────
   const serviceLineMap = new Map<
@@ -862,6 +965,187 @@ export async function GET(req: Request) {
     topClients: topPayoutClients,
   }
 
+  // ── Invoice payment-state roll-up (migration 377 fields) ──────────────
+  // Scoped to Reporting-API rows only (payment_state is always set on
+  // them). The table also holds legacy `csv:`-prefixed import rows —
+  // including *scheduled future* billing placeholders out to 2028 — that
+  // would double-count the same real-world invoices and inflate "billed"
+  // with money that hasn't been invoiced yet. The API gives amount +
+  // payment_state but no paid/outstanding split, so outstanding is
+  // derived: unpaid/partially_paid invoices count their full amount.
+  // Voided invoices are excluded — they're cancellations, not revenue.
+  type InvoiceRow = {
+    payment_state: string | null
+    amount: number | null
+    due_date: string | null
+  }
+  const buildInvoicesQuery = () => {
+    let invQ = supabase
+      .from("ignition_invoices")
+      .select("payment_state, amount, due_date")
+      .is("voided_at", null)
+      .not("payment_state", "is", null)
+    if (startDate) invQ = invQ.gte("invoice_date", startDate)
+    if (endDate) invQ = invQ.lte("invoice_date", endDate)
+    return invQ
+  }
+  let invoiceRows: InvoiceRow[] = []
+  try {
+    invoiceRows = await fetchAllPaged<InvoiceRow>(buildInvoicesQuery)
+  } catch (invErr) {
+    // Same degrade-to-zeros contract as the payments query.
+    console.error("[sales-dashboard] invoices query failed:", invErr)
+  }
+
+  const todayIso = new Date().toISOString().slice(0, 10)
+  let invBilled = 0
+  let invCollected = 0
+  let invOutstanding = 0
+  let invOverdue = 0
+  let invOverdueCount = 0
+  const invByState = { paid: 0, partially_paid: 0, unpaid: 0 }
+  for (const inv of invoiceRows) {
+    const amount = Number(inv.amount) || 0
+    const ps = (inv.payment_state || "").toLowerCase()
+    invBilled += amount
+    if (ps === "paid") {
+      invCollected += amount
+    } else {
+      invOutstanding += amount
+      if (inv.due_date && inv.due_date < todayIso) {
+        invOverdue += amount
+        invOverdueCount += 1
+      }
+    }
+    if (ps === "paid" || ps === "partially_paid" || ps === "unpaid") {
+      invByState[ps as keyof typeof invByState] += 1
+    }
+  }
+  const invoiceSummary = {
+    count: invoiceRows.length,
+    billed: round2(invBilled),
+    collected: round2(invCollected),
+    outstanding: round2(invOutstanding),
+    overdue: round2(invOverdue),
+    overdueCount: invOverdueCount,
+    byPaymentState: invByState,
+  }
+
+  // ── Deals pipeline roll-up (ignition_deals, migration 377 fields) ─────
+  // The pre-proposal pipeline: open deals grouped by stage with Ignition's
+  // own stage win-likelihoods, so partners see what's brewing before a
+  // proposal even exists. Small table (~50 rows) so one unfiltered read is
+  // fine; deliberately NOT subject to the date-range filter because an
+  // open deal is "current state", not history.
+  type DealRow = {
+    ignition_deal_id: string
+    title: string | null
+    status: string | null
+    client_name: string | null
+    stage_name: string | null
+    stage_position: number | null
+    stage_win_likelihood: number | null
+    projected_value: number | null
+    value: number | null
+    owner_name: string | null
+    current_stage_started_at: string | null
+    ignition_url: string | null
+  }
+  let dealRows: DealRow[] = []
+  try {
+    const { data: deals } = await supabase
+      .from("ignition_deals")
+      .select(
+        "ignition_deal_id, title, status, client_name, stage_name, stage_position, stage_win_likelihood, projected_value, value, owner_name, current_stage_started_at, ignition_url",
+      )
+      .eq("status", "open")
+    dealRows = (deals ?? []) as DealRow[]
+  } catch (dealErr) {
+    // Degrade to an empty pipeline rather than failing the dashboard.
+    console.error("[sales-dashboard] deals query failed:", dealErr)
+  }
+
+  type DealStageBucket = {
+    stage: string
+    position: number
+    winLikelihood: number | null
+    count: number
+    projectedValue: number
+    /** projectedValue × the stage's win likelihood (0–1). */
+    weightedValue: number
+    deals: Array<{
+      ignition_deal_id: string
+      title: string | null
+      client_name: string | null
+      projected_value: number
+      owner_name: string | null
+      in_stage_since: string | null
+      ignition_url: string | null
+    }>
+  }
+  const dealStageMap = new Map<string, DealStageBucket>()
+  for (const d of dealRows) {
+    const stage = d.stage_name || "(no stage)"
+    // stage_win_likelihood arrives as either a 0–1 fraction or a percent
+    // depending on API vintage — normalize to a fraction.
+    const rawWl = d.stage_win_likelihood
+    const winLikelihood =
+      rawWl == null ? null : rawWl > 1 ? Number(rawWl) / 100 : Number(rawWl)
+    const projected = Number(d.projected_value ?? d.value) || 0
+    const bucket = dealStageMap.get(stage) ?? {
+      stage,
+      position: d.stage_position ?? 999,
+      winLikelihood,
+      count: 0,
+      projectedValue: 0,
+      weightedValue: 0,
+      deals: [],
+    }
+    bucket.count += 1
+    bucket.projectedValue += projected
+    bucket.weightedValue += projected * (winLikelihood ?? 0)
+    bucket.deals.push({
+      ignition_deal_id: d.ignition_deal_id,
+      title: d.title,
+      client_name: d.client_name,
+      projected_value: projected,
+      owner_name: d.owner_name,
+      in_stage_since: d.current_stage_started_at,
+      ignition_url: d.ignition_url,
+    })
+    dealStageMap.set(stage, bucket)
+  }
+  const dealStages = Array.from(dealStageMap.values())
+    .sort((a, b) => a.position - b.position)
+    .map((b) => ({
+      ...b,
+      projectedValue: round2(b.projectedValue),
+      weightedValue: round2(b.weightedValue),
+      deals: b.deals.sort((x, y) => y.projected_value - x.projected_value),
+    }))
+  const dealsSummary = {
+    openCount: dealRows.length,
+    projectedValue: round2(
+      dealStages.reduce((s, b) => s + b.projectedValue, 0),
+    ),
+    weightedValue: round2(dealStages.reduce((s, b) => s + b.weightedValue, 0)),
+    stages: dealStages,
+  }
+
+  // ── Client mapping coverage ────────────────────────────────────────────
+  // Surfaced in the dashboard header so a partner can see at a glance
+  // whether every proposal is attributed to a Hub client — and jump to
+  // /admin/ignition to fix the stragglers when not.
+  let linkedCount = 0
+  for (const p of enriched) {
+    if (p.organization_id || p.contact_id) linkedCount++
+  }
+  const clientCoverage = {
+    total: enriched.length,
+    linked: linkedCount,
+    unlinked: enriched.length - linkedCount,
+  }
+
   return NextResponse.json({
     proposals: filtered,
     totalUnfiltered: enriched.length,
@@ -871,6 +1155,7 @@ export async function GET(req: Request) {
       managers,
       sentBy: sentByList,
       statuses,
+      clientTags,
     },
     serviceLines,
     stateBreakdown,
@@ -883,5 +1168,18 @@ export async function GET(req: Request) {
     // proposals — see comment block above for why this comes from
     // ignition_payments rather than ignition_disbursals.
     payouts: payoutsSummary,
+    // Billed / collected / outstanding roll-up from ignition_invoices'
+    // payment-lifecycle fields, same window as the proposals.
+    invoiceSummary,
+    // Open pre-proposal pipeline from ignition_deals, grouped by stage
+    // with Ignition's stage win-likelihoods. Current-state snapshot —
+    // not subject to the date filter.
+    dealsSummary,
+    // How many proposals resolve to a Hub client (directly or via the
+    // ignition_clients fallback) — drives the header coverage indicator.
+    clientCoverage,
+    // Server clock at response time — the client renders this as the
+    // "Updated …" stamp so it reflects data freshness, not render time.
+    generatedAt: new Date().toISOString(),
   })
 }

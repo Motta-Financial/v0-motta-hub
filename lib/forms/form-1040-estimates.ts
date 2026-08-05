@@ -51,6 +51,7 @@ import {
   type Form1040Constant,
   type Form1040Data,
   type Form1040Line,
+  type MaskedValue,
 } from "./form-1040"
 
 const FS_CELL = { seriesId: "s1", prefixId: "p0", codeId: "c1000100036", suffixId: "x1000" }
@@ -100,10 +101,12 @@ function statusKey(code: number): StatusKey | null {
   }
 }
 
-function toNum(v: string | number | boolean | null | undefined): number {
+function toNum(v: string | number | boolean | MaskedValue | null | undefined): number {
   if (v === null || v === undefined) return 0
   if (typeof v === "number") return Number.isFinite(v) ? v : 0
   if (typeof v === "boolean") return v ? 1 : 0
+  // Masked placeholders (and any other object) carry no numeric meaning.
+  if (typeof v === "object") return 0
   const n = Number.parseFloat(String(v).replace(/[,$\s]/g, ""))
   return Number.isNaN(n) ? 0 : n
 }

@@ -58,6 +58,7 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Target,
 } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -137,6 +138,10 @@ interface Proposal {
   /** Where state came from — drives which table the inline editor writes to. */
   state_source: "organization" | "contact" | "ignition_client" | null
   ignition_client_id: string | null
+  /** Deep link to this proposal in the Ignition app (null on pre-377 rows). */
+  ignition_url: string | null
+  /** Ignition client tags stamped on the proposal at sync time. */
+  client_tags: string[]
   total_value: number
   one_time_total: number
   recurring_total: number
@@ -167,6 +172,8 @@ interface DashboardResponse {
     managers: string[]
     sentBy: string[]
     statuses: string[]
+    /** Ignition client tags seen across the proposal set. */
+    clientTags: string[]
   }
   serviceLines: ServiceLineData[]
   stateBreakdown: StateData[]
@@ -213,6 +220,52 @@ interface DashboardResponse {
       net: number
     }>
   }
+  /**
+   * Billed vs collected vs outstanding roll-up from the Ignition invoice
+   * payment-lifecycle fields (payment_state / amount_outstanding), scoped
+   * to the dashboard's date window. Voided invoices excluded.
+   */
+  invoiceSummary: {
+    count: number
+    billed: number
+    collected: number
+    outstanding: number
+    overdue: number
+    overdueCount: number
+    byPaymentState: { paid: number; partially_paid: number; unpaid: number }
+  }
+  /**
+   * Open pre-proposal pipeline from `ignition_deals`, grouped by stage
+   * with Ignition's own stage win-likelihoods (migration 377 fields).
+   * Current-state snapshot — not subject to the dashboard's date filter.
+   */
+  dealsSummary: {
+    openCount: number
+    projectedValue: number
+    /** Sum of projected value × stage win-likelihood. */
+    weightedValue: number
+    stages: Array<{
+      stage: string
+      position: number
+      winLikelihood: number | null
+      count: number
+      projectedValue: number
+      weightedValue: number
+      deals: Array<{
+        ignition_deal_id: string
+        title: string | null
+        client_name: string | null
+        projected_value: number
+        owner_name: string | null
+        in_stage_since: string | null
+        ignition_url: string | null
+      }>
+    }>
+  }
+  /** Proposal→Hub-client attribution coverage for the header indicator. */
+  clientCoverage: { total: number; linked: number; unlinked: number }
+  /** Server timestamp when this payload was computed. */
+  generatedAt: string
 }
 
 const fetcher = (url: string): Promise<DashboardResponse> =>
@@ -298,6 +351,9 @@ export function SalesDashboard() {
   const managerFilter = (searchParams.get("manager") || "").split(",").filter(Boolean)
   const sentByFilter = (searchParams.get("sentBy") || "").split(",").filter(Boolean)
   const stateFilter = (searchParams.get("state") || "").split(",").filter(Boolean)
+  const clientTagFilter = (searchParams.get("clientTag") || "")
+    .split(",")
+    .filter(Boolean)
   const minValue = searchParams.get("minValue") || ""
   const maxValue = searchParams.get("maxValue") || ""
   const search = searchParams.get("search") || ""
@@ -357,6 +413,7 @@ export function SalesDashboard() {
     if (managerFilter.length) sp.set("manager", managerFilter.join(","))
     if (sentByFilter.length) sp.set("sentBy", sentByFilter.join(","))
     if (stateFilter.length) sp.set("state", stateFilter.join(","))
+    if (clientTagFilter.length) sp.set("clientTag", clientTagFilter.join(","))
     if (minValue) sp.set("minValue", minValue)
     if (maxValue) sp.set("maxValue", maxValue)
     if (search) sp.set("search", search)
@@ -364,14 +421,22 @@ export function SalesDashboard() {
   }, [
     dateField, startDate, endDate,
     statusFilter.join(","), partnerFilter.join(","), managerFilter.join(","),
-    sentByFilter.join(","), stateFilter.join(","),
+    sentByFilter.join(","), stateFilter.join(","), clientTagFilter.join(","),
     minValue, maxValue, search,
   ])
 
   const { data, error, isLoading, mutate } = useSWR<DashboardResponse>(
     `/api/sales/dashboard?${queryString}`,
     fetcher,
-    { keepPreviousData: true },
+    {
+      keepPreviousData: true,
+      // Match the Ignition sync cadence (Vercel cron runs */15) so the
+      // dashboard picks up freshly-synced proposals/payments/invoices
+      // without anyone touching the Refresh button. Focus revalidation
+      // gives instant freshness when a partner tabs back in.
+      refreshInterval: 15 * 60 * 1000,
+      revalidateOnFocus: true,
+    },
   )
 
   const proposals = data?.proposals ?? []
@@ -625,7 +690,8 @@ export function SalesDashboard() {
 
   const activeFilterCount =
     statusFilter.length + partnerFilter.length + managerFilter.length +
-    sentByFilter.length + stateFilter.length + (minValue ? 1 : 0) + (maxValue ? 1 : 0) + (search ? 1 : 0)
+    sentByFilter.length + stateFilter.length + clientTagFilter.length +
+    (minValue ? 1 : 0) + (maxValue ? 1 : 0) + (search ? 1 : 0)
 
   const clearAllFilters = () => {
     const sp = new URLSearchParams()
@@ -646,8 +712,28 @@ export function SalesDashboard() {
             Won, in-flight, and lost proposals plus collected payouts across{" "}
             {fmtCount(data?.totalUnfiltered ?? 0)} active proposals
           </p>
+          {data?.clientCoverage ? (
+            <p className="text-xs text-stone-500 mt-0.5">
+              {data.clientCoverage.unlinked === 0 ? (
+                <>All {fmtCount(data.clientCoverage.total)} proposals linked to Hub clients</>
+              ) : (
+                <>
+                  {fmtCount(data.clientCoverage.linked)} of {fmtCount(data.clientCoverage.total)}{" "}
+                  proposals linked to Hub clients ·{" "}
+                  <Link href="/admin/ignition" className="underline hover:text-stone-800">
+                    match the remaining {fmtCount(data.clientCoverage.unlinked)}
+                  </Link>
+                </>
+              )}
+            </p>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
+          {data?.generatedAt ? (
+            <span className="text-xs text-stone-500">
+              Updated {format(parseISO(data.generatedAt), "h:mm a")} · refreshes every 15 min
+            </span>
+          ) : null}
           {activeFilterCount > 0 && (
             <Button variant="ghost" size="sm" onClick={clearAllFilters} className="text-stone-600">
               <X className="h-3.5 w-3.5 mr-1" />
@@ -745,6 +831,14 @@ export function SalesDashboard() {
               value={stateFilter}
               options={data?.dimensions?.states ?? []}
               onChange={(v) => setParam("state", v.length ? v.join(",") : null)}
+            />
+            <MultiSelectFilter
+              label="Tag"
+              // Ignition client tags synced by migration 377. "(untagged)"
+              // matches proposals whose client carries no tags at all.
+              value={clientTagFilter}
+              options={[...(data?.dimensions?.clientTags ?? []), "(untagged)"]}
+              onChange={(v) => setParam("clientTag", v.length ? v.join(",") : null)}
             />
             <MultiSelectFilter
               label="Partner"
@@ -855,7 +949,14 @@ export function SalesDashboard() {
       </div>
 
       {/* ── Payouts (collected cash from clients in the same window) ──── */}
-      <PayoutsSection payouts={data?.payouts} loading={isLoading} />
+      <PayoutsSection
+        payouts={data?.payouts}
+        invoices={data?.invoiceSummary}
+        loading={isLoading}
+      />
+
+      {/* ── Deals pipeline (pre-proposal, from ignition_deals) ────────── */}
+      <DealsPipelineSection deals={data?.dealsSummary} loading={isLoading} />
 
       {/* ── Service Line KPIs ─────────────────────────────────────────── */}
       <ServiceLineSection
@@ -1466,8 +1567,19 @@ function ProposalTable({
                       <tr key={p.proposal_id} className="hover:bg-stone-50/60 transition-colors">
                         <td className="px-4 py-2.5">
                           <div className="flex flex-col">
-                            <span className="font-medium text-stone-900 text-xs">
+                            <span className="font-medium text-stone-900 text-xs inline-flex items-center gap-1">
                               {p.proposal_number || "(unnumbered)"}
+                              {p.ignition_url ? (
+                                <a
+                                  href={p.ignition_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="Open in Ignition"
+                                  className="text-stone-400 hover:text-stone-700"
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                </a>
+                              ) : null}
                             </span>
                             <span className="text-stone-500 text-[11px] truncate max-w-[260px]">
                               {p.title || "—"}
@@ -2050,9 +2162,11 @@ void Cell
 // days" they see proposals AND collections for the same window.
 function PayoutsSection({
   payouts,
+  invoices,
   loading,
 }: {
   payouts: DashboardResponse["payouts"] | undefined
+  invoices: DashboardResponse["invoiceSummary"] | undefined
   loading: boolean
 }) {
   if (loading || !payouts) {
@@ -2136,6 +2250,46 @@ function PayoutsSection({
                 }
               />
             </div>
+
+            {/* Invoice payment-lifecycle tiles (billed vs outstanding).
+                Sourced from ignition_invoices' payment_state /
+                amount_outstanding fields for the same date window, so
+                partners see A/R next to collections. */}
+            {invoices && invoices.count > 0 ? (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <PayoutTile
+                  icon={<FileText className="h-4 w-4" />}
+                  label="Invoiced"
+                  value={fmtMoney(invoices.billed)}
+                  sub={`${fmtCount(invoices.count)} invoices`}
+                />
+                <PayoutTile
+                  icon={<Banknote className="h-4 w-4" />}
+                  label="Invoices paid"
+                  value={fmtCount(invoices.byPaymentState.paid)}
+                  sub={
+                    invoices.byPaymentState.partially_paid > 0
+                      ? `+ ${fmtCount(invoices.byPaymentState.partially_paid)} partially paid`
+                      : `${fmtCount(invoices.byPaymentState.unpaid)} unpaid`
+                  }
+                  tone="emerald"
+                />
+                <PayoutTile
+                  icon={<Hourglass className="h-4 w-4" />}
+                  label="Outstanding"
+                  value={fmtMoney(invoices.outstanding)}
+                  sub={`${fmtCount(invoices.byPaymentState.unpaid + invoices.byPaymentState.partially_paid)} open invoices`}
+                  tone="amber"
+                />
+                <PayoutTile
+                  icon={<XCircle className="h-4 w-4" />}
+                  label="Overdue"
+                  value={fmtMoney(invoices.overdue)}
+                  sub={`${fmtCount(invoices.overdueCount)} past due date`}
+                  tone={invoices.overdue > 0 ? "rose" : undefined}
+                />
+              </div>
+            ) : null}
 
             {/* Trend + Top clients */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -2288,5 +2442,138 @@ function PayoutTile({
         <div className="text-[11px] text-stone-500 mt-0.5 truncate">{sub}</div>
       ) : null}
     </div>
+  )
+}
+
+// ── Deals Pipeline Section ───────────────────────────────────────────────
+// Pre-proposal pipeline from `ignition_deals` (synced by the Reporting
+// API, migration 377). Shows open deals grouped by stage with Ignition's
+// own stage win-likelihoods — the part of the funnel that exists BEFORE
+// a proposal is drafted, which no other Hub surface displayed until now.
+// Current-state snapshot: the dashboard's date filter deliberately does
+// not apply.
+function DealsPipelineSection({
+  deals,
+  loading,
+}: {
+  deals: DashboardResponse["dealsSummary"] | undefined
+  loading: boolean
+}) {
+  if (loading && !deals) {
+    return <Skeleton className="h-[160px]" />
+  }
+  if (!deals) return null
+
+  const maxStageValue = Math.max(
+    1,
+    ...deals.stages.map((s) => s.projectedValue),
+  )
+  // Top open deals across all stages — the ones worth chasing this week.
+  const topDeals = deals.stages
+    .flatMap((s) =>
+      s.deals.map((d) => ({ ...d, stage: s.stage, winLikelihood: s.winLikelihood })),
+    )
+    .sort((a, b) => b.projected_value - a.projected_value)
+    .slice(0, 5)
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <Target className="h-4 w-4 text-stone-500" />
+          <h3 className="text-sm font-semibold text-stone-900">Deals pipeline</h3>
+          <span className="text-xs text-stone-500">
+            pre-proposal · current snapshot (date filter does not apply)
+          </span>
+          <span className="ml-auto text-xs text-stone-500">
+            {fmtCount(deals.openCount)} open · {fmtMoney(deals.projectedValue)} projected ·{" "}
+            {fmtMoney(deals.weightedValue)} win-likelihood weighted
+          </span>
+        </div>
+
+        {deals.openCount === 0 ? (
+          <div className="py-6 text-center text-sm text-stone-500">
+            No open deals in the Ignition pipeline right now.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Stage breakdown */}
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-stone-500 font-medium mb-2">
+                By stage
+              </div>
+              <ul className="flex flex-col gap-2">
+                {deals.stages.map((s) => (
+                  <li key={s.stage} className="text-sm">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="font-medium text-stone-800">
+                        {s.stage}
+                        {s.winLikelihood != null ? (
+                          <span className="ml-1.5 text-[10px] text-stone-500 font-normal">
+                            {fmtPct(s.winLikelihood)} win likelihood
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="tabular-nums text-stone-700 whitespace-nowrap">
+                        {fmtCount(s.count)} · {fmtMoneyCompact(s.projectedValue)}
+                      </span>
+                    </div>
+                    <div className="h-1.5 mt-1 rounded bg-stone-100 overflow-hidden">
+                      <div
+                        className="h-full rounded bg-blue-600"
+                        style={{
+                          width: `${Math.max(2, (s.projectedValue / maxStageValue) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Top open deals */}
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-stone-500 font-medium mb-2">
+                Largest open deals
+              </div>
+              {topDeals.length === 0 ? (
+                <div className="text-sm text-stone-500">No valued deals yet.</div>
+              ) : (
+                <ul className="divide-y divide-stone-100">
+                  {topDeals.map((d) => (
+                    <li key={d.ignition_deal_id} className="flex items-center gap-2 py-1.5 text-sm">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-stone-900 truncate">
+                          {d.title || d.client_name || "(untitled deal)"}
+                          {d.ignition_url ? (
+                            <a
+                              href={d.ignition_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex align-middle ml-1 text-stone-400 hover:text-stone-900"
+                              title="Open deal in Ignition"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          ) : null}
+                        </div>
+                        <div className="text-xs text-stone-500 truncate">
+                          {[d.client_name, d.stage, d.owner_name]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </div>
+                      </div>
+                      <div className="tabular-nums text-blue-700 font-semibold whitespace-nowrap">
+                        {fmtMoneyCompact(d.projected_value)}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }

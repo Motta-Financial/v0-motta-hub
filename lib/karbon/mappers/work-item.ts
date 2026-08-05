@@ -30,6 +30,10 @@ export function mapKarbonWorkItemToSupabase(item: any) {
     client_group_name: item.RelatedClientGroupName || null,
     assignee_key: item.AssigneeKey || null,
     assignee_name: item.AssigneeName || null,
+    assignee_email: item.AssigneeEmailAddress || null,
+    // The CLIENT's user-assigned identifier as carried on the work item —
+    // distinct from the work item's own UserDefinedIdentifier below.
+    client_user_defined_identifier: item.ClientUserDefinedIdentifier || null,
     client_manager_key: item.ClientManagerKey || null,
     client_manager_name: item.ClientManagerName || null,
     client_partner_key: item.ClientPartnerKey || null,
@@ -46,6 +50,9 @@ export function mapKarbonWorkItemToSupabase(item: any) {
     user_defined_identifier: item.UserDefinedIdentifier || null,
     start_date: item.StartDate ? String(item.StartDate).split("T")[0] : null,
     due_date: item.DueDate ? String(item.DueDate).split("T")[0] : null,
+    // Karbon's hard deadline — a separate field from DueDate.
+    deadline_date: item.DeadlineDate ? String(item.DeadlineDate).split("T")[0] : null,
+    todo_period: item.ToDoPeriod || null,
     completed_date: item.CompletedDate ? String(item.CompletedDate).split("T")[0] : null,
     year_end: item.YearEnd ? String(item.YearEnd).split("T")[0] : null,
     tax_year: parseTaxYear(item),
@@ -64,6 +71,8 @@ export function mapKarbonWorkItemToSupabase(item: any) {
     extension_date: item.ExtensionDate ? String(item.ExtensionDate).split("T")[0] : null,
     work_template_key: item.WorkTemplateKey || null,
     work_template_name: item.WorkTemplateTitle || item.WorkTemplateTile || null,
+    // Recurring work schedule that generated this item.
+    work_schedule_key: item.WorkScheduleKey || null,
     fee_type: feeSettings.FeeType || null,
     estimated_fee: feeSettings.FeeValue || null,
     fixed_fee_amount: feeSettings.FeeType === "Fixed" ? feeSettings.FeeValue : null,

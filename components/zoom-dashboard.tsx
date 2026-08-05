@@ -44,6 +44,7 @@ import {
   type ZoomMeetingForTagging,
 } from "@/components/zoom/zoom-meeting-tag-dialog"
 import { RecordingsLibrary } from "@/components/zoom/recordings-library"
+import { ZoomContactsPanel } from "@/components/zoom/zoom-contacts-panel"
 import { Tag, TagIcon, AlertTriangle } from "lucide-react"
 
 interface ZoomConnection {
@@ -148,7 +149,9 @@ export function ZoomDashboard() {
   // reachable via cron / curl; this exposes it to admins from the UI.
   const [syncingAccount, setSyncingAccount] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [activeTab, setActiveTab] = useState("meetings")
+  // Recordings is the default landing tab — every meeting is recorded, so
+  // the library is what people come here for. Meetings/Calls follow.
+  const [activeTab, setActiveTab] = useState("recordings")
   const [viewMode, setViewMode] = useState<"schedule" | "byHost">("schedule")
   const [showSettings, setShowSettings] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -949,13 +952,17 @@ export function ZoomDashboard() {
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
+          <TabsTrigger value="recordings">
+            <FileVideo className="h-4 w-4 mr-2" />
+            Recordings
+          </TabsTrigger>
           <TabsTrigger value="meetings">
             <Video className="h-4 w-4 mr-2" />
             Meetings ({filteredMeetings.length})
           </TabsTrigger>
-          <TabsTrigger value="recordings">
-            <FileVideo className="h-4 w-4 mr-2" />
-            Recordings
+          <TabsTrigger value="contacts">
+            <Users className="h-4 w-4 mr-2" />
+            Zoom Contacts
           </TabsTrigger>
           <TabsTrigger value="calls">
             <Phone className="h-4 w-4 mr-2" />
@@ -1246,6 +1253,13 @@ export function ZoomDashboard() {
             }
             refreshKey={recordingsRefreshKey}
           />
+        </TabsContent>
+
+        {/* Zoom Contacts Tab — the synced Team Chat directory with its
+            Hub contact links. Sync runs hourly via the link sweep; the
+            tab exposes a manual "Sync now" for admins. */}
+        <TabsContent value="contacts" className="space-y-4">
+          <ZoomContactsPanel searchQuery={searchQuery} />
         </TabsContent>
 
         {/* Call History Tab */}

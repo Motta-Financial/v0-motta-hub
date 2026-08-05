@@ -21,7 +21,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { getS2SAccessToken, listAllZoomUsers, s2sFetch, isS2SConfigured } from "./s2s-auth"
-import { ingestRecordingFiles, type ZoomRecordingFile } from "./ingest-recording-files"
+import { ingestRecordingFiles, mergeBlobLinks, type ZoomRecordingFile } from "./ingest-recording-files"
 import { processOneMeeting, type ProcessResult } from "./process-meeting-participants"
 
 export interface AccountSyncOptions {
@@ -50,6 +50,14 @@ export interface AccountSyncOptions {
   tagParticipants?: boolean
   /** Limit to a single Zoom user id / email (debugging). */
   onlyUser?: string
+  /**
+   * Stop after copying this many media files and return early with
+   * `stoppedEarly: true`. Bounds per-invocation memory/time — sustained
+   * GB-scale copying accumulates until the function is OOM-killed, so
+   * batch drivers should cap each invocation and call again until
+   * `mediaCopied` comes back 0.
+   */
+  maxMediaCopies?: number
 }
 
 export interface AccountSyncResult {
@@ -59,11 +67,14 @@ export interface AccountSyncResult {
   transcriptsParsed: number
   transcriptsFailed: number
   mediaCopied: number
+  mediaFailed: number
   meetingsTagged: number
   clientLinksWritten: number
   errors: string[]
   /** The date windows that were scanned (echoed back for observability). */
   windows: Array<{ from: string; to: string }>
+  /** True when the run hit `maxMediaCopies` and exited before finishing. */
+  stoppedEarly?: boolean
 }
 
 function ymd(d: Date): string {
@@ -138,6 +149,7 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
   const { supabase } = opts
   const months = Math.max(1, Math.min(opts.months ?? 6, 24))
   const includeMedia = opts.includeMedia === true
+  const maxMediaCopies = opts.maxMediaCopies ?? Number.POSITIVE_INFINITY
   const tagParticipants = opts.tagParticipants !== false
   const windows = buildWindows(months, opts.from, opts.to)
 
@@ -148,6 +160,7 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
     transcriptsParsed: 0,
     transcriptsFailed: 0,
     mediaCopied: 0,
+    mediaFailed: 0,
     meetingsTagged: 0,
     clientLinksWritten: 0,
     errors: [],
@@ -217,7 +230,17 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
           if (recs.length > 0) userHadRecordings = true
 
           for (const rec of recs) {
-            const files = (rec.recording_files ?? []) as ZoomRecordingFile[]
+            // Merge blob links from the prior row — Zoom's payload never has
+            // them, and overwriting them forces a full media re-copy.
+            const { data: prior } = await supabase
+              .from("zoom_recordings")
+              .select("recording_files")
+              .eq("zoom_uuid", rec.uuid)
+              .maybeSingle()
+            const files = mergeBlobLinks(
+              (rec.recording_files ?? []) as ZoomRecordingFile[],
+              prior?.recording_files as ZoomRecordingFile[] | null,
+            )
 
             const { data: upserted, error: recErr } = await supabase
               .from("zoom_recordings")
@@ -232,6 +255,12 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
                   recording_count: rec.recording_count ?? files.length,
                   recording_files: files,
                   share_url: rec.share_url ?? null,
+                  zoom_host_id: rec.host_id ?? user.id ?? null,
+                  host_email: user.email ?? null,
+                  meeting_type: typeof rec.type === "number" ? rec.type : null,
+                  timezone: rec.timezone || null,
+                  zoom_account_id: rec.account_id ?? null,
+                  recording_play_passcode: rec.recording_play_passcode ?? null,
                   team_member_id: attribution.teamMemberId,
                   zoom_connection_id: attribution.connectionId,
                   raw_data: rec,
@@ -312,6 +341,7 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
                     zoom_meeting_id: String(rec.id),
                     topic: rec.topic ?? null,
                     start_time: rec.start_time ?? null,
+                    duration: typeof rec.duration === "number" ? rec.duration : null,
                     host_email: user.email ?? null,
                     team_member_id: attribution.teamMemberId,
                   },
@@ -360,12 +390,19 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
             result.transcriptsParsed += ingest.transcriptsParsed
             result.transcriptsFailed += ingest.transcriptsFailed
             result.mediaCopied += ingest.mediaCopied
+            result.mediaFailed += ingest.mediaFailed
 
             if (ingest.mediaCopied > 0) {
               await supabase
                 .from("zoom_recordings")
                 .update({ recording_files: ingest.updatedFiles, updated_at: new Date().toISOString() })
                 .eq("zoom_uuid", rec.uuid)
+            }
+
+            if (result.mediaCopied >= maxMediaCopies) {
+              result.stoppedEarly = true
+              if (userHadRecordings) result.usersWithRecordings++
+              return result
             }
           }
 

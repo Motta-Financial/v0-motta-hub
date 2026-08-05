@@ -3,31 +3,50 @@
 **What this is for:** Intuit doesn't publish which internal field code maps to which
 1040 line, so the Hub's 1040 viewer can't fill itself in yet. The sanctioned
 workaround (per Steve at Intuit) is to type known "sentinel" dollar amounts into a
-dummy return in ProConnect, re-export it through the API, and see which internal
-field each amount landed in. Each value below is unique, so wherever it shows up
-in the export tells us exactly which field feeds which 1040 line.
+dedicated test return in ProConnect, re-export it through the API, and see which
+internal field each amount landed in. Each value below is unique, so wherever it
+shows up in the export tells us exactly which field feeds which 1040 line.
 
 **Time needed:** ~20–30 minutes of normal PTO data entry.
 
 ## Safety rules (non-negotiable)
 
-- Work ONLY in the dummy client **"Test Return, Financial Analysis"** — never a
-  real client's return.
+- Work ONLY in the sentinel return **"SENTINEL TEST — DO NOT FILE"** — never a
+  real client's live return.
 - Do NOT open Return actions → Customer Support Tools → Batch Edit Data to make
   edits. (Browsing it is fine; its Edit button is support-only.)
 - Ignore every diagnostic/critical warning on this return — it will never be filed.
 
-## Step 1 — Create the return, then STOP
+## Step 1 — Open the sentinel return, then STOP
 
-Create a **2025 Individual (1040)** return on the client
-"Test Return, Financial Analysis":
+Use the existing return **"SENTINEL TEST — DO NOT FILE"** (engagement
+`de74b2b2`). It's a copy of a real 2025 1040 with the state module removed, and
+it's where every labeling round since round 1 (2026-07-30) and the
+conditional-mapping verification have run.
 
-- Filing status **Single**, any obviously fake SSN, taxpayer info can stay as-is.
-- **Do not attach any state.** (State modules copy federal amounts and pollute
-  the diff.)
+The return already carries prior-round state — leave these as-is, don't "fix"
+them:
 
-Then **tell Sam the return exists before entering any amounts** — we take a
-"before" snapshot first. Sam will give the go-ahead.
+- Filing status **Head of Household**
+- Digital-assets question answered **Yes**
+- First dependent **"SENTINEL DEPSON"** (DOB 2007, Type 1)
+- Sentinel routing/account numbers in the direct-deposit (refund) screen
+
+**If a brand-new sentinel return is ever needed**, don't build one from
+scratch — copy an existing real 2025 1040 (the copy approach was Micaela's, and
+it works as long as you follow both rules):
+
+1. **Remove the state module immediately.** (State copies federal amounts and
+   pollutes the diff.)
+2. Enter sentinels only into **FIRST-instance forms** (the first W-2, first
+   1099-INT, etc. — except where a step below explicitly asks for a second
+   instance).
+
+Rename the copy so it can't be mistaken for a live return (e.g. "SENTINEL
+TEST — DO NOT FILE").
+
+Then **tell Sam which return you're using before entering any amounts** — we
+take a "before" snapshot first. Sam will give the go-ahead.
 
 ## Step 2 — Enter these exact amounts
 

@@ -42,6 +42,10 @@ export async function GET(req: Request) {
   const search = (sp.get("search") || "").trim().toLowerCase()
   const category = sp.get("category") || ""
   const billingType = sp.get("billingType") || ""
+  // Ignition pricing model (migration 377): fixed | unit | included |
+  // minimum | range. Filters catalog rows directly; canonical rows match
+  // when ANY of their catalog variants uses one of the selected types.
+  const priceType = sp.get("priceType") || ""
   const serviceLineParam = sp.get("serviceLine") || ""
   const activeOnly = sp.get("activeOnly") === "true"
   const sortBy = sp.get("sortBy") || "totalRevenue"
@@ -56,7 +60,7 @@ export async function GET(req: Request) {
     supabase
       .from("ignition_services")
       .select(
-        "ignition_service_id, name, description, category, billing_type, default_price, currency, is_active, created_at, updated_at",
+        "ignition_service_id, name, description, category, billing_type, default_price, currency, is_active, created_at, updated_at, state, price_type, billing_mode, unit_name, min_price, max_price, tax_rate, service_origin, ignition_url",
       ),
     // Both tables exceed (or will imminently exceed) PostgREST's 1,000-row
     // cap, so page through them — an unbounded select silently truncates.
@@ -209,6 +213,16 @@ export async function GET(req: Request) {
       is_active: s.is_active,
       created_at: s.created_at,
       updated_at: s.updated_at,
+      // Full Ignition pricing model + lifecycle (migration 377).
+      state: s.state ?? null,
+      price_type: s.price_type ?? null,
+      billing_mode: s.billing_mode ?? null,
+      unit_name: s.unit_name ?? null,
+      min_price: s.min_price !== null && s.min_price !== undefined ? Number(s.min_price) : null,
+      max_price: s.max_price !== null && s.max_price !== undefined ? Number(s.max_price) : null,
+      tax_rate: s.tax_rate ?? null,
+      service_origin: s.service_origin ?? null,
+      ignition_url: s.ignition_url ?? null,
       proposalCount: agg?.proposalCount || 0,
       acceptedCount: agg?.acceptedCount || 0,
       lostCount: agg?.lostCount || 0,
@@ -244,6 +258,13 @@ export async function GET(req: Request) {
       is_active: boolean
       category: string | null
       billing_type: string | null
+      state: string | null
+      price_type: string | null
+      billing_mode: string | null
+      unit_name: string | null
+      min_price: number | null
+      max_price: number | null
+      ignition_url: string | null
     }>
     /**
      * Proposal-line names seen under this canonical id, with the count
@@ -338,6 +359,13 @@ export async function GET(req: Request) {
       is_active: row.is_active,
       category: row.category,
       billing_type: row.billing_type,
+      state: row.state,
+      price_type: row.price_type,
+      billing_mode: row.billing_mode,
+      unit_name: row.unit_name,
+      min_price: row.min_price,
+      max_price: row.max_price,
+      ignition_url: row.ignition_url,
     })
     target.catalogCount += 1
     if (row.is_active) target.isActive = true
@@ -423,6 +451,7 @@ export async function GET(req: Request) {
   const serviceLineList = serviceLineParam.split(",").filter(Boolean) as ServiceLine[]
   const categoryList = category.split(",").filter(Boolean)
   const billingTypeList = billingType.split(",").filter(Boolean)
+  const priceTypeList = priceType.split(",").filter(Boolean)
 
   function applyCommonFilters<T extends {
     serviceLine: ServiceLine
@@ -480,6 +509,16 @@ export async function GET(req: Request) {
       s.billingTypes.some((b) => billingTypeList.includes(b)),
     )
   }
+  if (priceTypeList.length) {
+    filteredCatalog = filteredCatalog.filter(
+      (s) => s.price_type && priceTypeList.includes(s.price_type),
+    )
+    filteredCanonical = filteredCanonical.filter((s) =>
+      s.catalogVariants.some(
+        (v) => v.price_type && priceTypeList.includes(v.price_type),
+      ),
+    )
+  }
   filteredCatalog = applyCommonFilters(filteredCatalog)
   filteredCanonical = applyCommonFilters(filteredCanonical)
 
@@ -517,6 +556,7 @@ export async function GET(req: Request) {
   const dimensions = {
     categories: uniqueSorted(catalogRows.map((s) => s.category)),
     billingTypes: uniqueSorted(catalogRows.map((s) => s.billing_type)),
+    priceTypes: uniqueSorted(catalogRows.map((s) => s.price_type)),
     serviceLines: ["Tax", "Accounting", "Advisory", "Other"] as ServiceLine[],
   }
 

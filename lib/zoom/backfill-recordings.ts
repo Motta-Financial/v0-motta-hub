@@ -15,7 +15,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { getActiveZoomConnections, zoomFetch, type ZoomConnection } from "@/lib/zoom-auth"
-import { ingestRecordingFiles, type ZoomRecordingFile } from "./ingest-recording-files"
+import { ingestRecordingFiles, mergeBlobLinks, type ZoomRecordingFile } from "./ingest-recording-files"
 
 export interface BackfillOptions {
   supabase: SupabaseClient
@@ -31,6 +31,7 @@ export interface BackfillResult {
   transcriptsParsed: number
   transcriptsFailed: number
   mediaCopied: number
+  mediaFailed: number
   errors: string[]
 }
 
@@ -49,6 +50,7 @@ export async function backfillZoomRecordings(opts: BackfillOptions): Promise<Bac
     transcriptsParsed: 0,
     transcriptsFailed: 0,
     mediaCopied: 0,
+    mediaFailed: 0,
     errors: [],
   }
 
@@ -97,7 +99,17 @@ export async function backfillZoomRecordings(opts: BackfillOptions): Promise<Bac
           const recs = data.meetings ?? []
 
           for (const rec of recs) {
-            const files = (rec.recording_files ?? []) as ZoomRecordingFile[]
+            // Merge blob links from the prior row — Zoom's payload never has
+            // them, and overwriting them forces a full media re-copy.
+            const { data: prior } = await supabase
+              .from("zoom_recordings")
+              .select("recording_files")
+              .eq("zoom_uuid", rec.uuid)
+              .maybeSingle()
+            const files = mergeBlobLinks(
+              (rec.recording_files ?? []) as ZoomRecordingFile[],
+              prior?.recording_files as ZoomRecordingFile[] | null,
+            )
 
             // Upsert the recording row (unique on zoom_uuid now).
             const { data: upserted, error: recErr } = await supabase
@@ -154,6 +166,7 @@ export async function backfillZoomRecordings(opts: BackfillOptions): Promise<Bac
             result.transcriptsParsed += ingest.transcriptsParsed
             result.transcriptsFailed += ingest.transcriptsFailed
             result.mediaCopied += ingest.mediaCopied
+            result.mediaFailed += ingest.mediaFailed
 
             // Persist any per-file Blob links back into recording_files.
             if (ingest.mediaCopied > 0) {

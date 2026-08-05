@@ -9,8 +9,8 @@
 --
 -- Also here:
 --   * 35c account-type enum CONFIRMED IN BOTH DIRECTIONS: the cell read 2
---     when the return said Checking and 1 after flipping to Savings. New
---     `value_decode` jsonb on the map renders the label instead of the code.
+--     when the return said Checking and 1 after flipping to Savings. The
+--     `value_decode` plumbing itself landed separately on main.
 --   * Caps/phaseouts for the line-8 and line-10 rollup estimators.
 --
 -- WHY THE ROLLUP ESTIMATORS MATTER: line 8 (Schedule 1 other income) and
@@ -19,19 +19,16 @@
 -- unemployment, alimony received, or gambling winnings rendered too low.
 -- Both lines are now summed from every component we have verified.
 
--- ── 1. value_decode: coded cell value -> human label ────────────────────
+-- ── 1. 35c enum: confirm the decode in BOTH directions ──────────────────
+-- The value_decode column and its renderer/API plumbing landed separately
+-- on main; this only records the empirical confirmation. Idempotent.
 ALTER TABLE form_1040_proconnect_map
   ADD COLUMN IF NOT EXISTS value_decode jsonb;
-
-COMMENT ON COLUMN form_1040_proconnect_map.value_decode IS
-  'Optional map from raw ProConnect cell value to the label the viewer '
-  'should show (e.g. {"1":"savings","2":"checking"} for 35c). Applied by '
-  'the renderer for enum-typed lines; the composer reverses it on write.';
 
 UPDATE form_1040_proconnect_map
    SET value_decode = '{"1":"savings","2":"checking"}'::jsonb,
        confidence   = 'confirmed',
-       notes        = 'Refund account type. Enum CONFIRMED both directions 2026-08-04: cell = 2 with Checking selected, 1 after flipping to Savings.'
+       notes        = 'Refund account type. Enum CONFIRMED both directions 2026-08-04: cell = 2 with Checking selected, 1 after flipping the return to Savings.'
  WHERE tax_year = 2025 AND return_type = 'IND' AND line_code = '35c';
 
 -- ── 2. Rollup caps / phaseouts (statutory + Rev. Proc. 2024-40) ─────────

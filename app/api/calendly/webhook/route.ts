@@ -17,6 +17,7 @@ import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
 import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
 import { notifyTeamOfNewBooking } from "@/lib/calendly/notify"
 import { pushHubContactToKarbon } from "@/lib/karbon/client-sync"
+import { syncHubMeetings } from "@/lib/meetings/sync-hub-meetings"
 
 /**
  * Calendly webhook receiver.
@@ -71,26 +72,97 @@ export async function POST(request: Request) {
 
   console.log(`[calendly] webhook received: ${parsed.event}`)
 
+  // Delivery ledger: record EVERY delivery before processing. The
+  // dedupe key collapses Calendly's retries and org+user dual delivery
+  // into a single processed row, so side-effects (team emails, ALFRED
+  // triage, Karbon pushes) can never double-fire. This ledger is also
+  // the only durable proof that deliveries are arriving at all — its
+  // multi-month emptiness is how a signing-key mismatch silently killed
+  // the real-time path without anyone noticing.
+  const supabase = createAdminClient()
+  const dedupeKey = buildDedupeKey(parsed)
+  let ledgerId: string | null = null
+  {
+    const p = parsed.payload ?? {}
+    const { data: ledger, error: ledgerErr } = await supabase
+      .from("calendly_webhook_events")
+      .insert({
+        event_type: parsed.event,
+        calendly_event_uuid:
+          extractUuid(p?.event?.uri ?? p?.invitee?.event ?? null) ?? null,
+        signature_valid: !!WEBHOOK_SIGNING_KEY,
+        dedupe_key: dedupeKey,
+        payload: parsed,
+      })
+      .select("id")
+      .single()
+    if (ledgerErr) {
+      // 23505 = unique violation on dedupe_key → this exact delivery was
+      // already processed (retry or dual subscription). Acknowledge it.
+      if (ledgerErr.code === "23505") {
+        return NextResponse.json({ success: true, action: "duplicate_ignored" })
+      }
+      // Ledger write failing must not drop the webhook — process anyway.
+      console.error("[calendly] webhook ledger insert failed:", ledgerErr)
+    }
+    ledgerId = ledger?.id ?? null
+  }
+
   try {
+    let result: Record<string, unknown>
     switch (parsed.event) {
       case "invitee.created":
-        return NextResponse.json(await handleInviteeCreated(parsed.payload))
+        result = await handleInviteeCreated(parsed.payload)
+        break
       case "invitee.canceled":
-        return NextResponse.json(await handleInviteeCanceled(parsed.payload))
+        result = await handleInviteeCanceled(parsed.payload)
+        break
       case "invitee_no_show.created":
-        return NextResponse.json(await handleNoShow(parsed.payload, true))
+        result = await handleNoShow(parsed.payload, true)
+        break
       case "invitee_no_show.deleted":
-        return NextResponse.json(await handleNoShow(parsed.payload, false))
+        result = await handleNoShow(parsed.payload, false)
+        break
       case "routing_form_submission.created":
-        return NextResponse.json(await handleRoutingFormSubmission(parsed.payload))
+        result = await handleRoutingFormSubmission(parsed.payload)
+        break
       default:
         console.log(`[calendly] ignoring unhandled event: ${parsed.event}`)
-        return NextResponse.json({ success: true, action: "ignored", event: parsed.event })
+        result = { success: true, action: "ignored", event: parsed.event }
     }
+
+    if (ledgerId) {
+      await supabase
+        .from("calendly_webhook_events")
+        .update({ processed_at: new Date().toISOString() })
+        .eq("id", ledgerId)
+    }
+    return NextResponse.json(result)
   } catch (err) {
     console.error("[calendly] webhook processing failed:", err)
+    if (ledgerId) {
+      await supabase
+        .from("calendly_webhook_events")
+        .update({
+          processing_error: err instanceof Error ? err.message : String(err),
+        })
+        .eq("id", ledgerId)
+    }
     return NextResponse.json({ error: "Webhook processing failed" }, { status: 500 })
   }
+}
+
+/**
+ * Stable identity for one logical webhook occurrence. Anchored on the
+ * most specific resource URI in the payload plus the emission timestamp,
+ * so a Calendly retry (same occurrence) collides while a genuine repeat
+ * event (e.g. no-show marked, cleared, marked again) does not.
+ */
+function buildDedupeKey(parsed: WebhookPayload): string | null {
+  const p = parsed.payload ?? {}
+  const anchor = p?.invitee?.uri ?? p?.uri ?? p?.event?.uri ?? null
+  if (!anchor) return null
+  return `${parsed.event}:${anchor}:${parsed.created_at ?? ""}`
 }
 
 export async function GET() {
@@ -393,6 +465,50 @@ async function notifyTeamMembers(
   if (error) console.error("[calendly] notification insert failed:", error)
 }
 
+/**
+ * Mirrors the booking into the unified `meetings` table immediately —
+ * keyed by the INTERNAL calendly_events.id, matching the convention of
+ * lib/meetings/sync-hub-meetings.ts — and schedules the full Hub
+ * Meetings pass (client links, deals, Zoom bridge) off the critical
+ * path. Before this, a new booking didn't reach Hub surfaces until the
+ * next 30-minute cron tick.
+ */
+async function mirrorMeetingRealtime(
+  supabase: ReturnType<typeof createAdminClient>,
+  event: any,
+  savedEventId: string,
+  status: "active" | "canceled",
+  connection: CalendlyConnectionRow | null,
+) {
+  const location = event?.location || {}
+  const { error } = await supabase.from("meetings").upsert(
+    {
+      calendly_event_id: savedEventId,
+      title: event?.name ?? "Meeting",
+      scheduled_start: event?.start_time ?? null,
+      scheduled_end: event?.end_time ?? null,
+      status: status === "active" ? "scheduled" : "cancelled",
+      cancelled_at: status === "canceled" ? (event?.cancellation?.canceled_at ?? new Date().toISOString()) : null,
+      cancellation_reason: status === "canceled" ? (event?.cancellation?.reason ?? null) : null,
+      location_type: location.type || "virtual",
+      video_link: location.join_url ?? null,
+      meeting_type: "client_meeting",
+      host_id: connection?.team_member_id ?? null,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "calendly_event_id", ignoreDuplicates: false },
+  )
+  if (error) console.error("[calendly] meetings mirror failed:", error)
+
+  after(() =>
+    syncHubMeetings(supabase)
+      .then(() => undefined)
+      .catch((err) => {
+        console.error("[calendly] hub meetings refresh failed (non-blocking):", err)
+      }),
+  )
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Event handlers
  * ─────────────────────────────────────────────────────────────────────── */
@@ -406,6 +522,8 @@ async function handleInviteeCreated(payload: any) {
   // we hydrate using the connection's token.
   const saved = await upsertEvent(supabase, event, "active", connection)
   if (!saved) return { success: false, error: "event upsert failed" }
+
+  await mirrorMeetingRealtime(supabase, event, saved.id, "active", connection)
 
   // Track every invitee we processed so ALFRED can run a triage pass
   // per invitee. The deterministic matcher already wrote a contact tag
@@ -494,6 +612,9 @@ async function handleInviteeCanceled(payload: any) {
   if (saved && invitee?.uri) {
     await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid)
   }
+  if (saved) {
+    await mirrorMeetingRealtime(supabase, event, saved.id, "canceled", connection)
+  }
   await notifyTeamMembers(supabase, event, invitee, "canceled", connection)
   return { success: true, action: "invitee_canceled" }
 }
@@ -531,12 +652,60 @@ async function handleNoShow(payload: any, isNoShow: boolean) {
 }
 
 /**
- * Routing form submissions: we don't yet have a dedicated table, so we
- * write a notification with the raw payload. This gives ops visibility
- * while preserving the data for later modeling.
+ * Routing form submissions now land in a real table
+ * (`calendly_routing_form_submissions`, migration 385) instead of only a
+ * notification blob. The parent form row is stubbed if the cron sync
+ * hasn't ingested the form definition yet — the next sync pass fills in
+ * name/questions. The ops notification is preserved.
  */
 async function handleRoutingFormSubmission(payload: any) {
   const supabase = createAdminClient()
+  const subUuid = extractUuid(payload?.uri)
+
+  if (subUuid) {
+    // Ensure a parent form row exists so the FK link is usable now.
+    let routingFormId: string | null = null
+    const formUri = payload?.routing_form ?? null
+    const formUuid = extractUuid(formUri)
+    if (formUuid && formUri) {
+      const { data: formRow } = await supabase
+        .from("calendly_routing_forms")
+        .upsert(
+          {
+            calendly_uuid: formUuid,
+            calendly_uri: formUri,
+            synced_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "calendly_uuid" },
+        )
+        .select("id")
+        .single()
+      routingFormId = formRow?.id ?? null
+    }
+
+    const { error } = await supabase.from("calendly_routing_form_submissions").upsert(
+      {
+        calendly_uuid: subUuid,
+        calendly_uri: payload.uri,
+        routing_form_uri: formUri,
+        routing_form_id: routingFormId,
+        submitter_uri: payload?.submitter ?? null,
+        submitter_type: payload?.submitter_type ?? null,
+        questions_and_answers: payload?.questions_and_answers ?? null,
+        tracking: payload?.tracking ?? null,
+        result: payload?.result ?? null,
+        raw_data: payload,
+        calendly_created_at: payload?.created_at ?? null,
+        calendly_updated_at: payload?.updated_at ?? null,
+        synced_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "calendly_uuid" },
+    )
+    if (error) console.error("[calendly] routing submission upsert failed:", error)
+  }
+
   const { data: members } = await supabase
     .from("team_members")
     .select("id")
@@ -550,11 +719,11 @@ async function handleRoutingFormSubmission(payload: any) {
       title: "Routing form submitted",
       message: `New Calendly routing form submission received`,
       related_entity_type: "calendly_routing_form",
-      related_entity_id: extractUuid(payload?.uri) ?? null,
+      related_entity_id: subUuid ?? null,
       metadata: payload,
       is_read: false,
       created_at: new Date().toISOString(),
     })
   }
-  return { success: true, action: "routing_form_submission_logged" }
+  return { success: true, action: "routing_form_submission_saved" }
 }

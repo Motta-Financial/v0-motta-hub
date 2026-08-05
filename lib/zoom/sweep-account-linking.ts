@@ -92,13 +92,19 @@ export async function sweepAccountLinking(opts: LinkSweepOptions): Promise<LinkS
   }
 
   const sinceIso = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
+  // Only meetings that plausibly ended — future/ongoing meetings 404 at
+  // the participants endpoint and must not consume a triage pass (or a
+  // watermark) before they've happened. processOneMeeting also guards
+  // per-row for long meetings still running past this coarse cutoff.
+  const endedIso = new Date(Date.now() - 30 * 60 * 1000).toISOString()
 
   let query = supabase
     .from("zoom_meetings")
-    .select("id, zoom_uuid, zoom_meeting_id, start_time, topic, agenda, host_email, team_member_id")
+    .select("id, zoom_uuid, zoom_meeting_id, start_time, duration, topic, agenda, host_email, team_member_id")
     .is("participants_processed_at", null)
     .not("zoom_uuid", "is", null)
     .gte("start_time", sinceIso)
+    .lt("start_time", endedIso)
     // Oldest unprocessed first so a backlog drains in order.
     .order("start_time", { ascending: true })
     .limit(maxMeetings)

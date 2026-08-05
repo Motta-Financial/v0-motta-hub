@@ -15,14 +15,31 @@ function mapKarbonContactToSupabase(contact: any) {
   // Extract accounting detail
   const accountingDetail = contact.AccountingDetail || {}
 
-  // Extract addresses from business card
+  // Extract addresses from business card. Prefer the Physical address but
+  // only when it has real content — Karbon frequently sends an empty
+  // Physical entry alongside a populated Mailing/Legal one.
   const addresses = businessCard.Addresses
     ? Array.isArray(businessCard.Addresses)
       ? businessCard.Addresses
       : [businessCard.Addresses]
     : []
-  const primaryAddress = addresses.find((a: any) => a.Label === "Physical") || addresses[0] || {}
+  const addressHasContent = (a: any): boolean =>
+    Boolean(
+      a?.StateProvinceCounty ||
+        a?.State ||
+        a?.City ||
+        a?.ZipCode ||
+        a?.PostalCode ||
+        (typeof a?.AddressLines === "string" && a.AddressLines.trim()) ||
+        a?.Street,
+    )
+  const primaryAddress =
+    addresses.find((a: any) => a.Label === "Physical" && addressHasContent(a)) ||
+    addresses.find((a: any) => a.Label !== "Mailing" && addressHasContent(a)) ||
+    {}
   const mailingAddress = addresses.find((a: any) => a.Label === "Mailing") || {}
+  const hasPhysicalAddress = addressHasContent(primaryAddress)
+  const hasMailingAddress = addressHasContent(mailingAddress)
 
   // Extract phone numbers from business card
   const phoneNumbers = businessCard.PhoneNumbers
@@ -210,21 +227,22 @@ function mapKarbonContactToSupabase(contact: any) {
     phone_work,
     phone_fax,
 
-    // Physical address from Karbon BusinessCard Addresses
-    address_line1,
-    address_line2,
-    city,
-    state,
-    zip_code,
-    country,
-
-    // Mailing address from Karbon BusinessCard Addresses
-    mailing_address_line1,
-    mailing_address_line2,
-    mailing_city,
-    mailing_state,
-    mailing_zip_code,
-    mailing_country,
+    // Address groups only included when Karbon actually has them —
+    // unconditional nulls would clobber values filled from ProConnect
+    // (propagate_proconnect_addresses) or manual edits on every re-sync.
+    ...(hasPhysicalAddress
+      ? { address_line1, address_line2, city, state, zip_code, country }
+      : {}),
+    ...(hasMailingAddress
+      ? {
+          mailing_address_line1,
+          mailing_address_line2,
+          mailing_city,
+          mailing_state,
+          mailing_zip_code,
+          mailing_country,
+        }
+      : {}),
 
     // Date of birth from Karbon AccountingDetail
     date_of_birth,

@@ -36,6 +36,12 @@ export async function GET(req: Request) {
     const search = (sp.get("search") || "").trim()
     const statusFilter = (sp.get("status") || "").split(",").filter(Boolean)
     const stateFilter = (sp.get("state") || "").split(",").filter(Boolean)
+    // Payment-lifecycle filters (migration 377 fields). paymentState is
+    // Ignition's unpaid | partially_paid | paid; paymentMethod is the
+    // credit_card | bank_account | check | credit_note | other enum.
+    // "(none)" matches rows where the field is null (legacy CSV imports).
+    const paymentStateFilter = (sp.get("paymentState") || "").split(",").filter(Boolean)
+    const paymentMethodFilter = (sp.get("paymentMethod") || "").split(",").filter(Boolean)
     const minAmount =
       sp.get("minAmount") !== null && sp.get("minAmount") !== ""
         ? Number(sp.get("minAmount"))
@@ -77,6 +83,8 @@ export async function GET(req: Request) {
           `ignition_invoice_id, invoice_number, status, amount, amount_paid, amount_outstanding,
            currency, invoice_date, due_date, sent_at, paid_at, voided_at, stripe_invoice_id,
            proposal_id, organization_id, contact_id, ignition_client_id, created_at, updated_at,
+           payment_state, payment_date, payment_method_type, payment_source,
+           issued_by_name, memo, items, disbursal_state, ignition_url,
            organizations(id, name),
            contacts(id, full_name)`,
         )
@@ -162,6 +170,21 @@ export async function GET(req: Request) {
       contacts: { id: string; full_name: string } | null
       state: string | null
       city: string | null
+      /** Ignition payment lifecycle (migration 377). */
+      payment_state: string | null
+      payment_date: string | null
+      payment_method_type: string | null
+      payment_source: string | null
+      issued_by_name: string | null
+      memo: string | null
+      /** Invoice line items as synced from the Reporting API:
+       *  { description, quantity, unit_price, discount, total, currency,
+       *    origin_type, origin_identifier }[] */
+      items: Array<Record<string, unknown>> | null
+      /** Payout status of the disbursal this invoice's payment landed in. */
+      disbursal_state: string | null
+      /** Direct link to the invoice in the Ignition web app. */
+      ignition_url: string | null
     }
 
     const enriched: EnrichedInvoice[] = invoices.map((inv: any) => {
@@ -185,6 +208,21 @@ export async function GET(req: Request) {
     const totalPaid = sum(enriched, "amount_paid")
     const totalOutstanding = sum(enriched, "amount_outstanding")
     const byStatus = countBy(enriched, "status")
+
+    // Payment-method mix: how collected revenue actually arrives
+    // (credit_card / bank_account / check / …). Only counts invoices
+    // where Ignition recorded a method — legacy CSV imports have none.
+    const byPaymentMethod: Record<string, { count: number; amount: number }> = {}
+    for (const inv of enriched) {
+      const m = inv.payment_method_type
+      if (!m) continue
+      const bucket = (byPaymentMethod[m] ??= { count: 0, amount: 0 })
+      bucket.count += 1
+      bucket.amount += Number(inv.amount_paid) || 0
+    }
+    for (const k of Object.keys(byPaymentMethod)) {
+      byPaymentMethod[k].amount = round2(byPaymentMethod[k].amount)
+    }
 
     // ── Overdue analysis ────────────────────────────────────────────────
     // The DB has a `status='overdue'` value, but the *real* overdue set
@@ -366,12 +404,16 @@ export async function GET(req: Request) {
       medianDaysToPay,
       // Aging buckets keyed by the standard 0/30/60/90 cutoffs.
       aging,
+      // Payment-method mix over paid invoices (migration 377 fields).
+      byPaymentMethod,
     }
 
     // ── Filter dimensions (full domain, ignoring current filters) ────────
     const dimensions = {
       statuses: uniqueSorted(enriched.map((d) => d.status)),
       states: uniqueSorted(enriched.map((d) => d.state)),
+      paymentStates: uniqueSorted(enriched.map((d) => d.payment_state)),
+      paymentMethods: uniqueSorted(enriched.map((d) => d.payment_method_type)),
     }
 
     // ── Apply filters ────────────────────────────────────────────────────
@@ -382,6 +424,14 @@ export async function GET(req: Request) {
       if (stateFilter.length) {
         const st = inv.state ?? "(unknown)"
         if (!stateFilter.includes(st)) return false
+      }
+      if (paymentStateFilter.length) {
+        const ps = inv.payment_state ?? "(none)"
+        if (!paymentStateFilter.includes(ps)) return false
+      }
+      if (paymentMethodFilter.length) {
+        const pm = inv.payment_method_type ?? "(none)"
+        if (!paymentMethodFilter.includes(pm)) return false
       }
       if (
         minAmount !== null &&
@@ -420,6 +470,7 @@ export async function GET(req: Request) {
       "invoice_date",
       "due_date",
       "paid_at",
+      "payment_date",
       "sent_at",
       "created_at",
       "amount",

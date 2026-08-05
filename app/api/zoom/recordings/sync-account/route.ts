@@ -29,9 +29,11 @@ function hasCronSecret(req: NextRequest): boolean {
 
 /**
  * GET = scheduled sweep. Vercel cron invokes routes with GET and an
- * automatic `Authorization: Bearer <CRON_SECRET>` header. We run a light
- * recent-window, transcripts-only sweep so each daily run is cheap; full
- * historical backfills go through POST with explicit options.
+ * automatic `Authorization: Bearer <CRON_SECRET>` header. We sweep a
+ * recent window for recordings, transcripts, AND media (media copies are
+ * incremental — files already in Blob are skipped, so only the last day's
+ * videos actually transfer); full historical backfills go through POST
+ * with explicit options.
  */
 export async function GET(req: NextRequest) {
   if (!hasCronSecret(req)) {
@@ -57,7 +59,7 @@ export async function GET(req: NextRequest) {
     const result = await syncAccountWideRecordings({
       supabase,
       months: 1,
-      includeMedia: false,
+      includeMedia: true,
       tagParticipants: false,
     })
     console.log(
@@ -97,6 +99,7 @@ export async function POST(req: NextRequest) {
   let onlyUser: string | undefined
   let from: string | undefined
   let to: string | undefined
+  let maxMediaCopies: number | undefined
   try {
     const body = (await req.json()) as {
       months?: number
@@ -105,6 +108,7 @@ export async function POST(req: NextRequest) {
       onlyUser?: string
       from?: string
       to?: string
+      maxMediaCopies?: number
     }
     if (typeof body.months === "number") months = body.months
     if (typeof body.includeMedia === "boolean") includeMedia = body.includeMedia
@@ -112,6 +116,9 @@ export async function POST(req: NextRequest) {
     if (typeof body.onlyUser === "string") onlyUser = body.onlyUser
     if (typeof body.from === "string") from = body.from
     if (typeof body.to === "string") to = body.to
+    if (typeof body.maxMediaCopies === "number" && body.maxMediaCopies > 0) {
+      maxMediaCopies = body.maxMediaCopies
+    }
   } catch {
     // empty body is fine — use defaults
   }
@@ -127,6 +134,7 @@ export async function POST(req: NextRequest) {
       includeMedia,
       tagParticipants,
       onlyUser,
+      maxMediaCopies,
     })
     console.log(
       `[v0] [Zoom Account Sync] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} media=${result.mediaCopied} tagged=${result.meetingsTagged} links=${result.clientLinksWritten} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,
