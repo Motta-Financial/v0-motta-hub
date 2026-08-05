@@ -29,6 +29,9 @@
  *   - 16 treats line 7 (capital gain distributions) + 3a as LTCG/qualified,
  *     which matches how those mapped inputs behave on real returns.
  *   - 19 ignores ODC (dep_odc not yet mappable) and the refundable ACTC.
+ *   - 23 covers NIIT + Additional Medicare only; NII treats line-7 losses
+ *     as zero (slightly overstates), MAGI approximated by AGI, and
+ *     Medicare wages come from W-2 box 5 cells (falls back to line 1a).
  *
  * Filing status is read straight from the discovered s1 cell
  * (c1000100036: 1=Single, 2=MFJ, 3=MFS, 4=HOH, 5=QSS). If the cell is
@@ -133,7 +136,8 @@ export function estimateDeterministicLines(
   constants: Form1040Constant[],
 ): Form1040Data {
   const fsRaw = findCell(cells, FS_CELL)?.val
-  const fs = statusKey(Number.parseInt(String(fsRaw ?? ""), 10))
+  const fsCode = Number.parseInt(String(fsRaw ?? ""), 10)
+  const fs = statusKey(fsCode)
   if (!fs) return data // no filing status → no safe estimates
 
   const lineByCode = new Map(lines.map((l) => [l.lineCode, l]))
@@ -203,6 +207,39 @@ export function estimateDeterministicLines(
       const at15 = clamp(Math.min(taxable, fifteenTop) - ordinary - at0, 0, qualified - at0)
       const at20 = qualified - at0 - at15
       setEstimate("16", bracketTax(brackets, ordinary) + 0.15 * at15 + 0.2 * at20)
+    }
+  }
+
+  // ── 23: other taxes — NIIT + Additional Medicare (partial) ──────────
+  if (isEmpty("23")) {
+    // NIIT (Form 8960): MFJ and QSS share the 250k threshold.
+    const niitThreshold = constNum(
+      constants,
+      fsCode === 2 || fsCode === 5 ? "niit_threshold_mfj" : fsCode === 3 ? "niit_threshold_mfs" : "niit_threshold_single",
+    )
+    // Additional Medicare (Form 8959): ONLY MFJ gets 250k; QSS is 200k.
+    const amThreshold = constNum(
+      constants,
+      fsCode === 2 ? "addl_medicare_threshold_mfj" : fsCode === 3 ? "addl_medicare_threshold_mfs" : "addl_medicare_threshold_single",
+    )
+    if (niitThreshold !== null && amThreshold !== null) {
+      // Net investment income from mapped lines. 3b already contains 3a
+      // (qualified ⊆ ordinary). Line-7 losses clamp to 0 (slight overstate).
+      const nii = Math.max(0, num("2b")) + Math.max(0, num("3b")) + Math.max(0, num("7"))
+      const magi = num("11") // MAGI ≈ AGI (foreign exclusions invisible)
+      const niit = 0.038 * Math.min(nii, Math.max(0, magi - niitThreshold))
+
+      // Medicare wages = W-2 box 5 (s11 c7) summed across instances;
+      // falls back to line 1a when box 5 cells are absent.
+      let medicareWages = 0
+      for (const c of cells) {
+        if (c.seriesId === "s11" && c.codeId === "c7" && c.suffixId === "x1000") medicareWages += toNum(c.val)
+      }
+      if (medicareWages === 0) medicareWages = num("1a")
+      const addlMedicare = 0.009 * Math.max(0, medicareWages - amThreshold)
+
+      const total = niit + addlMedicare
+      if (total > 0) setEstimate("23", total)
     }
   }
 
