@@ -171,6 +171,24 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
     console.error("[calendly-sync] hub meetings refresh failed:", err)
   }
 
+  // Apply client-provided intake/Calendly data to Hub contacts
+  // (migration 384, superset of 383's state propagation): missing
+  // email/phone/state fill automatically; values that CONFLICT with the
+  // Hub record are queued in contact_update_suggestions for staff review
+  // at /admin/contact-updates. Non-fatal.
+  try {
+    const { data: leadSync, error: leadErr } = await supabase.rpc(
+      "sync_lead_contact_updates",
+    )
+    if (leadErr) {
+      console.error("[calendly-sync] lead contact sync failed (non-fatal):", leadErr.message)
+    } else if (leadSync?.[0]) {
+      console.log("[calendly-sync] lead contact sync:", leadSync[0])
+    }
+  } catch (err) {
+    console.error("[calendly-sync] lead contact sync crashed (non-fatal):", err)
+  }
+
   return {
     success: true,
     synced: { events: totalEvents, invitees: totalInvitees, eventTypes: totalEventTypes },
@@ -224,6 +242,19 @@ async function syncEventTypesForConnection(
           scheduling_url: et.scheduling_url,
           secret: et.secret,
           calendly_user_uri: et.profile?.owner ?? connection.calendly_user_uri,
+          // Full Event Type coverage (migration 379): booking form
+          // questions, locations, positioning and admin metadata.
+          admin_managed: et.admin_managed ?? null,
+          custom_questions: Array.isArray(et.custom_questions) ? et.custom_questions : null,
+          deleted_at: et.deleted_at ?? null,
+          duration_options: Array.isArray(et.duration_options) ? et.duration_options : null,
+          internal_note: et.internal_note ?? null,
+          is_paid: et.is_paid ?? null,
+          locale: et.locale ?? null,
+          locations: Array.isArray(et.locations) ? et.locations : null,
+          position: typeof et.position === "number" ? et.position : null,
+          profile_type: et.profile?.type ?? null,
+          profile_name: et.profile?.name ?? null,
           raw_data: et,
           calendly_created_at: et.created_at,
           calendly_updated_at: et.updated_at,

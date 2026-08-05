@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs"
 
 const BASE_URL = process.env.HUB_URL || "https://hub.motta.cpa"
-const MAX_PASSES_PER_WINDOW = 60
+const MAX_PASSES_PER_WINDOW = 120
 
 function loadEnvLocal() {
   let text
@@ -55,9 +55,14 @@ async function runPass(secret, from, to) {
         Authorization: `Bearer ${secret}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ from, to, includeMedia: true, tagParticipants: false }),
+      // Cap copies per invocation so the function exits cleanly before
+      // memory accumulates (sustained GB-scale copying OOMs otherwise).
+      body: JSON.stringify({ from, to, includeMedia: true, tagParticipants: false, maxMediaCopies: 8 }),
     })
-    if (!res.ok) return { timeout: res.status === 504, error: `http_${res.status}` }
+    // 5xx = function timed out or crashed mid-run (e.g. OOM on one huge
+    // file). Progress persists per-recording, so another pass resumes where
+    // it left off — treat like a timeout, not a fatal error.
+    if (!res.ok) return { timeout: res.status >= 500, error: `http_${res.status}` }
     return await res.json()
   } catch (err) {
     // Abort/network drop while the function keeps running server-side —
@@ -83,15 +88,23 @@ async function main() {
     const [from, to] = monthWindow(back)
     let windowMedia = 0
 
+    let consecutiveRetries = 0
     for (let pass = 1; pass <= MAX_PASSES_PER_WINDOW; pass++) {
       const t0 = Date.now()
       const r = await runPass(secret, from, to)
       const secs = Math.round((Date.now() - t0) / 1000)
 
       if (r.timeout) {
-        console.log(`${from}: pass ${pass} timed out after ${secs}s (progress kept) — re-running`)
+        consecutiveRetries++
+        if (consecutiveRetries >= 10) {
+          console.error(`${from}: ${consecutiveRetries} retries without a completed pass — giving up on this window, continuing`)
+          break
+        }
+        console.log(`${from}: pass ${pass} retryable (${r.error ?? "timeout"}) after ${secs}s (progress kept) — re-running`)
+        await new Promise((res) => setTimeout(res, 15_000))
         continue
       }
+      consecutiveRetries = 0
       if (r.error || r.ok === false) {
         console.error(`${from}: pass ${pass} FAILED (${r.error ?? "unknown"}) — stopping`)
         process.exit(1)

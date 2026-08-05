@@ -48,7 +48,23 @@ export function mapKarbonContactToSupabase(contact: any) {
     : businessCard.Addresses
       ? [businessCard.Addresses]
       : []
-  const primaryAddress = addresses.find((a: any) => a.Label === "Physical") || addresses[0] || {}
+  // Prefer the Physical address but only when it has real content —
+  // Karbon frequently sends an empty Physical entry alongside a
+  // populated Mailing/Legal one.
+  const addressHasContent = (a: any): boolean =>
+    Boolean(
+      a?.StateProvinceCounty ||
+        a?.State ||
+        a?.City ||
+        a?.ZipCode ||
+        a?.PostalCode ||
+        (typeof a?.AddressLines === "string" && a.AddressLines.trim()) ||
+        a?.Street,
+    )
+  const primaryAddress =
+    addresses.find((a: any) => a.Label === "Physical" && addressHasContent(a)) ||
+    addresses.find((a: any) => a.Label !== "Mailing" && addressHasContent(a)) ||
+    {}
   const mailingAddress = addresses.find((a: any) => a.Label === "Mailing") || {}
 
   const phoneNumbers = Array.isArray(businessCard.PhoneNumbers)
@@ -132,18 +148,31 @@ export function mapKarbonContactToSupabase(contact: any) {
     phone_mobile: mobilePhone?.Number ? String(mobilePhone.Number) : null,
     phone_work: workPhone?.Number ? String(workPhone.Number) : null,
     phone_fax: faxPhone?.Number ? String(faxPhone.Number) : null,
-    address_line1: primaryAddress.AddressLines || primaryAddress.Street || null,
-    address_line2: primaryAddress.AddressLine2 || null,
-    city: primaryAddress.City || null,
-    state: primaryAddress.StateProvinceCounty || primaryAddress.State || null,
-    zip_code: primaryAddress.ZipCode || primaryAddress.PostalCode || null,
-    country: primaryAddress.CountryCode || primaryAddress.Country || null,
-    mailing_address_line1: mailingAddress.AddressLines || mailingAddress.Street || null,
-    mailing_address_line2: mailingAddress.AddressLine2 || null,
-    mailing_city: mailingAddress.City || null,
-    mailing_state: mailingAddress.StateProvinceCounty || mailingAddress.State || null,
-    mailing_zip_code: mailingAddress.ZipCode || mailingAddress.PostalCode || null,
-    mailing_country: mailingAddress.CountryCode || mailingAddress.Country || null,
+    // Address groups are only included when Karbon actually has that
+    // address on file. Unconditional nulls here would clobber values
+    // filled from other integrations (ProConnect tax-return addresses via
+    // propagate_proconnect_addresses(), or manual edits from the Sales
+    // Dashboard's inline state editor) on the next webhook/sync upsert.
+    ...(addressHasContent(primaryAddress)
+      ? {
+          address_line1: primaryAddress.AddressLines || primaryAddress.Street || null,
+          address_line2: primaryAddress.AddressLine2 || null,
+          city: primaryAddress.City || null,
+          state: primaryAddress.StateProvinceCounty || primaryAddress.State || null,
+          zip_code: primaryAddress.ZipCode || primaryAddress.PostalCode || null,
+          country: primaryAddress.CountryCode || primaryAddress.Country || null,
+        }
+      : {}),
+    ...(addressHasContent(mailingAddress)
+      ? {
+          mailing_address_line1: mailingAddress.AddressLines || mailingAddress.Street || null,
+          mailing_address_line2: mailingAddress.AddressLine2 || null,
+          mailing_city: mailingAddress.City || null,
+          mailing_state: mailingAddress.StateProvinceCounty || mailingAddress.State || null,
+          mailing_zip_code: mailingAddress.ZipCode || mailingAddress.PostalCode || null,
+          mailing_country: mailingAddress.CountryCode || mailingAddress.Country || null,
+        }
+      : {}),
     date_of_birth: accountingDetail.BirthDate ? String(accountingDetail.BirthDate).split("T")[0] : null,
     occupation: contact.Occupation || accountingDetail.Occupation || null,
     employer: contact.Employer || null,

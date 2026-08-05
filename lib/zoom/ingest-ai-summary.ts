@@ -33,7 +33,7 @@ import type { ZoomApiFetcher } from "./process-meeting-participants"
 
 // ─── Zoom summary shape (same for webhook payload + REST response) ───
 
-interface ZoomMeetingSummary {
+export interface ZoomMeetingSummary {
   meeting_uuid?: string
   meeting_id?: string | number
   summary_title?: string
@@ -41,6 +41,10 @@ interface ZoomMeetingSummary {
   summary_details?: Array<{ label?: string; summary?: string }>
   next_steps?: string[]
   summary_start_time?: string
+  summary_end_time?: string
+  summary_created_time?: string
+  summary_last_modified_time?: string
+  [key: string]: unknown
 }
 
 export interface AiSummaryIngestResult {
@@ -83,6 +87,141 @@ async function fetchZoomAiSummary(
     return tryOne(String(meeting.zoom_meeting_id))
   }
   return null
+}
+
+/**
+ * Persist a Zoom AI Companion summary into `zoom_meeting_summaries`
+ * (full-fidelity import — every meeting with a summary gets a row,
+ * regardless of client links or transcripts). Upserts on meeting UUID.
+ */
+export async function upsertZoomMeetingSummary(
+  admin: SupabaseClient,
+  meeting: { id: string | null; zoom_uuid: string | null; zoom_meeting_id: string | number | null },
+  summary: ZoomMeetingSummary,
+): Promise<void> {
+  const uuid = summary.meeting_uuid || meeting.zoom_uuid
+  if (!uuid) return
+
+  const numeric = Number(summary.meeting_id ?? meeting.zoom_meeting_id)
+  const { error } = await admin.from("zoom_meeting_summaries").upsert(
+    {
+      zoom_meeting_id: meeting.id,
+      zoom_meeting_uuid: uuid,
+      zoom_meeting_numeric_id: Number.isFinite(numeric) ? numeric : null,
+      summary_title: summary.summary_title ?? null,
+      summary_overview: summary.summary_overview ?? null,
+      summary_details: summary.summary_details ?? null,
+      next_steps: summary.next_steps ?? null,
+      summary_start_time: summary.summary_start_time || null,
+      summary_end_time: summary.summary_end_time || null,
+      summary_created_time: summary.summary_created_time || null,
+      summary_last_modified_time: summary.summary_last_modified_time || null,
+      raw_data: summary,
+      synced_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "zoom_meeting_uuid" },
+  )
+  if (error) {
+    console.warn("[v0] [Zoom AI summary] zoom_meeting_summaries upsert failed:", error.message)
+  }
+}
+
+export interface SummarySweepResult {
+  scanned: number
+  fetched: number
+  stored: number
+  skippedNoSummary: number
+  errors: Array<{ meeting_id: string; error: string }>
+}
+
+/**
+ * Account-wide AI-summary sweep: for past meetings that haven't been
+ * checked yet (`summary_checked_at IS NULL`), pull the AI Companion
+ * summary via REST and persist it. Unlike the note fallback below, this
+ * runs for EVERY meeting (client-linked or not) so the Hub carries the
+ * complete summary corpus.
+ *
+ * Each meeting is checked exactly once — the watermark is stamped
+ * whether or not a summary existed, and late-arriving summaries still
+ * land through the `meeting.summary_completed` webhook. Only meetings
+ * that started >4h ago are checked, so a summary still being generated
+ * isn't marked as missing. Bounded by `limit` fetches per invocation.
+ */
+export async function syncZoomMeetingSummaries(
+  admin: SupabaseClient,
+  zoomGet: ZoomApiFetcher,
+  opts: { limit?: number; sinceDays?: number } = {},
+): Promise<SummarySweepResult> {
+  const limit = Math.max(1, Math.min(opts.limit ?? 25, 100))
+  const sinceDays = Math.max(1, Math.min(opts.sinceDays ?? 90, 1000))
+  const result: SummarySweepResult = {
+    scanned: 0,
+    fetched: 0,
+    stored: 0,
+    skippedNoSummary: 0,
+    errors: [],
+  }
+
+  const sinceIso = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
+  const settledIso = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
+
+  const { data: meetings, error } = await admin
+    .from("zoom_meetings")
+    .select("id, zoom_uuid, zoom_meeting_id, start_time")
+    .gte("start_time", sinceIso)
+    .lte("start_time", settledIso)
+    .not("zoom_uuid", "is", null)
+    .is("summary_checked_at", null)
+    .order("start_time", { ascending: false })
+    .limit(limit)
+
+  if (error) {
+    result.errors.push({ meeting_id: "select", error: error.message })
+    return result
+  }
+
+  for (const m of meetings ?? []) {
+    if (!m.zoom_uuid) continue
+    result.scanned += 1
+
+    try {
+      result.fetched += 1
+      const summary = await fetchZoomAiSummary(zoomGet, {
+        zoom_uuid: m.zoom_uuid,
+        zoom_meeting_id: m.zoom_meeting_id ?? null,
+      })
+      const hasContent =
+        !!summary &&
+        (!!summary.summary_overview?.trim() ||
+          (summary.summary_details?.some((d) => d?.summary?.trim()) ?? false))
+
+      if (summary && hasContent) {
+        await upsertZoomMeetingSummary(
+          admin,
+          { id: m.id, zoom_uuid: m.zoom_uuid, zoom_meeting_id: m.zoom_meeting_id ?? null },
+          summary,
+        )
+        result.stored += 1
+      } else {
+        result.skippedNoSummary += 1
+      }
+
+      // Stamp the watermark on a definitive answer (summary or 404) so
+      // the sweep advances; thrown errors leave it null for retry.
+      await admin
+        .from("zoom_meetings")
+        .update({ summary_checked_at: new Date().toISOString() })
+        .eq("id", m.id)
+    } catch (err) {
+      result.errors.push({
+        meeting_id: m.id,
+        error: err instanceof Error ? err.message : "unknown",
+      })
+    }
+  }
+
+  return result
 }
 
 /** Render a Zoom AI summary as a markdown note body. */
@@ -219,6 +358,18 @@ export async function ingestPendingZoomAiSummaries(
         result.skippedNoSummary += 1
         continue
       }
+
+      // Persist the structured summary regardless of the note outcome —
+      // zoom_meeting_summaries is the full-fidelity store.
+      await upsertZoomMeetingSummary(
+        admin,
+        {
+          id: meetingId,
+          zoom_uuid: (m.zoom_uuid as string | null) ?? null,
+          zoom_meeting_id: (m.zoom_meeting_id as string | number | null) ?? null,
+        },
+        summary,
+      )
 
       const startTime = (m.start_time as string | null) ?? null
       const body = renderAiNote(summary, startTime)

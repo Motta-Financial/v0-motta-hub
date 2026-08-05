@@ -94,6 +94,16 @@ function extForFile(file: ZoomRecordingFile): string {
 }
 
 /**
+ * Zoom meeting UUIDs are base64 and can start with or contain "/" — which
+ * Vercel Blob rejects in pathnames ("//"). Swap to "_" (not in the base64
+ * alphabet, so no collisions). Only affects the blob path; DB keys keep the
+ * raw UUID, and readers use the stored blob_pathname verbatim.
+ */
+function blobSafeUuid(uuid: string): string {
+  return uuid.replace(/\//g, "_")
+}
+
+/**
  * Carry blob links from a previously stored `recording_files` array onto a
  * fresh Zoom payload. Zoom never returns our blob_url/blob_pathname, so
  * upserting a fresh payload verbatim clobbers the archive markers — and the
@@ -197,7 +207,7 @@ async function ingestTranscript(ctx: IngestContext, file: ZoomRecordingFile): Pr
     let blobUrl: string | null = null
     let blobPathname: string | null = null
     try {
-      const pathname = `zoom/${meetingUuid}/${recordingFileId || "transcript"}.vtt`
+      const pathname = `zoom/${blobSafeUuid(meetingUuid)}/${recordingFileId || "transcript"}.vtt`
       const blob = await put(pathname, vtt, {
         access: "private",
         contentType: "text/vtt",
@@ -292,12 +302,15 @@ async function copyMediaToBlob(
     if (!res.ok || !res.body) return null
 
     const ext = extForFile(file)
-    const pathname = `zoom/${ctx.meetingUuid}/${file.id || file.recording_type || "media"}.${ext}`
+    const pathname = `zoom/${blobSafeUuid(ctx.meetingUuid)}/${file.id || file.recording_type || "media"}.${ext}`
     const blob = await put(pathname, res.body, {
       access: "private",
       addRandomSuffix: false,
       allowOverwrite: true,
       token: zoomBlobToken(),
+      // Stream in chunks — without this the SDK buffers the whole file in
+      // memory, and GB-scale MP4s OOM-kill the 300s serverless function.
+      multipart: true,
     })
     return { blob_url: blob.url, blob_pathname: blob.pathname }
   } catch (err) {

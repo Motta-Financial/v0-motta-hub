@@ -165,6 +165,25 @@ async function runSync(syncType: "full" | "manual") {
     duration: `${result.duration}ms`,
   })
 
+  // Propagate tax-return addresses onto Hub contacts/organizations that
+  // have none (migration 381). ProConnect is the only integration that
+  // reliably carries a client address — Ignition's Reporting API has
+  // none — so this keeps the Sales Dashboard map/state filters covered
+  // as new clients link up. Fill-only (never overwrites) and non-fatal.
+  try {
+    const supabase = getSupabaseAdmin()
+    const { data: propagated, error: propErr } = await supabase.rpc(
+      "propagate_proconnect_addresses",
+    )
+    if (propErr) {
+      console.error("[Cron] Address propagation failed (non-fatal):", propErr.message)
+    } else if (propagated?.[0]) {
+      console.log("[Cron] Address propagation:", propagated[0])
+    }
+  } catch (err) {
+    console.error("[Cron] Address propagation crashed (non-fatal):", err)
+  }
+
   // Check if we need to send a failure alert
   if (!result.success && result.syncLogId) {
     const consecutiveFailures = await getConsecutiveFailures()

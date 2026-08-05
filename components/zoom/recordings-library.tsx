@@ -4,21 +4,28 @@
  * <RecordingsLibrary>
  * ────────────────────────────────────────────────────────────────────────
  * A browse-and-watch library of Zoom cloud recordings for ANY signed-in
- * teammate (not just admins). Rendered inside the Recordings tab of the Zoom
- * dashboard (/meetings/zoom).
+ * teammate (not just admins). Rendered as the DEFAULT tab of the Zoom
+ * dashboard (/meetings/zoom) — every firm meeting is recorded, so this is
+ * the page's centerpiece.
  *
  * Each card plays the recording IN the Hub via the authenticated stream proxy
  * (/api/zoom/recordings/stream — Blob copy when archived, otherwise the Zoom
  * download_url proxied with the account S2S token; the token never reaches the
  * browser). Recordings are read from the DB-backed /api/zoom/recordings/library
- * endpoint, and transcripts are lazy-loaded per card on expand.
+ * endpoint; the expanded card lazy-loads transcript + participants + Zoom AI
+ * summary from the per-meeting endpoint.
  *
- * This component owns only presentation + its own fetch. Tagging is delegated
- * back to the parent (which owns the shared tag dialog + counts) via `onTag`.
+ * Interactivity:
+ *   • filters — host, date range, transcript-only (server-side)
+ *   • click-to-seek transcript synced to the in-Hub player
+ *   • transcript download as Markdown (/transcript?format=md)
+ *   • participants with Hub-contact links, AI Companion summary
+ *   • tagging delegated back to the parent's shared dialog via `onTag`
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
+  CalendarDays,
   ChevronDown,
   ChevronRight,
   Download,
@@ -26,14 +33,23 @@ import {
   Loader2,
   Play,
   Search,
+  Sparkles,
   Tag,
   Users,
   Video,
+  X,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 interface RecordingFile {
   id?: string
@@ -54,9 +70,13 @@ interface LibraryRecording {
   duration: number | null
   total_size: number | null
   recording_count: number | null
+  timezone?: string | null
+  host?: { team_member_id: string | null; name: string | null; email: string | null }
   recording_files: RecordingFile[]
   clients: string[]
   has_transcript: boolean
+  has_summary?: boolean
+  participants_count?: number | null
 }
 
 interface TranscriptSegment {
@@ -71,6 +91,29 @@ interface TranscriptData {
   status: string
   text_content: string | null
   segments: TranscriptSegment[] | null
+}
+
+interface MeetingParticipant {
+  name: string | null
+  email: string | null
+  duration: number | null
+  internal_user: boolean | null
+  contact_id: string | null
+  contact_name: string | null
+}
+
+interface MeetingSummary {
+  summary_title: string | null
+  summary_overview: string | null
+  summary_details: Array<{ label?: string; summary?: string }> | null
+  next_steps: string[] | null
+}
+
+/** Payload of the per-meeting detail endpoint, lazy-loaded on expand. */
+interface MeetingDetail {
+  transcript: TranscriptData | null
+  participants: MeetingParticipant[]
+  summary: MeetingSummary | null
 }
 
 interface Props {
@@ -133,6 +176,13 @@ export function RecordingsLibrary({ searchQuery = "", tagCounts = {}, onTag, ref
   const [loadingMore, setLoadingMore] = useState(false)
   const [localQuery, setLocalQuery] = useState("")
 
+  // Filters — all applied server-side by the library endpoint.
+  const [hosts, setHosts] = useState<Array<{ id: string; name: string }>>([])
+  const [hostId, setHostId] = useState<string>("")
+  const [fromDate, setFromDate] = useState<string>("")
+  const [toDate, setToDate] = useState<string>("")
+  const [transcriptOnly, setTranscriptOnly] = useState(false)
+
   // Debounce the search box (and honor the parent's shared search box too).
   const [debouncedLocal, setDebouncedLocal] = useState("")
   useEffect(() => {
@@ -152,9 +202,15 @@ export function RecordingsLibrary({ searchQuery = "", tagCounts = {}, onTag, ref
           offset: String(opts.offset),
         })
         if (effectiveQuery) params.set("q", effectiveQuery)
+        if (hostId) params.set("hostId", hostId)
+        if (fromDate) params.set("from", fromDate)
+        if (toDate) params.set("to", toDate)
+        if (transcriptOnly) params.set("hasTranscript", "true")
+        if (!opts.append) params.set("include", "hosts")
         const res = await fetch(`/api/zoom/recordings/library?${params.toString()}`)
         const json = res.ok ? await res.json() : { recordings: [], total: 0 }
         setTotal(json.total ?? 0)
+        if (Array.isArray(json.hosts) && json.hosts.length > 0) setHosts(json.hosts)
         setRecordings((prev) =>
           opts.append ? [...prev, ...(json.recordings ?? [])] : json.recordings ?? [],
         )
@@ -165,59 +221,113 @@ export function RecordingsLibrary({ searchQuery = "", tagCounts = {}, onTag, ref
         setLoadingMore(false)
       }
     },
-    [effectiveQuery],
+    [effectiveQuery, hostId, fromDate, toDate, transcriptOnly],
   )
 
   useEffect(() => {
     load({ append: false, offset: 0 })
   }, [load, refreshKey])
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  if (recordings.length === 0) {
-    return (
-      <Card className="p-8 text-center">
-        <Video className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
-        <p className="text-muted-foreground">
-          {effectiveQuery ? "No recordings match your search." : "No recordings found."}
-        </p>
-      </Card>
-    )
-  }
+  const hasActiveFilters = !!(hostId || fromDate || toDate || transcriptOnly)
 
   return (
     <div className="space-y-4">
-      {/* Library-local search (independent of the dashboard search box). */}
-      {!searchQuery && (
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      {/* Search + filter bar */}
+      <div className="flex flex-wrap items-center gap-2">
+        {!searchQuery && (
+          <div className="relative min-w-56 flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={localQuery}
+              onChange={(e) => setLocalQuery(e.target.value)}
+              placeholder="Search recordings by topic..."
+              className="pl-9"
+            />
+          </div>
+        )}
+        <Select value={hostId || "all"} onValueChange={(v) => setHostId(v === "all" ? "" : v)}>
+          <SelectTrigger className="w-44">
+            <SelectValue placeholder="All hosts" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All hosts</SelectItem>
+            {hosts.map((h) => (
+              <SelectItem key={h.id} value={h.id}>
+                {h.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <div className="flex items-center gap-1">
+          <CalendarDays className="h-4 w-4 text-muted-foreground" />
           <Input
-            value={localQuery}
-            onChange={(e) => setLocalQuery(e.target.value)}
-            placeholder="Search recordings by topic..."
-            className="pl-9"
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="w-36"
+            aria-label="From date"
           />
+          <span className="text-xs text-muted-foreground">–</span>
+          <Input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            className="w-36"
+            aria-label="To date"
+          />
+        </div>
+        <Button
+          variant={transcriptOnly ? "secondary" : "outline"}
+          size="sm"
+          onClick={() => setTranscriptOnly((v) => !v)}
+        >
+          <FileText className="h-4 w-4 mr-1.5" />
+          Transcript only
+        </Button>
+        {hasActiveFilters && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setHostId("")
+              setFromDate("")
+              setToDate("")
+              setTranscriptOnly(false)
+            }}
+          >
+            <X className="h-4 w-4 mr-1" />
+            Clear
+          </Button>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : recordings.length === 0 ? (
+        <Card className="p-8 text-center">
+          <Video className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
+          <p className="text-muted-foreground">
+            {effectiveQuery || hasActiveFilters
+              ? "No recordings match your search or filters."
+              : "No recordings found."}
+          </p>
+        </Card>
+      ) : (
+        <div className="grid gap-4">
+          {recordings.map((rec) => (
+            <RecordingCard
+              key={rec.id}
+              rec={rec}
+              tagged={isTagged(rec, tagCounts)}
+              onTag={onTag}
+            />
+          ))}
         </div>
       )}
 
-      <div className="grid gap-4">
-        {recordings.map((rec) => (
-          <RecordingCard
-            key={rec.id}
-            rec={rec}
-            tagged={isTagged(rec, tagCounts)}
-            onTag={onTag}
-          />
-        ))}
-      </div>
-
-      {recordings.length < total && (
+      {!loading && recordings.length < total && (
         <div className="flex justify-center pt-2">
           <Button
             variant="outline"
@@ -254,8 +364,10 @@ function RecordingCard({
 }) {
   const [playing, setPlaying] = useState(false)
   const [showTranscript, setShowTranscript] = useState(false)
-  const [transcript, setTranscript] = useState<TranscriptData | null>(null)
-  const [transcriptLoading, setTranscriptLoading] = useState(false)
+  const [showParticipants, setShowParticipants] = useState(false)
+  const [showSummary, setShowSummary] = useState(false)
+  const [detail, setDetail] = useState<MeetingDetail | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
   const mediaRef = useRef<HTMLVideoElement | null>(null)
   const pendingSeekRef = useRef<number | null>(null)
 
@@ -271,19 +383,25 @@ function RecordingCard({
     return (t === "MP4" || t === "M4A") && f.blob_pathname
   })
 
-  const loadTranscript = useCallback(async () => {
-    if (transcript || transcriptLoading || rec.zoom_meeting_id == null) return
-    setTranscriptLoading(true)
+  // Lazy-load transcript + participants + AI summary in ONE round trip the
+  // first time any expandable section opens.
+  const loadDetail = useCallback(async () => {
+    if (detail || detailLoading || rec.zoom_meeting_id == null) return
+    setDetailLoading(true)
     try {
       const res = await fetch(`/api/zoom/meetings/${rec.zoom_meeting_id}/recordings`)
       const json = res.ok ? await res.json() : null
-      setTranscript(json?.transcript ?? null)
+      setDetail({
+        transcript: json?.transcript ?? null,
+        participants: Array.isArray(json?.participants) ? json.participants : [],
+        summary: json?.summary ?? null,
+      })
     } catch {
-      setTranscript(null)
+      setDetail({ transcript: null, participants: [], summary: null })
     } finally {
-      setTranscriptLoading(false)
+      setDetailLoading(false)
     }
-  }, [transcript, transcriptLoading, rec.zoom_meeting_id])
+  }, [detail, detailLoading, rec.zoom_meeting_id])
 
   function handleLoadedMetadata() {
     if (pendingSeekRef.current != null && mediaRef.current) {
@@ -308,7 +426,10 @@ function RecordingCard({
     }
   }
 
+  const transcript = detail?.transcript ?? null
   const segments = transcript?.segments ?? []
+  const participants = detail?.participants ?? []
+  const summary = detail?.summary ?? null
 
   return (
     <Card className="p-4">
@@ -328,11 +449,19 @@ function RecordingCard({
                 Transcript
               </Badge>
             ) : null}
+            {rec.has_summary ? (
+              <Badge variant="outline" className="gap-1">
+                <Sparkles className="h-3 w-3" />
+                AI Summary
+              </Badge>
+            ) : null}
           </div>
           <p className="text-sm text-muted-foreground">
             {formatDateTime(rec.start_time)}
             {rec.duration ? ` · ${rec.duration} min` : ""}
             {rec.total_size ? ` · ${formatBytes(rec.total_size)}` : ""}
+            {rec.host?.name || rec.host?.email ? ` · Host: ${rec.host.name || rec.host.email}` : ""}
+            {rec.participants_count ? ` · ${rec.participants_count} participants` : ""}
           </p>
           {rec.clients.length > 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -403,8 +532,8 @@ function RecordingCard({
         </p>
       )}
 
-      {/* Blob-backed downloads */}
-      {downloadFiles.length > 0 && (
+      {/* Downloads: Blob-backed media + transcript-as-Markdown */}
+      {(downloadFiles.length > 0 || rec.has_transcript) && (
         <div className="mt-2 flex flex-wrap gap-2">
           {downloadFiles.map((f, i) =>
             f.blob_pathname ? (
@@ -420,8 +549,123 @@ function RecordingCard({
               </a>
             ) : null,
           )}
+          {rec.has_transcript && rec.zoom_meeting_id != null && (
+            <a
+              href={`/api/zoom/meetings/${rec.zoom_meeting_id}/transcript?format=md`}
+              className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs hover:bg-muted/70"
+              title="Download the transcript as a Markdown file"
+            >
+              <Download className="h-3 w-3" />
+              Transcript (.md)
+            </a>
+          )}
         </div>
       )}
+
+      {/* AI Companion summary (lazy) */}
+      {rec.has_summary && (
+        <div className="mt-3 rounded-lg border">
+          <button
+            type="button"
+            onClick={() => {
+              setShowSummary((v) => !v)
+              void loadDetail()
+            }}
+            className="flex w-full items-center gap-2 p-3 text-sm font-medium"
+          >
+            {showSummary ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            <Sparkles className="h-4 w-4" />
+            AI Summary
+            {detailLoading && showSummary && <Loader2 className="ml-auto h-4 w-4 animate-spin" />}
+          </button>
+          {showSummary && summary && (
+            <div className="space-y-3 border-t p-3 text-sm">
+              {summary.summary_overview && (
+                <p className="whitespace-pre-wrap">{summary.summary_overview}</p>
+              )}
+              {(summary.summary_details ?? [])
+                .filter((d) => d?.summary?.trim())
+                .map((d, i) => (
+                  <div key={i}>
+                    {d.label && <p className="font-medium">{d.label}</p>}
+                    <p className="whitespace-pre-wrap text-muted-foreground">{d.summary}</p>
+                  </div>
+                ))}
+              {(summary.next_steps ?? []).length > 0 && (
+                <div>
+                  <p className="font-medium">Next steps</p>
+                  <ul className="list-disc pl-5 text-muted-foreground">
+                    {summary.next_steps!.map((s, i) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">Generated by Zoom AI Companion</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Participants (lazy) */}
+      <div className="mt-3 rounded-lg border">
+        <button
+          type="button"
+          onClick={() => {
+            setShowParticipants((v) => !v)
+            void loadDetail()
+          }}
+          className="flex w-full items-center gap-2 p-3 text-sm font-medium"
+        >
+          {showParticipants ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          <Users className="h-4 w-4" />
+          Participants
+          {rec.participants_count ? (
+            <span className="text-xs font-normal text-muted-foreground">
+              ({rec.participants_count})
+            </span>
+          ) : null}
+          {detailLoading && showParticipants && <Loader2 className="ml-auto h-4 w-4 animate-spin" />}
+        </button>
+        {showParticipants && detail && (
+          <div className="border-t p-3 text-sm">
+            {participants.length === 0 ? (
+              <p className="text-muted-foreground">
+                No participant data synced yet for this meeting.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {participants.map((p, i) => {
+                  const label = p.contact_name || p.name || p.email || "Unknown"
+                  const mins = p.duration ? Math.round(p.duration / 60) : null
+                  return p.contact_id ? (
+                    <a
+                      key={i}
+                      href={`/clients/${p.contact_id}`}
+                      className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 px-2 py-0.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                      title={p.email || undefined}
+                    >
+                      {label}
+                      {mins ? <span className="text-muted-foreground">· {mins}m</span> : null}
+                    </a>
+                  ) : (
+                    <span
+                      key={i}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
+                        p.internal_user ? "text-muted-foreground" : ""
+                      }`}
+                      title={p.email || undefined}
+                    >
+                      {label}
+                      {mins ? <span className="text-muted-foreground">· {mins}m</span> : null}
+                    </span>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Transcript (lazy) */}
       {rec.has_transcript && (
@@ -430,14 +674,14 @@ function RecordingCard({
             type="button"
             onClick={() => {
               setShowTranscript((v) => !v)
-              void loadTranscript()
+              void loadDetail()
             }}
             className="flex w-full items-center gap-2 p-3 text-sm font-medium"
           >
             {showTranscript ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
             <FileText className="h-4 w-4" />
             Transcript
-            {transcriptLoading && <Loader2 className="ml-auto h-4 w-4 animate-spin" />}
+            {detailLoading && showTranscript && <Loader2 className="ml-auto h-4 w-4 animate-spin" />}
           </button>
           {showTranscript && transcript && (
             <div className="max-h-80 space-y-2 overflow-y-auto border-t p-3 text-sm">

@@ -750,6 +750,8 @@ function LineRow({
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-3">
+          {/* Internal slugs (fs_hoh, dep_name, digital_assets) are DB keys,
+              not IRS line numbers — render an empty spacer to keep alignment. */}
           {/^\d{1,2}[a-z]?$/.test(line.lineCode) ? (
             <span className="text-xs font-mono text-muted-foreground/60 w-16 flex-shrink-0 truncate">
               {line.lineCode}

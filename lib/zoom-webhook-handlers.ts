@@ -28,6 +28,7 @@
 
 import { createAdminClient } from "@/lib/supabase/server"
 import { ingestRecordingFiles, mergeBlobLinks, type ZoomRecordingFile } from "@/lib/zoom/ingest-recording-files"
+import { upsertZoomMeetingSummary, type ZoomMeetingSummary } from "@/lib/zoom/ingest-ai-summary"
 import type { ZoomWebhookPayload } from "@/lib/zoom-webhook"
 
 export type HandlerResult =
@@ -99,6 +100,12 @@ async function handleRecordingCompleted(payload: ZoomWebhookPayload): Promise<Ha
       recording_count: obj.recording_count ?? recordingFiles.length,
       recording_files: recordingFiles,
       share_url: obj.share_url ?? null,
+      zoom_host_id: obj.host_id ?? null,
+      host_email: obj.host_email ?? null,
+      meeting_type: obj.type ?? null,
+      timezone: obj.timezone ?? null,
+      zoom_account_id: obj.account_id ?? null,
+      recording_play_passcode: obj.recording_play_passcode ?? null,
       team_member_id: attribution.teamMemberId,
       zoom_connection_id: attribution.connectionId,
       raw_data: payload as unknown as Record<string, unknown>,
@@ -338,6 +345,20 @@ async function handleSummaryCompleted(payload: ZoomWebhookPayload): Promise<Hand
     console.error("[v0] [Zoom Webhook] summary update failed:", error)
     return { ok: false, action: "meeting.summary_completed", error: error.message }
   }
+
+  // Also persist the structured summary to the dedicated
+  // zoom_meeting_summaries table (full-fidelity store; upserts on the
+  // meeting uuid so webhook + REST sweeps converge on one row).
+  try {
+    await upsertZoomMeetingSummary(
+      admin,
+      { id: row.id, zoom_uuid: summaryUuid, zoom_meeting_id: summaryMeetingId ?? null },
+      (payload.payload?.object ?? {}) as ZoomMeetingSummary,
+    )
+  } catch (err) {
+    console.warn("[v0] [Zoom Webhook] zoom_meeting_summaries persist failed (non-fatal):", err)
+  }
+
   return { ok: true, action: "meeting.summary_completed", details: { meeting_id: row.id } }
 }
 
@@ -415,6 +436,9 @@ interface ZoomRecordingObject {
   host_id?: string
   host_email?: string
   account_id?: string
+  type?: number
+  timezone?: string
+  recording_play_passcode?: string
   start_time?: string
   duration?: number
   total_size?: number
