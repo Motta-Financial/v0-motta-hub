@@ -40,6 +40,30 @@ interface ZoomParticipant {
   participant_user_id?: string | null
   status?: string | null
   duration?: number | null
+  join_time?: string | null
+  leave_time?: string | null
+  registrant_id?: string | null
+  failover?: boolean | null
+  internal_user?: boolean | null
+  [key: string]: unknown
+}
+
+/** Shape of `GET /past_meetings/{uuid}` — the post-meeting rollup. */
+interface ZoomPastMeetingDetails {
+  uuid?: string
+  id?: number
+  host_id?: string
+  type?: number
+  topic?: string
+  user_name?: string
+  user_email?: string
+  start_time?: string
+  end_time?: string
+  duration?: number
+  total_minutes?: number
+  participants_count?: number
+  dept?: string
+  source?: string
 }
 
 export interface ProcessResult {
@@ -50,6 +74,10 @@ export interface ProcessResult {
   linksWritten: number
   bridgedFromCalendly: number
   alfredTagged: number
+  /** Rows written to zoom_meeting_participants (full-fidelity import). */
+  participantsPersisted?: number
+  /** Meetings whose /past_meetings rollup (participants_count etc.) was stored. */
+  pastDetailsSynced?: number
   errors: Array<{ meeting_uuid: string; error: string }>
 }
 
@@ -95,6 +123,119 @@ async function fetchParticipants(
   }
   const data = (await res.json()) as { participants?: ZoomParticipant[] }
   return data.participants ?? []
+}
+
+/**
+ * Fetch the post-meeting rollup (`GET /past_meetings/{uuid}`): actual
+ * start/end, participants_count, total_minutes, host name/dept/source.
+ * Returns null on 404 or a scope error — the caller treats it as
+ * best-effort enrichment, never a blocker.
+ */
+async function fetchPastMeetingDetails(
+  zoomGet: ZoomApiFetcher,
+  meetingUuid: string,
+): Promise<ZoomPastMeetingDetails | null> {
+  const res = await zoomGet(
+    `https://api.zoom.us/v2/past_meetings/${encodeMeetingUuid(meetingUuid)}`,
+  )
+  if (!res.ok) return null
+  return (await res.json()) as ZoomPastMeetingDetails
+}
+
+/**
+ * Replace the persisted participant rows for one meeting with the fresh
+ * list from Zoom. Delete-then-insert keeps the operation idempotent
+ * without needing an upsert key across nullable columns (a person can
+ * legitimately appear N times — once per join session).
+ */
+async function persistParticipants(
+  supabase: SupabaseClient,
+  meeting: { id: string; zoom_uuid: string | null; zoom_meeting_id: string },
+  participants: ZoomParticipant[],
+  contactByEmail: Map<string, string>,
+  methodByEmail: Map<string, string>,
+): Promise<number> {
+  const { error: delErr } = await supabase
+    .from("zoom_meeting_participants")
+    .delete()
+    .eq("zoom_meeting_id", meeting.id)
+  if (delErr) throw new Error(`participants delete: ${delErr.message}`)
+
+  if (participants.length === 0) return 0
+
+  const numericId = Number(meeting.zoom_meeting_id)
+  const nowIso = new Date().toISOString()
+  const rows = participants.map((p) => {
+    const email = (p.user_email || p.email || "").trim().toLowerCase() || null
+    return {
+      zoom_meeting_id: meeting.id,
+      zoom_meeting_uuid: meeting.zoom_uuid,
+      zoom_meeting_numeric_id: Number.isFinite(numericId) ? numericId : null,
+      zoom_participant_id: p.id || null,
+      zoom_user_id: p.user_id || null,
+      participant_user_id: p.participant_user_id || null,
+      name: (p.name || "").trim() || null,
+      email,
+      join_time: p.join_time || null,
+      leave_time: p.leave_time || null,
+      duration: typeof p.duration === "number" ? p.duration : null,
+      registrant_id: p.registrant_id || null,
+      failover: typeof p.failover === "boolean" ? p.failover : null,
+      status: p.status || null,
+      internal_user: typeof p.internal_user === "boolean" ? p.internal_user : null,
+      contact_id: email ? contactByEmail.get(email) ?? null : null,
+      match_method: email ? methodByEmail.get(email) ?? null : null,
+      raw_data: p,
+      synced_at: nowIso,
+    }
+  })
+
+  const { error: insErr } = await supabase.from("zoom_meeting_participants").insert(rows)
+  if (insErr) throw new Error(`participants insert: ${insErr.message}`)
+  return rows.length
+}
+
+/**
+ * Recover an email for a name-only participant from the synced Zoom
+ * contact directory (`zoom_contacts`). Guests frequently join without
+ * exposing an email; if exactly ONE directory contact carries that
+ * display name, its email is trustworthy enough to resolve against the
+ * Hub. Ambiguous names (0 or 2+ distinct emails) return null.
+ */
+async function lookupZoomContactEmailByName(
+  supabase: SupabaseClient,
+  name: string,
+): Promise<string | null> {
+  const needle = name.trim()
+  if (needle.length < 3) return null
+
+  const { data } = await supabase
+    .from("zoom_contacts")
+    .select("email, display_name, first_name, last_name")
+    .eq("contact_type", "external")
+    .not("email", "is", null)
+    .ilike("display_name", needle)
+    .limit(5)
+
+  let candidates = data ?? []
+  if (candidates.length === 0) {
+    const parts = needle.split(/\s+/)
+    if (parts.length < 2) return null
+    const { data: byParts } = await supabase
+      .from("zoom_contacts")
+      .select("email, display_name, first_name, last_name")
+      .eq("contact_type", "external")
+      .not("email", "is", null)
+      .ilike("first_name", parts[0])
+      .ilike("last_name", parts[parts.length - 1])
+      .limit(5)
+    candidates = byParts ?? []
+  }
+
+  const emails = Array.from(
+    new Set(candidates.map((c) => (c.email || "").toLowerCase()).filter(Boolean)),
+  )
+  return emails.length === 1 ? emails[0] : null
 }
 
 /**
@@ -215,8 +356,14 @@ export async function processOneMeeting(
   const seenEmails = new Set<string>()
   const seenNamesNoEmail = new Set<string>()
 
+  // Resolution maps keyed on the participant's (possibly recovered)
+  // email, consumed by persistParticipants so every stored row carries
+  // its Hub contact link.
+  const contactByEmail = new Map<string, string>()
+  const methodByEmail = new Map<string, string>()
+
   for (const p of participants) {
-    const email = (p.user_email || p.email || "").trim().toLowerCase() || null
+    let email = (p.user_email || p.email || "").trim().toLowerCase() || null
     const name = (p.name || "").trim() || null
     if (!email && !name) continue
 
@@ -227,6 +374,25 @@ export async function processOneMeeting(
       const nKey = name.toLowerCase()
       if (seenNamesNoEmail.has(nKey)) continue
       seenNamesNoEmail.add(nKey)
+    }
+
+    // Guests often join without exposing an email. If the synced Zoom
+    // contact directory has exactly one external contact with this
+    // display name, adopt its email so the Hub resolution below can
+    // match instead of creating a bare name-only contact.
+    let emailFromDirectory = false
+    if (!email && name) {
+      try {
+        const recovered = await lookupZoomContactEmailByName(supabase, name)
+        if (recovered) {
+          email = recovered
+          emailFromDirectory = true
+          if (seenEmails.has(email)) continue
+          seenEmails.add(email)
+        }
+      } catch {
+        // Directory lookup is best-effort only.
+      }
     }
 
     try {
@@ -249,6 +415,16 @@ export async function processOneMeeting(
       if (created.created) result.contactsCreated += 1
       else result.contactsMatched += 1
 
+      const matchMethod = emailFromDirectory
+        ? "zoom_contact_directory"
+        : created.created
+          ? "auto_created"
+          : created.method
+      if (email) {
+        contactByEmail.set(email, created.contact_id)
+        methodByEmail.set(email, matchMethod)
+      }
+
       // Link to zoom_meeting_clients with link_source='auto'. The
       // table mirrors `calendly_event_clients` so the existing tag UI
       // renders these the same way.
@@ -259,7 +435,7 @@ export async function processOneMeeting(
             zoom_meeting_id: meeting.id,
             contact_id: created.contact_id,
             link_source: "auto",
-            match_method: created.created ? "auto_created" : created.method,
+            match_method: matchMethod,
           },
           { onConflict: "zoom_meeting_id,contact_id", ignoreDuplicates: true },
         )
@@ -277,6 +453,49 @@ export async function processOneMeeting(
       )
       enrichedParticipants.push({ name, email, matched_contact_id: null })
     }
+  }
+
+  // ── Persist the full participant list ──────────────────────────
+  // Every row Zoom returned (one per join session, all fields) lands in
+  // zoom_meeting_participants with its resolved Hub contact. Replaced
+  // wholesale per meeting, so re-runs stay idempotent.
+  try {
+    const persisted = await persistParticipants(
+      supabase,
+      { id: meeting.id, zoom_uuid: meeting.zoom_uuid, zoom_meeting_id: meeting.zoom_meeting_id },
+      participants,
+      contactByEmail,
+      methodByEmail,
+    )
+    result.participantsPersisted = (result.participantsPersisted ?? 0) + persisted
+  } catch (err) {
+    console.warn("[v0] [zoom participants] persist failed (non-fatal):", err)
+  }
+
+  // ── Past-meeting rollup ─────────────────────────────────────────
+  // Actual start/end, participants_count, total_minutes, host name/dept
+  // from GET /past_meetings/{uuid}. Best-effort enrichment.
+  try {
+    const details = await fetchPastMeetingDetails(zoomGet, meeting.zoom_uuid)
+    if (details) {
+      // Only write fields Zoom actually sent — a partial payload must
+      // not null out webhook-stamped started_at/ended_at.
+      const update: Record<string, unknown> = {
+        past_details_synced_at: new Date().toISOString(),
+      }
+      if (details.participants_count != null) update.participants_count = details.participants_count
+      if (details.total_minutes != null) update.total_minutes = details.total_minutes
+      if (details.user_name) update.host_name = details.user_name
+      if (details.dept) update.dept = details.dept
+      if (details.source) update.meeting_source = details.source
+      if (details.start_time) update.started_at = details.start_time
+      if (details.end_time) update.ended_at = details.end_time
+
+      await supabase.from("zoom_meetings").update(update).eq("id", meeting.id)
+      result.pastDetailsSynced = (result.pastDetailsSynced ?? 0) + 1
+    }
+  } catch (err) {
+    console.warn("[v0] [zoom participants] past-details fetch failed (non-fatal):", err)
   }
 
   // ── Calendly → Zoom bridge ──────────────────────────────────────
