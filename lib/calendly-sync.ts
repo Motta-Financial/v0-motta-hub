@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/server"
 import {
+  CalendlyApiError,
   calendlyListAll,
   calendlyRequest,
   ensureOrgWebhookSubscription,
@@ -667,8 +668,45 @@ async function syncEventsForConnection(
 }
 
 /**
+ * Connections eligible to read ORG-level resources, best guess first.
+ *
+ * Calendly only lets organization owners/admins list org-wide scheduled
+ * events and routing forms; regular members get 403. We can't read a
+ * user's role directly from the connection row, but the connection that
+ * successfully created the org-scope webhook subscription has already
+ * PROVEN it holds an admin role — so it goes first, and the rest are
+ * fallbacks tried on 403.
+ */
+async function orgLensCandidates(
+  supabase: AdminSupabase,
+  connections: CalendlyConnectionRow[],
+): Promise<CalendlyConnectionRow[]> {
+  const candidates = connections.filter((c) => c.calendly_organization_uri)
+  if (candidates.length <= 1) return candidates
+
+  const { data } = await supabase
+    .from("calendly_webhook_subscriptions")
+    .select("connection_id")
+    .eq("scope", "organization")
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const provenAdminId = data?.connection_id
+  if (!provenAdminId) return candidates
+  return [
+    ...candidates.filter((c) => c.id === provenAdminId),
+    ...candidates.filter((c) => c.id !== provenAdminId),
+  ]
+}
+
+/** True for Calendly "Permission Denied" — the lens lacks the org role. */
+function isPermissionDenied(err: unknown): boolean {
+  return err instanceof CalendlyApiError && err.status === 403
+}
+
+/**
  * Org-wide catch-all pass: lists the organization's scheduled events with
- * one healthy connection and ingests any event whose host has NO active
+ * an org-admin connection and ingests any event whose host has NO active
  * connection of their own (expired token / never connected). Those
  * bookings were previously invisible to the Hub until the host
  * reauthorized — real bookings from real clients, silently missing.
@@ -680,8 +718,8 @@ async function syncOrgWideEvents(
   maxStart: string,
   errors: string[],
 ): Promise<number> {
-  const lens = connections.find((c) => c.calendly_organization_uri)
-  if (!lens?.calendly_organization_uri) return 0
+  const candidates = await orgLensCandidates(supabase, connections)
+  if (candidates.length === 0) return 0
 
   const coveredUserUris = new Set(connections.map((c) => c.calendly_user_uri))
   let ingested = 0
@@ -697,23 +735,51 @@ async function syncOrgWideEvents(
     if (tm.email) teamMemberByEmail.set(String(tm.email).toLowerCase(), tm.id)
   }
 
+  // Once a lens proves usable it serves both statuses; a 403 rotates to
+  // the next candidate instead of surfacing as a per-run error.
+  let lens: CalendlyConnectionRow | null = null
+
   for (const status of ["active", "canceled"]) {
-    let events: any[] = []
-    try {
-      events = await calendlyListAll<any>(lens, supabase, "/scheduled_events", {
-        query: {
-          organization: lens.calendly_organization_uri,
-          min_start_time: minStart,
-          max_start_time: maxStart,
-          status,
-          count: 100,
-          sort: "start_time:asc",
-        },
-      })
-    } catch (err) {
-      errors.push(
-        `org events fetch ${status}: ${err instanceof Error ? err.message : String(err)}`,
-      )
+    let events: any[] | null = null
+    let usedLens: CalendlyConnectionRow | null = lens
+    let nonPermissionError = false
+    const pool: CalendlyConnectionRow[] = lens ? [lens] : candidates
+    for (const candidate of pool) {
+      try {
+        events = await calendlyListAll<any>(candidate, supabase, "/scheduled_events", {
+          query: {
+            organization: candidate.calendly_organization_uri,
+            min_start_time: minStart,
+            max_start_time: maxStart,
+            status,
+            count: 100,
+            sort: "start_time:asc",
+          },
+        })
+        lens = candidate
+        usedLens = candidate
+        break
+      } catch (err) {
+        if (isPermissionDenied(err)) continue
+        nonPermissionError = true
+        errors.push(
+          `org events fetch ${status} (${candidate.calendly_user_email}): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+        break
+      }
+    }
+    if (events === null || usedLens === null) {
+      if (!lens && !nonPermissionError) {
+        // Every candidate 403'd — org-wide reads are impossible until an
+        // org owner/admin connects. Not an error worth paging on: log
+        // once and let the per-connection sync carry the load.
+        console.log(
+          "[calendly-sync] org catch-all skipped: no connection with org-admin role",
+        )
+        return ingested
+      }
       continue
     }
 
@@ -733,7 +799,7 @@ async function syncOrgWideEvents(
     for (const event of uncovered) {
       const host = event.event_memberships?.[0] ?? {}
       const hostEmail = host.user_email ? String(host.user_email).toLowerCase() : null
-      const result = await processScheduledEvent(lens, supabase, event, known, errors, {
+      const result = await processScheduledEvent(usedLens, supabase, event, known, errors, {
         connectionId: null,
         teamMemberId: hostEmail ? (teamMemberByEmail.get(hostEmail) ?? null) : null,
         userUri: host.user ?? null,
@@ -763,19 +829,37 @@ async function syncRoutingForms(
   connections: CalendlyConnectionRow[],
   errors: string[],
 ): Promise<{ forms: number; submissions: number }> {
-  const lens = connections.find((c) => c.calendly_organization_uri)
-  if (!lens?.calendly_organization_uri) return { forms: 0, submissions: 0 }
+  const candidates = await orgLensCandidates(supabase, connections)
+  if (candidates.length === 0) return { forms: 0, submissions: 0 }
 
   let forms = 0
   let submissions = 0
 
-  let formList: any[] = []
-  try {
-    formList = await calendlyListAll<any>(lens, supabase, "/routing_forms", {
-      query: { organization: lens.calendly_organization_uri, count: 100 },
-    })
-  } catch (err) {
-    errors.push(`routing_forms fetch: ${err instanceof Error ? err.message : String(err)}`)
+  // Same 403-rotation as the org-wide event pass: routing forms are an
+  // org-level read that only owner/admin connections can perform.
+  let lens: CalendlyConnectionRow | null = null
+  let formList: any[] | null = null
+  for (const candidate of candidates) {
+    try {
+      formList = await calendlyListAll<any>(candidate, supabase, "/routing_forms", {
+        query: { organization: candidate.calendly_organization_uri, count: 100 },
+      })
+      lens = candidate
+      break
+    } catch (err) {
+      if (isPermissionDenied(err)) continue
+      errors.push(
+        `routing_forms fetch (${candidate.calendly_user_email}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+      return { forms: 0, submissions: 0 }
+    }
+  }
+  if (!lens || formList === null) {
+    console.log(
+      "[calendly-sync] routing forms skipped: no connection with org-admin role",
+    )
     return { forms: 0, submissions: 0 }
   }
 
