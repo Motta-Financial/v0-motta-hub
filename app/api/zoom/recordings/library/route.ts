@@ -1,5 +1,5 @@
 /**
- * GET /api/zoom/recordings/library?q=<search>&limit=<n>&offset=<n>
+ * GET /api/zoom/recordings/library
  *
  * DB-backed list of cloud recordings for the in-Hub Recordings library.
  * Available to ANY signed-in team member (not just admins) — recordings are a
@@ -7,13 +7,21 @@
  * service-role tables (zoom_recordings / zoom_meetings / zoom_meeting_clients)
  * with the admin client, exactly like the per-meeting recordings endpoint.
  *
+ * Query params:
+ *   q              — topic search
+ *   hostId         — filter to one team member's recordings
+ *   from / to      — inclusive date range (YYYY-MM-DD) on start_time
+ *   hasTranscript  — 'true' → only recordings with a parsed transcript
+ *   include=hosts  — also return the distinct host list (for the filter UI)
+ *   limit / offset — pagination
+ *
  * Each recording is returned with:
  *   • sanitized `recording_files` (NO raw Zoom download_url — only id /
  *     file_type / blob_pathname / a `playable` flag so the UI can stream the
  *     file in-Hub via /api/zoom/recordings/stream)
  *   • `clients` — the client/org names tagged to the parent meeting
- *   • `has_transcript` — whether a parsed transcript exists (lazy-loaded on
- *     expand via the per-meeting endpoint)
+ *   • `host` — host display name/email (team member when attributed)
+ *   • `has_transcript` / `has_summary` / `participants_count`
  *
  * Raw download URLs are deliberately stripped; playback + download always go
  * through the authenticated in-Hub proxies.
@@ -43,43 +51,96 @@ export async function GET(req: NextRequest) {
   } = await ssr.auth.getUser()
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  const q = (req.nextUrl.searchParams.get("q") || "").trim()
-  const limit = Math.min(Math.max(Number(req.nextUrl.searchParams.get("limit")) || 30, 1), 100)
-  const offset = Math.max(Number(req.nextUrl.searchParams.get("offset")) || 0, 0)
+  const sp = req.nextUrl.searchParams
+  const q = (sp.get("q") || "").trim()
+  const hostId = (sp.get("hostId") || "").trim()
+  const fromParam = (sp.get("from") || "").trim()
+  const toParam = (sp.get("to") || "").trim()
+  const hasTranscript = sp.get("hasTranscript") === "true"
+  const includeHosts = (sp.get("include") || "").split(",").includes("hosts")
+  const limit = Math.min(Math.max(Number(sp.get("limit")) || 30, 1), 100)
+  const offset = Math.max(Number(sp.get("offset")) || 0, 0)
 
   const admin = createAdminClient()
+
+  // ── 0. Optional pre-filter: meeting ids that have a parsed transcript ──
+  let transcriptIds: number[] | null = null
+  if (hasTranscript) {
+    const { data: tRows } = await admin
+      .from("zoom_transcripts")
+      .select("zoom_meeting_id")
+      .eq("status", "parsed")
+      .not("text_content", "is", null)
+      .neq("text_content", "")
+      .not("zoom_meeting_id", "is", null)
+      .order("updated_at", { ascending: false })
+      .limit(1000)
+    transcriptIds = Array.from(new Set((tRows ?? []).map((t) => t.zoom_meeting_id as number)))
+    if (transcriptIds.length === 0) {
+      return NextResponse.json({ recordings: [], total: 0, limit, offset, hosts: [] })
+    }
+  }
 
   // ── 1. Recordings page (newest first) ─────────────────────────────────
   let recQuery = admin
     .from("zoom_recordings")
     .select(
-      "id, zoom_uuid, zoom_meeting_id, topic, start_time, duration, total_size, recording_count, recording_files",
+      `id, zoom_uuid, zoom_meeting_id, topic, start_time, duration, total_size,
+       recording_count, recording_files, host_email, timezone, team_member_id,
+       team_members:team_member_id(id, full_name)`,
       { count: "exact" },
     )
     .order("start_time", { ascending: false, nullsFirst: false })
     .range(offset, offset + limit - 1)
 
   if (q) recQuery = recQuery.ilike("topic", `%${q}%`)
+  if (hostId) recQuery = recQuery.eq("team_member_id", hostId)
+  if (fromParam) recQuery = recQuery.gte("start_time", `${fromParam}T00:00:00Z`)
+  if (toParam) recQuery = recQuery.lte("start_time", `${toParam}T23:59:59Z`)
+  if (transcriptIds) recQuery = recQuery.in("zoom_meeting_id", transcriptIds)
 
   const { data: recRows, error: recErr, count } = await recQuery
   if (recErr) return NextResponse.json({ error: recErr.message }, { status: 500 })
 
-  const rows = recRows ?? []
-  if (rows.length === 0) {
-    return NextResponse.json({ recordings: [], total: count ?? 0, limit, offset })
+  // ── 1b. Distinct host list for the filter dropdown (first page only) ───
+  let hosts: Array<{ id: string; name: string }> = []
+  if (includeHosts) {
+    const { data: hostRows } = await admin
+      .from("zoom_recordings")
+      .select("team_member_id, team_members:team_member_id(id, full_name)")
+      .not("team_member_id", "is", null)
+      .limit(2000)
+    const seen = new Map<string, string>()
+    for (const h of hostRows ?? []) {
+      const tm = (h as { team_members?: { id?: string; full_name?: string } | null }).team_members
+      if (tm?.id && tm.full_name && !seen.has(tm.id)) seen.set(tm.id, tm.full_name)
+    }
+    hosts = Array.from(seen.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name))
   }
 
-  // ── 2. Map the bigint Zoom meeting ids → meeting uuids for tag joins ───
+  const rows = recRows ?? []
+  if (rows.length === 0) {
+    return NextResponse.json({ recordings: [], total: count ?? 0, limit, offset, hosts })
+  }
+
+  // ── 2. Map the bigint Zoom meeting ids → meeting rows for joins ────────
   const numericIds = Array.from(
     new Set(rows.map((r) => r.zoom_meeting_id).filter((v): v is number => v != null)),
   )
 
   const meetingUuidByNumeric = new Map<number, string>()
+  const participantsCountByNumeric = new Map<number, number>()
   const transcriptByNumeric = new Map<number, boolean>()
+  const summaryByNumeric = new Map<number, boolean>()
 
   if (numericIds.length > 0) {
-    const [meetingsRes, transcriptsRes] = await Promise.all([
-      admin.from("zoom_meetings").select("id, zoom_meeting_id").in("zoom_meeting_id", numericIds),
+    const [meetingsRes, transcriptsRes, summariesRes] = await Promise.all([
+      admin
+        .from("zoom_meetings")
+        .select("id, zoom_meeting_id, participants_count")
+        .in("zoom_meeting_id", numericIds),
       admin
         .from("zoom_transcripts")
         // Only the id — filtering on status/text_content server-side means
@@ -90,15 +151,24 @@ export async function GET(req: NextRequest) {
         .not("text_content", "is", null)
         .neq("text_content", "")
         .in("zoom_meeting_id", numericIds),
+      admin
+        .from("zoom_meeting_summaries")
+        .select("zoom_meeting_numeric_id")
+        .in("zoom_meeting_numeric_id", numericIds),
     ])
 
     for (const m of meetingsRes.data ?? []) {
-      if (m.zoom_meeting_id != null && m.id) meetingUuidByNumeric.set(m.zoom_meeting_id, m.id)
+      if (m.zoom_meeting_id == null || !m.id) continue
+      meetingUuidByNumeric.set(m.zoom_meeting_id, m.id)
+      if (m.participants_count != null) {
+        participantsCountByNumeric.set(m.zoom_meeting_id, m.participants_count)
+      }
     }
     for (const t of transcriptsRes.data ?? []) {
-      if (t.zoom_meeting_id != null) {
-        transcriptByNumeric.set(t.zoom_meeting_id, true)
-      }
+      if (t.zoom_meeting_id != null) transcriptByNumeric.set(t.zoom_meeting_id, true)
+    }
+    for (const s of summariesRes.data ?? []) {
+      if (s.zoom_meeting_numeric_id != null) summaryByNumeric.set(s.zoom_meeting_numeric_id, true)
     }
   }
 
@@ -131,6 +201,7 @@ export async function GET(req: NextRequest) {
   const recordings = rows.map((r) => {
     const meetingUuid = r.zoom_meeting_id != null ? meetingUuidByNumeric.get(r.zoom_meeting_id) : undefined
     const files = Array.isArray(r.recording_files) ? (r.recording_files as ZoomFile[]) : []
+    const tm = (r as { team_members?: { id?: string; full_name?: string } | null }).team_members
     return {
       id: r.id,
       zoom_uuid: r.zoom_uuid,
@@ -140,6 +211,12 @@ export async function GET(req: NextRequest) {
       duration: r.duration,
       total_size: r.total_size,
       recording_count: r.recording_count,
+      timezone: (r as { timezone?: string | null }).timezone ?? null,
+      host: {
+        team_member_id: tm?.id ?? null,
+        name: tm?.full_name ?? null,
+        email: (r as { host_email?: string | null }).host_email ?? null,
+      },
       recording_files: files.map((f) => ({
         id: f.id,
         file_type: f.file_type,
@@ -150,9 +227,14 @@ export async function GET(req: NextRequest) {
         playable: Boolean(f.blob_pathname || f.download_url),
       })),
       clients: meetingUuid ? clientsByMeetingUuid.get(meetingUuid) ?? [] : [],
-      has_transcript: r.zoom_meeting_id != null ? transcriptByNumeric.get(r.zoom_meeting_id) === true : false,
+      has_transcript:
+        r.zoom_meeting_id != null ? transcriptByNumeric.get(r.zoom_meeting_id) === true : false,
+      has_summary:
+        r.zoom_meeting_id != null ? summaryByNumeric.get(r.zoom_meeting_id) === true : false,
+      participants_count:
+        r.zoom_meeting_id != null ? participantsCountByNumeric.get(r.zoom_meeting_id) ?? null : null,
     }
   })
 
-  return NextResponse.json({ recordings, total: count ?? recordings.length, limit, offset })
+  return NextResponse.json({ recordings, total: count ?? recordings.length, limit, offset, hosts })
 }

@@ -23,7 +23,8 @@ import { createAdminClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/auth/require-admin"
 import { isS2SConfigured, s2sFetch } from "@/lib/zoom/s2s-auth"
 import { sweepAccountLinking } from "@/lib/zoom/sweep-account-linking"
-import { ingestPendingZoomAiSummaries } from "@/lib/zoom/ingest-ai-summary"
+import { ingestPendingZoomAiSummaries, syncZoomMeetingSummaries } from "@/lib/zoom/ingest-ai-summary"
+import { syncZoomContacts } from "@/lib/zoom/sync-contacts"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -59,16 +60,46 @@ async function runSweep(params: {
     { limit: params.aiSummaryLimit, sinceDays: params.sinceDays },
   )
 
+  // Full-fidelity AI-summary corpus: persist Zoom AI Companion summaries
+  // for recent meetings that don't have a stored row yet (independent of
+  // client links / transcripts). Bounded per run; drains over the hours.
+  const summarySweep = await syncZoomMeetingSummaries(supabase, (url) => s2sFetch(url), {
+    limit: params.aiSummaryLimit,
+    sinceDays: Math.min(params.sinceDays, 90),
+  })
+
+  // Zoom Team Chat contact directories → zoom_contacts (+ Hub links).
+  // Directories change slowly, so skip when the last sync is <6h old —
+  // this keeps the hourly invocation inside its time budget. Manual
+  // syncs go through POST /api/zoom/contacts, which has no gate.
+  // Per-connection scope failures are reported inside the result and
+  // never break the sweep.
+  let contacts: Awaited<ReturnType<typeof syncZoomContacts>> | { skipped: true } = {
+    skipped: true as const,
+  }
+  const { data: freshest } = await supabase
+    .from("zoom_contacts")
+    .select("synced_at")
+    .order("synced_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const staleMs = 6 * 60 * 60 * 1000
+  if (!freshest?.synced_at || Date.now() - new Date(freshest.synced_at).getTime() > staleMs) {
+    contacts = await syncZoomContacts({ supabase })
+  }
+
   const ms = Date.now() - startedAt
   console.log(
     `[v0] [Zoom Link Sweep]${linking.retryPass ? ":retry" : ""} ` +
       `scanned=${linking.meetingsScanned} links=${linking.linksWritten} ` +
       `bridged=${linking.bridgedFromCalendly} alfred=${linking.alfredTagged} ` +
       `aiSummaries=${aiSummaries.ingested}/${aiSummaries.updated} ` +
+      `summaryRows=${summarySweep.stored} ` +
+      `zoomContacts=${"skipped" in contacts ? "skipped" : `${contacts.contactsUpserted}/${contacts.contactsSeen}`} ` +
       `linkErrors=${linking.errors.length} (${ms}ms)`,
   )
 
-  return { ok: true, linking, aiSummaries, ms }
+  return { ok: true, linking, aiSummaries, summarySweep, contacts, ms }
 }
 
 export async function GET(req: NextRequest) {
