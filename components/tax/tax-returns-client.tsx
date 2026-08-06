@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useEffect } from "react"
 import useSWR from "swr"
+import Link from "next/link"
 import { ReturnRelationshipChip } from "@/components/tax/return-relationship-chip"
 import {
   FileText,
@@ -418,6 +419,7 @@ export function TaxReturnsClient() {
                     <TableHead className="w-[120px]">Preparer</TableHead>
                     <TableHead className="w-[110px]">Related</TableHead>
                     <TableHead className="w-[140px]">Modified</TableHead>
+                    <TableHead className="w-[80px]">View</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -472,6 +474,18 @@ export function TaxReturnsClient() {
                         {r.proconnect_modified_at
                           ? new Date(r.proconnect_modified_at).toLocaleDateString()
                           : "—"}
+                      </TableCell>
+                      <TableCell>
+                        {r.form === "1040" ? (
+                          <Link
+                            href={`/tax/returns/${r.id}/1040${r.proconnect_client_id ? `?clientId=${r.proconnect_client_id}` : ""}`}
+                            className="text-xs font-medium text-[#9CA757] hover:underline whitespace-nowrap"
+                          >
+                            View 1040
+                          </Link>
+                        ) : (
+                          <span className="text-xs text-muted-foreground/40">—</span>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))}
