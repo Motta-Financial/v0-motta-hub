@@ -324,13 +324,41 @@ function LoginContent() {
         return
       }
 
-      const { data: teamMember, error: teamError } = await supabase
+      // Primary lookup: match by auth_user_id (most reliable).
+      // Fallback: match by email — covers team members whose row was
+      // created before auth_user_id was backfilled, or whose
+      // auth_user_id was reset by a Supabase admin action.
+      let teamMember: { id: string; full_name: string | null; is_active: boolean; auth_user_id: string | null } | null = null
+
+      const { data: byAuthId, error: authIdError } = await supabase
         .from("team_members")
         .select("id, full_name, is_active, auth_user_id")
         .eq("auth_user_id", authData.user.id)
-        .single()
+        .maybeSingle()
 
-      if (teamError || !teamMember) {
+      if (!authIdError && byAuthId) {
+        teamMember = byAuthId
+      } else {
+        // Fallback: look up by email (case-insensitive via ilike)
+        const { data: byEmail } = await supabase
+          .from("team_members")
+          .select("id, full_name, is_active, auth_user_id")
+          .ilike("email", authData.user.email ?? "")
+          .maybeSingle()
+
+        if (byEmail) {
+          teamMember = byEmail
+          // Backfill auth_user_id so future logins use the fast path.
+          // Fire-and-forget — don't block the login on this write.
+          supabase
+            .from("team_members")
+            .update({ auth_user_id: authData.user.id })
+            .eq("id", byEmail.id)
+            .then(() => {})
+        }
+      }
+
+      if (!teamMember) {
         await supabase.auth.signOut()
         setError("Access denied. You are not registered as a Motta team member.")
         setIsLoading(false)
