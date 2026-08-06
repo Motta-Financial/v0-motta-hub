@@ -311,6 +311,19 @@ function LoginContent() {
         return
       }
 
+      // authData.user can be null when auth succeeds at the network level
+      // but GoTrue returns an empty session (e.g. rate-limit edge cases,
+      // unconfirmed email, or a Supabase quirk where error is null but
+      // the user object isn't populated). Surface a clear message instead
+      // of letting the team_members query below run with a null id and
+      // produce the misleading "Access denied" error.
+      if (!authData?.user) {
+        await supabase.auth.signOut()
+        setError("Sign-in failed — please check your email and password and try again.")
+        setIsLoading(false)
+        return
+      }
+
       const { data: teamMember, error: teamError } = await supabase
         .from("team_members")
         .select("id, full_name, is_active, auth_user_id")
