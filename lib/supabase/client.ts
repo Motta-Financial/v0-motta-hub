@@ -1,6 +1,11 @@
 import { createBrowserClient } from "@supabase/ssr"
 
-let supabaseClient: ReturnType<typeof createBrowserClient> | null = null
+// NOTE: intentionally not cached as a singleton.
+// Caching caused stale session state to persist across sign-in/sign-out
+// cycles (especially with autoRefreshToken: false), so the team_members
+// lookup after signInWithPassword ran with a dead cookie and returned null,
+// showing the misleading "Access denied / not a team member" error.
+// Each call creates a fresh client that reads the current cookie state.
 
 /**
  * Cookie attributes for the browser-issued session cookie.
@@ -36,10 +41,6 @@ function buildBrowserCookieOptions(): {
 }
 
 export function createClient() {
-  if (supabaseClient) {
-    return supabaseClient
-  }
-
   // Surface a clear, actionable error when the public Supabase env vars
   // aren't inlined into the client bundle. This happens when the dev
   // server is built without the NEXT_PUBLIC_* vars in process.env (the
@@ -61,7 +62,7 @@ export function createClient() {
     )
   }
 
-  supabaseClient = createBrowserClient(
+  return createBrowserClient(
     url,
     anonKey,
     {
@@ -113,6 +114,4 @@ export function createClient() {
       },
     },
   )
-
-  return supabaseClient
 }
