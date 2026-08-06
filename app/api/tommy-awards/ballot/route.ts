@@ -2,6 +2,126 @@ import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
 
 /**
+ * GET /api/tommy-awards/ballot
+ *
+ * Fetches initialization data for the voting form that requires server-side
+ * Supabase access (RLS blocks the anon key from reading these tables directly).
+ *
+ * ?type=init  → returns team_members + weeks (for fetchData on mount)
+ * ?type=check&voter_id=<id>&week_id=<id>&voter_name=<name>
+ *             → returns existing ballot row + history (for checkExistingBallot)
+ */
+export async function GET(request: NextRequest) {
+  const { searchParams } = request.nextUrl
+  const type = searchParams.get("type")
+
+  const supabase = await createClient()
+
+  if (type === "init") {
+    const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski", "Matthew Pereira", "Mark Dwyer"]
+    const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
+
+    const [membersResult, weeksResult] = await Promise.all([
+      supabase
+        .from("team_members")
+        .select("id, full_name, email, avatar_url, role")
+        .eq("is_active", true)
+        .not("role", "eq", "Company")
+        .not("role", "eq", "Alumni")
+        .order("full_name"),
+      supabase
+        .from("tommy_award_weeks")
+        .select("id, week_date, week_name, is_active")
+        .order("week_date", { ascending: false }),
+    ])
+
+    if (membersResult.error) {
+      return NextResponse.json({ error: membersResult.error.message }, { status: 500 })
+    }
+    if (weeksResult.error) {
+      return NextResponse.json({ error: weeksResult.error.message }, { status: 500 })
+    }
+
+    const filtered = (membersResult.data || []).filter(
+      (m) => !HIDDEN_MEMBERS.includes(m.full_name) && !COMBINED_VOTERS.includes(m.full_name),
+    )
+    const gtVoter = { id: "P24", full_name: "P24", email: "", avatar_url: null, role: "Combined Voter" }
+    const members = [...filtered, gtVoter].sort((a, b) => a.full_name.localeCompare(b.full_name))
+
+    return NextResponse.json({ members, weeks: weeksResult.data || [] })
+  }
+
+  if (type === "check") {
+    const voterId = searchParams.get("voter_id")
+    const weekId = searchParams.get("week_id")
+    const voterName = searchParams.get("voter_name")
+
+    if (!weekId) {
+      return NextResponse.json({ error: "week_id is required" }, { status: 400 })
+    }
+
+    let ballotQuery
+    if (voterId === "P24") {
+      ballotQuery = supabase
+        .from("tommy_award_ballots")
+        .select("*")
+        .in("voter_name", ["P24", "G&T"])
+        .eq("week_id", weekId)
+        .maybeSingle()
+    } else if (voterId) {
+      ballotQuery = supabase
+        .from("tommy_award_ballots")
+        .select("*")
+        .eq("voter_id", voterId)
+        .eq("week_id", weekId)
+        .maybeSingle()
+    } else if (voterName) {
+      ballotQuery = supabase
+        .from("tommy_award_ballots")
+        .select("*")
+        .eq("voter_name", voterName)
+        .eq("week_id", weekId)
+        .maybeSingle()
+    } else {
+      return NextResponse.json({ error: "voter_id or voter_name required" }, { status: 400 })
+    }
+
+    const { data: ballot, error: ballotError } = await ballotQuery
+
+    if (ballotError) {
+      return NextResponse.json({ error: ballotError.message }, { status: 500 })
+    }
+
+    let history: unknown[] = []
+    if (ballot?.id) {
+      const { data: histData } = await supabase
+        .from("tommy_award_ballot_history")
+        .select("id, change_type, changed_at, changed_by_name, change_summary")
+        .eq("ballot_id", ballot.id)
+        .order("changed_at", { ascending: false })
+      history = histData || []
+    }
+
+    return NextResponse.json({ ballot: ballot || null, history })
+  }
+
+  if (type === "history") {
+    const ballotId = searchParams.get("ballot_id")
+    if (!ballotId) return NextResponse.json({ error: "ballot_id is required" }, { status: 400 })
+
+    const { data: histData } = await supabase
+      .from("tommy_award_ballot_history")
+      .select("id, change_type, changed_at, changed_by_name, change_summary")
+      .eq("ballot_id", ballotId)
+      .order("changed_at", { ascending: false })
+
+    return NextResponse.json({ history: histData || [] })
+  }
+
+  return NextResponse.json({ error: "Invalid type parameter" }, { status: 400 })
+}
+
+/**
  * Server-side Tommy Award ballot submission/amendment.
  *
  * The browser POSTs here (same-origin, motta.cpa) instead of writing to Supabase
