@@ -167,26 +167,32 @@ export function TommyVotingForm() {
       // Prefer entries whose week_date falls on a Friday
       const dedupedWeeks = dedupeWeekList(weeks || [])
 
-      // Ensure current week exists
+      // Ensure current week exists — use the server-side API endpoint so
+      // we don't need INSERT privileges via the browser Supabase client
+      // (direct INSERT can be blocked by RLS or corporate proxies like Zscaler).
       let currentWeek: WeekOption | null = dedupedWeeks.find((w) => w.week_date === fridayStr) ?? null
       
       if (!currentWeek) {
-        const { data: newWeek, error: createError } = await supabase
-          .from("tommy_award_weeks")
-          .insert({
-            week_date: fridayStr,
-            week_name: `Week of ${friday.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`,
-            is_active: true,
+        try {
+          const weekRes = await fetch("/api/tommy-awards/ensure-week", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              week_date: fridayStr,
+              week_name: `Week of ${friday.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`,
+            }),
           })
-          .select()
-          .single()
-
-        if (createError) throw createError
-        currentWeek = newWeek as WeekOption
-        // Add to weeks list
-        if (currentWeek) {
-          setAvailableWeeks([currentWeek, ...dedupedWeeks])
+          if (weekRes.ok) {
+            const weekJson = await weekRes.json()
+            currentWeek = weekJson.week as WeekOption | null
+          } else {
+            console.error("[v0] ensure-week API returned", weekRes.status)
+          }
+        } catch (weekErr) {
+          // Non-fatal: form will still work with existing weeks in the dropdown
+          console.error("[v0] ensure-week request failed:", weekErr)
         }
+        setAvailableWeeks(currentWeek ? [currentWeek, ...dedupedWeeks] : dedupedWeeks)
       } else {
         setAvailableWeeks(dedupedWeeks)
       }
