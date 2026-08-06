@@ -324,48 +324,32 @@ function LoginContent() {
         return
       }
 
-      // Primary lookup: match by auth_user_id (most reliable).
-      // Fallback: match by email — covers team members whose row was
-      // created before auth_user_id was backfilled, or whose
-      // auth_user_id was reset by a Supabase admin action.
-      let teamMember: { id: string; full_name: string | null; is_active: boolean; auth_user_id: string | null } | null = null
-
-      const { data: byAuthId, error: authIdError } = await supabase
-        .from("team_members")
-        .select("id, full_name, is_active, auth_user_id")
-        .eq("auth_user_id", authData.user.id)
-        .maybeSingle()
-
-      if (!authIdError && byAuthId) {
-        teamMember = byAuthId
-      } else {
-        // Fallback: look up by email (case-insensitive via ilike)
-        const { data: byEmail } = await supabase
-          .from("team_members")
-          .select("id, full_name, is_active, auth_user_id")
-          .ilike("email", authData.user.email ?? "")
-          .maybeSingle()
-
-        if (byEmail) {
-          teamMember = byEmail
-          // Backfill auth_user_id so future logins use the fast path.
-          // Fire-and-forget — don't block the login on this write.
-          supabase
-            .from("team_members")
-            .update({ auth_user_id: authData.user.id })
-            .eq("id", byEmail.id)
-            .then(() => {})
+      // Verify team membership server-side via /api/auth/user.
+      // The server route uses the service-role client which reads the
+      // session cookie set by signInWithPassword above — this is more
+      // reliable than a client-side PostgREST query which can race
+      // against cookie propagation and RLS session context.
+      // We give the browser a short window to flush the cookie before
+      // the server read, then retry once if the session isn't ready yet.
+      await new Promise((r) => setTimeout(r, 300))
+      let userPayload: { user: unknown; teamMember: { is_active: boolean } | null } | null = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await fetch("/api/auth/user", { cache: "no-store" })
+        if (res.ok) {
+          userPayload = await res.json()
+          if (userPayload?.user) break
         }
+        await new Promise((r) => setTimeout(r, 400))
       }
 
-      if (!teamMember) {
+      if (!userPayload?.teamMember) {
         await supabase.auth.signOut()
         setError("Access denied. You are not registered as a Motta team member.")
         setIsLoading(false)
         return
       }
 
-      if (!teamMember.is_active) {
+      if (!userPayload.teamMember.is_active) {
         await supabase.auth.signOut()
         setError("Your account has been deactivated. Please contact an administrator.")
         setIsLoading(false)
