@@ -388,34 +388,23 @@ export function Form1040Viewer({
         <div className="max-w-5xl mx-auto px-6 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-center gap-4">
-              <div className="p-3 rounded-lg print:hidden" style={{ backgroundColor: "#1e2010", color: "#9CA757" }}>
+              <div className="p-3 rounded-lg print:hidden" style={{ backgroundColor: "#2a3314", color: "#9CA757" }}>
                 <FileText className="h-6 w-6" />
               </div>
-              <div>
-                <h1 className="text-xl font-semibold tracking-tight">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                <h1 className="text-xl font-semibold tracking-tight whitespace-nowrap">
                   Form 1040 — U.S. Individual Income Tax Return
                 </h1>
-                <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
-                  <span className="flex items-center gap-1">
-                    <Calendar className="h-3.5 w-3.5" />
-                    Tax Year {data.taxYear}
+                <span className="flex items-center gap-1 text-sm text-muted-foreground whitespace-nowrap">
+                  <Calendar className="h-3.5 w-3.5 flex-shrink-0" />
+                  Tax Year {data.taxYear}
+                </span>
+                {data.clientName && (
+                  <span className="flex items-center gap-1 text-sm text-muted-foreground whitespace-nowrap">
+                    <User className="h-3.5 w-3.5 flex-shrink-0" />
+                    {data.clientName}
                   </span>
-                  {data.clientName && (
-                    <span className="flex items-center gap-1">
-                      <User className="h-3.5 w-3.5" />
-                      {data.clientName}
-                    </span>
-                  )}
-                  <Badge
-                    variant="outline"
-                    className="text-xs"
-                    title="Remaining lines are amounts Intuit calculates (tax, credits) that the ProConnect API does not export yet — they come from the filed return."
-                  >
-                    {data.mappedLineCount + (data.computedLineCount ?? 0) + (data.estimatedLineCount ?? 0)} of {data.lineCount} lines populate
-                    ({data.mappedLineCount} from ProConnect + {data.computedLineCount ?? 0} computed
-                    {(data.estimatedLineCount ?? 0) > 0 ? ` + ${data.estimatedLineCount} estimated` : ""})
-                  </Badge>
-                </div>
+                )}
               </div>
             </div>
 
@@ -442,9 +431,21 @@ export function Form1040Viewer({
         {summaryValues && (
           <Card className="print:shadow-none print:border-none">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                Return Summary
-              </CardTitle>
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                  Return Summary
+                </CardTitle>
+                <Badge
+                  variant="outline"
+                  className="text-xs font-normal"
+                  title="Remaining lines are amounts Intuit calculates (tax, credits) that the ProConnect API does not export yet — they come from the filed return."
+                >
+                  {data.mappedLineCount + (data.computedLineCount ?? 0) + (data.estimatedLineCount ?? 0)} of {data.lineCount} lines
+                  &nbsp;&middot;&nbsp;{data.mappedLineCount} ProConnect
+                  {(data.computedLineCount ?? 0) > 0 ? ` · ${data.computedLineCount} computed` : ""}
+                  {(data.estimatedLineCount ?? 0) > 0 ? ` · ${data.estimatedLineCount} estimated` : ""}
+                </Badge>
+              </div>
             </CardHeader>
             <CardContent className="pt-0 px-0">
               {/* Horizontal scroll so each tile always has room — no truncation */}
