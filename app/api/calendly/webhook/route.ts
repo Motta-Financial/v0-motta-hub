@@ -14,6 +14,7 @@ import {
 import { runAlfredCalendlyTriage } from "@/lib/alfred/calendly-triage"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
+import { advanceDealStage } from "@/lib/deals/advance-stage"
 import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
 import { notifyTeamOfNewBooking } from "@/lib/calendly/notify"
 import { pushHubContactToKarbon } from "@/lib/karbon/client-sync"
@@ -356,7 +357,7 @@ async function upsertInvitee(
     // Calendly→Zoom bridge + hub-meetings sync attach the actual meeting
     // row to this deal. Best-effort: never block webhook processing.
     try {
-      await findOrCreateDeal(
+      const deal = await findOrCreateDeal(
         {
           contactId,
           title: invitee.name ?? invitee.email ?? "Calendly Prospect",
@@ -364,6 +365,13 @@ async function upsertInvitee(
         },
         { supabase },
       )
+      // A booking is the definition of `meeting_scheduled`. Monotonic, so
+      // a second booking on an already-debriefed deal is a no-op rather
+      // than a regression.
+      const moved = await advanceDealStage(supabase, deal.deal_id, "meeting_scheduled")
+      if (moved.advanced) {
+        console.log(`[calendly] deal ${deal.deal_id} stage ${moved.reason}`)
+      }
     } catch (err) {
       console.error("[calendly] deal create failed (non-blocking):", err)
     }

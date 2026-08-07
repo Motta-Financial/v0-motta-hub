@@ -9,6 +9,8 @@ import {
 import { postDebriefNoteToKarbon } from "@/lib/karbon/post-debrief-note"
 import { isPlaceholderOrgName, pickOrgDisplayName } from "@/lib/karbon/org-display-name"
 import { firmConfigSync } from "@/lib/firm-settings"
+import { advanceDealStage } from "@/lib/deals/advance-stage"
+import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
 
 const KARBON_TENANT_BASE = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
@@ -306,6 +308,50 @@ export async function POST(request: NextRequest) {
       console.warn(
         "[v0] Failed to stamp meeting debrief_requested_at:",
         markErr instanceof Error ? markErr.message : markErr,
+      )
+    }
+
+    // ── Deal spine ──────────────────────────────────────────────────
+    // Filing a debrief is the definition of `debriefed`. Two steps:
+    //
+    //   1. If no deal came in on the request, resolve one from the
+    //      primary contact. The reminder email now carries deal_id, but
+    //      a debrief started from the "New Debrief" button won't have
+    //      one — and an opportunity that exists shouldn't stay unlinked
+    //      just because of the entry point the partner chose.
+    //   2. Advance the stage. Monotonic, so a second debrief on the same
+    //      deal is a no-op and a won/lost deal is left alone.
+    //
+    // Best-effort throughout: the debrief is already saved, and a
+    // pipeline column must never fail a submission.
+    try {
+      let resolvedDealId = toUuidOrNull(dealId)
+      if (!resolvedDealId && (contactId || organizationId)) {
+        const deal = await findOrCreateDeal(
+          {
+            contactId: toUuidOrNull(contactId) ?? undefined,
+            organizationId: toUuidOrNull(organizationId) ?? undefined,
+            title: organizationName || body.team_member || "Client Deal",
+            source: "unknown",
+          },
+          { supabase },
+        )
+        resolvedDealId = deal.deal_id
+        if (resolvedDealId) {
+          await supabase
+            .from("debriefs")
+            .update({ deal_id: resolvedDealId })
+            .eq("id", createdDebrief.id)
+        }
+      }
+      const moved = await advanceDealStage(supabase, resolvedDealId, "debriefed")
+      if (moved.advanced) {
+        console.log(`[debrief] deal ${resolvedDealId} stage ${moved.reason}`)
+      }
+    } catch (dealErr) {
+      console.warn(
+        "[debrief] deal stage advance failed (non-blocking):",
+        dealErr instanceof Error ? dealErr.message : dealErr,
       )
     }
 

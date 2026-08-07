@@ -1249,6 +1249,22 @@ export function buildDebriefRequestHtml(opts: {
   clientName?: string | null
   /** Absolute URL to the prefilled debrief form. */
   debriefUrl: string
+  /** Deal page (or Hub meetings list) — the spine the meeting hangs off. */
+  hubUrl?: string | null
+  /** Zoom's own playback page for the cloud recording. */
+  recordingUrl?: string | null
+  /** Our archived transcript. */
+  transcriptUrl?: string | null
+  /** Zoom AI Companion overview, shown as a preview so the reminder is
+   *  useful on a phone without opening anything. */
+  summaryOverview?: string | null
+  /** Zoom's extracted next steps — previewed because they become the
+   *  starting action items on the form. */
+  nextSteps?: string[] | null
+  /** True when the form will hand them a pre-filled draft. Changes the
+   *  copy from "log a debrief" to "review the draft", which is a much
+   *  smaller ask and the whole point of waiting for the transcript. */
+  hasDraft?: boolean
 }) {
   const greet = opts.recipientName ? `<p style="margin:0 0 16px;">Hi ${opts.recipientName},</p>` : ""
   const clientRow = opts.clientName
@@ -1258,10 +1274,45 @@ export function buildDebriefRequestHtml(opts: {
        </tr>`
     : ""
 
+  const intro = opts.hasDraft
+    ? `ALFRED has drafted the notes and follow-ups from the recording. Review, correct
+       what it got wrong, add the judgment only you have, and submit.`
+    : `Your meeting has wrapped up. Take a minute to log a debrief so the rest of the
+       team stays in the loop and any follow-ups get captured.`
+
+  const summaryBlock = opts.summaryOverview
+    ? `<div style="margin:0 0 18px;">
+         <div style="font-size:11px;color:${BRAND.primaryDark};text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin:0 0 6px;">What Zoom heard</div>
+         <div style="background:#fff;border:1px solid ${BRAND.border};border-radius:6px;padding:12px 14px;font-size:13px;line-height:1.55;color:${BRAND.textPrimary};">${opts.summaryOverview}</div>
+       </div>`
+    : ""
+
+  const nextStepsBlock =
+    opts.nextSteps && opts.nextSteps.length > 0
+      ? `<div style="margin:0 0 18px;">
+           <div style="font-size:11px;color:${BRAND.textMuted};text-transform:uppercase;letter-spacing:0.5px;margin:0 0 6px;">Follow-ups it picked up</div>
+           <ul style="margin:0;padding-left:18px;color:${BRAND.textPrimary};font-size:13px;line-height:1.55;">
+             ${opts.nextSteps.slice(0, 6).map((n) => `<li style="margin-bottom:3px;">${n}</li>`).join("")}
+           </ul>
+         </div>`
+      : ""
+
+  // Secondary links. Rendered as a single row of text links under the CTA
+  // rather than competing buttons — the debrief is the action, these are
+  // reference material the partner may want mid-write-up.
+  const links: string[] = []
+  if (opts.recordingUrl) links.push(`<a href="${opts.recordingUrl}" style="color:${BRAND.primaryDark};text-decoration:none;">Watch recording</a>`)
+  if (opts.transcriptUrl) links.push(`<a href="${opts.transcriptUrl}" style="color:${BRAND.primaryDark};text-decoration:none;">Read transcript</a>`)
+  if (opts.hubUrl) links.push(`<a href="${opts.hubUrl}" style="color:${BRAND.primaryDark};text-decoration:none;">Open in Hub</a>`)
+  const linkRow =
+    links.length > 0
+      ? `<p style="margin:16px 0 0;text-align:center;font-size:13px;color:${BRAND.textMuted};">${links.join(' <span style="color:' + BRAND.border + '">&middot;</span> ')}</p>`
+      : ""
+
   const body = `${greet}
     <h2 style="font-size:18px;margin:0 0 12px;color:${BRAND.textPrimary};">How did the meeting go?</h2>
     <p style="margin:0 0 18px;color:${BRAND.textMuted};font-size:14px;line-height:1.6;">
-      Your meeting has wrapped up. Take a minute to log a debrief so the rest of the team stays in the loop and any follow-ups get captured.
+      ${intro}
     </p>
     <div style="background:#F9FAFB;border:1px solid ${BRAND.border};border-radius:8px;padding:14px 18px;margin:0 0 22px;">
       <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="width:100%;">
@@ -1280,14 +1331,21 @@ export function buildDebriefRequestHtml(opts: {
         ${clientRow}
       </table>
     </div>
+    ${summaryBlock}
+    ${nextStepsBlock}
     <div style="text-align:center;">
       <a href="${opts.debriefUrl}"
          style="display:inline-block;background:${BRAND.primary};color:#fff;padding:13px 34px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">
-        Submit Debrief
+        ${opts.hasDraft ? "Review &amp; submit debrief" : "Submit Debrief"}
       </a>
     </div>
+    ${linkRow}
     <p style="margin:20px 0 0;color:${BRAND.textMuted};font-size:12px;text-align:center;">
-      The form is pre-filled with this meeting's details — you just add the substance.
+      ${
+        opts.hasDraft
+          ? "The draft is ALFRED's read of the recording — please correct anything it got wrong."
+          : "The form is pre-filled with this meeting's details — you just add the substance."
+      }
     </p>`
   return baseEmailWrapper("Submit your meeting debrief", body)
 }

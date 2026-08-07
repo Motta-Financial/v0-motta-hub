@@ -9,6 +9,12 @@ import {
   resolveMeetingDebriefRecipientIds,
   type MeetingSource,
 } from "@/lib/debriefs/meeting-link"
+import {
+  loadDebriefMeetingContext,
+  isReadyForDebriefReminder,
+  type DebriefMeetingContext,
+} from "@/lib/debriefs/meeting-context"
+import { advanceDealStage } from "@/lib/deals/advance-stage"
 
 /**
  * Hourly Vercel Cron that emails a debrief request after every client /
@@ -29,11 +35,31 @@ import {
 const APP_URL = () => firmConfigSync().hubUrl
 // How far back to look for newly-ended meetings. An hourly cron only needs ~1h
 // but we use a buffer so a delayed Calendly/Zoom sync doesn't drop a meeting.
-const LOOKBACK_HOURS = 3
+const LOOKBACK_HOURS = 12
 // Zoom rows store start_time + duration (no end_time column). We widen the
 // start_time scan window by this much so a long meeting that started earlier
 // but ended recently is still considered.
 const ZOOM_MAX_DURATION_HOURS = 6
+/**
+ * How long a video meeting may wait for its Zoom artifacts before we send
+ * the reminder anyway.
+ *
+ * The reminder used to fire the moment a meeting ended, which meant the
+ * partner opened an empty form while the transcript was still processing.
+ * Now a Zoom meeting waits until the AI summary or the transcript lands,
+ * so the form can hand them a draft instead of a blank box — that is the
+ * difference between "write up the meeting" and "check what ALFRED wrote".
+ *
+ * Zoom typically produces both within ~30 minutes. The grace window exists
+ * for meetings that will never produce artifacts at all (cloud recording
+ * off, host forgot, dial-in only): past it we send the plain reminder
+ * rather than silently never reminding anyone.
+ *
+ * Note this widens the scan window too — a meeting that ends at 09:00 and
+ * gets its transcript at 11:30 must still be visible to the cron then, so
+ * LOOKBACK_HOURS has to comfortably exceed this.
+ */
+const ARTIFACT_GRACE_HOURS = 6
 
 function formatWhen(iso: string): string {
   return new Date(iso).toLocaleString("en-US", {
@@ -73,6 +99,11 @@ export async function GET(request: Request) {
     let totalSent = 0
     let totalSkipped = 0
     let meetingsProcessed = 0
+    // Meetings deliberately left un-reminded this tick because Zoom hasn't
+    // finished producing the transcript/summary yet. Surfaced in the
+    // response so a growing number is visibly a stuck pipeline, not a
+    // quiet cron.
+    let waitingOnArtifacts = 0
 
     // ── Calendly ────────────────────────────────────────────────────────
     const { data: calendlyEvents, error: calErr } = await supabase
@@ -96,6 +127,29 @@ export async function GET(request: Request) {
         continue
       }
 
+      // Resolve the full context first — a Calendly booking that produced
+      // a Zoom meeting has its recording on the Zoom side, so the wait is
+      // decided there even though we entered from Calendly.
+      const ctx = await loadDebriefMeetingContext(supabase, "calendly", ev.id)
+      // The meeting has ended, so the deal is at least `met`. Done BEFORE
+      // the readiness gate: a meeting still waiting on its transcript has
+      // nonetheless happened, and the pipeline shouldn't lag the reality
+      // by however long Zoom takes to process.
+      if (ctx?.dealId) await advanceDealStage(supabase, ctx.dealId, "met")
+      if (ctx) {
+        const readiness = isReadyForDebriefReminder(ctx, {
+          endedAt: new Date(ev.end_time),
+          now,
+          graceHours: ARTIFACT_GRACE_HOURS,
+        })
+        if (!readiness.ready) {
+          // Leave debrief_requested_at NULL so the next hourly tick
+          // re-evaluates once Zoom has finished processing.
+          waitingOnArtifacts++
+          continue
+        }
+      }
+
       const recipientIds = await resolveMeetingDebriefRecipientIds(supabase, {
         source: "calendly",
         hostTeamMemberId: ev.team_member_id,
@@ -111,6 +165,7 @@ export async function GET(request: Request) {
         locationType: ev.location_type,
         clientName: client.name,
         recipientIds,
+        context: ctx,
       })
       totalSent += sent.sent
       totalSkipped += sent.skipped
@@ -158,6 +213,20 @@ export async function GET(request: Request) {
         continue
       }
 
+      const ctx = await loadDebriefMeetingContext(supabase, "zoom", m.id)
+      if (ctx?.dealId) await advanceDealStage(supabase, ctx.dealId, "met")
+      if (ctx) {
+        const readiness = isReadyForDebriefReminder(ctx, {
+          endedAt: end,
+          now,
+          graceHours: ARTIFACT_GRACE_HOURS,
+        })
+        if (!readiness.ready) {
+          waitingOnArtifacts++
+          continue
+        }
+      }
+
       const recipientIds = await resolveMeetingDebriefRecipientIds(supabase, {
         source: "zoom",
         hostTeamMemberId: m.team_member_id,
@@ -173,6 +242,7 @@ export async function GET(request: Request) {
         locationType: null,
         clientName: client.name,
         recipientIds,
+        context: ctx,
       })
       totalSent += sent.sent
       totalSkipped += sent.skipped
@@ -188,6 +258,7 @@ export async function GET(request: Request) {
     return NextResponse.json({
       success: true,
       meetings_processed: meetingsProcessed,
+      waiting_on_artifacts: waitingOnArtifacts,
       sent: totalSent,
       skipped: totalSkipped,
     })
@@ -214,6 +285,10 @@ async function emailRecipients(
     locationType: string | null
     clientName: string | null
     recipientIds: string[]
+    /** Full meeting context — supplies the deal link, the Zoom artifact
+     *  URLs, and the AI summary preview. Null only if the row vanished
+     *  between the scan and here. */
+    context: DebriefMeetingContext | null
   },
 ): Promise<{ sent: number; skipped: number }> {
   if (args.recipientIds.length === 0) return { sent: 0, skipped: 0 }
@@ -236,6 +311,7 @@ async function emailRecipients(
       continue
     }
 
+    const ctx = args.context
     const debriefUrl = buildDebriefPrefillUrl(APP_URL(), {
       source: args.source,
       meetingRowId: args.meetingRowId,
@@ -244,7 +320,21 @@ async function emailRecipients(
       meetingType,
       teamMemberId: member.id,
       teamMemberName: member.full_name,
+      // Carrying the deal through the reminder is what finally attaches
+      // meeting-path debriefs to the opportunity — previously only the
+      // Deal page's own button could, which is why just 30% had one.
+      dealId: ctx?.dealId ?? null,
+      contactId: ctx?.client.contactId ?? ctx?.client.organizationId ?? null,
+      contactType: ctx?.client.type ?? null,
+      contactName: ctx?.client.name ?? args.clientName ?? null,
     })
+
+    // Deep-link into the Hub at the deal when there is one — that is the
+    // spine every other record hangs off — and fall back to the meetings
+    // list otherwise.
+    const hubUrl = ctx?.dealId
+      ? `${APP_URL()}/deals/${ctx.dealId}`
+      : `${APP_URL()}/meetings/hub`
 
     const html = buildDebriefRequestHtml({
       recipientName: member.full_name?.split(" ")[0] || "there",
@@ -253,6 +343,12 @@ async function emailRecipients(
       meetingTypeLabel: typeLabel,
       clientName: args.clientName,
       debriefUrl,
+      hubUrl,
+      recordingUrl: ctx?.artifacts.recordingUrl ?? null,
+      transcriptUrl: ctx?.artifacts.transcriptUrl ?? null,
+      summaryOverview: ctx?.artifacts.summary?.overview ?? null,
+      nextSteps: ctx?.artifacts.summary?.nextSteps ?? null,
+      hasDraft: !!ctx?.artifacts.summary,
     })
 
     const result = await sendCategoryEmail({

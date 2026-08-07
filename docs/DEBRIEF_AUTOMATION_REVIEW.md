@@ -268,6 +268,91 @@ step you called critical.
 
 ---
 
+## 3a. Implementation status
+
+Phases A and B are implemented on `claude/intake-form-automation-f3y37k`.
+
+| # | Finding | Status |
+| --- | --- | --- |
+| D1 | No debrief linked to its meeting | ⚠️ partly — see below |
+| D2 | Zoom recording/summary never reach the form | ✅ done |
+| D3 | Multi work-item is display-only | ⏳ Phase C |
+| D4 | No work-item creation from templates | ⏳ Phase C |
+| D5 | Deal stage never advances | ✅ done |
+| D6 | `deal_id` can't reach the debrief | ✅ done |
+| D7 | `zoom_meeting_deals` empty | ⏳ Phase C |
+| D8 | Reminders cover ¼ of meetings | ⚠️ improved, see below |
+| D9 | Everything in one JSONB blob | ⏳ Phase D |
+| D10 | Services → proposal dead-ends | ⚠️ **needs an API answer** |
+
+### The reminder now waits for the transcript
+
+Your instinct here reordered the work, and it turned out to be the right
+hinge. The reminder used to fire the moment a meeting ended — which meant the
+partner opened an empty form while Zoom was still processing. Now a video
+meeting waits until the AI summary or transcript lands (6-hour grace, then it
+sends anyway for meetings that will never produce artifacts), so the email
+arrives exactly when the form can hand over a draft.
+
+That single change also fixes the D1 entry point, because the email is now
+worth opening: it carries the meeting, the deal, the client, a preview of what
+Zoom heard, the follow-ups it picked up, and links to **watch the recording**,
+**read the transcript**, and **open the deal in the Hub**. The CTA changes from
+"Submit Debrief" to "Review & submit debrief" when a draft is waiting.
+
+D1 is marked partial because the *other* entry point — clicking "New Debrief"
+from scratch — still has no meeting picker. That's a small follow-up.
+
+**What was built**
+
+- `lib/debriefs/meeting-context.ts` — one resolver for "everything about this
+  meeting", used by the cron, the form's draft API, and the prefill builder.
+  Walks the Calendly↔Zoom bridge in either direction so the recording is found
+  regardless of which side you enter from.
+- `app/api/debriefs/meeting-context/route.ts` — turns Zoom's summary into a
+  debrief-shaped draft: `summary_overview` + labelled `summary_details` become
+  the notes, `next_steps` become action items.
+- `components/debrief-form.tsx` — fetches that draft on mount and seeds notes +
+  action items, **non-destructively** (only fills fields still empty, so a
+  partner typing before the fetch resolves never loses work). A banner marks
+  the prose as ALFRED's read of the call and keeps the recording one click away.
+- `lib/email.ts` — the reminder email rewritten with the summary preview,
+  next-steps preview, and the three links.
+- `app/api/cron/debrief-reminder/route.ts` — artifact readiness gate,
+  `waiting_on_artifacts` counter in the response, lookback widened 3h → 12h so
+  a meeting waiting on Zoom stays in scope.
+- `lib/debriefs/meeting-link.ts` — `dealId` added to the prefill contract.
+- `lib/deals/advance-stage.ts` — monotonic stage advancement, wired to the three
+  events that already fire: Calendly booking → `meeting_scheduled`, meeting end
+  → `met`, debrief submit → `debriefed`. `won`/`lost` stay manual, and a closed
+  deal is never touched.
+- `app/api/debriefs/route.ts` — resolves a deal from the primary contact when
+  the request didn't carry one, then advances the stage.
+
+**Two bugs found while testing against production data**
+
+1. `zoom_meeting_summaries` has no one-row-per-meeting constraint, and two
+   meetings currently have duplicates. A bare `.maybeSingle()` raises PGRST116
+   on exactly those. Fixed with an ordered `.limit(1)`.
+2. **Recurring meetings share a PMI**, so `zoom_recordings.zoom_meeting_id` is
+   identical across every occurrence — one production meeting carries 13
+   recordings and 10 transcripts under a single number. "Most recent recording"
+   would have stapled last Thursday's huddle onto today's debrief. The resolver
+   now picks the recording whose own `start_time` is closest to the meeting's,
+   and resolves the transcript *through* that recording so the two can never
+   disagree.
+
+**Needs a human**
+
+- **D10 / the proposal.** Confirm whether your Ignition plan exposes proposal
+  *creation* via API. The integration is currently read-only, so the debrief's
+  selected services still get re-keyed by hand. If the API supports it, this is
+  the biggest remaining win on this form.
+- **D8.** The reminder only emails meetings tagged to a client. Worth checking
+  whether the untagged ones are the same meetings that have no Zoom link.
+
+---
+
 ## 4. Recommended sequence
 
 **Phase A — attach the debrief to reality** (unblocks everything else)

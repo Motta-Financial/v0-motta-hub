@@ -265,6 +265,20 @@ export function DebriefForm() {
   const [loadingServices, setLoadingServices] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
+  // ── Zoom draft ────────────────────────────────────────────────────
+  // When the debrief is filed against a meeting we pull that meeting's
+  // context (deal, client, recording, AI summary) and seed notes +
+  // action items from it. Held in state so the UI can show where the
+  // draft came from and link out to the recording/transcript while the
+  // partner edits.
+  const [meetingContext, setMeetingContext] = useState<{
+    title: string
+    recording_url: string | null
+    transcript_url: string | null
+    has_draft: boolean
+  } | null>(null)
+  const [loadingMeetingContext, setLoadingMeetingContext] = useState(false)
+
   // Popover states
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false)
   // Separate popover state for the Primary Contact picker — needed because
@@ -443,6 +457,88 @@ export function DebriefForm() {
     fetchTeamMembers()
     fetchServices()
   }, [fetchTeamMembers, fetchServices])
+
+  // Seed the form from the meeting's Zoom artifacts. Runs once on mount
+  // and only when we actually know which meeting this is — the whole
+  // reason the reminder email now waits for the transcript before
+  // sending is so this call has something to return.
+  //
+  // Deliberately non-destructive: we only fill `notes` and `action_items`
+  // when they're still empty, so a partner who started typing before the
+  // fetch resolved never loses work, and a re-render can't clobber edits.
+  useEffect(() => {
+    const { calendly_event_id, zoom_meeting_id } = meetingLinkRef.current
+    if (!calendly_event_id && !zoom_meeting_id) return
+
+    let cancelled = false
+    const load = async () => {
+      setLoadingMeetingContext(true)
+      try {
+        const qs = zoom_meeting_id
+          ? `zoom_meeting_id=${encodeURIComponent(zoom_meeting_id)}`
+          : `calendly_event_id=${encodeURIComponent(calendly_event_id as string)}`
+        const res = await fetch(`/api/debriefs/meeting-context?${qs}`)
+        if (!res.ok) return
+        const { context } = await res.json()
+        if (cancelled || !context) return
+
+        // Backfill the deal link when the caller didn't supply one — the
+        // resolver finds the contact's open deal, which is how a debrief
+        // reached from a meeting finally lands on the opportunity.
+        if (!meetingLinkRef.current.deal_id && context.deal_id) {
+          meetingLinkRef.current.deal_id = context.deal_id
+        }
+        if (!meetingLinkRef.current.zoom_meeting_id && context.zoom_meeting_id) {
+          meetingLinkRef.current.zoom_meeting_id = context.zoom_meeting_id
+        }
+
+        setMeetingContext({
+          title: context.title,
+          recording_url: context.artifacts?.recording_url ?? null,
+          transcript_url: context.artifacts?.transcript_url ?? null,
+          has_draft: !!context.draft,
+        })
+
+        if (context.draft) {
+          setFormData((prev) => {
+            const next = { ...prev }
+            if (!prev.notes.trim() && context.draft.notes) {
+              next.notes = context.draft.notes
+            }
+            if (
+              prev.action_items.length === 0 &&
+              Array.isArray(context.draft.action_items) &&
+              context.draft.action_items.length > 0
+            ) {
+              next.action_items = context.draft.action_items.map(
+                (a: { description: string }) => ({
+                  id: crypto.randomUUID(),
+                  description: a.description,
+                  // Assignee, due date and priority are judgment calls —
+                  // guessing them would produce confidently wrong tasks,
+                  // so they stay blank for the partner to set.
+                  assignee_id: "",
+                  assignee_name: "",
+                  due_date: null,
+                  priority: "medium" as const,
+                  create_task: true,
+                }),
+              )
+            }
+            return next
+          })
+        }
+      } catch {
+        /* best-effort: an empty form is the pre-existing behaviour */
+      } finally {
+        if (!cancelled) setLoadingMeetingContext(false)
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Debounced search for clients
   useEffect(() => {
@@ -989,6 +1085,60 @@ export function DebriefForm() {
   // Filtered services to use services state
   const filteredServices = services
 
+  // Banner shown when this debrief is filed against a specific meeting.
+  // Two jobs: make it unmistakable that the prose below is a machine's
+  // read of the call (so it gets corrected rather than rubber-stamped),
+  // and keep the recording one click away while the partner edits.
+  const meetingBanner = meetingContext ? (
+    <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm">
+          <FileText className="h-4 w-4 shrink-0 text-primary" />
+          <span className="font-medium text-foreground">{meetingContext.title}</span>
+          {meetingContext.has_draft && (
+            <Badge variant="secondary" className="text-xs">
+              Notes &amp; follow-ups drafted from the recording
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          {meetingContext.recording_url && (
+            <a
+              href={meetingContext.recording_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              Watch recording
+            </a>
+          )}
+          {meetingContext.transcript_url && (
+            <a
+              href={meetingContext.transcript_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              Read transcript
+            </a>
+          )}
+        </div>
+      </div>
+      {meetingContext.has_draft && (
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          ALFRED drafted this from the Zoom recording. Please correct anything it
+          got wrong and add the judgment it can&apos;t have — that&apos;s the part
+          the rest of the firm actually needs.
+        </p>
+      )}
+    </div>
+  ) : loadingMeetingContext ? (
+    <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Checking for a recording from this meeting…
+    </div>
+  ) : null
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -1015,6 +1165,8 @@ export function DebriefForm() {
           )}
         </Button>
       </div>
+
+      {meetingBanner}
 
       <Card>
         <CardHeader>
