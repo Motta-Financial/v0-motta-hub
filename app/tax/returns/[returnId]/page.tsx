@@ -34,6 +34,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
 import { FieldEditSheet, type EditTarget } from "@/components/tax/field-edit-sheet"
+import { lookupFieldDescription } from "@/lib/proconnect/series-code-lookup"
 
 type Cell = {
   series_id: string
@@ -328,8 +329,22 @@ export default function ReturnDataPage({
 
                               return (
                                 <tr key={i} className="border-t">
-                                  <td className="whitespace-nowrap px-3 py-1.5 font-mono">
-                                    {c.prefix_id}/{c.code_id}/{c.suffix_id}
+                                  <td className="px-3 py-1.5">
+                                    {(() => {
+                                      const entry = lookupFieldDescription(seriesId, c.code_id)
+                                      return entry ? (
+                                        <div>
+                                          <span className="font-medium">{entry.description}</span>
+                                          <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">
+                                            {c.prefix_id}/{c.code_id}/{c.suffix_id}
+                                          </span>
+                                        </div>
+                                      ) : (
+                                        <span className="font-mono text-muted-foreground">
+                                          {c.prefix_id}/{c.code_id}/{c.suffix_id}
+                                        </span>
+                                      )
+                                    })()}
                                   </td>
                                   <td className="max-w-56 truncate px-3 py-1.5">{c.val ?? "—"}</td>
                                   <td className="max-w-64 truncate px-3 py-1.5 text-muted-foreground">

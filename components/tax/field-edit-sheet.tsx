@@ -34,6 +34,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
+import { lookupFieldDescription } from "@/lib/proconnect/series-code-lookup"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -255,16 +256,22 @@ export function FieldEditSheet({
       <Sheet open={open} onOpenChange={handleOpenChange}>
         <SheetContent side="right" onOpenAutoFocus={handleSheetOpen}>
           <SheetHeader>
-            <SheetTitle>Edit field</SheetTitle>
-            {target && (
-              <p className="font-mono text-sm">
-                {target.seriesId} / {target.prefixId} / {target.codeId} / {target.suffixId}
-              </p>
-            )}
-            {target?.seriesVersion && (
-              <p className="truncate font-mono text-xs text-muted-foreground" title={target.seriesVersion}>
-                version {target.seriesVersion}
-              </p>
+            {target ? (
+              <>
+                <SheetTitle>
+                  {lookupFieldDescription(target.seriesId, target.codeId)?.description ?? "Edit field"}
+                </SheetTitle>
+                <p className="font-mono text-xs text-muted-foreground">
+                  {target.seriesId} / {target.prefixId} / {target.codeId} / {target.suffixId}
+                </p>
+                {target.seriesVersion && (
+                  <p className="truncate font-mono text-xs text-muted-foreground" title={target.seriesVersion}>
+                    version {target.seriesVersion}
+                  </p>
+                )}
+              </>
+            ) : (
+              <SheetTitle>Edit field</SheetTitle>
             )}
           </SheetHeader>
 
