@@ -312,7 +312,7 @@ export default function ReturnDataPage({
                         <table className="w-full text-xs">
                           <thead>
                             <tr className="border-t bg-muted/50 text-left">
-                              <th className="px-3 py-1.5 font-medium">Address</th>
+                              <th className="px-3 py-1.5 font-medium">Field</th>
                               <th className="px-3 py-1.5 font-medium">Value</th>
                               <th className="px-3 py-1.5 font-medium">Description</th>
                               <th className="px-3 py-1.5 font-medium">T/S/J</th>
