@@ -18,6 +18,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 
 /**
  * Tax intake — key source documents, see the 1040 and the ProConnect
@@ -116,6 +126,50 @@ interface IntakeResponse {
   }
 }
 
+// ─── Import-plan types ───────────────────────────────────────────────────────
+
+type UnlandedEntry = {
+  prefixId: string
+  codeId: string
+  suffixId: string
+  reason: "absent" | "value_mismatch" | "clear_ignored"
+}
+
+type BatchImportResult = {
+  seriesId: string
+  entryCount: number
+  /** null while pending, populated after the call */
+  outcome:
+    | null
+    | { kind: "clean"; jobId: string }
+    | { kind: "rejected"; errors: Array<{ prefixId: string; codeId: string; suffixId: string; errorCode?: string; errorMessage?: string }> }
+    | { kind: "not-allowlisted" }
+    | { kind: "error"; message: string; statusCode?: number }
+    | { kind: "success"; jobId: string; landed: number }
+    | { kind: "partial"; jobId: string; unlanded: UnlandedEntry[] }
+    | { kind: "unverified"; jobId: string }
+}
+
+type ImportPhase =
+  | { stage: "idle" }
+  | { stage: "dry-running"; currentBatch: number; totalBatches: number; results: BatchImportResult[] }
+  | { stage: "dry-done"; results: BatchImportResult[]; allClean: boolean; notAllowlisted: boolean }
+  | { stage: "committing"; currentBatch: number; totalBatches: number; results: BatchImportResult[] }
+  | { stage: "commit-done"; results: BatchImportResult[] }
+
+function unlanded_label(reason: UnlandedEntry["reason"]): string {
+  switch (reason) {
+    case "clear_ignored":
+      return "API cannot clear — old value remains"
+    case "absent":
+      return "Value never appeared on return"
+    case "value_mismatch":
+      return "Different value came back than was sent"
+  }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 const money = (n: number | null) =>
   n === null ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
 
@@ -148,6 +202,9 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
   const [saving, setSaving] = useState<string | null>(null)
   // Local edits per document, flushed on Save.
   const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({})
+  // Import plan two-step state
+  const [importPhase, setImportPhase] = useState<ImportPhase>({ stage: "idle" })
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -222,6 +279,148 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
       body: JSON.stringify({ filingStatus: fs }),
     })
     await load()
+  }
+
+  /**
+   * Runs all batches sequentially with dryRun:true (or false for commits).
+   * Stops at the first 403 or partial/failed commit. Never parallel.
+   */
+  async function runBatchedImport(isDryRun: boolean) {
+    if (!data) return
+    const { importPlan, set } = data
+    const clientId = set.proconnectClientId!
+    const returnId = set.proconnectReturnId!
+    const batches = importPlan.batches
+    const totalBatches = batches.length
+
+    // Need the fresh return data for series versions
+    let seriesVersionMap: Record<string, string | null> = {}
+    try {
+      const vRes = await fetch(
+        `/api/proconnect/returns/${returnId}/data?clientId=${clientId}&fresh=true`,
+      )
+      if (vRes.ok) {
+        const vBody = await vRes.json()
+        const sv: Array<{ series: string; version: string }> = vBody.data?.seriesVersion ?? []
+        sv.forEach((s) => { seriesVersionMap[s.series] = s.version })
+      }
+    } catch {
+      // proceed with null versions — the import route accepts null
+    }
+
+    const results: BatchImportResult[] = batches.map((b) => ({
+      seriesId: b.seriesId,
+      entryCount: b.entries.length,
+      outcome: null,
+    }))
+
+    if (isDryRun) {
+      setImportPhase({ stage: "dry-running", currentBatch: 0, totalBatches, results: [...results] })
+    } else {
+      setImportPhase({ stage: "committing", currentBatch: 0, totalBatches, results: [...results] })
+    }
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i]
+      const version = seriesVersionMap[batch.seriesId] ?? null
+
+      if (isDryRun) {
+        setImportPhase({ stage: "dry-running", currentBatch: i + 1, totalBatches, results: [...results] })
+      } else {
+        setImportPhase({ stage: "committing", currentBatch: i + 1, totalBatches, results: [...results] })
+      }
+
+      try {
+        const res = await fetch(
+          `/api/proconnect/returns/${returnId}/import/${batch.seriesId}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientId,
+              version,
+              dryRun: isDryRun,
+              entries: batch.entries,
+            }),
+          },
+        )
+
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as Record<string, unknown>
+
+        if (!res.ok) {
+          if (res.status === 403) {
+            results[i] = { ...results[i], outcome: { kind: "not-allowlisted" } }
+            // Surface-B spec: 403 is the expected case for real returns.
+            // Keep going with dry-runs; stop commits.
+            if (!isDryRun) break
+          } else if (res.status === 409) {
+            results[i] = {
+              ...results[i],
+              outcome: { kind: "error", message: "stale-dry-run", statusCode: 409 },
+            }
+            break
+          } else {
+            results[i] = {
+              ...results[i],
+              outcome: {
+                kind: "error",
+                message: (body.error as string) ?? `HTTP ${res.status}`,
+                statusCode: res.status,
+              },
+            }
+            break
+          }
+        } else if (isDryRun) {
+          const errors = (body as { results?: Array<{ errors?: Array<{ prefixId: string; codeId: string; suffixId: string; errorCode?: string; errorMessage?: string }> }> }).results?.[0]?.errors ?? []
+          if (errors.length > 0) {
+            results[i] = { ...results[i], outcome: { kind: "rejected", errors } }
+          } else {
+            results[i] = {
+              ...results[i],
+              outcome: { kind: "clean", jobId: body.jobId as string },
+            }
+          }
+        } else {
+          // Commit path — THE CRITICAL RULE
+          const v = body.verification as { checked: number; landed: number; unlanded: UnlandedEntry[] } | null
+          if (!v) {
+            results[i] = {
+              ...results[i],
+              outcome: { kind: "unverified", jobId: body.jobId as string },
+            }
+            break
+          }
+          if (v.unlanded.length > 0) {
+            results[i] = {
+              ...results[i],
+              outcome: { kind: "partial", jobId: body.jobId as string, unlanded: v.unlanded },
+            }
+            break
+          }
+          results[i] = {
+            ...results[i],
+            outcome: { kind: "success", jobId: body.jobId as string, landed: v.landed },
+          }
+        }
+      } catch (err) {
+        results[i] = {
+          ...results[i],
+          outcome: {
+            kind: "error",
+            message: err instanceof Error ? err.message : "Network error",
+          },
+        }
+        break
+      }
+    }
+
+    if (isDryRun) {
+      const allClean = results.every((r) => r.outcome?.kind === "clean")
+      const notAllowlisted = results.some((r) => r.outcome?.kind === "not-allowlisted")
+      setImportPhase({ stage: "dry-done", results, allClean, notAllowlisted })
+    } else {
+      setImportPhase({ stage: "commit-done", results })
+    }
   }
 
   const currentValue = (doc: DocumentDto, f: FieldDef): string => {
@@ -713,20 +912,244 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
                 the Phase 1 field model — Intuit&apos;s catalog carries no prefix data. Verify against
                 a real Export before committing an import.
               </p>
-              {!data.importPlan.readyToImport && (
-                <p className="text-xs text-muted-foreground">
-                  {data.importPlan.blocked
-                    ? "Resolve the blocking problems above to enable import."
-                    : "Link a ProConnect client and return to this set to enable import."}
-                </p>
-              )}
-              <Button className="w-full" disabled title="Export/Import is awaiting Intuit provisioning">
-                Validate with dryRun — awaiting Intuit provisioning
-              </Button>
+
+              {/* ── Two-step import control ── */}
+              {(() => {
+                const plan = data.importPlan
+                const clientId = data.set.proconnectClientId
+                const returnId = data.set.proconnectReturnId
+                const canValidate = plan.readyToImport && !!clientId && !!returnId
+                const phase = importPhase
+
+                // Dry-run progress
+                if (phase.stage === "dry-running") {
+                  return (
+                    <div className="space-y-2">
+                      <p className="text-xs text-muted-foreground">
+                        Validating batch {phase.currentBatch} of {phase.totalBatches}…
+                      </p>
+                      <Button className="w-full" disabled>
+                        Validating…
+                      </Button>
+                    </div>
+                  )
+                }
+
+                // Commit progress
+                if (phase.stage === "committing") {
+                  return (
+                    <div className="space-y-2">
+                      <p className="text-xs text-muted-foreground">
+                        Applying batch {phase.currentBatch} of {phase.totalBatches}…
+                      </p>
+                      <Button className="w-full" variant="destructive" disabled>
+                        Applying…
+                      </Button>
+                    </div>
+                  )
+                }
+
+                // Dry-run results
+                if (phase.stage === "dry-done" || phase.stage === "commit-done") {
+                  const results = phase.results
+                  const isDryDone = phase.stage === "dry-done"
+                  const allClean = isDryDone && (phase as { allClean: boolean }).allClean
+                  const notAllowlisted = isDryDone && (phase as { notAllowlisted: boolean }).notAllowlisted
+
+                  return (
+                    <div className="space-y-3">
+                      {/* Per-batch result rows */}
+                      <div className="space-y-2">
+                        {results.map((r) => {
+                          const o = r.outcome
+                          if (!o) return null
+                          return (
+                            <div key={r.seriesId} className="rounded-md border p-2.5 text-xs">
+                              <p className="font-mono font-medium">
+                                {r.seriesId}{" "}
+                                <span className="text-muted-foreground">({r.entryCount} entries)</span>
+                              </p>
+                              {o.kind === "clean" && (
+                                <p className="mt-1 text-emerald-700 dark:text-emerald-400">
+                                  All {r.entryCount} entries validated — no errors.
+                                </p>
+                              )}
+                              {o.kind === "success" && (
+                                <p className="mt-1 text-emerald-700 dark:text-emerald-400">
+                                  {o.landed} of {r.entryCount} entr{o.landed === 1 ? "y" : "ies"} confirmed on return.
+                                </p>
+                              )}
+                              {o.kind === "rejected" && (
+                                <div className="mt-1">
+                                  <p className="text-destructive">
+                                    {o.errors.length} entr{o.errors.length === 1 ? "y" : "ies"} rejected
+                                  </p>
+                                  <ul className="mt-1 space-y-0.5">
+                                    {o.errors.map((e, i) => (
+                                      <li key={i} className="text-destructive">
+                                        <code className="rounded bg-muted px-1">
+                                          {e.prefixId}/{e.codeId}/{e.suffixId}
+                                        </code>
+                                        {e.errorCode && (
+                                          <span className="ml-1 font-mono">{e.errorCode}</span>
+                                        )}
+                                        {e.errorMessage && (
+                                          <span className="ml-1 text-muted-foreground">{e.errorMessage}</span>
+                                        )}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                              {o.kind === "partial" && (
+                                <div className="mt-1">
+                                  <p className="text-amber-700 dark:text-amber-400">
+                                    Not fully applied — {o.unlanded.length} entr{o.unlanded.length === 1 ? "y" : "ies"} did not land
+                                  </p>
+                                  <ul className="mt-1 space-y-0.5">
+                                    {o.unlanded.map((u, i) => (
+                                      <li key={i}>
+                                        <code className="rounded bg-muted px-1 font-mono">
+                                          {u.prefixId}/{u.codeId}/{u.suffixId}
+                                        </code>
+                                        <span className="ml-1 text-muted-foreground">
+                                          {unlanded_label(u.reason)}
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  <p className="mt-1 font-mono text-muted-foreground">job {o.jobId}</p>
+                                </div>
+                              )}
+                              {o.kind === "unverified" && (
+                                <p className="mt-1 text-amber-700 dark:text-amber-400">
+                                  Write completed but could not be verified. Do not assume success.{" "}
+                                  <span className="font-mono">job {o.jobId}</span>
+                                </p>
+                              )}
+                              {o.kind === "not-allowlisted" && (
+                                <p className="mt-1 text-muted-foreground">
+                                  Write restricted — this return is not on the allowlist for commits.
+                                  Validation passed.
+                                </p>
+                              )}
+                              {o.kind === "error" && o.message === "stale-dry-run" && (
+                                <p className="mt-1 text-amber-700 dark:text-amber-400">
+                                  Dry-run window expired. Re-run validation before committing.
+                                </p>
+                              )}
+                              {o.kind === "error" && o.message !== "stale-dry-run" && (
+                                <p className="mt-1 text-destructive">{o.message}</p>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      {/* 403 not-allowlisted explanation — calm, not an error */}
+                      {notAllowlisted && (
+                        <p className="text-xs text-muted-foreground">
+                          Writes are restricted to designated test returns. Validation works on all
+                          returns; commits require the return to be on the allowlist.
+                        </p>
+                      )}
+
+                      {/* Re-validate button */}
+                      {isDryDone && (
+                        <Button
+                          className="w-full"
+                          variant="outline"
+                          onClick={() => void runBatchedImport(true)}
+                          disabled={!canValidate}
+                        >
+                          Re-validate all batches ({plan.entryCount} entries)
+                        </Button>
+                      )}
+
+                      {/* Apply button — only after all batches are clean */}
+                      {isDryDone && allClean && (
+                        <Button
+                          className="w-full"
+                          variant="destructive"
+                          onClick={() => setCommitDialogOpen(true)}
+                        >
+                          Apply {plan.entryCount} entries to the return
+                        </Button>
+                      )}
+
+                      {/* After commit: option to re-validate from scratch */}
+                      {!isDryDone && (
+                        <Button
+                          className="w-full"
+                          variant="outline"
+                          onClick={() => {
+                            setImportPhase({ stage: "idle" })
+                          }}
+                        >
+                          Reset
+                        </Button>
+                      )}
+                    </div>
+                  )
+                }
+
+                // Idle — initial state
+                return (
+                  <div className="space-y-2">
+                    {!canValidate && (
+                      <p className="text-xs text-muted-foreground">
+                        {plan.blocked
+                          ? "Resolve the blocking problems above to enable import."
+                          : "Link a ProConnect client and return to this set to enable import."}
+                      </p>
+                    )}
+                    <Button
+                      className="w-full"
+                      disabled={!canValidate}
+                      onClick={() => void runBatchedImport(true)}
+                    >
+                      Validate all batches ({plan.entryCount} entries)
+                    </Button>
+                  </div>
+                )
+              })()}
             </CardContent>
           </Card>
         </div>
       </div>
+
+      {/* Commit confirmation dialog */}
+      <AlertDialog open={commitDialogOpen} onOpenChange={setCommitDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apply all batches to return?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3 text-sm">
+                <p>
+                  This will write{" "}
+                  <strong>{data?.importPlan.entryCount} entries</strong> across{" "}
+                  <strong>{data?.importPlan.batches.length} batches</strong> to the ProConnect return.
+                </p>
+                <p className="text-destructive">
+                  This cannot be undone. The ProConnect API has no delete or clear — a wrong value can only be overwritten, never removed.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                setCommitDialogOpen(false)
+                void runBatchedImport(false)
+              }}
+            >
+              Write to return
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
