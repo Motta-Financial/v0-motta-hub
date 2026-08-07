@@ -128,6 +128,14 @@ export function FieldEditSheet({
   // Reset state when the sheet opens for a new target
   function handleOpenChange(o: boolean) {
     if (!o) {
+      // Opening the confirm AlertDialog moves focus out of the Sheet, which
+      // makes Radix fire onOpenChange(false) here. The parent owns `target`
+      // and clears it on close, so honoring that would null the target out
+      // from under a confirm dialog that is still on screen — the dialog
+      // loses its field/old-value lines and `runCommit`'s `if (!target)`
+      // guard turns "Write to return" into a silent no-op. Stay open while
+      // confirming; the dialog's own actions close us.
+      if (confirmOpen) return
       onClose()
     }
   }
