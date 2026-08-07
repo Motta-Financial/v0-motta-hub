@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -38,6 +38,7 @@ import {
 import { cn } from "@/lib/utils"
 import { pickOrgDisplayName } from "@/lib/karbon/org-display-name"
 import { MentionTextarea } from "@/components/mentions/mention-textarea"
+import { filterServices, groupServicesByCategory } from "@/lib/services/filter-services"
 import {
   WorkItemBuilder,
   serializeWorkItemDrafts,
@@ -263,6 +264,9 @@ export function DebriefForm() {
   const [workItems, setWorkItems] = useState<WorkItem[]>([])
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const [services, setServices] = useState<Service[]>([])
+  // Catalog size reported by the API. Lets the picker say "56 of 100" so a
+  // short list is visibly a filter, not a missing price book.
+  const [servicesTotal, setServicesTotal] = useState<number | null>(null)
 
   // Loading states
   const [loadingClients, setLoadingClients] = useState(false)
@@ -451,14 +455,34 @@ export function DebriefForm() {
   }, [])
 
   // Fetch service lines
-  const fetchServices = useCallback(async (search?: string) => {
+  /**
+   * Load the WHOLE service catalog once, then filter in the browser.
+   *
+   * This replaced a debounced server-side search, which had three
+   * problems for a ~100-row catalog:
+   *
+   *   1. `limit=100` against exactly 100 active services meant the picker
+   *      showed everything only by coincidence — service 101 would have
+   *      silently disappeared.
+   *   2. Clearing the search box left the list filtered. The effect
+   *      driving it bailed on an empty string (`if (serviceSearch === "")
+   *      return`) and the Command had `shouldFilter={false}`, so the last
+   *      search's subset stayed on screen under an empty input with no
+   *      way back short of reopening the form.
+   *   3. A comma or bracket in the query broke the PostgREST `or()`
+   *      filter, 500'd, and got swallowed by the catch — the list just
+   *      didn't change.
+   *
+   * A hundred rows is nothing to filter client-side, and doing so makes
+   * all three failure modes structurally impossible rather than fixed.
+   * If the catalog ever grows past a few thousand, move back to server
+   * search — but then keep the empty-string path fetching.
+   */
+  const fetchServices = useCallback(async () => {
     setLoadingServices(true)
     try {
-      const params = new URLSearchParams()
-      if (search) params.set("search", search)
-      params.set("limit", "100")
-
-      const res = await fetch(`/api/services?${params.toString()}`)
+      const res = await fetch("/api/services?limit=1000")
+      if (!res.ok) throw new Error(`services fetch failed (${res.status})`)
       const data = await res.json()
       setServices(
         (data.services || []).map((s: any) => ({
@@ -472,6 +496,14 @@ export function DebriefForm() {
           description: s.description,
         })),
       )
+      // The API reports this when its own cap clipped the result. Loud on
+      // purpose: a quietly short price book is how a service goes missing.
+      if (data.truncated) {
+        console.warn(
+          `[debrief] service catalog truncated: showing ${data.returned} of ${data.total}`,
+        )
+      }
+      setServicesTotal(typeof data.total === "number" ? data.total : null)
     } catch (error) {
       console.error("Error fetching services:", error)
     } finally {
@@ -700,16 +732,6 @@ export function DebriefForm() {
     }, 300)
     return () => clearTimeout(timer)
   }, [workItemSearch, fetchWorkItems])
-
-  useEffect(() => {
-    // Skip initial mount fetch since we already do it above
-    if (serviceSearch === "") return
-
-    const timer = setTimeout(() => {
-      fetchServices(serviceSearch)
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [serviceSearch, fetchServices])
 
   // Add client (to the "Other Related Clients" list — never to primary).
   // Silently no-ops when the picked client matches the current primary
@@ -1235,8 +1257,19 @@ export function DebriefForm() {
   const uploadInProgress = attachments.some((a) => a.status === "uploading")
   const submitDisabled = submitting || uploadInProgress
 
-  // Filtered services to use services state
-  const filteredServices = services
+  // Filtering + grouping live in lib/services/filter-services.ts so the
+  // matching rules are testable (scripts/test-service-filter.mjs) rather
+  // than buried in a render path. `filteredServices` used to be
+  // `const filteredServices = services` — dead code, because the server
+  // did the filtering and the picker rendered `services` directly.
+  const filteredServices = useMemo(
+    () => filterServices(services, serviceSearch),
+    [services, serviceSearch],
+  )
+  const servicesByCategory = useMemo(
+    () => groupServicesByCategory(filteredServices),
+    [filteredServices],
+  )
 
   // Banner shown when this debrief is filed against a specific meeting.
   // Two jobs: make it unmistakable that the prose below is a machine's
@@ -2002,44 +2035,73 @@ export function DebriefForm() {
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-[500px] p-0" align="start">
+                {/* `shouldFilter={false}` because we filter ourselves in
+                    `filteredServices` — matching across name, category,
+                    subcategory AND description, which Command's built-in
+                    filter (value-only) can't do. Grouped by category since
+                    Tax alone is over half the catalog. */}
                 <Command shouldFilter={false}>
                   <CommandInput
-                    placeholder="Search services by name..."
+                    placeholder="Search by name, category, or description…"
                     value={serviceSearch}
                     onValueChange={setServiceSearch}
                   />
-                  <CommandList className="max-h-[300px]">
-                    <CommandEmpty>{loadingServices ? "Loading services..." : "No services found."}</CommandEmpty>
-                    <CommandGroup heading={`Services${services.length > 0 ? ` (${services.length})` : ""}`}>
-                      {services.map((service) => (
-                        <CommandItem
-                          key={service.id}
-                          value={service.id}
-                          onSelect={() => toggleService(service)}
-                        >
-                          <Checkbox checked={formData.services.some((s) => s.id === service.id)} className="mr-2" />
-                          <div className="flex flex-col flex-1">
-                            <span>{service.name}</span>
-                            {service.description && (
-                              <span className="text-xs text-muted-foreground truncate max-w-[350px]">
-                                {service.description}
+                  <CommandList className="max-h-[320px]">
+                    <CommandEmpty>
+                      {loadingServices
+                        ? "Loading services…"
+                        : services.length === 0
+                          ? "No services in the catalog — check the Ignition sync."
+                          : `No services match "${serviceSearch}".`}
+                    </CommandEmpty>
+                    {servicesByCategory.map(([category, items]) => (
+                      <CommandGroup
+                        key={category}
+                        heading={`${category} (${items.length})`}
+                      >
+                        {items.map((service) => (
+                          <CommandItem
+                            key={service.id}
+                            value={service.id}
+                            onSelect={() => toggleService(service)}
+                          >
+                            <Checkbox
+                              checked={formData.services.some((s) => s.id === service.id)}
+                              className="mr-2"
+                            />
+                            <div className="flex flex-col flex-1">
+                              <span>{service.name}</span>
+                              {service.description && (
+                                <span className="text-xs text-muted-foreground truncate max-w-[350px]">
+                                  {service.description}
+                                </span>
+                              )}
+                            </div>
+                            {service.price !== null && (
+                              <span className="ml-2 text-sm text-muted-foreground shrink-0">
+                                ${service.price.toLocaleString()}
                               </span>
                             )}
-                          </div>
-                          {service.category && (
-                            <Badge variant="outline" className="ml-2 shrink-0">
-                              {service.category}
-                            </Badge>
-                          )}
-                          {service.price !== null && ( // Check for price not being null
-                            <span className="ml-2 text-sm text-muted-foreground shrink-0">
-                              ${service.price.toLocaleString()}
-                            </span>
-                          )}
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    ))}
                   </CommandList>
+                  {/* Showing "N of M" makes a short list visibly a filter
+                      rather than a missing price book — the exact
+                      ambiguity that hid the old limit=100 truncation. */}
+                  {!loadingServices && services.length > 0 && (
+                    <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+                      {filteredServices.length === services.length
+                        ? `${services.length} service${services.length === 1 ? "" : "s"} in the catalog`
+                        : `${filteredServices.length} of ${services.length} services`}
+                      {servicesTotal !== null && servicesTotal > services.length && (
+                        <span className="ml-1 text-amber-700">
+                          · only {services.length} of {servicesTotal} loaded
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </Command>
               </PopoverContent>
             </Popover>
