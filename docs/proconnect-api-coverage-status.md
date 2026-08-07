@@ -58,7 +58,7 @@ explicitly rather than rounded up to "done."
 | `POST /v2/clients/oii-client/{clientOiiId}/returns` (create return) | ✅ | ❌ **Not built** | Blocked behind Export — we won't create returns we can't then read back. |
 | **Proforma** (roll prior year forward via `source`) | ✅ | ❌ **Not built** | Depends on create-return. |
 | `GET /v2/clients/{clientId}/returns/{returnId}/data` (**Export**) | ✅ | 🔴 **Built — 403 on every call** | Never succeeded. 0 snapshots. Latest failure 2026-07-26 09:18 UTC. |
-| `POST …/import/series/{seriesId}` (**Import**) | ✅ | ⚠️ **Built, never exercised** | Full pipeline with dryRun gate exists. 0 jobs run — cannot validate until Export works. |
+| `POST …/import/series/{seriesId}` (**Import**) | ✅ | ✅ **Working as of 2026-08-07** | First successful call ever on 2026-08-07. Had been 403 on every attempt because the Hub posted to the Export host; Import has its own host, `protaxonlineimport.api.intuit.com` (doc v3 §3), and unlike Export takes **no** `oii-client/` segment. Dry run + commit both verified on the sentinel return. |
 | Return-type allowlist (IND/COR/SCO/PAR/FID/EXM/GFT; reject 706/5500) | ✅ | ✅ **Enforced** | All 7 types present in synced data |
 | Both client identifiers (`oiiClientId` **and** numeric `id_client`) | ✅ | ✅ **Held per client** | We use `id_client` on Export/Import paths, correctly |
 

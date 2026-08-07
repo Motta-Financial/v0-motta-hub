@@ -12,21 +12,32 @@ This skill covers the ProConnect Open API "Series Map" Export and Import for the
 endpoints — only the codeIds/seriesIds change — but are out of scope here until Intuit
 ships them.
 
-Two endpoints:
+Two endpoints — **on two different hosts** (doc v3 §3):
 
-- Export (read): `GET /v2/clients/oii-client/{clientId}/returns/{returnId}/data`
-- Import (write): `POST /v2/clients/{clientId}/returns/{returnId}/import/series/{seriesId}`
+- Export (read): `GET https://protaxdata.api.intuit.com/v2/clients/oii-client/{clientId}/returns/{returnId}/data`
+- Import (write): `POST https://protaxonlineimport.api.intuit.com/v2/clients/{clientId}/returns/{returnId}/import/series/{seriesId}`
 
-> **The `oii-client/` asymmetry — read this before debugging a 403.**
-> Export requires the `oii-client/` path segment. Import does **not**. This is not a
-> typo and it is not something to "tidy up" for consistency — normalizing the two
-> paths to match each other will break one of them.
-> Doc versions before v3 omitted `oii-client/` from the Export path, which returns
-> **403 Forbidden** — an error that reads like a provisioning or entitlement problem
-> and cost this project several days of misdiagnosis. Motta is provisioned
-> (realm 9130356180193146); a 403 on Export is a path bug until proven otherwise.
-> Verified 200 with the `oii-client/` path on 2026-07-27. Intuit adopted the
-> correction in doc v3.
+> **Every 403 on this API is a path bug until proven otherwise.**
+> The gateway answers `403 AuthorizationFailed` for *any* route it doesn't
+> recognise — verified 2026-08-07: a deliberately bogus path under
+> `/v2/clients/oii-client/{c}/returns/{r}/` returns the same 403 as a real
+> endpoint reached the wrong way. So a 403 never distinguishes "not entitled"
+> from "wrong URL", and it must never be read as a provisioning gap. Motta is
+> provisioned (realm 9130356180193146, scope `com.intuit.proconnect.taxreturns`).
+>
+> Two independent instances of this have now bitten the project:
+>
+> 1. **Export needs `oii-client/`; Import must not have it.** Doc versions
+>    before v3 omitted the segment from the Export path. Cost several days of
+>    misdiagnosis. Fixed 2026-07-27, adopted in doc v3.
+> 2. **Import is on its own host.** The Hub posted Imports to the Export host
+>    and got a uniform 403, which again read as "write not provisioned" — the
+>    `proconnect_import_jobs` table stood empty from build until 2026-08-07 for
+>    this reason alone. Fixed in `lib/proconnect/data.ts`.
+>
+> The full 2×2 was measured on the sentinel return 2026-08-07: import host
+> **without** `oii-client/` → 200; import host **with** it → 403; export host
+> either way → 403. Don't "tidy up" the two paths to match each other.
 
 ## The data model (§1.1)
 
@@ -89,10 +100,14 @@ treat a missing property as null.**
 | `cityAbbrev` | City abbreviation for fields keyed on city |
 | `importSource` | Array describing the channel that populated the value. `isDetailImport` is *intended* to mean it was written via this Import API (Appendix B) — but see the caveat below |
 
-> **`isDetailImport` is unreliable as of 2026-07-28.** Intuit confirmed a defect where
-> data written through the Import API does **not** get flagged as API-written. Do not
-> use `importSource` to distinguish API writes from manual data entry until this is
-> fixed (target ~2026-08-03). Track what you wrote yourself in the meantime.
+> **`isDetailImport` is still broken — re-verified end-to-end 2026-08-07.** We committed
+> a real Import write and re-exported the cell: it came back as `{"desc": "..."}` with
+> **no `importSource` key at all**. Not a wrong flag — an absent one. By contrast, cells
+> on the same return populated by other channels do carry it (`["isDocImport"]`,
+> `["isCalculated"]`, `["default"]`). So `importSource` cannot distinguish an API write
+> from manual data entry; it can only tell you a cell came from one of the *other*
+> channels. Track what you wrote yourself. (This is the first test of the flag against
+> an actual API write — before 2026-08-07 no Import had ever succeeded.)
 
 ### val vs desc is per-code, but not perfectly stable
 
@@ -201,21 +216,47 @@ a legitimate way to learn catalog facts (max value, maxLength) from real returns
 Audit rows are written for every attempt, including dry runs and validation failures that
 never reach Intuit. They record field **addresses** and has-value flags only, never values.
 
-## Known Intuit defects (as of 2026-07-28)
+## Known Intuit defects — retested 2026-08-07
 
-Confirmed by Intuit on the 2026-07-27 call. All four have a target fix of ~2026-08-03 —
-**re-test and delete this section once verified fixed.**
+Four defects were confirmed by Intuit on the 2026-07-27 call with a target fix of
+~2026-08-03. All four were re-tested on 2026-08-07 against the sentinel return
+(`de74b2b2-…`), using `scripts/376-retest-intuit-import-defects.ts`. **Two are fixed,
+two are not.**
 
-| # | Defect | Practical effect |
-|---|---|---|
-| 1 | Hard cap of **20 instances for dispositions** | Imports beyond the 20th disposition instance fail |
-| 2 | **M-screens are not importable** | Miscellaneous screens (capital-loss carryovers and similar) whose ids start with `M` rather than a digit are rejected — Intuit's implementation assumed every screen id starts with a number |
-| 3 | **No delete or clear** | Nothing in the API removes a value once written; an incorrect write can only be corrected by overwriting, or by deleting the whole return in the PTO UI |
-| 4 | **API-written flag not set** | See the `isDetailImport` caveat above |
+| # | Defect | Status 2026-08-07 | Evidence |
+|---|---|---|---|
+| 1 | Hard cap of **20 instances for dispositions** | ✅ **FIXED** | A dry run of 25 disposition instances (s52 `p1`…`p25`) validated clean, and a real commit at `s52/p25/c800` returned `importedCount: 1`. Instance 25 exists on the return. |
+| 2 | **M-screens are not importable** | ✅ **FIXED (routing)** | `s100M` and `s200M` now resolve: both answer `INVALID_CODE — Code 'c999999999' is not valid for series 's100M'`, i.e. the series was recognised and the request reached field validation, identical in shape to the numeric control `s100`. Not a full end-to-end write — see the caveat below. |
+| 3 | **No delete or clear** | ❌ **STILL OPEN** | Five clear shapes tried against a populated cell — `desc:""`, `desc:null`, `val:""`, `val:null`, and omitting the value sub-field entirely. All five returned HTTP 200 with `importedCount: 1`, and the value was unchanged after each. |
+| 4 | **API-written flag not set** | ❌ **STILL OPEN** | See the `isDetailImport` note above — the API-written cell came back with no `importSource` key at all. |
 
-Defect 3 is the reason test writes belong on a disposable copy of a return rather than
-on anything real: if a write goes wrong, the recovery is deleting the return, not
+> **Defect 3 has a sharper edge than "no delete".** A clear attempt doesn't fail — it
+> reports **success**. `{"summary":{"totalImported":1,"totalErrors":0}}`, a bumped series
+> version, and no change to the cell. Anything that trusts `importedCount` as proof the
+> return now matches what you sent will be wrong whenever the entry was a clear. Diff
+> against a fresh Export instead.
+
+> **Defect 2's caveat: routing is fixed, a write is unproven.** The M-series accept a
+> seriesId in the path now, but the field catalog Intuit supplied contains **zero**
+> M-series rows (748 Federal series, all `^s\d+$`), so we have no valid M code to write.
+> A successful M-screen import stays untested until Intuit ships M rows in the catalog —
+> worth putting on the next call.
+
+Defect 3 remains the reason test writes belong on a disposable copy of a return rather
+than on anything real: if a write goes wrong, the recovery is deleting the return, not
 undoing the write.
+
+### Re-running this
+
+```
+npx tsx scripts/376-retest-intuit-import-defects.ts survey   # read-only
+npx tsx scripts/376-retest-intuit-import-defects.ts probe    # defects 1, 2 — dryRun only
+npx tsx scripts/376-retest-intuit-import-defects.ts write --i-understand-this-writes
+npx tsx scripts/376-retest-intuit-import-defects.ts clear --i-understand-this-writes
+```
+
+`write` and `clear` refuse any return other than the sentinel, and `write` runs its own
+dry run first. Both record audit rows in `proconnect_import_jobs`.
 
 ## Code dictionary — what each 1040 code means
 
