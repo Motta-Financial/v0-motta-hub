@@ -81,6 +81,15 @@ const nextConfig = {
        * 'self' (so /clients/[id] can preview the embed for QA), the
        * production marketing domain, and the Vercel preview pattern
        * for the public-website project.
+       *
+       * `connect-src` must name every host the embed pages fetch from.
+       * It was previously 'self' only, which silently blocked the two
+       * services the intake wizard's address step depends on — Photon
+       * (street autocomplete) and Zippopotam (ZIP → city/state) — so
+       * both features failed in the browser while looking fine in the
+       * source. Calendly is listed for the booking step on the
+       * completion screen; `form-action` covers the outbound booking
+       * navigation.
        */
       {
         source: "/embed/:path*",
@@ -95,10 +104,11 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https: blob:",
               "font-src 'self' data:",
-              "connect-src 'self'",
+              "connect-src 'self' https://photon.komoot.io https://api.zippopotam.us https://calendly.com https://*.calendly.com",
+              "frame-src https://calendly.com https://*.calendly.com",
               "frame-ancestors 'self' https://motta.cpa https://*.motta.cpa https://*.vercel.app https://www.mottafinancial.com",
               "base-uri 'self'",
-              "form-action 'self'",
+              "form-action 'self' https://calendly.com https://*.calendly.com",
             ].join("; "),
           },
         ],

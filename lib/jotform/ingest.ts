@@ -15,6 +15,9 @@ import {
   linkContactToOrganization,
 } from "@/lib/hub/find-or-create-contact"
 import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
+import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
+import { resolveDiscoveryBookingUrl } from "@/lib/intake/booking-link"
+import { sendProspectIntakeConfirmation } from "@/lib/intake/notify-prospect"
 import { resolvePreferredTeamMember } from "./assign"
 import { enrichIntakeSubmission } from "./enrich"
 import { researchProspectQuestions } from "./research-questions"
@@ -70,6 +73,13 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
   // the end of this function can re-fetch the fully enriched row
   // without having to re-resolve `jotform_submission_id`.
   let persistedRowId: string | null = null
+  // Why client-resolution didn't produce a link, persisted onto the row
+  // so failures are queryable instead of living only in a serverless
+  // console.log. Stays null on success.
+  let linkError: string | null = null
+  // Set once we know the resolution attempt ran at all — distinguishes
+  // "never attempted" from "attempted and found nothing".
+  let linkAttempted = false
 
   // Auto-match the freshly-upserted row to a contact / organization.
   // This is best-effort: a match failure shouldn't fail the webhook,
@@ -79,11 +89,26 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
   try {
     // Re-read so we have the row's UUID + current link state. We
     // upserted by `jotform_submission_id` so that's our key here.
-    const { data: persisted } = await supabase
+    // NOTE: the phone column is `submitter_phone`. This select asked for
+    // a `phone_number` column that has never existed on the table, which
+    // made PostgREST fail the whole request — so `persisted` was ALWAYS
+    // null and the entire linking block below never executed for any
+    // submission. The `{ data }`-only destructure discarded the error,
+    // so it failed completely silently: the 83% of Jotform rows that
+    // look linked were linked by the backfill sweep
+    // (scripts/jotform-intake-link-clients.mjs), never by this live
+    // path, and website intakes — which the sweep doesn't cover — sat at
+    // 1 of 12 linked. Capture the error from here on.
+    const { data: persisted, error: readErr } = await supabase
       .from("jotform_intake_submissions")
-      .select("id, submitter_email, submitter_full_name, business_name, phone_number, contact_id, organization_id, link_method")
+      .select("id, submitter_email, submitter_full_name, business_name, submitter_phone, contact_id, organization_id, link_method")
       .eq("jotform_submission_id", submission.id)
       .maybeSingle()
+      if (readErr) {
+        linkAttempted = true
+        linkError = `read-back: ${readErr.message}`
+        console.error("[Jotform] intake read-back failed, cannot link:", readErr.message)
+      }
       if (persisted) {
       persistedRowId = persisted.id
       // First try the standard auto-link (Supabase-only)
@@ -104,6 +129,7 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
       // Karbon for Jotform (per the user's intake-routing decision) —
       // the Hub-first call is purely a safety net + dedupe key.
       if (!result?.link_method) {
+        linkAttempted = true
         let hubFallback: { contact_id: string | null; organization_id: string | null } = {
           contact_id: null,
           organization_id: null,
@@ -114,7 +140,7 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
               email: persisted.submitter_email ?? null,
               fullName: persisted.submitter_full_name ?? null,
               businessName: persisted.business_name ?? null,
-              phone: persisted.phone_number ?? null,
+              phone: persisted.submitter_phone ?? null,
             },
             { source: "jotform_intake", supabase },
           )
@@ -123,21 +149,46 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
             organization_id: hub.organization_id,
           }
         } catch (err) {
+          linkError = `hub: ${(err as Error).message}`
           console.log(
             "[Jotform] hub-first create failed (will still try Karbon):",
             (err as Error).message,
           )
         }
 
-        const karbonResult = await findOrCreateClient(
-          {
-            email: persisted.submitter_email || undefined,
-            fullName: persisted.submitter_full_name || undefined,
-            businessName: persisted.business_name || undefined,
-            phone: persisted.phone_number || undefined,
-          },
-          { autoCreate: true, source: "Jotform Intake" }
-        )
+        // `findOrCreateClient` is a long chain of Karbon API calls and
+        // Supabase writes, any of which can throw. It used to run
+        // unguarded here, so a Karbon hiccup propagated straight to the
+        // outer catch — skipping the `.update()` below and DISCARDING
+        // the Hub contact we had just successfully created. That is how
+        // 11 of 12 website intakes ended up with link_method NULL while
+        // a matching Hub contact existed all along. Guard it, keep the
+        // Hub-first result, and record why Karbon didn't contribute.
+        let karbonResult: Awaited<ReturnType<typeof findOrCreateClient>> = {
+          contact_id: null,
+          organization_id: null,
+          karbon_key: null,
+          method: "not_found",
+          reason: "not attempted",
+        }
+        try {
+          karbonResult = await findOrCreateClient(
+            {
+              email: persisted.submitter_email || undefined,
+              fullName: persisted.submitter_full_name || undefined,
+              businessName: persisted.business_name || undefined,
+              phone: persisted.submitter_phone || undefined,
+            },
+            { autoCreate: true, source: "Jotform Intake" }
+          )
+        } catch (err) {
+          // Append rather than overwrite — if the Hub call ALSO failed
+          // we want both reasons on the row, since that combination is
+          // what leaves a submission genuinely orphaned.
+          const karbonMsg = `karbon: ${(err as Error).message}`
+          linkError = linkError ? `${linkError}; ${karbonMsg}` : karbonMsg
+          console.log("[Jotform] Karbon find-or-create failed (falling back to Hub contact):", karbonMsg)
+        }
 
         // Karbon path won — use its IDs (it has Karbon keys attached).
         // Karbon path failed — fall back to whatever the Hub-first
@@ -145,6 +196,10 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
         const finalContactId = karbonResult.contact_id ?? hubFallback.contact_id
         const finalOrganizationId =
           karbonResult.organization_id ?? hubFallback.organization_id
+
+        if (!finalContactId && !finalOrganizationId && !linkError) {
+          linkError = "no contact or organization could be resolved or created"
+        }
 
         if (finalContactId || finalOrganizationId) {
           const linkMethod =
@@ -193,7 +248,7 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
                 {
                   name: businessName,
                   email: persisted.submitter_email ?? null,
-                  phone: persisted.phone_number ?? null,
+                  phone: persisted.submitter_phone ?? null,
                   source: "jotform_intake",
                 },
                 supabase,
@@ -221,9 +276,66 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
       } else {
         console.log(`[Jotform] auto-linked intake ${submission.id} via ${result.link_method}: ${result.reason}`)
       }
+
+      // ── Open an opportunity ─────────────────────────────────────────
+      // A Calendly booking has always opened a Deal; an intake never
+      // did. That left form-only prospects — the majority, since most
+      // intakes never book — with a contact and a triage row but no
+      // opportunity, invisible to the deals pipeline.
+      //
+      // Re-read rather than reusing the in-scope ids: the business-org
+      // branch above may have rewritten `organization_id`, and the
+      // already-auto-linked branch never populated locals at all.
+      // findOrCreateDeal is idempotent, so the Calendly webhook will
+      // later reuse this same open deal rather than opening a second.
+      try {
+        const { data: linked } = await supabase
+          .from("jotform_intake_submissions")
+          .select("contact_id, organization_id")
+          .eq("id", persisted.id)
+          .maybeSingle()
+        if (linked?.contact_id || linked?.organization_id) {
+          await findOrCreateDeal(
+            {
+              contactId: linked.contact_id ?? undefined,
+              organizationId: linked.organization_id ?? undefined,
+              title:
+                persisted.business_name ||
+                persisted.submitter_full_name ||
+                persisted.submitter_email ||
+                "Intake Prospect",
+              source: "intake_form",
+            },
+            { supabase },
+          )
+        }
+      } catch (err) {
+        console.log("[Jotform] deal create failed (non-blocking):", (err as Error).message)
+      }
     }
   } catch (err) {
+    // Anything that still escapes the per-step guards above. Recorded
+    // on the row (below) rather than only in the runtime log, because a
+    // console.log in a serverless function is not an operational signal
+    // — that is precisely why the website-intake linking failures went
+    // unnoticed for months.
+    linkError = `unhandled: ${(err as Error).message}`
+    linkAttempted = true
     console.log("[Jotform] intake auto-link error:", (err as Error).message)
+  }
+
+  // Persist link diagnostics regardless of outcome. `link_error` is
+  // informational even on a successful link — "linked via Hub, but the
+  // Karbon mirror failed" is exactly the state worth knowing about.
+  if (persistedRowId && linkAttempted) {
+    const { error: diagErr } = await supabase
+      .from("jotform_intake_submissions")
+      .update({
+        link_attempted_at: new Date().toISOString(),
+        link_error: linkError,
+      })
+      .eq("id", persistedRowId)
+    if (diagErr) console.log("[Jotform] link diagnostics write failed:", diagErr.message)
   }
 
   // ── Post-link pipeline ───────────────────────────────────────────
@@ -278,7 +390,31 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
     }
   }
 
-  return { id: submission.id }
+  // Hand the caller the resolved identity + booking link. The public
+  // intake route relays these to the website form so it can render the
+  // booking step immediately, rather than telling the prospect to wait
+  // for a callback.
+  let bookingUrl: string | null = null
+  let contactId: string | null = null
+  let organizationId: string | null = null
+  if (persistedRowId) {
+    const { data: final } = await supabase
+      .from("jotform_intake_submissions")
+      .select("booking_url, contact_id, organization_id")
+      .eq("id", persistedRowId)
+      .maybeSingle()
+    bookingUrl = final?.booking_url ?? null
+    contactId = final?.contact_id ?? null
+    organizationId = final?.organization_id ?? null
+  }
+
+  return {
+    id: submission.id,
+    row_id: persistedRowId,
+    booking_url: bookingUrl,
+    contact_id: contactId,
+    organization_id: organizationId,
+  }
 }
 
 /**
@@ -335,6 +471,9 @@ export async function runIntakePostProcessing(
         "question_research",
         "fee_estimate",
         "notified_at",
+        "preferred_team_member_id",
+        "booking_url",
+        "prospect_confirmation_sent_at",
       ].join(","),
     )
     .eq("jotform_submission_id", jotformSubmissionId)
@@ -380,6 +519,9 @@ export async function runIntakePostProcessing(
     question_research: Record<string, unknown> | null
     fee_estimate: Record<string, unknown> | null
     notified_at: string | null
+    preferred_team_member_id: string | null
+    booking_url: string | null
+    prospect_confirmation_sent_at: string | null
   }
 
   // ── 1. Auto-assign + persist preferred-teammate FK ─────────────────
@@ -415,6 +557,11 @@ export async function runIntakePostProcessing(
           if (!submissionRow.assigned_to_id) {
             submissionRow.assigned_to_id = resolved.team_member_id
           }
+          // Mirror onto the local row too — the booking-link step below
+          // routes off this field, and it was read from the DB *before*
+          // this update, so without the write-back it would still be
+          // null and every prospect would land on the firm round-robin.
+          submissionRow.preferred_team_member_id = resolved.team_member_id
           resolvedAssignee = { id: resolved.team_member_id, name: resolved.team_member_name }
           console.log(
             `[Jotform] resolved preferred teammate "${resolved.input}" → ${resolved.team_member_name ?? resolved.team_member_id} via ${resolved.method}`,
@@ -427,6 +574,49 @@ export async function runIntakePostProcessing(
       }
     } catch (err) {
       console.log("[Jotform] auto-assign error:", (err as Error).message)
+    }
+  }
+
+  // ── 1a. Discovery-call booking link ───────────────────────────────
+  // Generated here, AFTER the preferred-teammate resolution above, so a
+  // prospect who asked for a specific person is routed to that person's
+  // calendar rather than the firm round-robin.
+  //
+  // Persisted on the row so every surface that offers the link — the
+  // wizard's booking step, the prospect confirmation email, the team
+  // email, any later nudge — hands out the SAME url. Regenerating would
+  // be harmless for the prospect but would fragment attribution, since
+  // the salesforce_uuid we thread through it is what ties the resulting
+  // booking back to this intake.
+  //
+  // Idempotent: only computed when the column is still null, so a
+  // replayed webhook or a manual re-run never rewrites a link already
+  // sitting in someone's inbox.
+  if (!submissionRow.booking_url) {
+    try {
+      const booking = await resolveDiscoveryBookingUrl(supabase, {
+        submissionId: submissionRow.id,
+        fullName: submissionRow.submitter_full_name,
+        email: submissionRow.submitter_email,
+        // Fall back to the queue owner: on a re-run of an intake a human
+        // has already reassigned, that is the person actually working it.
+        preferredTeamMemberId:
+          submissionRow.preferred_team_member_id ?? submissionRow.assigned_to_id,
+      })
+      const { error: bookingErr } = await supabase
+        .from("jotform_intake_submissions")
+        .update({ booking_url: booking.url })
+        .eq("id", submissionRow.id)
+      if (bookingErr) {
+        console.log("[Jotform] booking url persist error:", bookingErr.message)
+      } else {
+        submissionRow.booking_url = booking.url
+        console.log(
+          `[Jotform] booking link routed via ${booking.routing}${booking.hostName ? ` (${booking.hostName})` : ""}`,
+        )
+      }
+    } catch (err) {
+      console.log("[Jotform] booking link error:", (err as Error).message)
     }
   }
 
@@ -573,6 +763,12 @@ export async function runIntakePostProcessing(
   // would also swallow legitimate retries; setting AFTER means a
   // crash mid-send can re-trigger, which is the correct tradeoff
   // (better duplicate than missed prospect intro).
+  //
+  // The stamp is now conditional on `sent > 0`. `sendCategoryEmail`
+  // reports transport failures by RETURNING `{ sent: 0 }` rather than
+  // throwing, so the previous unconditional stamp meant a Resend outage
+  // silently consumed the intake alert AND the single-flight guard then
+  // blocked every retry. A prospect could arrive with nobody told.
   if (!submissionRow.notified_at) {
     try {
       const { sent, attempted } = await notifyTeamOfNewIntake(supabase, {
@@ -612,17 +808,77 @@ export async function runIntakePostProcessing(
         fee_estimate: feeEstimate ?? null,
         jotform_created_at: submissionRow.jotform_created_at,
       })
-      const { error: notifyErr } = await supabase
-        .from("jotform_intake_submissions")
-        .update({ notified_at: new Date().toISOString() })
-        .eq("id", submissionRow.id)
-      if (notifyErr) console.log("[Jotform] notified_at update error:", notifyErr.message)
-      console.log(`[Jotform] intake ${jotformSubmissionId} notified ${sent}/${attempted} teammates`)
+      if (sent > 0) {
+        const { error: notifyErr } = await supabase
+          .from("jotform_intake_submissions")
+          .update({ notified_at: new Date().toISOString() })
+          .eq("id", submissionRow.id)
+        if (notifyErr) console.log("[Jotform] notified_at update error:", notifyErr.message)
+        console.log(`[Jotform] intake ${jotformSubmissionId} notified ${sent}/${attempted} teammates`)
+      } else {
+        // Leave `notified_at` null so a replay or a sweep can retry.
+        // Loud, because zero delivered on a live prospect is an incident,
+        // not a routine outcome.
+        console.error(
+          `[Jotform] intake ${jotformSubmissionId} notified 0/${attempted} teammates — leaving notified_at NULL for retry`,
+        )
+      }
     } catch (err) {
       console.log("[Jotform] notify error:", (err as Error).message)
     }
   } else {
     console.log(`[Jotform] intake ${jotformSubmissionId} already notified at ${submissionRow.notified_at} — skipping email`)
+  }
+
+  // ── 4. Prospect confirmation + booking link ───────────────────────
+  // The client-facing half of the funnel fix. Until now the prospect
+  // got nothing at all — only the team was emailed — and the wizard
+  // told them to wait for a callback. Of 130 intakes with a resolved
+  // contact in the 18 months to 2026-08, 8 booked within a week.
+  //
+  // Same single-flight discipline as the team email, and the same
+  // send-verified stamp: `sendEmail` returns `{ success: false }` on a
+  // transport failure instead of throwing, so stamping unconditionally
+  // would burn the one automated chance to reach this prospect.
+  if (!submissionRow.prospect_confirmation_sent_at && submissionRow.submitter_email) {
+    if (!submissionRow.booking_url) {
+      console.log(
+        `[Jotform] intake ${jotformSubmissionId} has no booking_url — skipping prospect confirmation`,
+      )
+    } else {
+      try {
+        const firstName =
+          submissionRow.submitter_full_name?.trim().split(/\s+/)[0] ?? null
+        const { sent, error: sendErr } = await sendProspectIntakeConfirmation({
+          firstName,
+          email: submissionRow.submitter_email,
+          bookingUrl: submissionRow.booking_url,
+          // Only name the host when we actually routed to their calendar;
+          // `preferred_team_member` is the prospect's raw typed answer and
+          // may not have matched anyone.
+          hostName: submissionRow.preferred_team_member_id
+            ? submissionRow.preferred_team_member
+            : null,
+          serviceFocus: submissionRow.service_focus,
+        })
+        if (sent) {
+          const { error: stampErr } = await supabase
+            .from("jotform_intake_submissions")
+            .update({ prospect_confirmation_sent_at: new Date().toISOString() })
+            .eq("id", submissionRow.id)
+          if (stampErr) {
+            console.log("[Jotform] prospect confirmation stamp error:", stampErr.message)
+          }
+          console.log(`[Jotform] intake ${jotformSubmissionId} prospect confirmation sent`)
+        } else {
+          console.error(
+            `[Jotform] intake ${jotformSubmissionId} prospect confirmation NOT sent: ${sendErr ?? "unknown"}`,
+          )
+        }
+      } catch (err) {
+        console.log("[Jotform] prospect confirmation error:", (err as Error).message)
+      }
+    }
   }
 
   // Silence the "unused" warning for the assignee handle while leaving

@@ -316,10 +316,20 @@ export const POST = withPublicCors(async (req: NextRequest) => {
   // the next sync, and Sentry will catch the underlying cause.
   try {
     const submission = synthesizeJotformSubmission(payload)
-    await upsertIntakeSubmission(submission)
+    const result = await upsertIntakeSubmission(submission)
+    // `booking_url` is the point of this response: it lets the form show
+    // the prospect a live "book your discovery call" step instead of
+    // "someone will follow up within one business day". It carries a
+    // salesforce_uuid tying the resulting booking back to this intake,
+    // so the website must use THIS url rather than hardcoding a generic
+    // Calendly link. Null only if the pipeline couldn't resolve one —
+    // render the plain thank-you in that case.
     return jsonWithCors(req, {
       ok: true,
       submission_id: submission.id,
+      booking_url: result.booking_url,
+      contact_id: result.contact_id,
+      organization_id: result.organization_id,
     })
   } catch (err) {
     console.error("[v0] /api/public/intake error:", err)

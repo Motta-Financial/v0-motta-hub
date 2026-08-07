@@ -176,25 +176,43 @@ Most are test rows, but at least one is a real prospect (2026-07-29) for whom a
 Hub contact **does** exist and **is** in Karbon — the intake row simply never
 had `contact_id` written back.
 
-Root cause is a structural one in `lib/jotform/ingest.ts:106-227`.
-`findOrCreateHubContact` is individually try/caught (lines 111-130), but
-`findOrCreateClient` on line 132 is **not**:
+**Root cause: the read-back query in `lib/jotform/ingest.ts` selected a column
+that does not exist.**
 
 ```ts
-try { const hub = await findOrCreateHubContact(...) ; hubFallback = {...} }
-catch (err) { /* logged, safe */ }
-
-const karbonResult = await findOrCreateClient(...)   // ← unguarded
+const { data: persisted } = await supabase
+  .from("jotform_intake_submissions")
+  .select("id, submitter_email, …, phone_number, …")   // ← no such column
+  .eq("jotform_submission_id", submission.id)
+  .maybeSingle()
+if (persisted) { /* ALL linking lives in here */ }
 ```
 
-If the Karbon call throws, the exception escapes to the outer catch at line 225
-and the `.update({ contact_id, link_method, … })` on line 156 **never runs** —
-discarding the Hub contact that was just successfully created. The intake looks
-unlinked even though the contact exists.
+The column is `submitter_phone`. PostgREST rejects the whole request for an
+unknown column, so `persisted` was **always null** and the entire linking block
+— Hub contact, Karbon contact, business-org pairing, everything — **never
+executed for any submission**. Confirmed against the live schema:
 
-**Fix:** wrap `findOrCreateClient` in its own try/catch that degrades to
-`hubFallback`, so the Hub-first invariant actually holds. Also persist the
-failure — see F7.
+```
+ERROR: 42703: column "phone_number" does not exist
+```
+
+It failed silently because the destructure took only `{ data }` and dropped
+`error`. Nothing threw, nothing logged, and the row simply came out unlinked.
+
+This reframes the 83% link rate on the Jotform side: those rows were linked by
+the bulk sweep (`scripts/jotform-intake-link-clients.mjs`), never by the live
+pipeline. Website intakes aren't covered by that sweep, which is why they sat
+at 1 of 12.
+
+**Fixed:** correct column name, and capture `error` so a future schema drift
+surfaces instead of silently disabling the feature.
+
+A second, latent fault in the same block: `findOrCreateClient` ran unguarded
+while `findOrCreateHubContact` was try/caught, so once the read-back was fixed
+a Karbon outage would have thrown past the `.update()` and discarded the
+successfully-created Hub contact. Also fixed — it now degrades to the Hub
+result, which is what the Hub-first invariant promises.
 
 ### 🟠 F3 — Nothing durably links an intake to the booking it produced
 
@@ -335,6 +353,59 @@ option vocabulary and question exists in two places. Pick the native form
 (better UX, no third-party dependency, no per-submission API call) and disable
 the Jotform one — or the reverse — but running both means every future change
 gets made twice or, worse, once.
+
+---
+
+## 3a. Implementation status
+
+Phases 1 and 2 are implemented on `claude/intake-form-automation-f3y37k`.
+
+| # | Finding | Status |
+| --- | --- | --- |
+| F1 | Booking step + prospect confirmation email | ✅ done |
+| F2 | Silent linking failure (`phone_number`) | ✅ fixed |
+| F3 | Intake → booking attribution | ✅ done |
+| F4 | Open a Deal on intake | ✅ done |
+| F5 | `notified_at` stamped on a failed send | ✅ fixed |
+| F6 | Discovery Meeting allows phone | ⚠️ Calendly config — **needs a human** |
+| F7 | No observability on link failures | ✅ done |
+| F8 | Stale `WEBSITE_INTEGRATION.md` | ✅ rewritten |
+| F9–F12 | Qualifying questions, auto work item, form consolidation, triage adoption | ⏳ not started |
+
+**What was built**
+
+- `scripts/386_intake_booking_attribution.sql` — `link_error`,
+  `link_attempted_at`, `booking_url`, `prospect_confirmation_sent_at`,
+  `calendly_event_id`, `first_booked_at`, plus three partial indexes.
+  **Applied to production.**
+- `lib/intake/booking-link.ts` — resolves the discovery-call URL, routing to the
+  prospect's requested teammate when they have an active Discovery event type
+  and falling back to the firm round-robin link otherwise. Stamps
+  `salesforce_uuid` with the intake row id for attribution.
+- `lib/intake/notify-prospect.ts` — the client-facing confirmation email,
+  carrying the same booking link. Only stamps `prospect_confirmation_sent_at`
+  when Resend actually accepted the message.
+- `lib/jotform/ingest.ts` — F2/F4/F5/F7 plus booking-link generation and the
+  prospect send. Returns `booking_url` / `contact_id` / `organization_id`.
+- `app/api/public/intake/route.ts` — relays those to the website form.
+- `app/embed/intake/page.tsx` — the completion screen is now a booking step.
+- `app/api/calendly/webhook/route.ts` — writes `calendly_event_id` back onto the
+  intake row from `invitee.tracking.salesforce_uuid`. First booking wins.
+- `next.config.mjs` — `connect-src` on `/embed/*` was `'self'` only, which
+  silently blocked the intake wizard's own address autocomplete (Photon) and
+  ZIP lookup (Zippopotam). Both hosts added, along with Calendly.
+
+**Needs a human decision**
+
+- **F6** — remove the phone option from the Discovery Meeting event type in
+  Calendly if discovery calls should always be Zoom. 11 of 48 currently aren't.
+- **`FIRM_DISCOVERY_BOOKING_URL`** defaults to
+  `https://calendly.com/motta-financial/discovery-meeting` (the team
+  round-robin link found in `calendly_event_types`). Override via env or the
+  `intake.discovery_booking_url` row in `firm_settings` if that's the wrong
+  default.
+- The prospect confirmation email copy — it's the first thing a new lead reads
+  from the firm and should get a partner's eye before it goes live.
 
 ---
 

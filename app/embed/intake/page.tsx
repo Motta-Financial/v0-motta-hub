@@ -207,6 +207,11 @@ export default function IntakeWizardPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  // Prefilled Calendly URL returned by /api/public/intake. Drives the
+  // booking step on the completion screen. Null means the pipeline
+  // couldn't resolve a link — we fall back to the old "we'll follow up"
+  // copy rather than showing a dead button.
+  const [bookingUrl, setBookingUrl] = useState<string | null>(null)
 
   const steps = useMemo(() => buildSteps(state), [state])
   const safeIndex = Math.min(stepIndex, steps.length - 1)
@@ -322,10 +327,19 @@ export default function IntakeWizardPage() {
         )
         return
       }
+      setBookingUrl(typeof data.booking_url === "string" ? data.booking_url : null)
       setDone(true)
       try {
         window.parent?.postMessage(
-          { type: "motta:intake:success", submission_id: data.submission_id },
+          {
+            type: "motta:intake:success",
+            submission_id: data.submission_id,
+            // Relayed so a host page that renders its own confirmation
+            // (instead of keeping the iframe visible) can still offer
+            // the booking step. Using this url rather than a hardcoded
+            // Calendly link is what preserves intake attribution.
+            booking_url: data.booking_url ?? null,
+          },
           "*",
         )
       } catch {
@@ -356,11 +370,43 @@ export default function IntakeWizardPage() {
         <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
           Thanks{state.first_name ? `, ${state.first_name}` : ""} — we&apos;ve got it
         </h1>
-        <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          ALFRED is preparing a research brief for our team right now.
-          A teammate will follow up within one business day to schedule
-          your discovery call on Zoom.
-        </p>
+
+        {bookingUrl ? (
+          <>
+            {/* The booking step. This screen used to end the flow with
+                "a teammate will follow up within one business day",
+                which is where the funnel leaked: only 8 of 130 intakes
+                booked a call within a week. Asking for the booking here,
+                while the prospect is still engaged, is the whole point
+                of the change. */}
+            <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
+              One last step — grab a time for your free 30-minute discovery
+              call. We&apos;ll send a Zoom link automatically once you book.
+            </p>
+            <a
+              href={bookingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-flex items-center justify-center rounded-lg bg-primary px-8 py-3.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+              Book your discovery call →
+            </a>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Not ready to pick a time? No problem — we&apos;ve emailed this
+              link to {state.email || "you"} so you can book whenever suits.
+              ALFRED is preparing a research brief for our team in the
+              meantime.
+            </p>
+          </>
+        ) : (
+          /* No link resolved (misconfigured Calendly, lookup failure).
+             Degrade to the previous copy rather than show a dead CTA. */
+          <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
+            ALFRED is preparing a research brief for our team right now.
+            A teammate will follow up within one business day to schedule
+            your discovery call on Zoom.
+          </p>
+        )}
       </div>
     )
   }
