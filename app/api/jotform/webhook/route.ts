@@ -174,6 +174,19 @@ export async function POST(req: Request) {
     // table shaped to that form's actual fields; an unknown kind
     // still gets the raw payload preserved on `jotform_webhook_events`
     // (recorded above) but we don't pretend to denormalize it.
+    // A retired form still ingests. `retired_at` means "we no longer
+    // offer this form", not "reject anyone who finds it" — the Jotform
+    // URL may still be in an email signature, a QR code or a search
+    // result, and a prospect who fills it in is a real prospect. Dropping
+    // them would be a worse failure than the duplication we retired it to
+    // remove. We log loudly instead, and /intake surfaces the count so
+    // someone can chase down whatever is still linking to it.
+    if (formRow.retired_at) {
+      console.warn(
+        `[v0] jotform webhook: submission on RETIRED form ${formRow.jotform_form_id} (retired ${formRow.retired_at}) — ingesting anyway; find and update whatever still links to it`,
+      )
+    }
+
     switch (formRow.kind) {
       case "intake":
         await upsertIntakeSubmission(submission)

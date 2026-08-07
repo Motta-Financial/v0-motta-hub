@@ -44,6 +44,12 @@ import { format } from "date-fns"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  WorkItemBuilder,
+  serializeWorkItemDrafts,
+  validWorkItemDrafts,
+  type WorkItemDraft,
+} from "@/components/karbon/work-item-builder"
 import { Calendar } from "@/components/ui/calendar"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -345,6 +351,68 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
    * inline (the API route returns user-friendly strings for the
    * 422 prereq errors).
    */
+  // ── Template-based work items ─────────────────────────────────────
+  // The button below is the one-click 1040 fast path (the shape the old
+  // Zap had). This is everything else: pick any Karbon template, queue as
+  // many as the engagement needs. A prospect who came in for bookkeeping
+  // and payroll shouldn't get a 1040 work item because that's the only
+  // one we hardcoded.
+  const [workItemDrafts, setWorkItemDrafts] = useState<WorkItemDraft[]>([])
+  const [creatingDrafts, setCreatingDrafts] = useState(false)
+  const [draftsError, setDraftsError] = useState<string | null>(null)
+  const [draftsResult, setDraftsResult] = useState<string | null>(null)
+
+  async function createDraftWorkItems() {
+    if (!submissionId) return
+    const drafts = serializeWorkItemDrafts(workItemDrafts)
+    if (drafts.length === 0) return
+    setDraftsError(null)
+    setDraftsResult(null)
+    setCreatingDrafts(true)
+    try {
+      const res = await fetch(
+        `/api/jotform/intake/${submissionId}/karbon-work-items`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ drafts }),
+        },
+      )
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string
+        created?: number
+        failed?: number
+        results?: Array<{ title: string; ok: boolean; error?: string }>
+      }
+      if (!res.ok) {
+        throw new Error(json?.error || `Work item creation failed (${res.status})`)
+      }
+      // Partial success is expected, so report both halves rather than
+      // showing a bare success and silently dropping the rejects.
+      const failedItems = (json.results ?? []).filter((r) => !r.ok)
+      if (failedItems.length > 0) {
+        setDraftsError(
+          `${failedItems.length} failed: ${failedItems.map((f) => `${f.title} (${f.error})`).join("; ")}`,
+        )
+      }
+      if ((json.created ?? 0) > 0) {
+        setDraftsResult(`Created ${json.created} work item${json.created === 1 ? "" : "s"} in Karbon.`)
+        // Only clear the drafts that actually landed — anything that
+        // failed stays on screen so it can be fixed and retried.
+        const okTitles = new Set(
+          (json.results ?? []).filter((r) => r.ok).map((r) => r.title),
+        )
+        setWorkItemDrafts((prev) => prev.filter((d) => !okTitles.has(d.title.trim())))
+      }
+      await mutate()
+      onChanged?.()
+    } catch (err: any) {
+      setDraftsError(err?.message ?? "Failed to create work items")
+    } finally {
+      setCreatingDrafts(false)
+    }
+  }
+
   async function createWorkItem() {
     if (!submissionId) return
     setWorkItemError(null)
@@ -943,6 +1011,75 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                   </Button>
                 </>
               )}
+
+              {/* Any other Karbon template — the 1040 button above is the
+                  fast path, this is the general case. */}
+              <div className="space-y-3 border-t pt-3">
+                <div className="text-xs font-medium text-foreground">
+                  Other work items
+                </div>
+                {submission.contact_id || submission.organization_id ? (
+                  <>
+                    <WorkItemBuilder
+                      value={workItemDrafts}
+                      onChange={setWorkItemDrafts}
+                      clientName={
+                        submission.linkedClient?.name ??
+                        submission.business_name ??
+                        submission.submitter_full_name
+                      }
+                      // `team_members.full_name` is nullable in the Hub
+                      // schema; drop the nameless rows rather than render
+                      // blank options in the assignee picker.
+                      teamMembers={teamMembers
+                        .filter((m) => !!m.full_name)
+                        .map((m) => ({ id: m.id, full_name: m.full_name as string }))}
+                      defaultAssigneeTeamMemberId={submission.assigned_to_id}
+                      disabled={creatingDrafts}
+                    />
+
+                    {draftsError && (
+                      <div className="rounded-md border border-red-200 bg-red-50 p-2.5 text-xs text-red-800">
+                        {draftsError}
+                      </div>
+                    )}
+                    {draftsResult && (
+                      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2.5 text-xs text-emerald-800">
+                        {draftsResult}
+                      </div>
+                    )}
+
+                    {validWorkItemDrafts(workItemDrafts).length > 0 && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="w-full"
+                        disabled={creatingDrafts}
+                        onClick={createDraftWorkItems}
+                      >
+                        {creatingDrafts ? (
+                          <>
+                            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                            Creating in Karbon…
+                          </>
+                        ) : (
+                          <>
+                            <Briefcase className="mr-2 h-3.5 w-3.5" />
+                            Create {validWorkItemDrafts(workItemDrafts).length} work item
+                            {validWorkItemDrafts(workItemDrafts).length === 1 ? "" : "s"}
+                          </>
+                        )}
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Link this intake to a client first — work items are created on
+                    that client&apos;s Karbon timeline.
+                  </p>
+                )}
+              </div>
             </section>
 
             {/* ───── Summary sections ───── */}

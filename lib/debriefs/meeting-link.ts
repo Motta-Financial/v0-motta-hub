@@ -75,6 +75,16 @@ export interface DebriefPrefillParams {
   contactType?: "contact" | "organization" | null
   contactName?: string | null
   karbonKey?: string | null
+  /**
+   * The Deal this meeting belongs to.
+   *
+   * Previously absent from the prefill contract, which meant the
+   * reminder email and the meeting detail dialog could not attach a
+   * debrief to its opportunity even when one existed — only the Deal
+   * page's own "Run debrief" button could. That is why 271 of 915
+   * debriefs had a deal and the rest floated free.
+   */
+  dealId?: string | null
 }
 
 /**
@@ -95,6 +105,7 @@ export function buildDebriefPrefillPath(params: DebriefPrefillParams): string {
   if (params.contactType) sp.set("contact_type", params.contactType)
   if (params.contactName) sp.set("contact_name", params.contactName)
   if (params.karbonKey) sp.set("karbon_key", params.karbonKey)
+  if (params.dealId) sp.set("deal_id", params.dealId)
   return `/debriefs/new?${sp.toString()}`
 }
 

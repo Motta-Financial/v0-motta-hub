@@ -117,6 +117,26 @@ type WebsiteIntakePayload = {
   current_cpa_status?: string
   cpa_switch_reason?: string
 
+  // Business detail the legacy Jotform collected and this endpoint now
+  // accepts, so the native form reaches full parity before Jotform is
+  // retired. `business_situation` was Jotform's "Which best describes
+  // your situation?" (117/220 answered); `business_summary` its "brief
+  // summary of your existing business" (102); `additional_notes` its
+  // "any additional information" (53).
+  business_street_address?: string
+  business_city?: string
+  business_zip?: string
+
+  // ── Consent ────────────────────────────────────────────────────────
+  // Answered on 220/220 Jotform submissions, with real variance: 47
+  // people declined data storage and 38 declined marketing contact.
+  // Callers should send the literal strings "I accept" / "I don't accept"
+  // (and "Accepted" for terms) so historical and new rows share one
+  // vocabulary.
+  terms_accepted?: string
+  consent_store_data?: string
+  consent_marketing_contact?: string
+
   // Tracking — passed straight through to raw_answers for analytics.
   utm_source?: string
   utm_medium?: string
@@ -202,8 +222,15 @@ function synthesizeJotformSubmission(
   // (asking would be a UX regression). For a brand-new biz the user
   // can put their best guess in business_summary.
   put("whatsThe", asString(payload.business_name))
-  if (payload.business_state) {
-    put("whatIs", { state: payload.business_state } as unknown as JotformAnswer["answer"])
+  // Business address travels as one Jotform-shaped address object so the
+  // existing parser extracts state AND street from a single answer.
+  const businessAddr: Record<string, string> = {}
+  if (payload.business_street_address) businessAddr.addr_line1 = payload.business_street_address
+  if (payload.business_city) businessAddr.city = payload.business_city
+  if (payload.business_state) businessAddr.state = payload.business_state
+  if (payload.business_zip) businessAddr.postal = payload.business_zip
+  if (Object.keys(businessAddr).length > 0) {
+    put("whatIs", businessAddr as unknown as JotformAnswer["answer"])
   }
   if (payload.business_email || payload.business_phone) {
     put("existingBusiness", {
@@ -229,6 +256,12 @@ function synthesizeJotformSubmission(
   put("pendingNotices", asString(payload.pending_tax_notices))
   put("currentCpa", asString(payload.current_cpa_status))
   put("switchReason", asString(payload.cpa_switch_reason))
+
+  // Consent — synthesized under the ORIGINAL Jotform slugs so one parser
+  // serves both sources and the 230 historical rows stay comparable.
+  put("typeA", asString(payload.terms_accepted))
+  put("canWe49", asString(payload.consent_store_data))
+  put("canWe", asString(payload.consent_marketing_contact))
 
   // Tracking — preserved verbatim, parser ignores them but they
   // survive in `raw_answers` for analytics.
@@ -316,10 +349,20 @@ export const POST = withPublicCors(async (req: NextRequest) => {
   // the next sync, and Sentry will catch the underlying cause.
   try {
     const submission = synthesizeJotformSubmission(payload)
-    await upsertIntakeSubmission(submission)
+    const result = await upsertIntakeSubmission(submission)
+    // `booking_url` is the point of this response: it lets the form show
+    // the prospect a live "book your discovery call" step instead of
+    // "someone will follow up within one business day". It carries a
+    // salesforce_uuid tying the resulting booking back to this intake,
+    // so the website must use THIS url rather than hardcoding a generic
+    // Calendly link. Null only if the pipeline couldn't resolve one —
+    // render the plain thank-you in that case.
     return jsonWithCors(req, {
       ok: true,
       submission_id: submission.id,
+      booking_url: result.booking_url,
+      contact_id: result.contact_id,
+      organization_id: result.organization_id,
     })
   } catch (err) {
     console.error("[v0] /api/public/intake error:", err)

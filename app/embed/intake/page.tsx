@@ -154,8 +154,42 @@ interface FormState {
    * question-research pass picks it up.  */
   situation: string
 
+  // ── Qualifying questions ────────────────────────────────────────
+  // The backend has parsed, stored and emailed these four fields since
+  // the website form launched, but no form ever asked them — they were
+  // dead capability. They're the highest-signal triage inputs we can
+  // collect: a prospect who is behind on filings with an open IRS
+  // notice is a different (and more urgent) engagement than one
+  // shopping around, and the fee estimate leans on both.
+  behind_on_filings: string
+  pending_tax_notices: string
+  current_cpa_status: string
+  /** Only asked when they currently work with someone. */
+  cpa_switch_reason: string
+
   referral_source: string
   preferred_team_member: string
+
+  // ── Parity with the retired Jotform form ──────────────────────────
+  // Fields the Jotform collected that this wizard originally dropped.
+  // `business_situation` ("Which best describes your situation?") was
+  // answered 117/220, `business_summary` 102/220, `additional_notes`
+  // 53/220 — all real signal the team read.
+  business_street_address: string
+  business_city: string
+  business_zip: string
+  business_situation: string
+  business_summary: string
+  additional_notes: string
+
+  // ── Consent ───────────────────────────────────────────────────────
+  // Answered on 220/220 Jotform submissions, and two of them carry real
+  // variance: 47 people declined data storage and 38 declined marketing
+  // contact. Dropping these would silently start treating every new
+  // prospect as opted in.
+  terms_accepted: boolean
+  consent_store_data: boolean
+  consent_marketing_contact: boolean
 
   // Honeypot — must stay empty.
   website: string
@@ -184,10 +218,60 @@ const INITIAL_STATE: FormState = {
   business_employee_count: "",
   business_uses_accounting_system: "",
   situation: "",
+  behind_on_filings: "",
+  pending_tax_notices: "",
+  current_cpa_status: "",
+  cpa_switch_reason: "",
   referral_source: "",
   preferred_team_member: "",
+  business_street_address: "",
+  business_city: "",
+  business_zip: "",
+  business_situation: "",
+  business_summary: "",
+  additional_notes: "",
+  terms_accepted: false,
+  // Default ON for the two optional consents — matches the Jotform,
+  // where the overwhelming majority accepted, while leaving the
+  // decline a single click away. Terms stays OFF because acceptance
+  // must be an affirmative act.
+  consent_store_data: true,
+  consent_marketing_contact: true,
   website: "",
 }
+
+const BUSINESS_SITUATION_OPTIONS: QualifyingOption[] = [
+  { value: "I have an existing business", label: "I have an existing business" },
+  { value: "I'm starting a new business", label: "I'm starting a new business", sub: "Formation, entity choice, setup" },
+  { value: "I'm buying or selling a business", label: "I'm buying or selling a business" },
+  { value: "Personal only — no business", label: "No business", sub: "Personal taxes and planning only" },
+]
+
+// Option sets for the qualifying step. Values are stored verbatim on
+// `jotform_intake_submissions` and rendered as-is in the team email, so
+// they read as prose rather than as enum keys.
+type QualifyingOption = { value: string; label: string; sub?: string }
+
+const FILING_STATUS_OPTIONS: QualifyingOption[] = [
+  { value: "Up to date", label: "All caught up", sub: "Everything filed on time" },
+  { value: "Behind 1 year", label: "Behind one year", sub: "Last year still outstanding" },
+  { value: "Behind 2+ years", label: "Behind two or more years", sub: "We handle this a lot — no judgment" },
+  { value: "Not sure", label: "Not sure", sub: "We'll figure it out together" },
+]
+
+const NOTICE_OPTIONS: QualifyingOption[] = [
+  { value: "No", label: "No notices" },
+  { value: "Yes — IRS", label: "Yes — from the IRS" },
+  { value: "Yes — state", label: "Yes — from my state" },
+  { value: "Yes — both", label: "Yes — both" },
+]
+
+const CPA_STATUS_OPTIONS: QualifyingOption[] = [
+  { value: "No one currently", label: "No one right now", sub: "First time hiring, or between providers" },
+  { value: "Works with a CPA", label: "Yes, a CPA or accountant" },
+  { value: "Works with a bookkeeper", label: "Yes, a bookkeeper" },
+  { value: "Self-prepared", label: "I do it myself", sub: "TurboTax, spreadsheets, etc." },
+]
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -207,6 +291,11 @@ export default function IntakeWizardPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  // Prefilled Calendly URL returned by /api/public/intake. Drives the
+  // booking step on the completion screen. Null means the pipeline
+  // couldn't resolve a link — we fall back to the old "we'll follow up"
+  // copy rather than showing a dead button.
+  const [bookingUrl, setBookingUrl] = useState<string | null>(null)
 
   const steps = useMemo(() => buildSteps(state), [state])
   const safeIndex = Math.min(stepIndex, steps.length - 1)
@@ -295,6 +384,30 @@ export default function IntakeWizardPage() {
         // ALFRED's enrichment job.
         questions_or_concerns: state.situation.trim() || undefined,
 
+        // Qualifying answers. The API, parser, storage columns and team
+        // email have accepted these all along — this form is simply the
+        // first one to ask.
+        behind_on_filings: state.behind_on_filings || undefined,
+        pending_tax_notices: state.pending_tax_notices || undefined,
+        current_cpa_status: state.current_cpa_status || undefined,
+        cpa_switch_reason: state.cpa_switch_reason.trim() || undefined,
+
+        // Parity fields carried over from the Jotform.
+        business_situation: state.business_situation || undefined,
+        business_summary: state.business_summary.trim() || undefined,
+        business_street_address: state.business_street_address.trim() || undefined,
+        business_city: state.business_city.trim() || undefined,
+        business_zip: state.business_zip.trim() || undefined,
+        additional_notes: state.additional_notes.trim() || undefined,
+
+        // Consent. Sent as the Jotform's own vocabulary so the 230
+        // historical rows and every new one share one set of values.
+        terms_accepted: state.terms_accepted ? "Accepted" : undefined,
+        consent_store_data: state.consent_store_data ? "I accept" : "I don't accept",
+        consent_marketing_contact: state.consent_marketing_contact
+          ? "I accept"
+          : "I don't accept",
+
         referral_source: state.referral_source.trim() || undefined,
         preferred_team_member:
           state.preferred_team_member.trim() || undefined,
@@ -322,10 +435,19 @@ export default function IntakeWizardPage() {
         )
         return
       }
+      setBookingUrl(typeof data.booking_url === "string" ? data.booking_url : null)
       setDone(true)
       try {
         window.parent?.postMessage(
-          { type: "motta:intake:success", submission_id: data.submission_id },
+          {
+            type: "motta:intake:success",
+            submission_id: data.submission_id,
+            // Relayed so a host page that renders its own confirmation
+            // (instead of keeping the iframe visible) can still offer
+            // the booking step. Using this url rather than a hardcoded
+            // Calendly link is what preserves intake attribution.
+            booking_url: data.booking_url ?? null,
+          },
           "*",
         )
       } catch {
@@ -356,11 +478,43 @@ export default function IntakeWizardPage() {
         <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
           Thanks{state.first_name ? `, ${state.first_name}` : ""} — we&apos;ve got it
         </h1>
-        <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          ALFRED is preparing a research brief for our team right now.
-          A teammate will follow up within one business day to schedule
-          your discovery call on Zoom.
-        </p>
+
+        {bookingUrl ? (
+          <>
+            {/* The booking step. This screen used to end the flow with
+                "a teammate will follow up within one business day",
+                which is where the funnel leaked: only 8 of 130 intakes
+                booked a call within a week. Asking for the booking here,
+                while the prospect is still engaged, is the whole point
+                of the change. */}
+            <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
+              One last step — grab a time for your free 30-minute discovery
+              call. We&apos;ll send a Zoom link automatically once you book.
+            </p>
+            <a
+              href={bookingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-flex items-center justify-center rounded-lg bg-primary px-8 py-3.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+              Book your discovery call →
+            </a>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Not ready to pick a time? No problem — we&apos;ve emailed this
+              link to {state.email || "you"} so you can book whenever suits.
+              ALFRED is preparing a research brief for our team in the
+              meantime.
+            </p>
+          </>
+        ) : (
+          /* No link resolved (misconfigured Calendly, lookup failure).
+             Degrade to the previous copy rather than show a dead CTA. */
+          <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
+            ALFRED is preparing a research brief for our team right now.
+            A teammate will follow up within one business day to schedule
+            your discovery call on Zoom.
+          </p>
+        )}
       </div>
     )
   }
@@ -890,7 +1044,153 @@ function buildSteps(state: FormState): Step[] {
       ),
     },
 
-    // 9 — Referral + preferred teammate (optional)
+    // 8b — Business detail carried over from the Jotform. Only shown to
+    // prospects who indicated a business focus, so a personal-only filer
+    // never sees it.
+    wantsBusiness && {
+      id: "business-detail",
+      alfred:
+        "This is the context I use to research your company before the call — a sentence or two is plenty.",
+      render: ({ state, update }) => (
+        <StepShell
+          eyebrow="Your business"
+          title="A bit more about the business"
+          subtitle="All optional. The Jotform asked these and the team read every one, so they're worth the extra thirty seconds."
+        >
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium text-foreground">
+              Which best describes your situation?
+            </p>
+            {BUSINESS_SITUATION_OPTIONS.map((opt) => (
+              <RadioCard
+                key={opt.value}
+                name="business_situation"
+                value={opt.value}
+                label={opt.label}
+                description={opt.sub}
+                checked={state.business_situation === opt.value}
+                onChange={() => update("business_situation", opt.value)}
+              />
+            ))}
+          </div>
+
+          <Textarea
+            label="Brief summary of the business"
+            value={state.business_summary}
+            onChange={(v) => update("business_summary", v)}
+            placeholder="What you do, who you serve, roughly how long you've been running."
+            rows={4}
+          />
+
+          <Field
+            label="Business street address"
+            value={state.business_street_address}
+            onChange={(v) => update("business_street_address", v)}
+            placeholder="Optional — helps us set up state filings correctly"
+          />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field
+              label="Business city"
+              value={state.business_city}
+              onChange={(v) => update("business_city", v)}
+            />
+            <Field
+              label="Business ZIP"
+              value={state.business_zip}
+              onChange={(v) => update("business_zip", v)}
+            />
+          </div>
+        </StepShell>
+      ),
+    },
+
+    // 9 — Qualifying questions (all optional)
+    //
+    // Deliberately placed AFTER the freeform "how can we help" step:
+    // by this point the prospect has already told their story, so
+    // these read as clarifying follow-ups rather than as a screening
+    // gate at the door. Every one is skippable — the CTA copy says so
+    // — because a prospect who is two years behind is exactly the one
+    // most likely to abandon a form that feels like an interrogation.
+    {
+      id: "qualifying",
+      alfred:
+        "Straight answers help me size things up before the call. Skip anything you&apos;d rather discuss live.",
+      render: ({ state, update }) => (
+        <StepShell
+          eyebrow="Your situation"
+          title="A few quick specifics"
+          subtitle="All optional — but each one sharpens the estimate we bring to your call."
+        >
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium text-foreground">
+              Are your tax filings up to date?
+            </p>
+            {FILING_STATUS_OPTIONS.map((opt) => (
+              <RadioCard
+                key={opt.value}
+                name="behind_on_filings"
+                value={opt.value}
+                label={opt.label}
+                description={opt.sub}
+                checked={state.behind_on_filings === opt.value}
+                onChange={() => update("behind_on_filings", opt.value)}
+              />
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium text-foreground">
+              Any open letters or notices from the IRS or your state?
+            </p>
+            {NOTICE_OPTIONS.map((opt) => (
+              <RadioCard
+                key={opt.value}
+                name="pending_tax_notices"
+                value={opt.value}
+                label={opt.label}
+                checked={state.pending_tax_notices === opt.value}
+                onChange={() => update("pending_tax_notices", opt.value)}
+              />
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium text-foreground">
+              Who handles this for you today?
+            </p>
+            {CPA_STATUS_OPTIONS.map((opt) => (
+              <RadioCard
+                key={opt.value}
+                name="current_cpa_status"
+                value={opt.value}
+                label={opt.label}
+                description={opt.sub}
+                checked={state.current_cpa_status === opt.value}
+                onChange={() => update("current_cpa_status", opt.value)}
+              />
+            ))}
+          </div>
+
+          {/* Conditional: only ask why they're leaving if there's
+              someone to leave. Asking a first-time filer "why are you
+              switching?" is the kind of non-sequitur that erodes trust
+              in the rest of the form. */}
+          {state.current_cpa_status === "Works with a CPA" ||
+          state.current_cpa_status === "Works with a bookkeeper" ? (
+            <Textarea
+              label="What's prompting the change?"
+              value={state.cpa_switch_reason}
+              onChange={(v) => update("cpa_switch_reason", v)}
+              placeholder="e.g. They retired, responsiveness, we outgrew them, price…"
+              rows={3}
+            />
+          ) : null}
+        </StepShell>
+      ),
+    },
+
+    // 10 — Referral + preferred teammate (optional)
     {
       id: "referral",
       alfred: "All optional — skip if you&apos;d rather we pick.",
@@ -908,11 +1208,57 @@ function buildSteps(state: FormState): Step[] {
             onChange={(v) => update("preferred_team_member", v)}
             placeholder="No preference is fine — we&apos;ll match you up."
           />
+          <Textarea
+            label="Anything else that would help us prepare?"
+            value={state.additional_notes}
+            onChange={(v) => update("additional_notes", v)}
+            placeholder="Deadlines, a prior accountant we should contact, documents you already have…"
+            rows={3}
+          />
         </StepShell>
       ),
     },
 
-    // 10 — Review & submit
+    // 10b — Consent. Carried over from the Jotform, where all three were
+    // required and two had real variance (47 of 230 declined data
+    // storage, 38 declined marketing contact). Terms must be an
+    // affirmative act, so it gates the submit; the other two default on
+    // and are one click to decline.
+    {
+      id: "consent",
+      alfred: "Standard housekeeping — and your answers here are honored, not decorative.",
+      validate: (s) =>
+        !s.terms_accepted ? "Please accept the terms and conditions to continue." : null,
+      render: ({ state, update }) => (
+        <StepShell
+          eyebrow="Almost there"
+          title="Permissions"
+          subtitle="You can change any of these later by replying to any email from us."
+        >
+          <CheckboxRow
+            label="I accept the terms and conditions"
+            checked={state.terms_accepted}
+            onChange={(v) => update("terms_accepted", v)}
+          />
+          <CheckboxRow
+            label="Motta may store the information I've provided"
+            checked={state.consent_store_data}
+            onChange={(v) => update("consent_store_data", v)}
+          />
+          <CheckboxRow
+            label="Motta may contact me about products and services"
+            checked={state.consent_marketing_contact}
+            onChange={(v) => update("consent_marketing_contact", v)}
+          />
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Declining the last two won&apos;t stop us helping you — we just won&apos;t
+            add you to anything beyond the conversation you asked for.
+          </p>
+        </StepShell>
+      ),
+    },
+
+    // 11 — Review & submit
     {
       id: "review",
       cta: "Submit intake",
@@ -1518,6 +1864,9 @@ function ReviewStep({ state }: { state: FormState }) {
       label: "Revenue range",
       value: state.business_revenue_range || null,
     },
+    { label: "Filings", value: state.behind_on_filings || null },
+    { label: "Open notices", value: state.pending_tax_notices || null },
+    { label: "Currently with", value: state.current_cpa_status || null },
     { label: "Referred by", value: state.referral_source || null },
     {
       label: "Preferred teammate",

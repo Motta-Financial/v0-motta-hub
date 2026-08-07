@@ -73,6 +73,17 @@ export interface FeeEstimateInput {
   business_state: string | null
   business_summary: string | null
   questions_or_concerns: string | null
+  /**
+   * Qualifying answers from the intake form. These move an estimate
+   * materially: back-filings are billable years of catch-up work, and
+   * an open IRS/state notice usually means a resolution engagement on
+   * top of whatever the prospect thought they were asking for. Both
+   * optional — pre-2026 submissions and real Jotform rows leave them
+   * null, and the prompt renders "(not provided)".
+   */
+  behind_on_filings?: string | null
+  pending_tax_notices?: string | null
+  current_cpa_status?: string | null
 }
 
 interface ServiceCatalogRow {
@@ -259,7 +270,12 @@ export async function estimateIntakeFees(
     `- Annual revenue: ${input.business_revenue_range ?? "(not provided)"}`,
     `- Employees: ${input.business_employee_count ?? "(not provided)"}`,
     `- State: ${input.business_state ?? "(not provided)"}`,
+    `- Filings up to date: ${input.behind_on_filings ?? "(not provided)"}`,
+    `- Open IRS / state notices: ${input.pending_tax_notices ?? "(not provided)"}`,
+    `- Currently handled by: ${input.current_cpa_status ?? "(not provided)"}`,
     `- Their words: ${input.questions_or_concerns ?? input.business_summary ?? "(not provided)"}`,
+    "",
+    "Note on catch-up work: back-filings and open notices are separate billable engagements, not discounts on the base return. Price them as their own one-time line items when the intake indicates either.",
   ].join("\n")
 
   let modelUsed: string = DEFAULT_MODEL

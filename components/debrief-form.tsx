@@ -38,6 +38,13 @@ import {
 import { cn } from "@/lib/utils"
 import { pickOrgDisplayName } from "@/lib/karbon/org-display-name"
 import { MentionTextarea } from "@/components/mentions/mention-textarea"
+import {
+  WorkItemBuilder,
+  serializeWorkItemDrafts,
+  validWorkItemDrafts,
+  type WorkItemDraft,
+} from "@/components/karbon/work-item-builder"
+import type { CandidateMeeting } from "@/app/api/debriefs/candidate-meetings/route"
 
 // Types
 interface Client {
@@ -265,6 +272,40 @@ export function DebriefForm() {
   const [loadingServices, setLoadingServices] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
+  // ── Zoom draft ────────────────────────────────────────────────────
+  // When the debrief is filed against a meeting we pull that meeting's
+  // context (deal, client, recording, AI summary) and seed notes +
+  // action items from it. Held in state so the UI can show where the
+  // draft came from and link out to the recording/transcript while the
+  // partner edits.
+  const [meetingContext, setMeetingContext] = useState<{
+    title: string
+    recording_url: string | null
+    transcript_url: string | null
+    has_draft: boolean
+  } | null>(null)
+  const [loadingMeetingContext, setLoadingMeetingContext] = useState(false)
+
+  // ── Karbon work items to CREATE on submit ─────────────────────────
+  // Distinct from `related_work_items`, which selects work items that
+  // already exist. A meeting is where you learn which engagements to
+  // open, so the debrief is the natural place to open them — previously
+  // only the prospect form could create from a template, and only one.
+  const [workItemDrafts, setWorkItemDrafts] = useState<WorkItemDraft[]>([])
+
+  // ── Meeting picker ────────────────────────────────────────────────
+  // Shown when the form was opened WITHOUT a meeting in the URL — i.e.
+  // someone clicked "New Debrief" rather than following the reminder
+  // email. That path is why 0 of 915 debriefs were linked to a meeting:
+  // the plumbing worked, the form just never asked.
+  const [candidateMeetings, setCandidateMeetings] = useState<CandidateMeeting[]>([])
+  const [loadingCandidates, setLoadingCandidates] = useState(false)
+  const [meetingPickerOpen, setMeetingPickerOpen] = useState(false)
+  const [pickedMeeting, setPickedMeeting] = useState<CandidateMeeting | null>(null)
+  // Set when the user explicitly says this debrief isn't about a meeting
+  // on the list, so we stop nudging.
+  const [noMeetingMatch, setNoMeetingMatch] = useState(false)
+
   // Popover states
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false)
   // Separate popover state for the Primary Contact picker — needed because
@@ -443,6 +484,206 @@ export function DebriefForm() {
     fetchTeamMembers()
     fetchServices()
   }, [fetchTeamMembers, fetchServices])
+
+  // Seed the form from the meeting's Zoom artifacts. Runs once on mount
+  // and only when we actually know which meeting this is — the whole
+  // reason the reminder email now waits for the transcript before
+  // sending is so this call has something to return.
+  //
+  // Deliberately non-destructive: we only fill `notes` and `action_items`
+  // when they're still empty, so a partner who started typing before the
+  // fetch resolved never loses work, and a re-render can't clobber edits.
+  useEffect(() => {
+    const { calendly_event_id, zoom_meeting_id } = meetingLinkRef.current
+    if (!calendly_event_id && !zoom_meeting_id) return
+
+    let cancelled = false
+    const load = async () => {
+      setLoadingMeetingContext(true)
+      try {
+        const qs = zoom_meeting_id
+          ? `zoom_meeting_id=${encodeURIComponent(zoom_meeting_id)}`
+          : `calendly_event_id=${encodeURIComponent(calendly_event_id as string)}`
+        const res = await fetch(`/api/debriefs/meeting-context?${qs}`)
+        if (!res.ok) return
+        const { context } = await res.json()
+        if (cancelled || !context) return
+
+        // Backfill the deal link when the caller didn't supply one — the
+        // resolver finds the contact's open deal, which is how a debrief
+        // reached from a meeting finally lands on the opportunity.
+        if (!meetingLinkRef.current.deal_id && context.deal_id) {
+          meetingLinkRef.current.deal_id = context.deal_id
+        }
+        if (!meetingLinkRef.current.zoom_meeting_id && context.zoom_meeting_id) {
+          meetingLinkRef.current.zoom_meeting_id = context.zoom_meeting_id
+        }
+
+        setMeetingContext({
+          title: context.title,
+          recording_url: context.artifacts?.recording_url ?? null,
+          transcript_url: context.artifacts?.transcript_url ?? null,
+          has_draft: !!context.draft,
+        })
+
+        if (context.draft) {
+          setFormData((prev) => {
+            const next = { ...prev }
+            if (!prev.notes.trim() && context.draft.notes) {
+              next.notes = context.draft.notes
+            }
+            if (
+              prev.action_items.length === 0 &&
+              Array.isArray(context.draft.action_items) &&
+              context.draft.action_items.length > 0
+            ) {
+              next.action_items = context.draft.action_items.map(
+                (a: { description: string }) => ({
+                  id: crypto.randomUUID(),
+                  description: a.description,
+                  // Assignee, due date and priority are judgment calls —
+                  // guessing them would produce confidently wrong tasks,
+                  // so they stay blank for the partner to set.
+                  assignee_id: "",
+                  assignee_name: "",
+                  due_date: null,
+                  priority: "medium" as const,
+                  create_task: true,
+                }),
+              )
+            }
+            return next
+          })
+        }
+      } catch {
+        /* best-effort: an empty form is the pre-existing behaviour */
+      } finally {
+        if (!cancelled) setLoadingMeetingContext(false)
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Offer a meeting to attach to when the form wasn't opened against one.
+  // Re-runs when the primary contact changes so the list narrows to that
+  // client once we know who the debrief is about.
+  useEffect(() => {
+    const { calendly_event_id, zoom_meeting_id } = meetingLinkRef.current
+    if (calendly_event_id || zoom_meeting_id) return
+    if (pickedMeeting || noMeetingMatch) return
+
+    let cancelled = false
+    const load = async () => {
+      setLoadingCandidates(true)
+      try {
+        const qs = new URLSearchParams()
+        const primary = formData.primary_contact
+        if (primary?.type === "contact") qs.set("contact_id", primary.id)
+        if (primary?.type === "organization") qs.set("organization_id", primary.id)
+        const res = await fetch(`/api/debriefs/candidate-meetings?${qs.toString()}`)
+        if (!res.ok) return
+        const { meetings } = await res.json()
+        if (!cancelled) setCandidateMeetings(meetings ?? [])
+      } catch {
+        /* best-effort — the picker just doesn't appear */
+      } finally {
+        if (!cancelled) setLoadingCandidates(false)
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [formData.primary_contact, pickedMeeting, noMeetingMatch])
+
+  /**
+   * Attach the debrief to a meeting chosen from the picker.
+   *
+   * Writes the ref (which the POST body reads), pulls that meeting's
+   * context so the Zoom draft path runs exactly as it does when the
+   * reminder email supplied the meeting, and back-fills the date and
+   * primary contact when they're still blank.
+   */
+  const selectMeeting = useCallback(
+    async (m: CandidateMeeting) => {
+      setPickedMeeting(m)
+      setMeetingPickerOpen(false)
+      meetingLinkRef.current = {
+        ...meetingLinkRef.current,
+        calendly_event_id: m.source === "calendly" ? m.meeting_row_id : null,
+        zoom_meeting_id: m.source === "zoom" ? m.meeting_row_id : null,
+      }
+
+      if (m.start_time) {
+        const d = new Date(m.start_time)
+        if (!Number.isNaN(d.getTime())) {
+          setFormData((prev) => ({ ...prev, meeting_date: d }))
+        }
+      }
+
+      try {
+        const qs =
+          m.source === "zoom"
+            ? `zoom_meeting_id=${encodeURIComponent(m.meeting_row_id)}`
+            : `calendly_event_id=${encodeURIComponent(m.meeting_row_id)}`
+        const res = await fetch(`/api/debriefs/meeting-context?${qs}`)
+        if (!res.ok) return
+        const { context } = await res.json()
+        if (!context) return
+
+        if (context.deal_id) meetingLinkRef.current.deal_id = context.deal_id
+        if (context.zoom_meeting_id) {
+          meetingLinkRef.current.zoom_meeting_id = context.zoom_meeting_id
+        }
+
+        setMeetingContext({
+          title: context.title,
+          recording_url: context.artifacts?.recording_url ?? null,
+          transcript_url: context.artifacts?.transcript_url ?? null,
+          has_draft: !!context.draft,
+        })
+
+        setFormData((prev) => {
+          const next = { ...prev }
+          if (context.draft) {
+            if (!prev.notes.trim() && context.draft.notes) next.notes = context.draft.notes
+            if (prev.action_items.length === 0 && Array.isArray(context.draft.action_items)) {
+              next.action_items = context.draft.action_items.map(
+                (a: { description: string }) => ({
+                  id: crypto.randomUUID(),
+                  description: a.description,
+                  assignee_id: "",
+                  assignee_name: "",
+                  due_date: null,
+                  priority: "medium" as const,
+                  create_task: true,
+                }),
+              )
+            }
+          }
+          // Adopt the meeting's client only when the user hasn't already
+          // chosen one — their explicit pick always wins.
+          if (!prev.primary_contact && context.client?.name) {
+            const isOrg = !!context.client.organizationId && !context.client.contactId
+            next.primary_contact = {
+              id: (context.client.contactId ?? context.client.organizationId) as string,
+              name: context.client.name,
+              full_name: context.client.name,
+              type: isOrg ? "organization" : "contact",
+              karbon_key: "",
+            }
+          }
+          return next
+        })
+      } catch {
+        /* the link is already set; the draft is a bonus */
+      }
+    },
+    [],
+  )
 
   // Debounced search for clients
   useEffect(() => {
@@ -845,6 +1086,10 @@ export function DebriefForm() {
           // Changed to use client_ids and work_item_ids
           client_ids: formData.client_ids,
           work_item_ids: formData.work_item_ids,
+          // Templates to instantiate in Karbon on submit. The API creates
+          // these, mirrors them into `work_items`, and links every one
+          // (created + selected) to this debrief and its deal.
+          create_work_items: serializeWorkItemDrafts(workItemDrafts),
           // Primary contact drives debriefs.contact_id / organization_id
           // server-side. Sent as a flat object so the API can resolve
           // either kind without inspecting related_clients.
@@ -955,6 +1200,10 @@ export function DebriefForm() {
   follow_up_date: null,
   notification_recipients: [],
   })
+      // Queued work items were created by the submit — clearing them stops
+      // a second debrief from the same form re-creating duplicates in Karbon.
+      setWorkItemDrafts([])
+      setMeetingContext(null)
       // The meeting link was consumed by the debrief we just created — clear
       // it so a second debrief filed from this same form isn't re-attached to
       // the same meeting.
@@ -989,6 +1238,140 @@ export function DebriefForm() {
   // Filtered services to use services state
   const filteredServices = services
 
+  // Banner shown when this debrief is filed against a specific meeting.
+  // Two jobs: make it unmistakable that the prose below is a machine's
+  // read of the call (so it gets corrected rather than rubber-stamped),
+  // and keep the recording one click away while the partner edits.
+  const meetingBanner = meetingContext ? (
+    <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm">
+          <FileText className="h-4 w-4 shrink-0 text-primary" />
+          <span className="font-medium text-foreground">{meetingContext.title}</span>
+          {meetingContext.has_draft && (
+            <Badge variant="secondary" className="text-xs">
+              Notes &amp; follow-ups drafted from the recording
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          {meetingContext.recording_url && (
+            <a
+              href={meetingContext.recording_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              Watch recording
+            </a>
+          )}
+          {meetingContext.transcript_url && (
+            <a
+              href={meetingContext.transcript_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              Read transcript
+            </a>
+          )}
+        </div>
+      </div>
+      {meetingContext.has_draft && (
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          ALFRED drafted this from the Zoom recording. Please correct anything it
+          got wrong and add the judgment it can&apos;t have — that&apos;s the part
+          the rest of the firm actually needs.
+        </p>
+      )}
+    </div>
+  ) : loadingMeetingContext ? (
+    <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Checking for a recording from this meeting…
+    </div>
+  ) : null
+
+  // "Which meeting was this?" — the missing question. Only shown when the
+  // form wasn't opened against a meeting and we found un-debriefed ones.
+  // Every modality is listed, including phone and in-person: they produce
+  // no recording so nothing pre-fills, but the firm's rule is a debrief
+  // for EVERY meeting, and hiding the un-recorded ones would quietly make
+  // them the easy ones to skip.
+  const showMeetingPicker =
+    !meetingContext &&
+    !pickedMeeting &&
+    !noMeetingMatch &&
+    !meetingLinkRef.current.calendly_event_id &&
+    !meetingLinkRef.current.zoom_meeting_id &&
+    candidateMeetings.length > 0
+
+  const meetingPicker = showMeetingPicker ? (
+    <div className="rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm">
+          <CalendarIcon className="h-4 w-4 shrink-0 text-amber-700" />
+          <span className="font-medium text-amber-900">Which meeting was this?</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Popover open={meetingPickerOpen} onOpenChange={setMeetingPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="bg-background">
+                {loadingCandidates ? "Loading…" : "Pick a meeting"}
+                <ChevronsUpDown className="ml-2 h-3.5 w-3.5 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[420px] p-0" align="end">
+              <Command>
+                <CommandInput placeholder="Search recent meetings…" />
+                <CommandList>
+                  <CommandEmpty>No un-debriefed meetings found.</CommandEmpty>
+                  <CommandGroup>
+                    {candidateMeetings.map((m) => (
+                      <CommandItem
+                        key={`${m.source}:${m.meeting_row_id}`}
+                        value={`${m.title} ${m.client_name ?? ""} ${m.start_time ?? ""}`}
+                        onSelect={() => void selectMeeting(m)}
+                      >
+                        <div className="flex min-w-0 flex-1 flex-col">
+                          <span className="truncate text-sm font-medium">{m.title}</span>
+                          <span className="truncate text-xs text-muted-foreground">
+                            {m.start_time ? format(new Date(m.start_time), "PP") : "—"}
+                            {" · "}
+                            {m.meeting_type_label}
+                            {m.client_name ? ` · ${m.client_name}` : ""}
+                          </span>
+                        </div>
+                        {m.has_artifacts ? (
+                          <Badge variant="secondary" className="ml-2 shrink-0 text-[10px]">
+                            Recording
+                          </Badge>
+                        ) : null}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-amber-900"
+            onClick={() => setNoMeetingMatch(true)}
+          >
+            Not about a meeting
+          </Button>
+        </div>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-amber-900/80">
+        Linking the debrief to its meeting is what ties it to the deal, the
+        recording and the rest of the timeline. Phone and in-person meetings are
+        listed too — they won&apos;t pre-fill, but they still need a debrief.
+      </p>
+    </div>
+  ) : null
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -1015,6 +1398,9 @@ export function DebriefForm() {
           )}
         </Button>
       </div>
+
+      {meetingBanner}
+      {meetingPicker}
 
       <Card>
         <CardHeader>
@@ -1204,6 +1590,38 @@ export function DebriefForm() {
                   ),
                 )}
               </div>
+            )}
+          </div>
+
+          {/* ─── Create new Karbon work items ────────────────────────────
+              The section above SELECTS work items that already exist.
+              This one CREATES them from Karbon templates on submit —
+              a meeting is where you learn which engagements to open, so
+              it's the natural place to open them. Requires a primary
+              contact (that's the Karbon client the work hangs off). */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              <Plus className="h-4 w-4" />
+              Create Karbon Work Items
+              <Badge variant="outline" className="text-xs font-normal">
+                Optional
+              </Badge>
+            </Label>
+            {formData.primary_contact ? (
+              <WorkItemBuilder
+                value={workItemDrafts}
+                onChange={setWorkItemDrafts}
+                clientName={formData.primary_contact.name}
+                teamMembers={teamMembers}
+                defaultAssigneeTeamMemberId={formData.team_member_id || null}
+                description={`Kicked off in Karbon on ${formData.primary_contact.name}'s timeline when you submit, and linked to this debrief.`}
+                disabled={submitting}
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Pick a primary contact below first — new work items are created on
+                that client&apos;s Karbon timeline.
+              </p>
             )}
           </div>
 

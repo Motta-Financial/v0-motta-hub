@@ -33,7 +33,7 @@ export async function GET() {
   //    when we ran the subscribe step).
   const { data: formRow } = await supabase
     .from("jotform_forms")
-    .select("jotform_form_id, title, webhook_url, webhook_subscribed, last_synced_at")
+    .select("jotform_form_id, title, webhook_url, webhook_subscribed, last_synced_at, retired_at, retired_reason")
     .eq("jotform_form_id", INTAKE_FORM_ID)
     .maybeSingle()
 
@@ -106,6 +106,49 @@ export async function GET() {
       .eq("jotform_form_id", INTAKE_FORM_ID),
   ])
 
+  // 5. Pipeline health across ALL intake sources, not just Jotform.
+  //
+  //    A silently-broken client resolver produced 11 of 12 unlinked
+  //    website intakes and nothing anywhere said so — the only trace
+  //    was a console.log in a serverless runtime. These three counters
+  //    are the standing signal so that class of failure surfaces on the
+  //    page teammates already look at. Scoped to 30 days so ancient
+  //    pre-fix rows don't permanently redden the card.
+  const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  // Submissions still arriving on the retired form. Non-zero means
+  // something out there — an email signature, a QR code, a stale link on
+  // the marketing site — is still sending people to Jotform.
+  const { count: retiredTraffic } = await supabase
+    .from("jotform_intake_submissions")
+    .select("*", { count: "exact", head: true })
+    .eq("jotform_form_id", INTAKE_FORM_ID)
+    .gte("jotform_created_at", since30d)
+  const [recentTotal, recentUnlinked, recentLinkErrors, notBooked] = await Promise.all([
+    supabase
+      .from("jotform_intake_submissions")
+      .select("*", { count: "exact", head: true })
+      .gte("jotform_created_at", since30d),
+    supabase
+      .from("jotform_intake_submissions")
+      .select("*", { count: "exact", head: true })
+      .gte("jotform_created_at", since30d)
+      .is("contact_id", null)
+      .is("organization_id", null),
+    supabase
+      .from("jotform_intake_submissions")
+      .select("*", { count: "exact", head: true })
+      .gte("jotform_created_at", since30d)
+      .not("link_error", "is", null),
+    // Funnel health: how many recent prospects were handed a booking
+    // link and still have no meeting attributed.
+    supabase
+      .from("jotform_intake_submissions")
+      .select("*", { count: "exact", head: true })
+      .gte("jotform_created_at", since30d)
+      .not("prospect_confirmation_sent_at", "is", null)
+      .is("calendly_event_id", null),
+  ])
+
   return NextResponse.json({
     form: {
       id: INTAKE_FORM_ID,
@@ -114,6 +157,11 @@ export async function GET() {
       live_submission_count: jotformForm?.count ?? null,
       stored_submission_count: totalRows.count ?? 0,
       last_synced_at: formRow?.last_synced_at ?? null,
+      // Retired means "no longer offered", not "rejected" — the receiver
+      // still ingests so a stale link can't drop a real prospect. The
+      // count below is what tells us whether anything still points here.
+      retired_at: formRow?.retired_at ?? null,
+      retired_reason: formRow?.retired_reason ?? null,
     },
     jotform_api: {
       ok: jotformError === null,
@@ -133,6 +181,14 @@ export async function GET() {
       last_success_at: lastSuccess.data?.processed_at ?? null,
       last_failure_at: lastFailure.data?.received_at ?? null,
       last_failure_error: lastFailure.data?.processing_error ?? null,
+    },
+    // All intake sources (Jotform + website), last 30 days.
+    pipeline: {
+      submissions_30d: recentTotal.count ?? 0,
+      unlinked_30d: recentUnlinked.count ?? 0,
+      link_errors_30d: recentLinkErrors.count ?? 0,
+      awaiting_booking_30d: notBooked.count ?? 0,
+      retired_form_submissions_30d: retiredTraffic ?? 0,
     },
   })
 }

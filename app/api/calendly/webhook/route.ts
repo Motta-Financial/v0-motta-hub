@@ -14,6 +14,7 @@ import {
 import { runAlfredCalendlyTriage } from "@/lib/alfred/calendly-triage"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
+import { advanceDealStage } from "@/lib/deals/advance-stage"
 import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
 import { notifyTeamOfNewBooking } from "@/lib/calendly/notify"
 import { pushHubContactToKarbon } from "@/lib/karbon/client-sync"
@@ -356,7 +357,7 @@ async function upsertInvitee(
     // Calendly→Zoom bridge + hub-meetings sync attach the actual meeting
     // row to this deal. Best-effort: never block webhook processing.
     try {
-      await findOrCreateDeal(
+      const deal = await findOrCreateDeal(
         {
           contactId,
           title: invitee.name ?? invitee.email ?? "Calendly Prospect",
@@ -364,6 +365,13 @@ async function upsertInvitee(
         },
         { supabase },
       )
+      // A booking is the definition of `meeting_scheduled`. Monotonic, so
+      // a second booking on an already-debriefed deal is a no-op rather
+      // than a regression.
+      const moved = await advanceDealStage(supabase, deal.deal_id, "meeting_scheduled")
+      if (moved.advanced) {
+        console.log(`[calendly] deal ${deal.deal_id} stage ${moved.reason}`)
+      }
     } catch (err) {
       console.error("[calendly] deal create failed (non-blocking):", err)
     }
@@ -509,6 +517,54 @@ async function mirrorMeetingRealtime(
   )
 }
 
+/**
+ * Attribute a booking back to the intake submission that produced it.
+ *
+ * The intake pipeline hands each prospect a Calendly link carrying
+ * `salesforce_uuid=<jotform_intake_submissions.id>` (see
+ * lib/intake/booking-link.ts). Calendly round-trips that value into
+ * `invitee.tracking`, so a booking made from an intake link tells us
+ * exactly which intake it came from — no email-matching heuristics.
+ *
+ * Without this the only link between the two halves of the funnel was
+ * an implicit join on contact_id, which broke whenever a prospect
+ * booked with a different address than they typed on the form.
+ *
+ * First booking wins: `.is("calendly_event_id", null)` means a
+ * reschedule or a second meeting never overwrites the original
+ * conversion event.
+ */
+async function attributeBookingToIntake(
+  supabase: ReturnType<typeof createAdminClient>,
+  invitee: any,
+  calendlyEventId: string,
+  startTime: string | null,
+): Promise<void> {
+  const raw = invitee?.tracking?.salesforce_uuid
+  if (typeof raw !== "string") return
+  const submissionRowId = raw.trim()
+  // Guard the shape before it reaches Postgres: a non-uuid value in a
+  // uuid comparison is a 22P02 error, not a no-op.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(submissionRowId)) {
+    return
+  }
+
+  const { error } = await supabase
+    .from("jotform_intake_submissions")
+    .update({
+      calendly_event_id: calendlyEventId,
+      first_booked_at: startTime ?? new Date().toISOString(),
+    })
+    .eq("id", submissionRowId)
+    .is("calendly_event_id", null)
+
+  if (error) {
+    console.error("[calendly] intake attribution failed:", error.message)
+  } else {
+    console.log(`[calendly] attributed booking to intake ${submissionRowId}`)
+  }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Event handlers
  * ─────────────────────────────────────────────────────────────────────── */
@@ -539,6 +595,18 @@ async function handleInviteeCreated(payload: any) {
     for (const i of fetched) {
       processed.push(await upsertInvitee(supabase, i, saved.id, saved.calendly_uuid))
     }
+  }
+
+  // Close the intake → booking loop before any of the async work below,
+  // so the conversion is recorded even if a later step times out.
+  for (const p of processed) {
+    if (!p?.invitee) continue
+    await attributeBookingToIntake(
+      supabase,
+      p.invitee,
+      saved.id,
+      event?.start_time ?? null,
+    )
   }
 
   // Run ALFRED triage for each invitee. We deliberately do NOT block

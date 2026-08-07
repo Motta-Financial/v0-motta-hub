@@ -1,0 +1,528 @@
+# Intake Form — Automation Review
+
+**Date:** 2026-08-07
+**Scope:** the prospect journey `Intake form → Hub contact → Karbon → Calendly booking → Zoom meeting → team email`
+**Method:** read of the live code paths plus queries against the Motta Hub
+production database (`gylupzxitoebhqjnvzuw`).
+
+---
+
+## 0. TL;DR
+
+The individual pieces are built and working. **They are not connected to each
+other.** The intake form and the Calendly booking are two independent front
+doors, and nothing in the intake flow ever asks the prospect to book.
+
+Production evidence (last 18 months):
+
+| Measure | Value |
+| --- | --- |
+| Intakes with a resolved Hub contact | 130 |
+| …that booked a Calendly meeting within **7 days** | **8 (6%)** |
+| …that booked within **30 days** | **11 (8%)** |
+| Calendly bookings with **no intake form on file at all** | **83 of 142 (58%)** |
+
+So the described flow — "client takes the intake form, then books via Calendly" —
+happens for roughly 1 in 12 intakes. The majority of people who actually book a
+discovery call skipped the form entirely.
+
+Closing that gap is the single highest-leverage change available, and the
+Calendly API plumbing needed to do it **already exists in this codebase**
+(`lib/calendly-api.ts`, `app/api/calendly/scheduling-links/route.ts`,
+`app/api/calendly/book/route.ts`).
+
+One correction to the working assumption: **Karbon is no longer driven by
+Zapier.** The Hub calls the Karbon v3 API directly. See §2.
+
+---
+
+## 1. What actually runs today
+
+### 1.1 Two live intake front doors
+
+Both are enabled right now, simultaneously:
+
+| Front door | Path | Volume | Most recent |
+| --- | --- | --- | --- |
+| Jotform `242306172162144` "Motta \| Intake Form" | Jotform → `POST /api/jotform/webhook?token=…` | 230 all-time, 100 in last 12 mo | 2026-07-08 |
+| motta.cpa native form | `app/embed/intake/page.tsx` → `POST /api/public/intake` | 12 (mostly test rows) | 2026-08-04 |
+
+`jotform_forms` shows the legacy Jotform form still `is_enabled = true` and
+`webhook_subscribed = true`. Nothing has been retired.
+
+Both converge on the same function, so the downstream pipeline is genuinely
+shared — that part of the design is sound:
+
+```
+lib/jotform/ingest.ts :: upsertIntakeSubmission()
+```
+
+### 1.2 The shared ingest pipeline
+
+`upsertIntakeSubmission` (lib/jotform/ingest.ts:52) does, in order:
+
+1. **Persist** — upsert into `jotform_intake_submissions`, keyed on
+   `jotform_submission_id` (idempotent).
+2. **Resolve the client** — `autoLinkIntakeSubmission`, then on miss:
+   `findOrCreateHubContact` (Hub-first, never blocked by a Karbon outage)
+   followed by `findOrCreateClient` (Karbon search → create). Writes
+   `contact_id` / `organization_id` / `link_method`.
+3. **Pair person + business** — when there's both a person and a business name,
+   find-or-create the `organizations` row, link as Owner, push to Karbon.
+4. **Post-processing** (`runIntakePostProcessing`, ingest.ts:294):
+   - resolve `preferred_team_member` → `assigned_to_id`
+   - resolve `referral_source` → `referral_contact_id` / `_organization_id`
+     (single exact name match only — deliberately conservative)
+   - **ALFRED, three parallel passes**: company enrichment
+     (`lib/jotform/enrich.ts`), question research
+     (`lib/jotform/research-questions.ts`), fee estimate
+     (`lib/jotform/fee-estimate.ts`)
+   - **firm-wide intake email** via `notifyTeamOfNewIntake`
+     (`lib/jotform/notify.ts`), single-flight on `notified_at`
+5. **Karbon timeline note** on newly-created Karbon entities
+   (`lib/karbon/post-intake-note.ts`).
+
+The team email is genuinely good — identity, ALFRED research brief, ALFRED draft
+answer to the prospect's questions, and a fee estimate with line items. That
+matches "an automated Intake email that goes out to the team" and then some.
+
+### 1.3 Calendly — a completely separate pipeline
+
+`app/api/calendly/webhook/route.ts` on `invitee.created`:
+
+1. signature verify → dedupe ledger (`calendly_webhook_events`)
+2. upsert `calendly_events` + `calendly_invitees`
+3. match invitee → contact; **on miss, auto-create a Hub contact** and
+   fire-and-forget `pushHubContactToKarbon`
+4. `findOrCreateDeal` — opens an opportunity
+5. real-time mirror into the unified `meetings` table
+6. `runAlfredCalendlyTriage` — org / work-item / service tagging
+7. `notifyTeamOfNewBooking` — a second team email
+
+Backstop: `/api/cron/calendly-sync` every 30 min, which also self-heals the
+webhook subscription.
+
+### 1.4 Zoom
+
+Zoom meetings are created by **Calendly's own native Zoom integration**, not by
+the Hub — the Hub reads `event.location.join_url`. The Hub then *bridges* the
+two records by the numeric meeting ID in the URL
+(`lib/zoom/bridge-to-calendly.ts`), copying client/work-item tags across, driven
+hourly by `/api/cron/zoom-link-sweep`.
+
+Bridge health, last 180 days: 91 active Calendly events, 69 with a Zoom URL, 57
+bridged to a `zoom_meetings` row.
+
+---
+
+## 2. Correction: Karbon is direct API, not Zapier
+
+The Hub replaced the Zaps. Karbon contact/org create + match runs through
+`lib/karbon/client-sync.ts` against `api.karbonhq.com/v3` on every intake, and
+`lib/karbon/create-intake-work-item.ts` carries an explicit note that it
+"mirrors the legacy Zapier flow" including the original `WorkTemplateKey`.
+The Ignition Zapier bridge is likewise retired (`app/api/ignition/webhook/`
+is marked DEPRECATED).
+
+**Action:** confirm no duplicate Zaps are still firing on the Jotform form. The
+`/intake` page already has a card for exactly this
+(`components/intake/jotform-status-card.tsx` surfaces "other webhooks
+registered"). Worth an eyes-on check before the next intake.
+
+---
+
+## 3. Findings, ranked by impact
+
+### 🔴 F1 — The intake form never asks the prospect to book
+
+The wizard's success screen (`app/embed/intake/page.tsx:359`) reads:
+
+> "A teammate will follow up within one business day to schedule your discovery
+> call on Zoom."
+
+That is a **manual handoff**, and it is where the funnel leaks. There is:
+
+- no Calendly link on the confirmation screen
+- **no client-facing confirmation email at all** — `/api/public/intake` sends
+  nothing to the prospect, only to the team
+- no nudge for prospects who never book
+
+Result: 8 of 130 intakes booked within a week.
+
+**Fix:** make booking step N+1 of the wizard, not a follow-up task. Two options,
+both already supported by code in the repo:
+
+- **Embedded Calendly with prefill** — simplest. Append
+  `?name=…&email=…&utm_source=hub_intake&salesforce_uuid=<submission_id>` to the
+  Discovery Meeting scheduling URL. The `salesforce_uuid` tracking field flows
+  through `mapCalendlyInviteeFields` into `calendly_invitees`, which solves F3
+  for free.
+- **In-Hub slot picker** — `getEventTypeAvailableTimes` + `createEventInvitee`
+  are already wired in `lib/calendly-api.ts:862-924` and exercised by
+  `app/api/calendly/book/route.ts`. More work, best UX, no redirect.
+
+Either way, also send the prospect a confirmation email carrying the booking
+link, and a 48-hour nudge if `contact_id` still has no future Calendly event.
+
+### 🔴 F2 — 11 of 12 website intakes never got linked to a contact
+
+Every website submission has a name and an email, yet:
+
+```
+link_method IS NULL and contact_id IS NULL  →  11 of 12
+```
+
+Most are test rows, but at least one is a real prospect (2026-07-29) for whom a
+Hub contact **does** exist and **is** in Karbon — the intake row simply never
+had `contact_id` written back.
+
+**Root cause: the read-back query in `lib/jotform/ingest.ts` selected a column
+that does not exist.**
+
+```ts
+const { data: persisted } = await supabase
+  .from("jotform_intake_submissions")
+  .select("id, submitter_email, …, phone_number, …")   // ← no such column
+  .eq("jotform_submission_id", submission.id)
+  .maybeSingle()
+if (persisted) { /* ALL linking lives in here */ }
+```
+
+The column is `submitter_phone`. PostgREST rejects the whole request for an
+unknown column, so `persisted` was **always null** and the entire linking block
+— Hub contact, Karbon contact, business-org pairing, everything — **never
+executed for any submission**. Confirmed against the live schema:
+
+```
+ERROR: 42703: column "phone_number" does not exist
+```
+
+It failed silently because the destructure took only `{ data }` and dropped
+`error`. Nothing threw, nothing logged, and the row simply came out unlinked.
+
+This reframes the 83% link rate on the Jotform side: those rows were linked by
+the bulk sweep (`scripts/jotform-intake-link-clients.mjs`), never by the live
+pipeline. Website intakes aren't covered by that sweep, which is why they sat
+at 1 of 12.
+
+**Fixed:** correct column name, and capture `error` so a future schema drift
+surfaces instead of silently disabling the feature.
+
+A second, latent fault in the same block: `findOrCreateClient` ran unguarded
+while `findOrCreateHubContact` was try/caught, so once the read-back was fixed
+a Karbon outage would have thrown past the `.update()` and discarded the
+successfully-created Hub contact. Also fixed — it now degrades to the Hub
+result, which is what the Hub-first invariant promises.
+
+### 🟠 F3 — Nothing durably links an intake to the booking it produced
+
+`jotform_intake_submissions` has no `calendly_event_id`, no `meeting_id`, no
+`deal_id`. Attribution today is an implicit join on `contact_id`, which only
+works when the prospect books with the same email they typed on the form — and
+only when F2 didn't eat the link.
+
+That means the firm cannot answer "did this intake convert to a meeting?"
+without a fuzzy query, which is why the 8% number above took SQL to find rather
+than being on a dashboard.
+
+**Fix:** add `calendly_event_id uuid` (+ `first_booked_at`) to the intake row and
+populate it from the `salesforce_uuid` / UTM tracking value carried through F1.
+
+### 🟠 F4 — An intake does not open a Deal
+
+`findOrCreateDeal` is called from the Calendly webhook, `/api/calendly/book`,
+`/api/prospects`, and the hub-meetings sync — but **not** from the intake
+pipeline. A prospect who submits the form and never books has a contact and a
+triage row but no opportunity, so they're invisible to the deals pipeline.
+
+**Fix:** call `findOrCreateDeal({ contactId, source: "intake" })` in
+`upsertIntakeSubmission` right after the contact resolves. It's already
+idempotent — the Calendly webhook will reuse the same open deal.
+
+### 🟠 F5 — A mail outage silently marks the intake as notified
+
+`sendCategoryEmail` (lib/email.ts:1078) **swallows** delivery failures and
+returns `{ sent: 0 }` rather than throwing. In `runIntakePostProcessing`
+(ingest.ts:576-620) `notified_at` is stamped unconditionally after the call:
+
+```ts
+const { sent, attempted } = await notifyTeamOfNewIntake(...)
+await supabase...update({ notified_at: new Date().toISOString() })   // even if sent === 0
+```
+
+If Resend is down or rate-limited, the team email for that prospect is lost
+permanently and the single-flight guard prevents any retry.
+
+**Fix:** only stamp `notified_at` when `sent > 0`; otherwise leave it null and
+let a sweep retry. Also worth an alert when `sent < attempted`.
+
+### 🟠 F6 — "A Zoom meeting is booked" is true ~77% of the time
+
+The Discovery Meeting event type offers a phone option alongside Zoom:
+
+| Event type | Zoom | Outbound call (no join URL) |
+| --- | --- | --- |
+| **Discovery Meeting (First Meeting with Motta)** | 37 | **11** |
+| Client Check-In (30 min) | 14 | 3 |
+| Client Touch Base (15 min) | 10 | 7 |
+
+Those 11 discovery calls have no `join_url`, therefore no Zoom meeting, therefore
+no recording, no transcript, no AI summary, and nothing for the Calendly→Zoom
+bridge or the debrief flow to attach to. Everything downstream of the meeting
+silently doesn't happen for them.
+
+**Fix (Calendly config, not code):** if the intent is "discovery calls are always
+Zoom", remove the phone option from that event type. If phone is deliberate,
+accept that those meetings won't produce recordings and don't chase the bridge
+gap.
+
+### 🟡 F7 — No observability on intake linking failures
+
+When linking fails, the only trace is `console.log("[Jotform] intake auto-link
+error: …")` in a serverless log. There is no `link_error` column on the intake
+row, and website submissions bypass `jotform_webhook_events` entirely (that
+audit table is only written by the Jotform webhook receiver), so the website
+path has no raw-delivery audit trail at all.
+
+That is why F2 sat undetected: 11 unlinked rows produce zero visible signal.
+
+**Fix:** persist `link_error` / `link_attempted_at` on the row; surface unlinked
+intakes as a count on the `/intake` page next to the existing Jotform status card.
+
+### 🟡 F8 — `docs/WEBSITE_INTEGRATION.md` documents the wrong intake contract
+
+The doc tells the website team to POST a **nested** payload with an `_hp`
+honeypot:
+
+```json
+{ "submitter": { "first_name": … }, "engagement": {…}, "business": {…}, "_hp": "" }
+```
+
+The route (`app/api/public/intake/route.ts:70-125`) accepts a **flat** payload
+with a honeypot named `website`. The documented response
+(`contact_id`, `organization_id`) is also wrong — the route returns only
+`{ ok, submission_id }`.
+
+Anyone integrating from the doc gets a row with every field null, which still
+returns `200 ok`. (The contact-form half of the doc *is* accurate, and
+`app/embed/intake/page.tsx` uses the correct flat shape — so this is doc drift,
+not a code bug.)
+
+**Fix:** rewrite §1's intake block to match the route, and consider returning
+`contact_id` so the website can confirm the link landed.
+
+### 🟡 F9 — Four supported fields the live form never collects
+
+`behind_on_filings`, `pending_tax_notices`, `current_cpa_status`,
+`cpa_switch_reason` are parsed (`lib/jotform/parse.ts:305-308`), stored,
+selected in post-processing, and rendered in the team email
+(`lib/jotform/notify.ts:214-217`) — but **no form collects them**. The wizard
+doesn't ask, and real Jotform submissions never contained them.
+
+These are high-signal qualifying questions ("are you behind on filings?",
+"do you have an open IRS notice?") that would materially improve the fee
+estimate and triage priority.
+
+**Fix:** add them to the wizard as one optional step. Zero backend work required.
+
+### 🟡 F10 — The Karbon work item is still a manual button
+
+`createIntakeWorkItem` fires only when a teammate clicks in the detail sheet
+(`components/intake/intake-detail-sheet.tsx:348`). Only 7 of 230 intakes have a
+`karbon_work_item_key`.
+
+That's arguably correct — you don't want a 1040 work item for every tyre-kicker.
+But if the firm's rule is "every intake gets a prospect work item", it should
+fire automatically on `lead_status → qualified`.
+
+### 🟡 F11 — The Hub intake queue isn't being worked
+
+Of 100 Jotform intakes in the last 12 months, **1** has a `lead_status` other
+than `new`. The triage UI (status, owner, notes, action items, ALFRED draft
+reply) exists and is well-built, but the team is evidently working from the
+email, not the queue.
+
+Worth deciding: either drive people into the queue (make the email CTA the only
+path to the prospect's info) or accept the email as the product and stop
+investing in triage state.
+
+### 🟢 F12 — Two front doors, one should go
+
+Both intake forms are live and accepting submissions. Every field mapping,
+option vocabulary and question exists in two places. Pick the native form
+(better UX, no third-party dependency, no per-submission API call) and disable
+the Jotform one — or the reverse — but running both means every future change
+gets made twice or, worse, once.
+
+---
+
+## 3a. Implementation status
+
+Phases 1–3 are implemented on `claude/intake-form-automation-f3y37k`.
+
+| # | Finding | Status |
+| --- | --- | --- |
+| F1 | Booking step + prospect confirmation email | ✅ done |
+| F2 | Silent linking failure (`phone_number`) | ✅ fixed |
+| F3 | Intake → booking attribution | ✅ done |
+| F4 | Open a Deal on intake | ✅ done |
+| F5 | `notified_at` stamped on a failed send | ✅ fixed |
+| F6 | Discovery Meeting allows phone | ⚠️ Calendly config — **needs a human** |
+| F7 | No observability on link failures | ✅ done + surfaced on `/intake` |
+| F8 | Stale `WEBSITE_INTEGRATION.md` | ✅ rewritten |
+| F9 | Four qualifying fields nothing collected | ✅ added to the wizard |
+| F10 | Karbon work item was manual-only | ✅ auto-fires on qualify |
+| F11 | Triage queue unused (1 of 100 worked) | ⚠️ **needs a decision** |
+| F12 | Two live intake forms | ✅ Jotform retired |
+
+Plus one addition not in the original list: a **48-hour booking nudge**
+(`/api/cron/intake-booking-nudge`, weekdays 10:00 ET) — one reminder, ever, to
+prospects who got a link and didn't book. Skipped if they book, if a teammate
+has already moved the lead off `new`, or if the intake is over 14 days old.
+
+**What was built**
+
+- `scripts/386_intake_booking_attribution.sql` — `link_error`,
+  `link_attempted_at`, `booking_url`, `prospect_confirmation_sent_at`,
+  `calendly_event_id`, `first_booked_at`, plus three partial indexes.
+  **Applied to production.**
+- `lib/intake/booking-link.ts` — resolves the discovery-call URL, routing to the
+  prospect's requested teammate when they have an active Discovery event type
+  and falling back to the firm round-robin link otherwise. Stamps
+  `salesforce_uuid` with the intake row id for attribution.
+- `lib/intake/notify-prospect.ts` — the client-facing confirmation email,
+  carrying the same booking link. Only stamps `prospect_confirmation_sent_at`
+  when Resend actually accepted the message.
+- `lib/jotform/ingest.ts` — F2/F4/F5/F7 plus booking-link generation and the
+  prospect send. Returns `booking_url` / `contact_id` / `organization_id`.
+- `app/api/public/intake/route.ts` — relays those to the website form.
+- `app/embed/intake/page.tsx` — the completion screen is now a booking step.
+- `app/api/calendly/webhook/route.ts` — writes `calendly_event_id` back onto the
+  intake row from `invitee.tracking.salesforce_uuid`. First booking wins.
+- `next.config.mjs` — `connect-src` on `/embed/*` was `'self'` only, which
+  silently blocked the intake wizard's own address autocomplete (Photon) and
+  ZIP lookup (Zippopotam). Both hosts added, along with Calendly.
+- `scripts/387_intake_booking_nudge.sql` + `lib/intake/booking-nudge.ts` +
+  `app/api/cron/intake-booking-nudge/route.ts` — the 48-hour reminder.
+  **Applied to production.**
+- `lib/karbon/intake-work-item-flow.ts` — the resolve → create → cross-link
+  sequence, extracted from the button's route so the new auto-trigger shares it.
+  Reports precondition gaps as `skipped` (the button turns those into
+  actionable 422s; the auto-trigger just logs). The route went 313 → 89 lines.
+- `app/api/jotform/intake/[id]/route.ts` — `lead_status → qualified` now
+  auto-creates the Karbon work item via `after()`. The trigger is qualification
+  rather than "every intake" on purpose: qualifying is an explicit human
+  judgment that the prospect is real, so the automation inherits that intent
+  instead of littering Karbon with a work item per tyre-kicker.
+- `app/embed/intake/page.tsx` — new qualifying step (filings status, open
+  IRS/state notices, who handles it today, and a conditional "what's prompting
+  the change?"). All optional, placed *after* the freeform step so they read as
+  follow-ups rather than a screening gate.
+- `lib/jotform/fee-estimate.ts` — the estimator now receives those answers,
+  and is told to price back-filings and notice resolution as their own line
+  items. It was also being passed `business_tax_classification: null` and
+  `business_employee_count: null` as hardcoded nulls despite both columns being
+  populated — now wired through.
+- `app/api/jotform/intake/webhook-status/route.ts` +
+  `components/intake/jotform-status-card.tsx` — 30-day counters for intakes,
+  unlinked intakes, link errors and awaiting-booking, with an amber banner when
+  anything is unlinked. This is the standing signal that would have caught F2.
+
+**Needs a human decision**
+
+- **F6** — remove the phone option from the Discovery Meeting event type in
+  Calendly if discovery calls should always be Zoom. 11 of 48 currently aren't.
+- **`FIRM_DISCOVERY_BOOKING_URL`** defaults to
+  `https://calendly.com/motta-financial/discovery-meeting` (the team
+  round-robin link found in `calendly_event_types`). Override via env or the
+  `intake.discovery_booking_url` row in `firm_settings` if that's the wrong
+  default.
+- The prospect confirmation email copy — it's the first thing a new lead reads
+  from the firm and should get a partner's eye before it goes live. Same for
+  the 48-hour nudge in `lib/intake/booking-nudge.ts`.
+- **F12 — the Jotform intake form is retired** (migration 390), gated on a
+  parity test. One manual step remains that no code here can do: **unpublish
+  or redirect the form inside the Jotform account itself**. Until that
+  happens the URL stays live, and the `/intake` card will show a count of
+  any submissions still arriving on it.
+- **F11 — is the triage queue the product, or is the email?** 1 of 100 intakes
+  in the last 12 months had its `lead_status` moved off `new`. Worth noting the
+  new work-item automation is *triggered by* qualification, so it only pays off
+  if people start using the queue. If the team is never going to work it, the
+  trigger should move to something they do touch.
+
+---
+
+## 4. Recommended sequence
+
+**Phase 1 — close the funnel leak (highest value)**
+1. F1: booking step in the intake wizard + prospect confirmation email carrying
+   the link, with `salesforce_uuid=<submission_id>` on the Calendly URL.
+2. F3: persist `calendly_event_id` / `first_booked_at` on the intake row from
+   that tracking value.
+3. F6: decide Zoom-only vs. phone-allowed on the Discovery Meeting event type.
+
+**Phase 2 — stop losing records**
+4. F2: guard `findOrCreateClient`; fall back to the Hub contact.
+5. F5: only stamp `notified_at` when `sent > 0`.
+6. F7: persist `link_error`; surface an "unlinked intakes" count on `/intake`.
+
+**Phase 3 — richer automation**
+7. F4: open a Deal on intake.
+8. F9: add the four qualifying questions to the wizard.
+9. F10: auto-create the Karbon work item on qualification.
+
+**Phase 4 — consolidate**
+10. F8: fix `WEBSITE_INTEGRATION.md`.
+11. F12: retire one of the two intake forms.
+12. F11: decide whether the triage queue is the product or the email is.
+
+---
+
+## 5. What's already good and shouldn't change
+
+- **The Hub-first invariant.** Contacts are created in Supabase before Karbon,
+  so a Karbon outage can't lose a prospect. Right call. (F2 is a bug in the
+  implementation, not the design.)
+- **Single ingest path** for both front doors. The website route synthesizing a
+  Jotform-shaped payload rather than forking the pipeline is the right trade.
+- **Idempotency everywhere** — upsert on `jotform_submission_id`, dedupe ledger
+  on the Calendly webhook, single-flight on `notified_at`,
+  `karbon_work_item_key` short-circuit.
+- **The ALFRED intake email.** Research brief + draft answer + fee estimate is a
+  genuinely strong artifact.
+- **The Calendly→Zoom bridge.** Deterministic (no model in the loop), idempotent,
+  and it carries tags forward so nobody retags the same meeting twice.
+
+---
+
+## 6. Appendix — queries used
+
+```sql
+-- Intake → booking conversion (the headline number)
+with i as (
+  select id, contact_id, jotform_created_at
+  from jotform_intake_submissions
+  where jotform_created_at > now() - interval '18 months' and contact_id is not null
+)
+select
+  count(*) as intakes_with_contact,
+  count(*) filter (where exists (
+    select 1 from calendly_invitees ci join calendly_events ce on ce.id = ci.calendly_event_id
+    where ci.contact_id = i.contact_id
+      and ce.created_at between i.jotform_created_at and i.jotform_created_at + interval '30 days'
+  )) as booked_within_30d
+from i;
+
+-- Zoom coverage by event type
+select name, location_type, count(*),
+       count(*) filter (where join_url is not null) as with_join_url
+from calendly_events
+where start_time > now() - interval '180 days' and status = 'active'
+group by 1, 2 order by 1;
+
+-- Unlinked website intakes
+select jotform_submission_id, jotform_created_at, link_method, contact_id
+from jotform_intake_submissions
+where jotform_form_id = 'website' and contact_id is null;
+```

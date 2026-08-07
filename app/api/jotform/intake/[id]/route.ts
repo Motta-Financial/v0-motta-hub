@@ -1,5 +1,6 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse, after } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
+import { runIntakeWorkItemFlow } from "@/lib/karbon/intake-work-item-flow"
 
 /**
  * Detail + triage actions for a single intake submission.
@@ -196,6 +197,42 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       .single()
 
     if (error) throw error
+
+    // ── Auto-create the Karbon work item on qualification ───────────
+    // Only 7 of 230 intakes ever got a work item, because it needed a
+    // teammate to remember to click a button in the detail sheet.
+    //
+    // The trigger is `lead_status → qualified` rather than "every new
+    // intake" deliberately: qualifying is an explicit human judgment
+    // that this prospect is real, so the automation inherits that
+    // intent instead of littering Karbon with a work item per
+    // tyre-kicker.
+    //
+    // Runs after the response via `after()` — Karbon can be slow and
+    // the triager shouldn't wait on it. `runIntakeWorkItemFlow` is
+    // idempotent (short-circuits on `karbon_work_item_key`), so
+    // re-qualifying a lead never mints a duplicate, and precondition
+    // gaps come back as `skipped` rather than throwing. The button in
+    // the detail sheet stays as the manual path for those.
+    if (updates.lead_status === "qualified") {
+      after(async () => {
+        try {
+          const outcome = await runIntakeWorkItemFlow(supabase, id)
+          if (outcome.status === "created") {
+            console.log(
+              `[intake] auto-created Karbon work item ${outcome.workItem.key} on qualify (${id})`,
+            )
+          } else if (outcome.status === "skipped") {
+            console.log(`[intake] auto work item skipped (${outcome.code}): ${outcome.message}`)
+          } else if (outcome.status === "failed") {
+            console.error(`[intake] auto work item failed: ${outcome.message}`)
+          }
+        } catch (err) {
+          console.error("[intake] auto work item threw:", err)
+        }
+      })
+    }
+
     return NextResponse.json({ submission: data })
   } catch (err: any) {
     console.error("[v0] PATCH /api/jotform/intake/[id] error:", err)

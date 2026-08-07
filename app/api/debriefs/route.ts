@@ -9,6 +9,12 @@ import {
 import { postDebriefNoteToKarbon } from "@/lib/karbon/post-debrief-note"
 import { isPlaceholderOrgName, pickOrgDisplayName } from "@/lib/karbon/org-display-name"
 import { firmConfigSync } from "@/lib/firm-settings"
+import { advanceDealStage } from "@/lib/deals/advance-stage"
+import {
+  createWorkItemsBatch,
+  type WorkItemDraftPayload,
+} from "@/lib/karbon/create-work-items-batch"
+import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
 
 const KARBON_TENANT_BASE = "https://app2.karbonhq.com/4mTyp9lLRWTC#"
 
@@ -309,6 +315,131 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // ── Karbon work items: create + link ────────────────────────────
+    // Two populations end up in `debrief_work_items`:
+    //   • work items the teammate SELECTED (already exist in Karbon)
+    //   • work items the teammate asked us to CREATE from a template
+    //
+    // Until now only the first of the selected list survived as a real
+    // link (`debriefs.work_item_id = relatedWorkItems[0].id`) and the
+    // rest lived in a JSONB blob. That column is still written, for the
+    // views and the Karbon note builder that read it — but the join
+    // table is now the full picture.
+    const workItemRowIds: Array<{ id: string; source: "selected" | "created" }> = []
+    for (const wi of relatedWorkItems) {
+      const id = toUuidOrNull(wi?.id)
+      if (id) workItemRowIds.push({ id, source: "selected" })
+    }
+
+    const createDrafts: WorkItemDraftPayload[] = Array.isArray(body.create_work_items)
+      ? body.create_work_items
+      : []
+    let createdWorkItems: Awaited<ReturnType<typeof createWorkItemsBatch>> = []
+    if (createDrafts.length > 0 && karbonClientKey) {
+      try {
+        createdWorkItems = await createWorkItemsBatch(supabase, {
+          drafts: createDrafts,
+          clientKey: karbonClientKey,
+          clientType: organizationId ? "Organization" : "Contact",
+          contactId: toUuidOrNull(contactId),
+          organizationId: toUuidOrNull(organizationId),
+        })
+        for (const r of createdWorkItems) {
+          if (r.ok && r.workItemRowId) {
+            workItemRowIds.push({ id: r.workItemRowId, source: "created" })
+          }
+        }
+        const failed = createdWorkItems.filter((r) => !r.ok)
+        if (failed.length > 0) {
+          // Partial success is expected — Karbon can reject one item and
+          // accept its siblings. Surfaced in the response so the UI can
+          // tell the partner which ones need a retry.
+          console.warn(
+            `[debrief] ${failed.length}/${createdWorkItems.length} work items failed:`,
+            failed.map((f) => `${f.title}: ${f.error}`).join("; "),
+          )
+        }
+      } catch (wiErr) {
+        console.warn(
+          "[debrief] work item batch failed (non-blocking):",
+          wiErr instanceof Error ? wiErr.message : wiErr,
+        )
+      }
+    } else if (createDrafts.length > 0) {
+      console.warn("[debrief] work items requested but no Karbon client key — skipped")
+    }
+
+    if (workItemRowIds.length > 0) {
+      const { error: linkErr } = await supabase.from("debrief_work_items").upsert(
+        workItemRowIds.map((w) => ({
+          debrief_id: createdDebrief.id,
+          work_item_id: w.id,
+          link_source: w.source,
+        })),
+        { onConflict: "debrief_id,work_item_id", ignoreDuplicates: true },
+      )
+      if (linkErr) console.warn("[debrief] work item links failed:", linkErr.message)
+    }
+
+    // ── Deal spine ──────────────────────────────────────────────────
+    // Filing a debrief is the definition of `debriefed`. Two steps:
+    //
+    //   1. If no deal came in on the request, resolve one from the
+    //      primary contact. The reminder email now carries deal_id, but
+    //      a debrief started from the "New Debrief" button won't have
+    //      one — and an opportunity that exists shouldn't stay unlinked
+    //      just because of the entry point the partner chose.
+    //   2. Advance the stage. Monotonic, so a second debrief on the same
+    //      deal is a no-op and a won/lost deal is left alone.
+    //
+    // Best-effort throughout: the debrief is already saved, and a
+    // pipeline column must never fail a submission.
+    try {
+      let resolvedDealId = toUuidOrNull(dealId)
+      if (!resolvedDealId && (contactId || organizationId)) {
+        const deal = await findOrCreateDeal(
+          {
+            contactId: toUuidOrNull(contactId) ?? undefined,
+            organizationId: toUuidOrNull(organizationId) ?? undefined,
+            title: organizationName || body.team_member || "Client Deal",
+            source: "unknown",
+          },
+          { supabase },
+        )
+        resolvedDealId = deal.deal_id
+        if (resolvedDealId) {
+          await supabase
+            .from("debriefs")
+            .update({ deal_id: resolvedDealId })
+            .eq("id", createdDebrief.id)
+        }
+      }
+      const moved = await advanceDealStage(supabase, resolvedDealId, "debriefed")
+      if (moved.advanced) {
+        console.log(`[debrief] deal ${resolvedDealId} stage ${moved.reason}`)
+      }
+
+      // Mirror the debrief's work items onto the deal, so the opportunity
+      // shows every engagement the meeting touched without anyone
+      // re-tagging them by hand on the Deal page.
+      if (resolvedDealId && workItemRowIds.length > 0) {
+        const { error: dwiErr } = await supabase.from("deal_work_items").upsert(
+          workItemRowIds.map((w) => ({
+            deal_id: resolvedDealId as string,
+            work_item_id: w.id,
+            link_source: "debrief",
+          })),
+          { onConflict: "deal_id,work_item_id", ignoreDuplicates: true },
+        )
+        if (dwiErr) console.warn("[debrief] deal work item mirror failed:", dwiErr.message)
+      }
+    } catch (dealErr) {
+      console.warn(
+        "[debrief] deal stage advance failed (non-blocking):",
+        dealErr instanceof Error ? dealErr.message : dealErr,
+      )
+    }
+
     await createDebriefNotifications(createdDebrief, body.team_member, body)
 
     // Push the debrief into Karbon as a Note attached to every related work
@@ -333,7 +464,12 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    return NextResponse.json({ debrief: createdDebrief })
+    return NextResponse.json({
+      debrief: createdDebrief,
+      // Per-item outcomes so the form can report partial failures rather
+      // than silently dropping a work item the partner asked for.
+      created_work_items: createdWorkItems,
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error"
     console.error("Error in POST /api/debriefs:", message, error)

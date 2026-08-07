@@ -50,6 +50,13 @@ export interface FirmConfig {
   assistantName: string
   /** Service-account identity the assistant acts as. */
   assistantEmail: string
+  /**
+   * Fallback Calendly URL for the discovery call offered at the end of
+   * the intake form. Used when the prospect named no preferred teammate
+   * (or that teammate has no active Discovery event type), so it should
+   * point at a TEAM / round-robin link rather than one person's calendar.
+   */
+  discoveryBookingUrl: string
 }
 
 function normalizeUrl(url: string): string {
@@ -99,6 +106,11 @@ export function firmDefaults(): FirmConfig {
     corsPreviewPrefixes: envList("FIRM_CORS_PREVIEW_PREFIXES") || ["newmottawebsite", "motta-", "v0-motta-hub"],
     assistantName: process.env.ASSISTANT_NAME || "ALFRED",
     assistantEmail: process.env.ASSISTANT_EMAIL || "Info@mottafinancial.com",
+    // Motta's team-level Discovery Meeting link (round-robin across the
+    // partners who take first meetings), NOT an individual's calendar.
+    discoveryBookingUrl:
+      process.env.FIRM_DISCOVERY_BOOKING_URL ||
+      "https://calendly.com/motta-financial/discovery-meeting",
   }
 }
 
@@ -120,6 +132,7 @@ const KEY_MAP: Array<{
   { key: "firm.cors_preview_prefixes", field: "corsPreviewPrefixes", kind: "string[]" },
   { key: "assistant.name", field: "assistantName", kind: "string" },
   { key: "assistant.email", field: "assistantEmail", kind: "string" },
+  { key: "intake.discovery_booking_url", field: "discoveryBookingUrl", kind: "string" },
 ]
 
 const FIRM_SETTINGS_TTL_MS = 5 * 60 * 1000

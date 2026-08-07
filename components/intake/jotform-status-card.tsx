@@ -34,6 +34,8 @@ type Status = {
     live_submission_count: number | null
     stored_submission_count: number
     last_synced_at: string | null
+    retired_at?: string | null
+    retired_reason?: string | null
   }
   jotform_api: { ok: boolean; error: string | null }
   webhook: {
@@ -50,6 +52,15 @@ type Status = {
     last_success_at: string | null
     last_failure_at: string | null
     last_failure_error: string | null
+  }
+  /** All intake sources (Jotform + website), last 30 days. Optional so
+   *  the card still renders against an older deployment of the API. */
+  pipeline?: {
+    submissions_30d: number
+    unlinked_30d: number
+    link_errors_30d: number
+    awaiting_booking_30d: number
+    retired_form_submissions_30d: number
   }
 }
 
@@ -284,10 +295,78 @@ export function JotformStatusCard({ formId }: { formId?: string } = {}) {
             </ul>
           </div>
         )}
+        {data.form.retired_at && (
+          <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+            <strong className="font-semibold">This form is retired.</strong>{" "}
+            {data.form.retired_reason ??
+              "Superseded by the Hub's native intake form."}{" "}
+            {(data.pipeline?.retired_form_submissions_30d ?? 0) > 0 ? (
+              <span className="text-amber-800">
+                It has still received{" "}
+                {data.pipeline?.retired_form_submissions_30d} submission
+                {data.pipeline?.retired_form_submissions_30d === 1 ? "" : "s"} in
+                the last 30 days — those are being ingested normally, but
+                something is still linking to it. Worth tracking down.
+              </span>
+            ) : (
+              <span>No submissions in the last 30 days.</span>
+            )}
+          </div>
+        )}
+
         {data.deliveries.last_failure_at && data.deliveries.failed_24h > 0 && (
           <div className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">
             <strong className="font-semibold">Last failure</strong> {relativeTime(data.deliveries.last_failure_at)}
             {data.deliveries.last_failure_error ? `: ${data.deliveries.last_failure_error}` : ""}
+          </div>
+        )}
+
+        {/* Pipeline health across BOTH intake sources.
+            A broken client resolver once left 11 of 12 website intakes
+            with no contact and produced no visible signal anywhere —
+            these counters exist so that can't recur unnoticed. */}
+        {data.pipeline && data.pipeline.submissions_30d > 0 && (
+          <div className="grid grid-cols-3 gap-3 border-t pt-3">
+            <div>
+              <dt className="text-xs text-muted-foreground">Intakes (30d)</dt>
+              <dd className="mt-0.5 text-sm font-medium text-foreground">
+                {data.pipeline.submissions_30d}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">Unlinked</dt>
+              <dd
+                className={cn(
+                  "mt-0.5 text-sm font-medium",
+                  data.pipeline.unlinked_30d > 0 ? "text-amber-700" : "text-foreground",
+                )}
+              >
+                {data.pipeline.unlinked_30d}
+                {data.pipeline.link_errors_30d > 0 && (
+                  <span className="ml-1 text-xs font-normal text-amber-700">
+                    ({data.pipeline.link_errors_30d} errored)
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">Not yet booked</dt>
+              <dd className="mt-0.5 text-sm font-medium text-foreground">
+                {data.pipeline.awaiting_booking_30d}
+              </dd>
+            </div>
+          </div>
+        )}
+
+        {data.pipeline && data.pipeline.unlinked_30d > 0 && (
+          <div className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">
+            <strong className="font-semibold">
+              {data.pipeline.unlinked_30d} intake
+              {data.pipeline.unlinked_30d === 1 ? "" : "s"} with no linked contact
+            </strong>{" "}
+            in the last 30 days. These prospects exist in the Hub but aren&apos;t
+            attached to a contact record, so they won&apos;t appear on a client
+            profile or reach Karbon.
           </div>
         )}
       </CardContent>

@@ -100,55 +100,97 @@ Content-Type: application/json
 Origin: https://motta.cpa
 ```
 
+The payload is **flat** — there are no `submitter` / `business` /
+`engagement` wrapper objects. (Earlier revisions of this document
+showed a nested shape that the API never accepted; a nested payload
+returns `200 ok` with every field null, so it fails without looking
+like it failed.)
+
 ```json
 {
-  "submitter": {
-    "first_name": "Jane",
-    "last_name": "Doe",
-    "email": "jane@example.com",
-    "phone": "+15551234567",
-    "city": "Tampa",
-    "state": "FL",
-    "zip": "33602"
-  },
-  "engagement": {
-    "service_focus": "tax",
-    "services_requested": ["1040 return", "tax planning"],
-    "entity_types": ["1040", "1120-S"]
-  },
-  "business": {
-    "name": "Doe Family LLC",
-    "email": "info@doefamily.com",
-    "phone": "+15559998888",
-    "state": "FL",
-    "tax_classification": "S-Corp",
-    "revenue_range": "$500k–$1M",
-    "employee_count": "5–10",
-    "uses_accounting_system": "QuickBooks Online",
-    "situation": "Recently formed, no prior CPA",
-    "summary": "Need full-service tax + bookkeeping"
-  },
-  "notes": "Referred by Sam Wilson",
+  "first_name": "Jane",
+  "last_name": "Doe",
+  "email": "jane@example.com",
+  "phone": "+15551234567",
+  "street_address": "100 Main St",
+  "city": "Tampa",
+  "state": "FL",
+  "zip": "33602",
+
+  "service_focus": "Both Personal & Business",
+  "services_requested": ["Tax Preparation", "Tax Planning & Advisory"],
+  "entity_types": ["Individual (1040)", "S-Corp (1120-S)"],
+
+  "business_name": "Doe Family LLC",
+  "business_email": "info@doefamily.com",
+  "business_phone": "+15559998888",
+  "business_state": "FL",
+  "business_tax_classification": "S-Corp",
+  "business_revenue_range": "$500k – $1M",
+  "business_employee_count": "5",
+  "business_uses_accounting_system": "QuickBooks Online",
+  "business_summary": "Need full-service tax + bookkeeping",
+
+  "questions_or_concerns": "We're behind on 2024 and just got an IRS letter.",
+  "additional_notes": "Prefer mornings",
+  "referral_source": "Sam Wilson",
+  "preferred_team_member": "Dat Le",
+
+  "utm_source": "google",
+  "utm_medium": "cpc",
+  "utm_campaign": "tax-2026",
   "page_url": "https://motta.cpa/get-started",
-  "_hp": ""
+  "website": ""
 }
 ```
 
-`submitter.first_name`, `submitter.last_name`, and `submitter.email`
-are required. Everything else is optional but we strongly recommend
-collecting `service_focus` and either `business.name` or
-`entity_types` so the team email surfaces useful context.
+**Required:** one of `email` or `phone` — we need a way to reach them.
+Everything else is optional server-side (mark what you like as required
+in the form UI). We strongly recommend collecting `service_focus` and
+either `business_name` or `entity_types` so the team email and the
+ALFRED fee estimate have something to work with.
+
+**Honeypot:** the field is named **`website`**, not `_hp` (the contact
+form uses `_hp` — they differ). Render it as a hidden input and leave
+it empty; a non-empty value gets the submission silently dropped with
+`200 { ok: false }`.
+
+**Optional qualifying fields** — accepted but not currently on the
+Hub's own form. Sending them lights up extra rows in the team email:
+`behind_on_filings`, `pending_tax_notices`, `current_cpa_status`,
+`cpa_switch_reason`.
 
 **Response (success)**
 
 ```json
 {
   "ok": true,
-  "submission_id": "uuid",
-  "contact_id": "uuid",
+  "submission_id": "web_9f1c…",
+  "booking_url": "https://calendly.com/motta-financial/discovery-meeting?name=Jane+Doe&email=…&salesforce_uuid=…",
+  "contact_id": "uuid-or-null",
   "organization_id": "uuid-or-null"
 }
 ```
+
+### ⚠️ Use `booking_url` — don't hardcode a Calendly link
+
+`booking_url` is the discovery-call link for **this specific
+prospect**. Show it as the next step on your confirmation screen
+("Book your discovery call"). It is:
+
+- **prefilled** with their name and email, so they don't retype;
+- **routed** to the teammate they asked for in `preferred_team_member`,
+  when that person has an active Discovery event type;
+- **tagged** with a `salesforce_uuid` that ties the resulting booking
+  back to this intake submission.
+
+A hardcoded generic Calendly link loses all three, and in particular
+breaks conversion reporting — the Hub would no longer be able to tell
+which bookings came from the form. The Hub also emails this same link
+to the prospect, so a visitor who closes the tab can still book.
+
+`booking_url` is `null` only if the Hub couldn't resolve one; render a
+plain thank-you in that case.
 
 Same failure-mode table as the contact form.
 
@@ -274,8 +316,36 @@ export function ContactForm() {
 }
 ```
 
-For the intake form, swap the URL to `/api/public/intake` and shape
-the body to match section 1 (above). Same honeypot rule applies.
+For the intake form, swap the URL to `/api/public/intake`, shape the
+body to match section 1 (above), and note two differences: the
+honeypot field is named **`website`** rather than `_hp`, and the
+success handler should render the booking step from `booking_url`:
+
+```tsx
+const data = await res.json()
+setBookingUrl(data.booking_url ?? null)   // then render the CTA below
+```
+
+```tsx
+{bookingUrl ? (
+  <a href={bookingUrl} target="_blank" rel="noopener noreferrer">
+    Book your discovery call →
+  </a>
+) : (
+  <p>Thanks — a teammate will follow up within one business day.</p>
+)}
+```
+
+If you keep the Hub's iframe embed instead, it already renders this
+step itself and also posts the url out to the parent window:
+
+```js
+window.addEventListener("message", (e) => {
+  if (e.data?.type === "motta:intake:success") {
+    // e.data.submission_id, e.data.booking_url
+  }
+})
+```
 
 ---
 

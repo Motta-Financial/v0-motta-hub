@@ -79,6 +79,10 @@
     {
       "path": "/api/cron/proconnect-sync",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/intake-booking-nudge",
+      "schedule": "0 14 * * 1-5"
     }
   ]
 }
