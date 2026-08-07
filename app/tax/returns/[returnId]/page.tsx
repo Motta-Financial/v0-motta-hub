@@ -24,6 +24,7 @@ import {
   ArrowLeft,
   Clock,
   FileText,
+  Pencil,
   RefreshCw,
   Table2,
 } from "lucide-react"
@@ -32,6 +33,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
+import { FieldEditSheet, type EditTarget } from "@/components/tax/field-edit-sheet"
 
 type Cell = {
   series_id: string
@@ -132,6 +134,7 @@ export default function ReturnDataPage({
   const searchParams = useSearchParams()
   const clientId = searchParams.get("clientId")
   const [refreshing, setRefreshing] = useState(false)
+  const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
 
   const { data, error, isLoading, mutate } = useSWR<ReturnDetail>(
     `/api/proconnect/returns/${returnId}`,
@@ -281,6 +284,7 @@ export default function ReturnDataPage({
           </Card>
 
           {data && data.cellCount > 0 && (
+            <>
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
@@ -292,44 +296,94 @@ export default function ReturnDataPage({
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {Object.entries(data.cellsBySeries).map(([seriesId, cells]) => (
-                  <details key={seriesId} className="rounded-md border" open={data.seriesCount <= 3}>
-                    <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">
-                      Series <code className="rounded bg-muted px-1">{seriesId}</code>{" "}
-                      <span className="text-muted-foreground">({cells.length} cells)</span>
-                    </summary>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="border-t bg-muted/50 text-left">
-                            <th className="px-3 py-1.5 font-medium">Address</th>
-                            <th className="px-3 py-1.5 font-medium">Value</th>
-                            <th className="px-3 py-1.5 font-medium">Description</th>
-                            <th className="px-3 py-1.5 font-medium">T/S/J</th>
-                            <th className="px-3 py-1.5 font-medium">Source</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {cells.map((c, i) => (
-                            <tr key={i} className="border-t">
-                              <td className="whitespace-nowrap px-3 py-1.5 font-mono">
-                                {c.prefix_id}/{c.code_id}/{c.suffix_id}
-                              </td>
-                              <td className="max-w-56 truncate px-3 py-1.5">{c.val ?? "—"}</td>
-                              <td className="max-w-64 truncate px-3 py-1.5 text-muted-foreground">
-                                {c.description ?? "—"}
-                              </td>
-                              <td className="px-3 py-1.5">{c.tsj ?? "—"}</td>
-                              <td className="px-3 py-1.5 text-muted-foreground">{c.src ?? "—"}</td>
+                {Object.entries(data.cellsBySeries).map(([seriesId, cells]) => {
+                  // Find the version stamp for this series from the snapshot
+                  const seriesVersion =
+                    data.snapshot?.series_versions?.find((sv: { series: string; version: string }) => sv.series === seriesId)
+                      ?.version ?? null
+
+                  return (
+                    <details key={seriesId} className="rounded-md border" open={data.seriesCount <= 3}>
+                      <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">
+                        Series <code className="rounded bg-muted px-1">{seriesId}</code>{" "}
+                        <span className="text-muted-foreground">({cells.length} cells)</span>
+                      </summary>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-t bg-muted/50 text-left">
+                              <th className="px-3 py-1.5 font-medium">Field</th>
+                              <th className="px-3 py-1.5 font-medium">Value</th>
+                              <th className="px-3 py-1.5 font-medium">Description</th>
+                              <th className="px-3 py-1.5 font-medium">T/S/J</th>
+                              <th className="px-3 py-1.5 font-medium">Source</th>
+                              <th className="px-3 py-1.5" />
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </details>
-                ))}
+                          </thead>
+                          <tbody>
+                            {cells.map((c, i) => {
+                              // Determine which key the cell uses — prefer val, fall back to desc
+                              const writeKey: "val" | "desc" = c.val !== null ? "val" : "desc"
+                              const currentValue = c.val ?? c.description ?? null
+
+                              return (
+                                <tr key={i} className="border-t">
+                                  <td className="whitespace-nowrap px-3 py-1.5 font-mono">
+                                    {c.prefix_id}/{c.code_id}/{c.suffix_id}
+                                  </td>
+                                  <td className="max-w-56 truncate px-3 py-1.5">{c.val ?? "—"}</td>
+                                  <td className="max-w-64 truncate px-3 py-1.5 text-muted-foreground">
+                                    {c.description ?? "—"}
+                                  </td>
+                                  <td className="px-3 py-1.5">{c.tsj ?? "—"}</td>
+                                  <td className="px-3 py-1.5 text-muted-foreground">{c.src ?? "—"}</td>
+                                  <td className="px-3 py-1.5 text-right">
+                                    {clientId && (
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="size-6"
+                                        aria-label={`Edit ${c.prefix_id}/${c.code_id}/${c.suffix_id}`}
+                                        onClick={() =>
+                                          setEditTarget({
+                                            returnId,
+                                            clientId,
+                                            seriesId,
+                                            seriesVersion,
+                                            prefixId: c.prefix_id,
+                                            codeId: c.code_id,
+                                            suffixId: c.suffix_id,
+                                            writeKey,
+                                            currentValue,
+                                          })
+                                        }
+                                      >
+                                        <Pencil className="size-4" />
+                                      </Button>
+                                    )}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
+                  )
+                })}
               </CardContent>
             </Card>
+
+            <FieldEditSheet
+              target={editTarget}
+              open={editTarget !== null}
+              onClose={() => setEditTarget(null)}
+              onCommitSuccess={() => {
+                setEditTarget(null)
+                mutate()
+              }}
+            />
+            </>
           )}
         </>
       )}
