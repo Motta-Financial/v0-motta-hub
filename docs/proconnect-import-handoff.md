@@ -1,13 +1,15 @@
 # ProConnect Series Map Import — remaining work (handoff)
 
-**Written:** 2026-08-07 · **Revised:** 2026-08-07 after the defect retest
+**Written:** 2026-08-07 · **Revised:** 2026-08-07, after the write path was
+proven end to end through the UI.
 **Purpose:** each section is self-contained. Paste one into a fresh chat and it
 should be workable without the others.
 
 ## Shared context (include this in any of the chats below)
 
 Intuit ProConnect Phase 1 gives two Data Service endpoints — **Export** (read a
-1040's full field data) and **Import** (write field values back). Both now work.
+1040's full field data) and **Import** (write field values back). Both work, in
+production, from the UI.
 
 **They are asymmetric, and this cost us weeks twice:**
 
@@ -35,110 +37,66 @@ name      SENTINEL TEST — DO NOT FILE
 TY2025, type IND
 ```
 
-⚠️ **The sentinel is now permanently dirty.** The probe text
+⚠️ **The sentinel is permanently dirty.** The probe text
 `RETEST 20260807 DEFECT PROBE` sits at disposition instance 25 (`s52/p25/c800`)
 and **cannot be removed** — that's defect 3. Refresh
 `scripts/.sentinel-baseline-de74b2b2-*.json` before using this return for
 sentinel-diff field labeling, or that cell reads as a real mapping.
 
 **Key files**
-- `lib/proconnect/data.ts` — `exportReturnData()`, `importSeries()`, the two host constants, error classification
-- `app/api/proconnect/returns/[returnId]/import/[seriesId]/route.ts` — Import route (leadership-gated, allowlist, 30-min dryRun-before-commit window)
+- `lib/proconnect/data.ts` — `exportReturnData()`, `importSeries()`, `verifyEntriesLanded()`, the two host constants
+- `app/api/proconnect/returns/[returnId]/import/[seriesId]/route.ts` — Import route (leadership-gated, allowlist, 30-min dryRun-before-commit window, post-write verification)
 - `app/api/proconnect/returns/imports/route.ts` — import audit-log query
-- `scripts/376-retest-intuit-import-defects.ts` — survey/probe/write/clear harness (untracked)
-- `skills/proconnect-1040-mapping/SKILL.md` — field model, code dictionary, defect table
-- `app/tax/returns/[returnId]/page.tsx`, `components/tax/form-1040-viewer.tsx`, `components/tax/tax-intake-client.tsx` — the UI
+- `components/tax/field-edit-sheet.tsx` — the single-field write UI
+- `scripts/376-retest-intuit-import-defects.ts` — survey/probe/write/clear/selftest harness
+- `skills/proconnect-1040-mapping/SKILL.md` — field model, code dictionary, defect list
 
-**Prod state**
+**Prod state, end of 2026-08-07**
 - `proconnect_return_snapshots`: 35+ rows — Export solid
-- `proconnect_import_jobs`: **7 rows** as of 2026-08-07 08:47 UTC (1 dry run, 6 commits, all 200) — Import proven end to end
-- `proconnect_export_raw`: exists, **0 rows** — abandoned landing table (see §3)
+- `proconnect_import_jobs`: 15 rows — 7 dry runs, 8 commits, 2 of them `partial`
+- `PROCONNECT_WRITE_ALLOWED_RETURN_IDS`: set in Production + Preview, sentinel only
+- Host base URLs are **not** set as env vars in any environment, deliberately — see §5
 
 ---
 
 # DONE 2026-08-07 — close these in Karbon
 
-- **Manually call Import API in dry-run mode** — dry run at `s52`, 200, audited
-- **Manually call Import API in commit mode** — commit at `s52/p25/c800`, `importedCount: 1`
-- **Verify write via Export re-pull** — value confirmed present, series version bumped
-- **Retest Intuit's four import-API bugs** — results below
-- **Build Import Edge Function** — built as a Next.js route (accepted deviation), now exercised
-- **Build Export Edge Function** — same deviation, verified since 2026-07-27
 - **Identify test 1040 return** — the sentinel, above
+- **Manually call Export API** / **Store raw Export response**
+- **Manually call Import API in dry-run mode** — job `7f717e35`, s52, HTTP 200, clean summary, nothing persisted
+- **Manually call Import API in commit mode** — first write ever at 08:46:17 UTC (`s52/p25/c800`, `importedCount 1`, new series version); first via the Hub route as job `68cc172d`
+- **Verify write via Export re-pull** — confirmed, and now automated (see the verification note below)
+- **Retest Intuit's four import-API bugs** — results below
+- **Build Export / Import Edge Function** — built as Next.js routes, accepted deviation, both exercised
+- **Build v0 frontend for return read/write** — shipped in #332, fixed in #333, verified through the UI at 11:18:59 UTC
 
 **Defect results (sentinel, 2026-08-07)**
 
 | # | Defect | Status | Evidence |
 |---|---|---|---|
 | 1 | 20-instance disposition cap | ✅ Fixed | 25 instances (`s52` p1–p25) dry-ran clean; commit at p25 returned `importedCount: 1` |
-| 2 | M-screens not importable | ⚠️ Routing fixed, untestable | `s100M`/`s200M` now resolve — they answer `INVALID_CODE … not valid for series 's100M'`, same shape as the numeric control. But the catalog Intuit shipped has **zero M-series rows** (748 Federal series, all `^s\d+$`), so there is no valid M code to write. Not closeable from our side |
+| 2 | M-screens not importable | ✅ Fixed | Echoing a real populated M cell (`s200M/p0/c11/x1000`) back as a dry run returned `totalImported 1 / totalErrors 0`. The remaining M problem is a **catalog-delivery gap**, not an API bug — see §1 |
 | 3 | No delete/clear | ❌ Still open | Five clear shapes tried, all left the value untouched |
-| 4 | `isDetailImport` not set on API writes | ❌ Still open | API-written cell came back `{"desc":"…"}` with no `importSource` key. Other channels *do* populate it on this same return (`isDocImport` 49, `isCalculated` 29, default 22), so the flag is absent specifically for API writes |
+| 4 | `isDetailImport` not set on API writes | ❌ Still open | API-written cell came back with no `importSource` key. Other channels *do* populate it on this same return (`isDocImport` 49, `isCalculated` 29, default 22), so the flag is absent specifically for API writes |
 
-**Defect 3 fails silently as success** — this is the sharpest operational finding.
-Every clear attempt returned `{"totalImported":1,"totalErrors":0}` **and bumped the
-series version**, with the value unchanged. All five are sitting in
-`proconnect_import_jobs` as `succeeded / imported_count=1 / error_count=0`.
-Anything that treats `importedCount` as proof the return matches what you sent
-will be wrong. Diff a fresh Export instead. See §2.
+**Defect 3 fails silently as success** — the single most important operational
+fact here. Every clear attempt returned `{"totalImported":1,"totalErrors":0}`
+**and bumped the series version**, with the value unchanged.
 
----
+So the Import route no longer believes Intuit. After every commit it re-exports
+and diffs each entry against the return (`verifyEntriesLanded()`), classifying
+misses as `absent` / `value_mismatch` / `clear_ignored`, and marks the job
+**`partial`** — never `succeeded` — when anything didn't land. Proven end to end
+through the UI: job `d7abac42`, `checked 1 / landed 0`, `clear_ignored`,
+`request_version dc5a7dc0…` → `response_version c9d546c0…` on a write that
+changed nothing.
 
-# 1. Set the write allowlist — the last gap before route-driven commits
-
-**Shipped:** the two-host fix, the harness, and the docs merged in PR #329
-(`b9374b5`, 2026-08-07).
-
-**Still missing: `PROCONNECT_WRITE_ALLOWED_RETURN_IDS` is set in _no_ Vercel
-environment** — not production, preview, or development (verified 2026-08-07 via
-`vercel env ls`). The route's allowlist **fails closed**, so commit-mode imports
-through the Hub are refused with no other symptom. This is why today's six
-commits went through `scripts/376` instead: the harness bypasses the route and
-carries its own hard-coded allowlist.
-
-```bash
-printf 'de74b2b2-ab40-4867-8a2a-d52f1518c58d' | npx vercel@latest env add PROCONNECT_WRITE_ALLOWED_RETURN_IDS production
-```
-
-Add `preview` too if you want to exercise commit mode on a preview deploy before
-it reaches production — that's the natural way to test §4. **A redeploy is
-required either way**; Vercel injects env at deploy time, and the PR #329 build
-predates the variable.
-
-What works without it: Export, and Import **dry runs** through the route on any
-return — dry runs bypass both write gates. That's the safe half of the pipeline
-and it needs no config.
-
-**Do NOT set `PROCONNECT_IMPORT_BASE_URL`.** An earlier draft of this doc
-suggested it; that was wrong. `PROCONNECT_TAX_RETURNS_BASE_URL` (the Export host)
-is set in no environment either — Export has run off its code default for weeks.
-Setting only the Import one creates a second source of truth that can drift, and
-the drift failure mode is a 403 indistinguishable from deprovisioning: the exact
-trap that cost weeks twice. Both defaults are verified against live 200s. Set
-these only if Intuit moves a host.
+**Never treat `importedCount`, `totalErrors: 0`, or a version bump as proof a
+write applied.** Only a value-level diff of a fresh Export is.
 
 ---
 
-# 2. Make the Import route not trust `importedCount`
-
-**New — comes directly out of defect 3.** The route currently reads a 200 with
-`totalErrors: 0` as success, records `status = succeeded`, and triggers a fresh
-Export. Defect 3 means that combination can be a complete no-op. Six of the seven
-audit rows in prod right now claim success; five of them changed nothing.
-
-The re-export already happens — the missing piece is **using it**. After the
-post-write Export, diff the cells actually written against the entries sent, and
-either record a `verified` boolean / `succeeded_unverified` status on
-`proconnect_import_jobs`, or fail the job outright when the value didn't land.
-This matters most for §4: a UI that says "saved" on a silent no-op is worse than
-one that errors.
-
-`app/api/proconnect/returns/[returnId]/import/[seriesId]/route.ts` +
-`scripts/130_proconnect_return_data.sql` for the column.
-
----
-
-# 3. Back to Intuit — next call
+# 1. Back to Intuit — next call
 
 1. **Defect 3 (no delete/clear)** — still open, and worse than "unsupported": it
    reports success and bumps the version. Ask for either a real clear or an
@@ -146,60 +104,39 @@ one that errors.
 2. **Defect 4 (`isDetailImport`)** — still open. Bring the baseline: other
    channels populate `importSource` on the same return, so this is specific to
    API writes.
-3. **M-series catalog gap** — routing is fixed but the supplied catalog has zero
-   M-series rows, so defect 2 can't be verified. Ask for the M-series codes.
+3. **M-series catalog delivery gap** — the API accepts M-series writes now, but
+   the catalog they supplied has **zero** M-series rows (748 Federal series, all
+   `^s\d+$`) while live returns carry them. Ask for the M-series codes. This is
+   a delivery problem, not a defect.
 4. Optional: whether ProConnect reads are metered (Core vs. metered CorePlus),
    still unconfirmed and relevant before scaling Export polling.
 
 ---
 
-# 4. Build the write half of the v0 return read/write page
+# 2. Line 26 and line 25b — one schema change, not two
 
-**Karbon:** "Build v0 frontend for return read/write" · 68 days overdue.
-Unblocked now.
+Both are blocked on the same limitation: `form_1040_proconnect_map` holds **one
+code per line**, and both of these lines must sum several codes.
 
-**Built:** `/tax/returns/[returnId]?clientId=…` renders engagement context,
-snapshot metadata (version, e-file items, series versions), and flattened field
-cells by series, with a "Refresh from ProConnect" button. Explicitly read-only.
+- **Line 26, estimated payments.** Codes known — `s5400` amount-paid `c2`=Q1,
+  `c4`=Q2, `c6`=Q3, `c8`=Q4 (`scripts/369_form_1040_sentinel_round2_ty2025.sql:8`).
+  Mapped: Q1 only.
+- **Line 25b, other withholding.** Mapped: `s12/*/c14` = "Federal income tax
+  withheld" on Interest Income (1099-INT / 1099-OID), aggregated across
+  instances. Missing: withholding from 1099-R (series `s14`) and 1099-MISC, so
+  25b understates on any return carrying those.
 
-**Not built:** edit a field and trigger an Import.
+The fix is either extending the `*` wildcard aggregate mechanism used for
+multiple W-2s (commit `8d46511`) to span series, or adding a multi-code row
+type. Discovery is done; this is schema work.
 
-1. `components/tax/tax-intake-client.tsx:723` — the import-plan card's action
-   button is hard-disabled with stale copy:
-   `"Validate with dryRun — awaiting Intuit provisioning"`. We were never
-   unprovisioned. Wire it to the real dryRun call.
-2. The return viewer has no per-cell edit affordance at all.
-3. `app/tax/returns/[returnId]/page.tsx:12` — header comment still describes a
-   "403 blocked empty-state."
-
-Suggested shape: inline edit on one cell → dryRun → show validation summary →
-explicit confirm → commit → re-export and re-render. Keep dryRun-before-commit
-visible in the UI; the route enforces it server-side anyway (30-minute window).
-**Do not report success from `importedCount`** — depends on §2.
+**Also still open, but waiting on data, not on us:** filing-status codes 1
+(Single), 3 (MFS) and 5 (QSS) are `inferred`; only 2 (MFJ) and 4 (HOH) are
+`confirmed`. A real return with each status confirms them — check when one syncs.
 
 ---
 
-# 5. Clean up the abandoned Edge Function path
-
-Karbon records three Completed sub-items describing an architecture the build
-abandoned: a Data Service base URL as a **Supabase Edge Function secret**, a
-deployed `proconnect-test-export` Edge Function, and a
-`public.proconnect_export_raw` landing table. None of it is live:
-`supabase/functions/` holds only the five sync/token functions, Export and Import
-are Next.js routes over `lib/proconnect/data.ts`, and `proconnect_export_raw` has
-**0 rows** while all real snapshots live in `proconnect_return_snapshots`.
-
-Drop or deprecate the table, delete the Edge Function if still deployed, correct
-the Karbon sub-items.
-
-**Also:** `docs/proconnect-meeting-brief.md` still reads "Every call returns HTTP
-403" (line 21), "Export ❌ 403, 0 snapshots ever" (line 40), and "Import ⛔
-Untested" (line 41). It's a point-in-time brief for a specific call, so either
-date-stamp it as historical or refresh it — but don't leave it looking current.
-
----
-
-# 6. 1040 viewer vs ProConnect — coverage verification
+# 3. 1040 viewer vs ProConnect — coverage verification
 
 **Karbon:** "1040 viewer vs PC". Independent of the Import work.
 
@@ -214,27 +151,33 @@ computed against a **filed PDF**, not the API.
 
 ---
 
-# 7. Conditional-mapping leftovers
+# 4. Karbon board hygiene
 
-**Karbon:** "1040 renderer: conditional mappings shipped (migration 373, PR #301)".
-Shipped and live; two items stayed open.
+Three sub-items are marked Completed on the board that describe an architecture
+this build abandoned: a Data Service base URL as a **Supabase Edge Function
+secret**, a deployed `proconnect-test-export` Edge Function, and the
+`proconnect_export_raw` landing table.
 
-1. **Filing-status codes 3 (MFS) and 5 (QSS) unconfirmed.** The coded
-   filing-status cell (1=Single, 2=MFJ, 3=MFS, 4=HOH, 5=QSS) fans out to five
-   boolean `fs_*` lines via value-predicate conditions
-   (`scripts/373_form_1040_conditional_mappings.sql:18,100`). Only a real return
-   with those statuses confirms them — wait-for-data, check when one syncs.
-2. **Q2–Q4 estimated payments.** Codes are known — `s5400` amount-paid `c2`=Q1,
-   `c4`=Q2, `c6`=Q3, `c8`=Q4 (`scripts/369_form_1040_sentinel_round2_ty2025.sql:8`)
-   — but line 26 maps Q1 only because the map schema holds **one code per line**.
-   Summing needs the aggregate mechanism used for multiple W-2s (the `*` wildcard
-   prefix, commit `8d46511`) or a new multi-code row type. Schema change, not a
-   discovery gap.
+None of it is live. `supabase/functions/` holds only the five sync/token
+functions; Export and Import are Next.js routes over `lib/proconnect/data.ts`;
+and `proconnect_export_raw` held 0 rows and is dropped by
+`scripts/377_drop_proconnect_export_raw.sql`. Correct the board so nobody builds
+against it, and delete the Edge Function if it is still deployed in Supabase —
+that one can't be checked from the repo.
 
 ---
 
-## Suggested order
+# 5. Standing decisions worth not re-litigating
 
-§1 whenever the next deploy goes out (it needs a redeploy anyway, and only §4
-depends on it) → §2 (small, and §4 depends on it) → §3 whenever the next Intuit
-call lands → §4 → §5 as cleanup. §6 and §7 are independent.
+- **Do not set `PROCONNECT_IMPORT_BASE_URL` or `PROCONNECT_TAX_RETURNS_BASE_URL`
+  in Vercel.** Neither is set in any environment; both defaults are verified
+  against live 200s. Overriding one creates a second source of truth that can
+  drift, and drift surfaces as a 403 indistinguishable from deprovisioning —
+  the exact trap that cost weeks twice. Set them only if Intuit moves a host.
+- **`PROCONNECT_WRITE_ALLOWED_RETURN_IDS` fails closed.** Unset means no return
+  may be committed to. It currently holds the sentinel and nothing else.
+  Widening it is the one change that makes real client returns writable.
+- **The five `succeeded` commit rows from 08:47 UTC are false.** They predate
+  verification and were all no-op clears. Anyone auditing
+  `proconnect_import_jobs` should read anything before 10:00 UTC on 2026-08-07
+  as unverified.

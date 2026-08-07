@@ -1,0 +1,26 @@
+-- 377_drop_proconnect_export_raw.sql
+--
+-- Drop the abandoned Export landing table.
+--
+-- `public.proconnect_export_raw` was created early in Phase 2 planning as a
+-- lightweight place to land the raw Export JSON, back when the design called
+-- for a `proconnect-test-export` Supabase Edge Function. That architecture was
+-- never built. Export shipped as a Next.js route over lib/proconnect/data.ts,
+-- and persistence went to the richer schema in scripts/130:
+--
+--   proconnect_return_snapshots     one row per (client, return), raw_data
+--                                   jsonb plus version / series_versions /
+--                                   efile_items / agencies for OCC and querying
+--   proconnect_return_field_cells   the flattened leaf cells
+--
+-- Verified before writing this migration (2026-08-07):
+--   * proconnect_export_raw holds 0 rows and has never held any
+--   * the name appears nowhere in the codebase — no route, script, or type
+--   * proconnect_return_snapshots holds every real export (35+ and counting)
+--
+-- Left in place it is a trap: it looks like the Export landing table, and the
+-- Karbon board still describes it as one.
+--
+-- NOT RUN AUTOMATICALLY. Apply deliberately against production.
+
+DROP TABLE IF EXISTS public.proconnect_export_raw;

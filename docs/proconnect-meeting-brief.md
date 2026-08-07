@@ -3,6 +3,31 @@
 **Firm:** Motta Financial · **Scope granted:** `com.intuit.proconnect.taxreturns` · **Source:** `ITO`
 **Prepared:** 2026-07-26 — every figure below is a live query against production.
 
+> ## 🗂️ HISTORICAL — superseded 2026-08-07
+>
+> **This document is the provisioning request we took into the Intuit call.
+> Its central claim turned out to be wrong, and it is kept unedited below as
+> the record of what we believed at the time. Do not read it as current
+> status.**
+>
+> We were never unprovisioned. Realm and scope were correct throughout; the
+> 403s came from two wrong URLs:
+>
+> | | Host | Path |
+> |---|---|---|
+> | Export | `protaxdata` | **needs** the `oii-client/` segment — resolved 2026-07-27 |
+> | Import | `protaxonlineimport` (its own host) | **must not** have `oii-client/` — resolved 2026-08-07 |
+>
+> A wrong host or path returns `403 AuthorizationFailed`, byte-identical to a
+> genuine provisioning failure — which is why this brief reached the
+> conclusion it did. **A 403 on this gateway proves nothing about entitlement.**
+>
+> Current status: both endpoints live in production. Export has 35+ snapshots;
+> Import is exercised in both dryRun and commit mode with post-write
+> verification. Of the four defects Intuit confirmed on the call, 1 and 2 are
+> fixed and 3 and 4 remain open. See `docs/proconnect-import-handoff.md` and
+> `skills/proconnect-1040-mapping/SKILL.md`.
+
 > ⚠️ **This repository is public.** The realm/company ID and client
 > identifiers have been redacted from this committed copy; the private
 > meeting artifact carries them. ProConnect endpoint paths and hostnames
