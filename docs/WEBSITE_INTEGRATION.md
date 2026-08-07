@@ -192,6 +192,67 @@ to the prospect, so a visitor who closes the tab can still book.
 `booking_url` is `null` only if the Hub couldn't resolve one; render a
 plain thank-you in that case.
 
+### Ask *who* before showing a calendar — `booking_hosts`
+
+The same response carries `booking_hosts`: everyone who takes discovery
+calls, each with their own prefilled, attribution-stamped URL.
+
+```json
+"booking_hosts": [
+  {
+    "teamMemberId": "21969201-…",
+    "name": "Dat Le",
+    "role": "Partner",
+    "title": "Managing Partner",
+    "avatarUrl": "https://…",
+    "url": "https://calendly.com/dat-le-motta/discovery-meeting-first-meeting-with-motta?name=…&salesforce_uuid=…",
+    "isTeam": false
+  }
+]
+```
+
+Render this as a "Who would you like to speak with?" picker, with a
+**"No preference"** option that uses the top-level `booking_url` (the
+firm round-robin, which books soonest). When the prospect named someone
+in `preferred_team_member`, pre-select that host.
+
+**Use the `url` from the host you selected — never a person's plain
+Calendly page.** A person-level URL like `calendly.com/caleb-long-…`
+renders that person's *entire* event-type menu — Coffee Chat, Client
+Check-In, Kickoff Meeting — and a brand-new prospect will book the wrong
+one. Every `url` here is scoped to the 30-minute discovery call.
+
+Membership of the list is driven by Calendly itself: anyone with an
+active "Discovery Meeting" event type appears. Nobody needs to maintain
+a second list in the Hub, and someone who shouldn't take first meetings
+simply doesn't have that event type.
+
+If you need the list outside the submit response — a standalone "book a
+call" page, or a re-render after the response is gone — call:
+
+```http
+GET /api/public/booking-hosts?submission_id=<row_id>&name=Jane+Doe&email=jane@example.com
+→ { "ok": true, "hosts": [...], "default_url": "https://calendly.com/motta-financial/discovery-meeting?…" }
+```
+
+All three query params are optional. `submission_id` is what ties the
+resulting booking back to the intake, so pass it when you have one.
+
+### Embedding the calendar
+
+Calendly renders fine in a plain `<iframe>` — no widget script needed.
+Append `embed_type=Inline` and `embed_domain=<your-hostname>` to the
+host's `url`, and keep an "Open in a new tab" fallback for browsers that
+block third-party frames:
+
+```tsx
+const src = new URL(host.url)
+src.searchParams.set("embed_type", "Inline")
+src.searchParams.set("embed_domain", window.location.hostname)
+
+<iframe src={src.toString()} title="Book your discovery call" style={{ width: "100%", height: 680, border: 0 }} />
+```
+
 Same failure-mode table as the contact form.
 
 ---

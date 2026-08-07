@@ -118,6 +118,17 @@ const US_STATES: { value: string; label: string }[] = [
 
 // ── Form state shape ─────────────────────────────────────────────
 
+/** One bookable teammate, from GET /api/public/booking-hosts. */
+interface BookingHost {
+  teamMemberId: string | null
+  name: string
+  role: string | null
+  title: string | null
+  avatarUrl: string | null
+  url: string
+  isTeam: boolean
+}
+
 interface FormState {
   first_name: string
   last_name: string
@@ -296,6 +307,11 @@ export default function IntakeWizardPage() {
   // couldn't resolve a link — we fall back to the old "we'll follow up"
   // copy rather than showing a dead button.
   const [bookingUrl, setBookingUrl] = useState<string | null>(null)
+  // Who the prospect can book with. Returned inline by /api/public/intake
+  // so the confirmation screen can ask "who?" before showing a calendar.
+  const [bookingHosts, setBookingHosts] = useState<BookingHost[]>([])
+  // null = the firm round-robin ("no preference"), which is the default.
+  const [selectedHost, setSelectedHost] = useState<BookingHost | null>(null)
 
   const steps = useMemo(() => buildSteps(state), [state])
   const safeIndex = Math.min(stepIndex, steps.length - 1)
@@ -436,6 +452,21 @@ export default function IntakeWizardPage() {
         return
       }
       setBookingUrl(typeof data.booking_url === "string" ? data.booking_url : null)
+      const hosts: BookingHost[] = Array.isArray(data.booking_hosts) ? data.booking_hosts : []
+      setBookingHosts(hosts)
+      // Pre-select the teammate they asked for, if they named one and that
+      // person takes discovery calls. Otherwise stay on "no preference" —
+      // the round-robin finds whoever is free soonest, which books faster.
+      const asked = state.preferred_team_member.trim().toLowerCase()
+      if (asked) {
+        const match = hosts.find(
+          (h) =>
+            h.name.toLowerCase() === asked ||
+            h.name.toLowerCase().startsWith(asked) ||
+            asked.startsWith(h.name.toLowerCase().split(" ")[0]),
+        )
+        if (match) setSelectedHost(match)
+      }
       setDone(true)
       try {
         window.parent?.postMessage(
@@ -466,6 +497,12 @@ export default function IntakeWizardPage() {
     }
   }
 
+  // The selected host's calendar, or the firm round-robin when they
+  // haven't expressed a preference. `bookingUrl` from the submit response
+  // is already the right default (their requested teammate if we matched
+  // one), so it stays the fallback.
+  const activeBookingUrl = selectedHost?.url ?? bookingUrl ?? ""
+
   if (done) {
     return (
       <div className="mx-auto flex min-h-[80vh] max-w-xl flex-col items-center justify-center gap-4 px-6 py-12 text-center">
@@ -484,26 +521,77 @@ export default function IntakeWizardPage() {
             {/* The booking step. This screen used to end the flow with
                 "a teammate will follow up within one business day",
                 which is where the funnel leaked: only 8 of 130 intakes
-                booked a call within a week. Asking for the booking here,
-                while the prospect is still engaged, is the whole point
-                of the change. */}
+                booked a call within a week.
+
+                The prospect picks WHO first, then sees that person's
+                calendar. Two reasons that ordering matters:
+                  · "who do I want to talk to" is a real preference, and
+                    a form that already asked for it should honour it
+                    visibly rather than silently routing;
+                  · every URL here is event-type specific, so the embed
+                    opens on the 30-minute discovery call. Dropping
+                    someone onto a person-level Calendly page instead
+                    shows their whole menu — Coffee Chat, Kickoff,
+                    Client Check-In — and invites the wrong booking. */}
             <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
               One last step — grab a time for your free 30-minute discovery
               call. We&apos;ll send a Zoom link automatically once you book.
             </p>
-            <a
-              href={bookingUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-2 inline-flex items-center justify-center rounded-lg bg-primary px-8 py-3.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-            >
-              Book your discovery call →
-            </a>
+
+            {bookingHosts.length > 0 && (
+              <div className="mt-2 w-full text-left">
+                <p className="mb-2 text-sm font-medium text-foreground">
+                  Who would you like to speak with?
+                </p>
+                <div className="flex flex-col gap-2">
+                  <HostOption
+                    label="No preference"
+                    sub="We'll match you with whoever can see you soonest"
+                    selected={selectedHost === null}
+                    onSelect={() => setSelectedHost(null)}
+                  />
+                  {bookingHosts.map((host) => (
+                    <HostOption
+                      key={host.name}
+                      label={host.name}
+                      sub={host.title || host.role || undefined}
+                      avatarUrl={host.avatarUrl}
+                      selected={selectedHost?.name === host.name}
+                      onSelect={() => setSelectedHost(host)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Calendly's inline embed via a plain iframe rather than
+                their widget script — one less third-party script, and the
+                embed CSP only needs frame-src. `embed_type=Inline` and
+                `embed_domain` are what tell Calendly to render the
+                stripped-down inline view. */}
+            <div className="mt-4 w-full overflow-hidden rounded-xl border bg-card">
+              <iframe
+                key={activeBookingUrl}
+                src={calendlyEmbedSrc(activeBookingUrl)}
+                title="Book your discovery call"
+                className="h-[680px] w-full border-0"
+                loading="lazy"
+              />
+            </div>
+
             <p className="text-xs leading-relaxed text-muted-foreground">
-              Not ready to pick a time? No problem — we&apos;ve emailed this
-              link to {state.email || "you"} so you can book whenever suits.
-              ALFRED is preparing a research brief for our team in the
-              meantime.
+              Calendar not loading?{" "}
+              <a
+                href={activeBookingUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary underline underline-offset-2"
+              >
+                Open it in a new tab
+              </a>
+              . We&apos;ve also emailed this link to {state.email || "you"} so you
+              can book whenever suits — ALFRED is preparing a research brief for
+              our team in the meantime.
             </p>
           </>
         ) : (
@@ -1992,5 +2080,103 @@ function PinIcon() {
       <path d="M10 17s6-5.4 6-10a6 6 0 1 0-12 0c0 4.6 6 10 6 10z" />
       <circle cx="10" cy="7" r="2" />
     </svg>
+  )
+}
+
+
+/**
+ * Build a Calendly inline-embed URL.
+ *
+ * `embed_type=Inline` + `embed_domain` switch Calendly to the stripped
+ * inline view (no site chrome, no "back to event types" nav). We embed
+ * with a plain iframe rather than Calendly's widget.js: one fewer
+ * third-party script on a page that collects prospect data, and the
+ * embed CSP then only needs `frame-src` instead of `script-src`.
+ *
+ * The incoming URL already carries the prefill + attribution params from
+ * `lib/intake/booking-link.ts`, so this only appends embed hints and
+ * never rebuilds the query string.
+ */
+function calendlyEmbedSrc(url: string): string {
+  if (!url) return ""
+  try {
+    const u = new URL(url)
+    u.searchParams.set("embed_type", "Inline")
+    u.searchParams.set(
+      "embed_domain",
+      typeof window !== "undefined" ? window.location.hostname : "hub.motta.cpa",
+    )
+    // Calendly's own back-link is noise inside an embed that is already
+    // scoped to one event type.
+    u.searchParams.set("hide_gdpr_banner", "1")
+    return u.toString()
+  } catch {
+    return url
+  }
+}
+
+/** One selectable host in the "who would you like to speak with?" list. */
+function HostOption({
+  label,
+  sub,
+  avatarUrl,
+  selected,
+  onSelect,
+}: {
+  label: string
+  sub?: string
+  avatarUrl?: string | null
+  selected: boolean
+  onSelect: () => void
+}) {
+  const initials = label
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase()
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={`flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors ${
+        selected
+          ? "border-primary bg-primary/5"
+          : "border-border hover:border-foreground/30 hover:bg-muted/40"
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className={`flex h-5 w-5 flex-none items-center justify-center rounded-full border-2 transition-colors ${
+          selected ? "border-primary bg-primary" : "border-input bg-background"
+        }`}
+      >
+        {selected ? <span className="h-2 w-2 rounded-full bg-primary-foreground" /> : null}
+      </span>
+      {avatarUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={avatarUrl}
+          alt=""
+          aria-hidden="true"
+          className="h-8 w-8 flex-none rounded-full object-cover"
+        />
+      ) : (
+        <span
+          aria-hidden="true"
+          className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground"
+        >
+          {initials}
+        </span>
+      )}
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate text-sm font-medium text-foreground">{label}</span>
+        {sub ? (
+          <span className="truncate text-xs text-muted-foreground">{sub}</span>
+        ) : null}
+      </span>
+    </button>
   )
 }
