@@ -38,6 +38,12 @@ import {
 import { cn } from "@/lib/utils"
 import { pickOrgDisplayName } from "@/lib/karbon/org-display-name"
 import { MentionTextarea } from "@/components/mentions/mention-textarea"
+import {
+  WorkItemBuilder,
+  serializeWorkItemDrafts,
+  validWorkItemDrafts,
+  type WorkItemDraft,
+} from "@/components/karbon/work-item-builder"
 
 // Types
 interface Client {
@@ -278,6 +284,13 @@ export function DebriefForm() {
     has_draft: boolean
   } | null>(null)
   const [loadingMeetingContext, setLoadingMeetingContext] = useState(false)
+
+  // ── Karbon work items to CREATE on submit ─────────────────────────
+  // Distinct from `related_work_items`, which selects work items that
+  // already exist. A meeting is where you learn which engagements to
+  // open, so the debrief is the natural place to open them — previously
+  // only the prospect form could create from a template, and only one.
+  const [workItemDrafts, setWorkItemDrafts] = useState<WorkItemDraft[]>([])
 
   // Popover states
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false)
@@ -941,6 +954,10 @@ export function DebriefForm() {
           // Changed to use client_ids and work_item_ids
           client_ids: formData.client_ids,
           work_item_ids: formData.work_item_ids,
+          // Templates to instantiate in Karbon on submit. The API creates
+          // these, mirrors them into `work_items`, and links every one
+          // (created + selected) to this debrief and its deal.
+          create_work_items: serializeWorkItemDrafts(workItemDrafts),
           // Primary contact drives debriefs.contact_id / organization_id
           // server-side. Sent as a flat object so the API can resolve
           // either kind without inspecting related_clients.
@@ -1051,6 +1068,10 @@ export function DebriefForm() {
   follow_up_date: null,
   notification_recipients: [],
   })
+      // Queued work items were created by the submit — clearing them stops
+      // a second debrief from the same form re-creating duplicates in Karbon.
+      setWorkItemDrafts([])
+      setMeetingContext(null)
       // The meeting link was consumed by the debrief we just created — clear
       // it so a second debrief filed from this same form isn't re-attached to
       // the same meeting.
@@ -1356,6 +1377,38 @@ export function DebriefForm() {
                   ),
                 )}
               </div>
+            )}
+          </div>
+
+          {/* ─── Create new Karbon work items ────────────────────────────
+              The section above SELECTS work items that already exist.
+              This one CREATES them from Karbon templates on submit —
+              a meeting is where you learn which engagements to open, so
+              it's the natural place to open them. Requires a primary
+              contact (that's the Karbon client the work hangs off). */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              <Plus className="h-4 w-4" />
+              Create Karbon Work Items
+              <Badge variant="outline" className="text-xs font-normal">
+                Optional
+              </Badge>
+            </Label>
+            {formData.primary_contact ? (
+              <WorkItemBuilder
+                value={workItemDrafts}
+                onChange={setWorkItemDrafts}
+                clientName={formData.primary_contact.name}
+                teamMembers={teamMembers}
+                defaultAssigneeTeamMemberId={formData.team_member_id || null}
+                description={`Kicked off in Karbon on ${formData.primary_contact.name}'s timeline when you submit, and linked to this debrief.`}
+                disabled={submitting}
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Pick a primary contact below first — new work items are created on
+                that client&apos;s Karbon timeline.
+              </p>
             )}
           </div>
 

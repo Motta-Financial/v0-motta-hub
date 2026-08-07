@@ -270,17 +270,17 @@ step you called critical.
 
 ## 3a. Implementation status
 
-Phases A and B are implemented on `claude/intake-form-automation-f3y37k`.
+Phases A, B and C are implemented on `claude/intake-form-automation-f3y37k`.
 
 | # | Finding | Status |
 | --- | --- | --- |
 | D1 | No debrief linked to its meeting | ⚠️ partly — see below |
 | D2 | Zoom recording/summary never reach the form | ✅ done |
-| D3 | Multi work-item is display-only | ⏳ Phase C |
-| D4 | No work-item creation from templates | ⏳ Phase C |
+| D3 | Multi work-item is display-only | ✅ done |
+| D4 | No work-item creation from templates | ✅ done |
 | D5 | Deal stage never advances | ✅ done |
 | D6 | `deal_id` can't reach the debrief | ✅ done |
-| D7 | `zoom_meeting_deals` empty | ⏳ Phase C |
+| D7 | `zoom_meeting_deals` empty | ⏳ still empty (low value — `meetings.deal_id` covers it) |
 | D8 | Reminders cover ¼ of meetings | ⚠️ improved, see below |
 | D9 | Everything in one JSONB blob | ⏳ Phase D |
 | D10 | Services → proposal dead-ends | ⚠️ **needs an API answer** |
@@ -341,6 +341,50 @@ from scratch — still has no meeting picker. That's a small follow-up.
    now picks the recording whose own `start_time` is closest to the meeting's,
    and resolves the transcript *through* that recording so the two can never
    disagree.
+
+### Phase C — the Karbon work-item ask
+
+`components/karbon/work-item-builder.tsx` is now the single template picker,
+mounted on **both** forms, and it queues as many work items as the engagement
+needs rather than one:
+
+| Surface | Select existing | Create from template |
+| --- | --- | --- |
+| Prospect form | — | ✅ (unchanged, still single) |
+| **Intake** detail sheet | — | ✅ **new** — any template, multiple |
+| **Debrief** | ✅ multi-select | ✅ **new** — any template, multiple |
+
+The intake's hardcoded Individual-1040 button is **kept** as the one-click fast
+path for the common case — it owns `karbon_work_item_key` and matches the shape
+the old Zap had. The builder sits beneath it as the general case, so a prospect
+who came in for bookkeeping and payroll no longer gets a 1040 work item just
+because that was the only template wired up.
+
+`lib/karbon/create-work-items-batch.ts` does the creation. It treats **partial
+success as a normal outcome**: Karbon can reject one item (bad template,
+assignee isn't a Karbon user) while accepting its siblings, so each is created
+independently and results are reported per item. Aborting on the first failure
+would leave the teammate working out which ones already exist before retrying.
+Created items are mirrored into `work_items` immediately rather than waiting up
+to 15 minutes for the next Karbon sync, because the join tables below key on a
+`work_items.id`.
+
+**D3 — every selected work item is now a real link.** `debrief_work_items`
+(migration 388) holds the full set; `debriefs.work_item_id` is deliberately left
+in place as "the primary one" because `debriefs_full`, the Karbon note builder
+and several dashboards read it, and breaking those to normalize a list isn't a
+trade worth making. Backfilled **567 links across 544 debriefs**, 12 of which
+had genuinely multiple work items that the old single-FK column was silently
+dropping.
+
+The backfill needed two passes, which is worth knowing: the JSONB blob's
+`related_work_items` key only exists on 83 of 915 debriefs (it was added to the
+payload later), so seeding from it alone covered 73. The authoritative source
+for the rest is `debriefs.work_item_id` — 543 rows, all resolvable.
+
+Debrief work items also mirror onto `deal_work_items` with a new
+`link_source='debrief'`, so the opportunity shows every engagement the meeting
+touched without anyone re-tagging by hand on the Deal page.
 
 **Needs a human**
 
