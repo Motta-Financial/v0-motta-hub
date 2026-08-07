@@ -106,6 +106,41 @@ export async function GET() {
       .eq("jotform_form_id", INTAKE_FORM_ID),
   ])
 
+  // 5. Pipeline health across ALL intake sources, not just Jotform.
+  //
+  //    A silently-broken client resolver produced 11 of 12 unlinked
+  //    website intakes and nothing anywhere said so — the only trace
+  //    was a console.log in a serverless runtime. These three counters
+  //    are the standing signal so that class of failure surfaces on the
+  //    page teammates already look at. Scoped to 30 days so ancient
+  //    pre-fix rows don't permanently redden the card.
+  const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const [recentTotal, recentUnlinked, recentLinkErrors, notBooked] = await Promise.all([
+    supabase
+      .from("jotform_intake_submissions")
+      .select("*", { count: "exact", head: true })
+      .gte("jotform_created_at", since30d),
+    supabase
+      .from("jotform_intake_submissions")
+      .select("*", { count: "exact", head: true })
+      .gte("jotform_created_at", since30d)
+      .is("contact_id", null)
+      .is("organization_id", null),
+    supabase
+      .from("jotform_intake_submissions")
+      .select("*", { count: "exact", head: true })
+      .gte("jotform_created_at", since30d)
+      .not("link_error", "is", null),
+    // Funnel health: how many recent prospects were handed a booking
+    // link and still have no meeting attributed.
+    supabase
+      .from("jotform_intake_submissions")
+      .select("*", { count: "exact", head: true })
+      .gte("jotform_created_at", since30d)
+      .not("prospect_confirmation_sent_at", "is", null)
+      .is("calendly_event_id", null),
+  ])
+
   return NextResponse.json({
     form: {
       id: INTAKE_FORM_ID,
@@ -133,6 +168,13 @@ export async function GET() {
       last_success_at: lastSuccess.data?.processed_at ?? null,
       last_failure_at: lastFailure.data?.received_at ?? null,
       last_failure_error: lastFailure.data?.processing_error ?? null,
+    },
+    // All intake sources (Jotform + website), last 30 days.
+    pipeline: {
+      submissions_30d: recentTotal.count ?? 0,
+      unlinked_30d: recentUnlinked.count ?? 0,
+      link_errors_30d: recentLinkErrors.count ?? 0,
+      awaiting_booking_30d: notBooked.count ?? 0,
     },
   })
 }

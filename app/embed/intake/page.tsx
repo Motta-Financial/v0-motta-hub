@@ -154,6 +154,19 @@ interface FormState {
    * question-research pass picks it up.  */
   situation: string
 
+  // ── Qualifying questions ────────────────────────────────────────
+  // The backend has parsed, stored and emailed these four fields since
+  // the website form launched, but no form ever asked them — they were
+  // dead capability. They're the highest-signal triage inputs we can
+  // collect: a prospect who is behind on filings with an open IRS
+  // notice is a different (and more urgent) engagement than one
+  // shopping around, and the fee estimate leans on both.
+  behind_on_filings: string
+  pending_tax_notices: string
+  current_cpa_status: string
+  /** Only asked when they currently work with someone. */
+  cpa_switch_reason: string
+
   referral_source: string
   preferred_team_member: string
 
@@ -184,10 +197,40 @@ const INITIAL_STATE: FormState = {
   business_employee_count: "",
   business_uses_accounting_system: "",
   situation: "",
+  behind_on_filings: "",
+  pending_tax_notices: "",
+  current_cpa_status: "",
+  cpa_switch_reason: "",
   referral_source: "",
   preferred_team_member: "",
   website: "",
 }
+
+// Option sets for the qualifying step. Values are stored verbatim on
+// `jotform_intake_submissions` and rendered as-is in the team email, so
+// they read as prose rather than as enum keys.
+type QualifyingOption = { value: string; label: string; sub?: string }
+
+const FILING_STATUS_OPTIONS: QualifyingOption[] = [
+  { value: "Up to date", label: "All caught up", sub: "Everything filed on time" },
+  { value: "Behind 1 year", label: "Behind one year", sub: "Last year still outstanding" },
+  { value: "Behind 2+ years", label: "Behind two or more years", sub: "We handle this a lot — no judgment" },
+  { value: "Not sure", label: "Not sure", sub: "We'll figure it out together" },
+]
+
+const NOTICE_OPTIONS: QualifyingOption[] = [
+  { value: "No", label: "No notices" },
+  { value: "Yes — IRS", label: "Yes — from the IRS" },
+  { value: "Yes — state", label: "Yes — from my state" },
+  { value: "Yes — both", label: "Yes — both" },
+]
+
+const CPA_STATUS_OPTIONS: QualifyingOption[] = [
+  { value: "No one currently", label: "No one right now", sub: "First time hiring, or between providers" },
+  { value: "Works with a CPA", label: "Yes, a CPA or accountant" },
+  { value: "Works with a bookkeeper", label: "Yes, a bookkeeper" },
+  { value: "Self-prepared", label: "I do it myself", sub: "TurboTax, spreadsheets, etc." },
+]
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -299,6 +342,14 @@ export default function IntakeWizardPage() {
         // as `business_summary` — extracting biz facts from it is
         // ALFRED's enrichment job.
         questions_or_concerns: state.situation.trim() || undefined,
+
+        // Qualifying answers. The API, parser, storage columns and team
+        // email have accepted these all along — this form is simply the
+        // first one to ask.
+        behind_on_filings: state.behind_on_filings || undefined,
+        pending_tax_notices: state.pending_tax_notices || undefined,
+        current_cpa_status: state.current_cpa_status || undefined,
+        cpa_switch_reason: state.cpa_switch_reason.trim() || undefined,
 
         referral_source: state.referral_source.trim() || undefined,
         preferred_team_member:
@@ -936,7 +987,93 @@ function buildSteps(state: FormState): Step[] {
       ),
     },
 
-    // 9 — Referral + preferred teammate (optional)
+    // 9 — Qualifying questions (all optional)
+    //
+    // Deliberately placed AFTER the freeform "how can we help" step:
+    // by this point the prospect has already told their story, so
+    // these read as clarifying follow-ups rather than as a screening
+    // gate at the door. Every one is skippable — the CTA copy says so
+    // — because a prospect who is two years behind is exactly the one
+    // most likely to abandon a form that feels like an interrogation.
+    {
+      id: "qualifying",
+      alfred:
+        "Straight answers help me size things up before the call. Skip anything you&apos;d rather discuss live.",
+      render: ({ state, update }) => (
+        <StepShell
+          eyebrow="Your situation"
+          title="A few quick specifics"
+          subtitle="All optional — but each one sharpens the estimate we bring to your call."
+        >
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium text-foreground">
+              Are your tax filings up to date?
+            </p>
+            {FILING_STATUS_OPTIONS.map((opt) => (
+              <RadioCard
+                key={opt.value}
+                name="behind_on_filings"
+                value={opt.value}
+                label={opt.label}
+                description={opt.sub}
+                checked={state.behind_on_filings === opt.value}
+                onChange={() => update("behind_on_filings", opt.value)}
+              />
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium text-foreground">
+              Any open letters or notices from the IRS or your state?
+            </p>
+            {NOTICE_OPTIONS.map((opt) => (
+              <RadioCard
+                key={opt.value}
+                name="pending_tax_notices"
+                value={opt.value}
+                label={opt.label}
+                checked={state.pending_tax_notices === opt.value}
+                onChange={() => update("pending_tax_notices", opt.value)}
+              />
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium text-foreground">
+              Who handles this for you today?
+            </p>
+            {CPA_STATUS_OPTIONS.map((opt) => (
+              <RadioCard
+                key={opt.value}
+                name="current_cpa_status"
+                value={opt.value}
+                label={opt.label}
+                description={opt.sub}
+                checked={state.current_cpa_status === opt.value}
+                onChange={() => update("current_cpa_status", opt.value)}
+              />
+            ))}
+          </div>
+
+          {/* Conditional: only ask why they're leaving if there's
+              someone to leave. Asking a first-time filer "why are you
+              switching?" is the kind of non-sequitur that erodes trust
+              in the rest of the form. */}
+          {state.current_cpa_status === "Works with a CPA" ||
+          state.current_cpa_status === "Works with a bookkeeper" ? (
+            <Textarea
+              label="What's prompting the change?"
+              value={state.cpa_switch_reason}
+              onChange={(v) => update("cpa_switch_reason", v)}
+              placeholder="e.g. They retired, responsiveness, we outgrew them, price…"
+              rows={3}
+            />
+          ) : null}
+        </StepShell>
+      ),
+    },
+
+    // 10 — Referral + preferred teammate (optional)
     {
       id: "referral",
       alfred: "All optional — skip if you&apos;d rather we pick.",
@@ -958,7 +1095,7 @@ function buildSteps(state: FormState): Step[] {
       ),
     },
 
-    // 10 — Review & submit
+    // 11 — Review & submit
     {
       id: "review",
       cta: "Submit intake",
@@ -1564,6 +1701,9 @@ function ReviewStep({ state }: { state: FormState }) {
       label: "Revenue range",
       value: state.business_revenue_range || null,
     },
+    { label: "Filings", value: state.behind_on_filings || null },
+    { label: "Open notices", value: state.pending_tax_notices || null },
+    { label: "Currently with", value: state.current_cpa_status || null },
     { label: "Referred by", value: state.referral_source || null },
     {
       label: "Preferred teammate",

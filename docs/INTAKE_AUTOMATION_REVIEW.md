@@ -358,7 +358,7 @@ gets made twice or, worse, once.
 
 ## 3a. Implementation status
 
-Phases 1 and 2 are implemented on `claude/intake-form-automation-f3y37k`.
+Phases 1–3 are implemented on `claude/intake-form-automation-f3y37k`.
 
 | # | Finding | Status |
 | --- | --- | --- |
@@ -368,9 +368,17 @@ Phases 1 and 2 are implemented on `claude/intake-form-automation-f3y37k`.
 | F4 | Open a Deal on intake | ✅ done |
 | F5 | `notified_at` stamped on a failed send | ✅ fixed |
 | F6 | Discovery Meeting allows phone | ⚠️ Calendly config — **needs a human** |
-| F7 | No observability on link failures | ✅ done |
+| F7 | No observability on link failures | ✅ done + surfaced on `/intake` |
 | F8 | Stale `WEBSITE_INTEGRATION.md` | ✅ rewritten |
-| F9–F12 | Qualifying questions, auto work item, form consolidation, triage adoption | ⏳ not started |
+| F9 | Four qualifying fields nothing collected | ✅ added to the wizard |
+| F10 | Karbon work item was manual-only | ✅ auto-fires on qualify |
+| F11 | Triage queue unused (1 of 100 worked) | ⚠️ **needs a decision** |
+| F12 | Two live intake forms | ⚠️ **needs a decision** |
+
+Plus one addition not in the original list: a **48-hour booking nudge**
+(`/api/cron/intake-booking-nudge`, weekdays 10:00 ET) — one reminder, ever, to
+prospects who got a link and didn't book. Skipped if they book, if a teammate
+has already moved the lead off `new`, or if the intake is over 14 days old.
 
 **What was built**
 
@@ -394,6 +402,31 @@ Phases 1 and 2 are implemented on `claude/intake-form-automation-f3y37k`.
 - `next.config.mjs` — `connect-src` on `/embed/*` was `'self'` only, which
   silently blocked the intake wizard's own address autocomplete (Photon) and
   ZIP lookup (Zippopotam). Both hosts added, along with Calendly.
+- `scripts/387_intake_booking_nudge.sql` + `lib/intake/booking-nudge.ts` +
+  `app/api/cron/intake-booking-nudge/route.ts` — the 48-hour reminder.
+  **Applied to production.**
+- `lib/karbon/intake-work-item-flow.ts` — the resolve → create → cross-link
+  sequence, extracted from the button's route so the new auto-trigger shares it.
+  Reports precondition gaps as `skipped` (the button turns those into
+  actionable 422s; the auto-trigger just logs). The route went 313 → 89 lines.
+- `app/api/jotform/intake/[id]/route.ts` — `lead_status → qualified` now
+  auto-creates the Karbon work item via `after()`. The trigger is qualification
+  rather than "every intake" on purpose: qualifying is an explicit human
+  judgment that the prospect is real, so the automation inherits that intent
+  instead of littering Karbon with a work item per tyre-kicker.
+- `app/embed/intake/page.tsx` — new qualifying step (filings status, open
+  IRS/state notices, who handles it today, and a conditional "what's prompting
+  the change?"). All optional, placed *after* the freeform step so they read as
+  follow-ups rather than a screening gate.
+- `lib/jotform/fee-estimate.ts` — the estimator now receives those answers,
+  and is told to price back-filings and notice resolution as their own line
+  items. It was also being passed `business_tax_classification: null` and
+  `business_employee_count: null` as hardcoded nulls despite both columns being
+  populated — now wired through.
+- `app/api/jotform/intake/webhook-status/route.ts` +
+  `components/intake/jotform-status-card.tsx` — 30-day counters for intakes,
+  unlinked intakes, link errors and awaiting-booking, with an amber banner when
+  anything is unlinked. This is the standing signal that would have caught F2.
 
 **Needs a human decision**
 
@@ -405,7 +438,21 @@ Phases 1 and 2 are implemented on `claude/intake-form-automation-f3y37k`.
   `intake.discovery_booking_url` row in `firm_settings` if that's the wrong
   default.
 - The prospect confirmation email copy — it's the first thing a new lead reads
-  from the firm and should get a partner's eye before it goes live.
+  from the firm and should get a partner's eye before it goes live. Same for
+  the 48-hour nudge in `lib/intake/booking-nudge.ts`.
+- **F12 — two live intake forms.** Both are still enabled and accepting
+  submissions. Everything built above landed on the shared pipeline, so both
+  benefit, but the *forms themselves* are separate: the qualifying questions
+  (F9) exist only on the Hub's native wizard, and the Jotform one will keep
+  producing intakes without them. Retiring one is a business call — it's a
+  live client-facing surface, so I haven't touched it. When you decide:
+  disable `jotform_forms.is_enabled` for `242306172162144` and unregister its
+  webhook, or point motta.cpa away from `/embed/intake`.
+- **F11 — is the triage queue the product, or is the email?** 1 of 100 intakes
+  in the last 12 months had its `lead_status` moved off `new`. Worth noting the
+  new work-item automation is *triggered by* qualification, so it only pays off
+  if people start using the queue. If the team is never going to work it, the
+  trigger should move to something they do touch.
 
 ---
 

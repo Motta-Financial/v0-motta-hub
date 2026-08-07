@@ -451,6 +451,8 @@ export async function runIntakePostProcessing(
         "business_summary",
         "business_revenue_range",
         "business_situation",
+        "business_tax_classification",
+        "business_employee_count",
         "service_focus",
         "services_requested",
         "entity_types",
@@ -499,6 +501,8 @@ export async function runIntakePostProcessing(
     business_summary: string | null
     business_revenue_range: string | null
     business_situation: string | null
+    business_tax_classification: string | null
+    business_employee_count: string | null
     service_focus: string | null
     services_requested: string[] | null
     entity_types: string[] | null
@@ -725,11 +729,17 @@ export async function runIntakePostProcessing(
           services_requested: submissionRow.services_requested,
           entity_types: submissionRow.entity_types,
           business_revenue_range: submissionRow.business_revenue_range,
-          business_tax_classification: null,
-          business_employee_count: null,
+          // These were hardcoded to null while the columns existed and
+          // were populated — the estimator was being starved of two of
+          // its better pricing signals for no reason.
+          business_tax_classification: submissionRow.business_tax_classification,
+          business_employee_count: submissionRow.business_employee_count,
           business_state: submissionRow.business_state,
           business_summary: submissionRow.business_summary,
           questions_or_concerns: submissionRow.questions_or_concerns,
+          behind_on_filings: submissionRow.behind_on_filings,
+          pending_tax_notices: submissionRow.pending_tax_notices,
+          current_cpa_status: submissionRow.current_cpa_status,
         })
       : Promise.resolve(null),
   ])
