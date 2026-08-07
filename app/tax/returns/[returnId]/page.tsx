@@ -3,16 +3,21 @@
 /**
  * Return-data viewer — /tax/returns/[returnId]?clientId=...
  *
- * Read-only browser over the Phase 1 export snapshot for one return:
- * engagement context, snapshot metadata (version / e-file items /
- * series versions), and the flattened field cells grouped by series.
- * A "Refresh from ProConnect" button forces a fresh export via
+ * Browser over the Phase 1 export snapshot for one return: engagement
+ * context, snapshot metadata (version / e-file items / series versions),
+ * and the flattened field cells grouped by series. A "Refresh from
+ * ProConnect" button forces a fresh export via
  * POST /api/proconnect/returns/[returnId]/data.
  *
- * While Intuit has the Phase 1 data endpoints blocked (403
- * scope_missing) this page shows the blocked empty-state instead of
- * silently rendering nothing — same messaging as the /tax/settings
- * connection card.
+ * Each cell row opens `FieldEditSheet` for a single-field write —
+ * dryRun, then an explicit confirm, then a commit whose success is
+ * judged on the server's post-write verification and never on Intuit's
+ * own summary counts. See the sheet for why.
+ *
+ * The 403 empty-state is still rendered, but it no longer means "Intuit
+ * has us blocked" — that was a wrong URL, resolved 2026-07-27 (Export)
+ * and 2026-08-07 (Import). A 403 here now means a genuine scope or
+ * ownership problem, and the messaging matches the /tax/settings card.
  */
 
 import { use, useState } from "react"
