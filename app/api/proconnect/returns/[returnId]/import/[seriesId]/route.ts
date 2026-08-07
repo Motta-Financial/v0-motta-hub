@@ -25,9 +25,15 @@
  * Audit policy:
  *   We record EVERY attempt — including dry runs and validation failures
  *   that never hit the network — into proconnect_import_jobs, with one
- *   row per rejected entry in proconnect_import_entry_results. After a
- *   successful non-dry-run write we trigger a fresh export so the local
- *   snapshot reflects what ProConnect now thinks the return contains.
+ *   row per rejected entry in proconnect_import_entry_results.
+ *
+ * Post-write verification:
+ *   A commit re-exports the return and checks that each entry actually
+ *   landed, because Intuit reports entries it did not apply as applied
+ *   (open defect, confirmed 2026-08-07 — see verifyEntriesLanded). A job
+ *   with unlanded entries is recorded as "partial", never "succeeded",
+ *   and the per-entry addresses come back on `verification.unlanded`.
+ *   That same Export doubles as the snapshot refresh.
  */
 
 import { NextRequest, NextResponse } from "next/server"
@@ -36,9 +42,11 @@ import { requireLeadership } from "@/lib/auth/require-leadership"
 import {
   importSeries,
   exportReturnData,
+  verifyEntriesLanded,
   MAX_ENTRIES_PER_IMPORT,
   type ImportEntry,
   type ImportRequest,
+  type ImportVerification,
 } from "@/lib/proconnect/data"
 import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
 
@@ -240,15 +248,45 @@ export async function POST(
   }
 
   const seriesResult = result.data.results?.[0] ?? null
+
+  // ------------------------------------------------------------------ verify it landed
+  // Intuit defect 3 (open as of 2026-08-07): the API reports entries it did
+  // not apply as applied — every clear attempt returned totalImported:1 with
+  // the cell unchanged. So a commit is not "succeeded" because Intuit said
+  // so; it is succeeded because a fresh Export agrees. Dry runs skip this,
+  // having changed nothing by definition.
+  let verification: ImportVerification | null = null
+  if (!dryRun) {
+    const fresh = await exportReturnData(body.clientId, returnId)
+    if (fresh.ok) {
+      verification = verifyEntriesLanded(
+        fresh.data,
+        seriesId,
+        body.entries,
+        seriesResult?.errors ?? [],
+      )
+      // Keep the local mirror consistent while we have the export in hand.
+      await persistReturnSnapshot(sb, body.clientId, returnId, fresh.data).catch((err) =>
+        console.error("[v0] post-import snapshot persist failed", err),
+      )
+    } else {
+      console.error("[v0] post-import verification export failed", fresh.error)
+    }
+  }
+
+  // An unverified commit must not read as a clean one. Both a per-entry
+  // rejection and an entry that silently failed to land are "partial".
+  const hasUnlanded = (verification?.unlanded.length ?? 0) > 0
   await sb
     .from("proconnect_import_jobs")
     .update({
-      status: result.data.summary.totalErrors > 0 ? "partial" : "succeeded",
+      status: result.data.summary.totalErrors > 0 || hasUnlanded ? "partial" : "succeeded",
       http_status: 200,
       imported_count: result.data.summary.totalImported,
       error_count: result.data.summary.totalErrors,
       response_version: seriesResult?.version ?? null,
-      response_summary: result.data.summary,
+      // Addresses only — verifyEntriesLanded never returns values (§8).
+      response_summary: { ...result.data.summary, verification },
       response_raw: result.data,
       intuit_tid: result.intuitTid ?? null,
       completed_at: new Date().toISOString(),
@@ -274,23 +312,12 @@ export async function POST(
     if (errInsErr) console.error("[v0] failed to write entry-results rows", errInsErr)
   }
 
-  // After a real (non-dry-run) write that changed at least one cell,
-  // refresh the snapshot so the local view is consistent. We don't
-  // block the response on this — a small staleness window is fine.
-  if (!dryRun && result.data.summary.totalImported > 0) {
-    refreshSnapshot(body.clientId, returnId).catch((err) =>
-      console.error("[v0] post-import snapshot refresh failed", err),
-    )
-  }
-
-  return NextResponse.json({ jobId, ...result.data, intuitTid: result.intuitTid })
-}
-
-// Background snapshot refresher — shared implementation in
-// lib/proconnect/snapshots.ts (also used by the webhook receiver and
-// the data route).
-async function refreshSnapshot(clientId: string, returnId: string) {
-  const result = await exportReturnData(clientId, returnId)
-  if (!result.ok) return
-  await persistReturnSnapshot(admin(), clientId, returnId, result.data)
+  // The snapshot was already refreshed above, as a side effect of the
+  // verification export — one Export serves both.
+  return NextResponse.json({
+    jobId,
+    ...result.data,
+    verification,
+    intuitTid: result.intuitTid,
+  })
 }
