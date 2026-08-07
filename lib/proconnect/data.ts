@@ -22,14 +22,25 @@
  * NOTE the asymmetry — Import does NOT use `oii-client/`. Don't "tidy up" the
  * two paths to match; the gateway routes them differently.
  *
- * Reference: ProConnect Open API Doc — Phase 1 (V2).
+ * Export and Import also live on DIFFERENT HOSTS (doc v3 §3). Sending an
+ * Import to the Export host answers 403 AuthorizationFailed — the same
+ * indistinguishable-from-unprovisioned failure the `oii-client/` omission
+ * produced on Export. Verified against the sentinel return 2026-08-07:
+ * import host + no oii-client → 200; every other combination → 403.
+ *
+ * Reference: ProConnect Open API Doc — Phase 1 (external view) v3.
  */
 
 import { getAccessToken, getRealmId } from "./oauth"
 import { acquireRateLimitSlot, newIntuitTid } from "./rate-limit"
 
+/** Data Service / Export API. */
 const TAX_RETURNS_BASE_URL =
   process.env.PROCONNECT_TAX_RETURNS_BASE_URL || "https://protaxdata.api.intuit.com"
+
+/** Import Service / Import API — a separate host (doc v3 §3). */
+const IMPORT_BASE_URL =
+  process.env.PROCONNECT_IMPORT_BASE_URL || "https://protaxonlineimport.api.intuit.com"
 
 // Spec caps a single import at 500 entries. We split anything larger.
 export const MAX_ENTRIES_PER_IMPORT = 500
@@ -294,12 +305,12 @@ function sleep(ms: number) {
 
 async function authedRequest<T>(
   path: string,
-  init: { method: "GET" | "POST"; body?: unknown }
+  init: { method: "GET" | "POST"; body?: unknown; baseUrl?: string }
 ): Promise<Result<T>> {
   const accessToken = await getAccessToken()
   const realmId = getRealmId()
 
-  const url = `${TAX_RETURNS_BASE_URL}${path}`
+  const url = `${init.baseUrl ?? TAX_RETURNS_BASE_URL}${path}`
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     Accept: "application/json",
@@ -415,7 +426,7 @@ export async function importSeries(
 
   return authedRequest<ImportResponse>(
     `/v2/clients/${encodeURIComponent(clientId)}/returns/${encodeURIComponent(returnId)}/import/series/${encodeURIComponent(seriesId)}`,
-    { method: "POST", body: payload }
+    { method: "POST", body: payload, baseUrl: IMPORT_BASE_URL }
   )
 }
 

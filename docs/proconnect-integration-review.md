@@ -77,7 +77,7 @@ The duplicate `v0-motta-hub` Vercel project runs the same `vercel.json` crons **
 | `GET /v1/custom-status` | ✅ Nightly |
 | Webhooks: Client / TaxReturn / TaxReturnWorkStatus, HMAC via `intuit-signature` | ✅ All three handled (was: Client failing, WorkStatus dropped) |
 | Phase 1 return-data **export** (`GET /v2/clients/{c}/returns/{r}/data`) | ✅ API + snapshot tables + webhook-driven refresh (no UI yet) |
-| Phase 1 return-data **import/write-back** (`POST .../import/series/{s}`) | ⚠️ API + audit tables exist (`/api/proconnect/returns/[returnId]/import/[seriesId]`), no UI; use with care |
+| Phase 1 return-data **import/write-back** (`POST .../import/series/{s}`) | ✅ Verified end-to-end 2026-08-07 (own host: `protaxonlineimport.api.intuit.com`, no `oii-client/`). API + audit tables exist (`/api/proconnect/returns/[returnId]/import/[seriesId]`), no UI; use with care — there is still no delete/clear |
 | Engagement **creation** (`POST /v2/clients/oii-client/{id}/returns`) | ❌ Not built — candidate next step for the intake → engagement flow (`prospect_submissions.proconnect_push_status` already exists) |
 | Line-item ingest / PDF generation / e-file triggering | 🚫 Not supported by the ProConnect API (per docs) |
 

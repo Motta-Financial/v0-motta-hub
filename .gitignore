@@ -33,3 +33,8 @@ next-env.d.ts
 *allseriescodemappings*.csv
 ind2025-catalog.csv
 proconnect-catalog*.csv
+
+# Sentinel-diff baselines — raw Export dumps of the sentinel return.
+# Field VALUES, and this repo is public. Regenerate with
+# `scripts/376-retest-intuit-import-defects.ts survey`.
+scripts/.sentinel-baseline-*.json
