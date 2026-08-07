@@ -113,7 +113,7 @@ async function main() {
   loadEnv()
   const { cmd, opts } = parseArgs()
   const returnId = (opts["return"] as string) || SENTINEL_RETURN_ID
-  if (!["survey", "screens", "shape", "paths", "history", "probe", "write", "clear"].includes(cmd)) {
+  if (!["survey", "screens", "shape", "paths", "history", "selftest", "probe", "write", "clear"].includes(cmd)) {
     console.error(
       "usage: survey|screens|shape|paths|history|probe|write|clear [--return <id>] " +
         "[--grep <text>] [--series <sid>] [--i-understand-this-writes]",
@@ -148,6 +148,7 @@ async function main() {
   if (cmd === "shape") return shape(clientId, returnId, String(opts["series"] ?? ""))
   if (cmd === "paths") return paths(sb, clientId, returnId)
   if (cmd === "history") return history(sb)
+  if (cmd === "selftest") return selftest(clientId, returnId)
   if (cmd === "write" || cmd === "clear") {
     // Both gates the API route enforces, re-implemented here because this
     // script talks to Intuit directly. Fails closed on each.
@@ -414,6 +415,47 @@ async function rawImport(
 }
 
 /**
+ * Read-only check of verifyEntriesLanded() against real Export data. The
+ * sentinel return is the ideal fixture: s52/p25/c800 holds the probe text
+ * that defect 3 refused to clear, so a "clear" of it must be reported as
+ * clear_ignored — the exact case the helper exists to catch.
+ */
+async function selftest(clientId: string, returnId: string) {
+  await refreshTokenServerSide()
+  const { exportReturnData, verifyEntriesLanded } = await import("../lib/proconnect/data")
+  const exp = await exportReturnData(clientId, returnId)
+  if (!exp.ok) {
+    console.error(`export failed: ${exp.error.kind} ${exp.error.status}`)
+    process.exit(1)
+  }
+  const { seriesId, ...addr } = TARGET
+  const cases: Array<[string, any[], string | null]> = [
+    ["value that IS present → landed", [{ ...addr, desc: TARGET_TEXT }], null],
+    ["clear of a value that persisted → clear_ignored", [{ ...addr }], "clear_ignored"],
+    ["empty-string clear → clear_ignored", [{ ...addr, desc: "" }], "clear_ignored"],
+    ["wrong text at a real address → value_mismatch", [{ ...addr, desc: "NOT WHAT IS THERE" }], "value_mismatch"],
+    ["address that doesn't exist → absent", [{ ...addr, prefixId: "p99", desc: "x" }], "absent"],
+    ["rejected entries are skipped, not counted", [{ ...addr, desc: "NOT WHAT IS THERE" }], null],
+  ]
+
+  let failed = 0
+  cases.forEach(([label, entries, expected], i) => {
+    // The last case passes the entry in as already-rejected by Intuit.
+    const rejected = i === cases.length - 1 ? [{ ...addr, errorDetails: [] }] : []
+    const v = verifyEntriesLanded(exp.data, seriesId, entries as any, rejected as any)
+    const got = v.unlanded[0]?.reason ?? null
+    const ok = got === expected && (expected !== null || v.landed === v.checked)
+    if (!ok) failed++
+    console.log(
+      `  ${ok ? "PASS" : "FAIL"}  ${label}\n` +
+        `        checked=${v.checked} landed=${v.landed} reason=${got ?? "(none)"} expected=${expected ?? "(none)"}`,
+    )
+  })
+  console.log(failed ? `\n${failed} case(s) FAILED` : "\nall cases passed")
+  if (failed) process.exit(1)
+}
+
+/**
  * Every Import attempt the Hub has ever made, from the audit table. Answers
  * "has this API ever returned anything but 403 for us?" — which decides
  * whether a 403 today is a regression or the standing state.
@@ -604,6 +646,42 @@ async function probe(sb: any, clientId: string, returnId: string) {
   const control = await shot("s100")
   const treatments = []
   for (const sid of mSeries) treatments.push(await shot(sid))
+
+  // Stronger test when the return actually has a populated M-series cell:
+  // echo its CURRENT value back as a dry run. A clean result proves the
+  // whole path works on a real M address, not just that routing resolves.
+  // Echoing the existing value means even a hypothetical stray commit is a
+  // no-op overwrite of identical data.
+  for (const sid of mSeries) {
+    const prefixes = Object.keys(map[sid] ?? {})
+    if (!prefixes.length) continue
+    const prefixId = prefixes[0]
+    const codeId = Object.keys(map[sid][prefixId])[0]
+    const suffixId = Object.keys(map[sid][prefixId][codeId])[0]
+    const cell: any = map[sid][prefixId][codeId][suffixId]
+    const entry: Record<string, unknown> = { prefixId, codeId, suffixId }
+    if (cell.val != null) entry.val = String(cell.val)
+    if (cell.desc != null) entry.desc = String(cell.desc)
+    if (cell.tsj != null) entry.tsj = cell.tsj
+
+    const res = await rawImport(clientId, returnId, sid, {
+      version: getSeriesVersion(ret, sid),
+      dryRun: true,
+      entries: [entry],
+    })
+    const clean = res.status === 200 && (res.body?.summary?.totalErrors ?? 1) === 0
+    console.log(
+      `  REAL M-CELL ${sid}/${prefixId}/${codeId}/${suffixId} (value echoed, redacted) → HTTP ${res.status}`,
+    )
+    console.log(`     ${JSON.stringify(res.body?.summary ?? res.body).slice(0, 300)}`)
+    verdict(
+      `defect 2 (${sid}, real address)`,
+      clean ? true : false,
+      clean
+        ? "a valid M-series entry validated clean end-to-end — M-screens are importable"
+        : `rejected: ${JSON.stringify(res.body?.results?.[0]?.errors ?? res.body).slice(0, 300)}`,
+    )
+  }
 
   const sameShape = (a: any, b: any) => a.status === b.status && a.entryErrors > 0 === b.entryErrors > 0
   for (const t of treatments) {

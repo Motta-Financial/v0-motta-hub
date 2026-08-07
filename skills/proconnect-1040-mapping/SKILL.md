@@ -226,7 +226,7 @@ two are not.**
 | # | Defect | Status 2026-08-07 | Evidence |
 |---|---|---|---|
 | 1 | Hard cap of **20 instances for dispositions** | ✅ **FIXED** | A dry run of 25 disposition instances (s52 `p1`…`p25`) validated clean, and a real commit at `s52/p25/c800` returned `importedCount: 1`. Instance 25 exists on the return. |
-| 2 | **M-screens are not importable** | ✅ **FIXED (routing)** | `s100M` and `s200M` now resolve: both answer `INVALID_CODE — Code 'c999999999' is not valid for series 's100M'`, i.e. the series was recognised and the request reached field validation, identical in shape to the numeric control `s100`. Not a full end-to-end write — see the caveat below. |
+| 2 | **M-screens are not importable** | ✅ **FIXED** | Two independent checks. Routing: `s100M`/`s200M` answer `INVALID_CODE — Code 'c999999999' is not valid for series 's100M'`, identical in shape to the numeric control `s100`, so the series resolves. End-to-end: echoing a real populated M cell (`s200M/p0/c11/x1000`) back as a dry run returned `totalImported: 1, totalErrors: 0`. |
 | 3 | **No delete or clear** | ❌ **STILL OPEN** | Five clear shapes tried against a populated cell — `desc:""`, `desc:null`, `val:""`, `val:null`, and omitting the value sub-field entirely. All five returned HTTP 200 with `importedCount: 1`, and the value was unchanged after each. |
 | 4 | **API-written flag not set** | ❌ **STILL OPEN** | See the `isDetailImport` note above — the API-written cell came back with no `importSource` key at all. |
 
@@ -236,11 +236,12 @@ two are not.**
 > return now matches what you sent will be wrong whenever the entry was a clear. Diff
 > against a fresh Export instead.
 
-> **Defect 2's caveat: routing is fixed, a write is unproven.** The M-series accept a
-> seriesId in the path now, but the field catalog Intuit supplied contains **zero**
-> M-series rows (748 Federal series, all `^s\d+$`), so we have no valid M code to write.
-> A successful M-screen import stays untested until Intuit ships M rows in the catalog —
-> worth putting on the next call.
+> **M-screens import fine but are undocumented.** Defect 2 is closed, yet the field
+> catalog Intuit supplied contains **zero** M-series rows (748 Federal series, all
+> `^s\d+$`) while live returns carry `s100M` and `s200M` cells. So we can write to an M
+> address we've already observed in an Export, but we don't know what any M code *means*
+> and can't discover new ones. That's a catalog-delivery gap, not an API bug — a separate
+> ask for the next call.
 
 Defect 3 remains the reason test writes belong on a disposable copy of a return rather
 than on anything real: if a write goes wrong, the recovery is deleting the return, not
@@ -299,6 +300,17 @@ addresses (§8).
 The 6.2% and 1.45% ratio checks are worth reusing as a labeling technique: statutory
 rates let you confirm a numeric code's identity from a single real return without
 entering anything.
+
+### Schedule 1 / Schedule 3 inputs — see `form_1040_line_inputs`
+
+Sentinel round 4 (values `114001`–`114009`) labeled the Schedule 1 and Schedule 3 inputs
+that roll up into 1040 lines 8, 10 and 20. Those aren't 1040-face lines, so they live in
+**`form_1040_line_inputs`** (verified 2026-08-05, PR #328), not in
+`form_1040_proconnect_map` and not duplicated here — a hand-copy would drift.
+
+Sentinel `114003` (alimony *paid*, Sch 1 line 19a) never landed: the field is an
+expandable detail table demanding a recipient SSN. Still unobserved — do **not** add it
+from catalog evidence alone.
 
 ### Unconfirmed — do not treat as mappings
 

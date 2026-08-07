@@ -466,6 +466,106 @@ export function flattenSeriesMap(data: SeriesMap | undefined): FlatCell[] {
   return out
 }
 
+// ---------------------------------------------------------------------------
+// Post-write verification
+//
+// Intuit defect 3 (open as of 2026-08-07): an entry that the API cannot apply
+// is still reported as applied. Every attempt to clear a value came back
+// `{"totalImported":1,"totalErrors":0}` with a bumped series version and the
+// cell unchanged. So `summary.totalImported` is NOT evidence the return now
+// matches what was sent — the only evidence is a fresh Export.
+//
+// Callers that commit must therefore re-export and run the entries through
+// verifyEntriesLanded() before reporting success.
+// ---------------------------------------------------------------------------
+
+export type UnlandedEntry = {
+  prefixId: string
+  codeId: string
+  suffixId: string
+  /**
+   * absent            — the cell doesn't exist in the export at all
+   * value_mismatch    — the cell exists but holds something else
+   * clear_ignored     — we sent an empty/absent value and the old one is still there
+   */
+  reason: "absent" | "value_mismatch" | "clear_ignored"
+}
+
+export type ImportVerification = {
+  checked: number
+  landed: number
+  /** Addresses only — never values (§8). */
+  unlanded: UnlandedEntry[]
+}
+
+/**
+ * Numbers survive the round trip reformatted — "150000" comes back as
+ * "150,000" or "150000.00" depending on the field. Compare numerically when
+ * both sides parse, exactly otherwise.
+ */
+function sameValue(sent: string, got: string): boolean {
+  if (sent === got) return true
+  const a = Number(sent.replace(/,/g, ""))
+  const b = Number(got.replace(/,/g, ""))
+  return Number.isFinite(a) && Number.isFinite(b) && a === b
+}
+
+/**
+ * Check that each entry actually landed, given an Export taken AFTER the
+ * commit. `rejected` is the errors[] array Intuit returned — those entries
+ * are already reported as failures and are skipped here so they aren't
+ * counted twice.
+ */
+export function verifyEntriesLanded(
+  exportData: ReturnExport,
+  seriesId: string,
+  entries: ImportEntry[],
+  rejected: ImportEntryError[] = []
+): ImportVerification {
+  const wasRejected = new Set(
+    rejected.map((e) => `${e.prefixId}/${e.codeId}/${e.suffixId}`)
+  )
+  const series = exportData.data?.[seriesId]
+  const unlanded: UnlandedEntry[] = []
+  let checked = 0
+
+  for (const entry of entries) {
+    const addr = `${entry.prefixId}/${entry.codeId}/${entry.suffixId}`
+    if (wasRejected.has(addr)) continue
+    checked++
+
+    const cell = series?.[entry.prefixId]?.[entry.codeId]?.[entry.suffixId]
+    const at = { prefixId: entry.prefixId, codeId: entry.codeId, suffixId: entry.suffixId }
+
+    // A clear: we sent no value, or an empty one. It landed only if the
+    // cell is now gone or empty. This is the case defect 3 always fails.
+    const sentVal = entry.val
+    const sentDesc = entry.desc
+    const isClear =
+      (sentVal === undefined || sentVal === "") && (sentDesc === undefined || sentDesc === "")
+    if (isClear) {
+      const stillSet =
+        cell != null && ((cell.val != null && cell.val !== "") || (cell.desc != null && cell.desc !== ""))
+      if (stillSet) unlanded.push({ ...at, reason: "clear_ignored" })
+      continue
+    }
+
+    if (cell == null) {
+      unlanded.push({ ...at, reason: "absent" })
+      continue
+    }
+    if (sentVal !== undefined && !sameValue(sentVal, String(cell.val ?? ""))) {
+      unlanded.push({ ...at, reason: "value_mismatch" })
+      continue
+    }
+    if (sentDesc !== undefined && sentDesc !== String(cell.desc ?? "")) {
+      unlanded.push({ ...at, reason: "value_mismatch" })
+    }
+  }
+
+  return { checked, landed: checked - unlanded.length, unlanded }
+}
+
 /**
  * Compute the version stamp for a specific series given a snapshot.
  * Returns null if the series isn't tracked in seriesVersion[]. Pass
