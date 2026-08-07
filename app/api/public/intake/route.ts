@@ -42,6 +42,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "node:crypto"
 import { withPublicCors, jsonWithCors, optionsForCors } from "@/lib/cors"
 import { upsertIntakeSubmission } from "@/lib/jotform/ingest"
+import { listDiscoveryBookingHosts } from "@/lib/intake/booking-link"
+import { createAdminClient } from "@/lib/supabase/server"
 import type { JotformSubmission, JotformAnswer } from "@/lib/jotform/client"
 
 // We keep the runtime explicit: this calls Resend + ALFRED + Karbon
@@ -357,10 +359,35 @@ export const POST = withPublicCors(async (req: NextRequest) => {
     // so the website must use THIS url rather than hardcoding a generic
     // Calendly link. Null only if the pipeline couldn't resolve one —
     // render the plain thank-you in that case.
+    // The host list travels with the response so the confirmation screen
+    // can ask "who would you like to speak with?" before showing any
+    // calendar, without a second round-trip. `booking_url` remains the
+    // default (the prospect's requested teammate, else the firm
+    // round-robin) so a caller that ignores `booking_hosts` still works
+    // exactly as before.
+    let bookingHosts: Awaited<ReturnType<typeof listDiscoveryBookingHosts>>["hosts"] = []
+    if (result.row_id) {
+      try {
+        const listed = await listDiscoveryBookingHosts(createAdminClient(), {
+          submissionId: result.row_id,
+          fullName:
+            [asString(payload.first_name), asString(payload.last_name)]
+              .filter(Boolean)
+              .join(" ") || asString(payload.full_name),
+          email: asString(payload.email),
+        })
+        bookingHosts = listed.hosts
+      } catch (err) {
+        // Non-fatal: the single booking_url below is the important path.
+        console.error("[v0] /api/public/intake host list failed:", err)
+      }
+    }
+
     return jsonWithCors(req, {
       ok: true,
       submission_id: submission.id,
       booking_url: result.booking_url,
+      booking_hosts: bookingHosts,
       contact_id: result.contact_id,
       organization_id: result.organization_id,
     })

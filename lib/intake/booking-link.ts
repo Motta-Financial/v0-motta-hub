@@ -205,3 +205,114 @@ export async function resolveDiscoveryBookingUrl(
     hostName: null,
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Host picker
+ * ───────────────────────────────────────────────────────────────────── */
+
+export interface DiscoveryHost {
+  /** Hub `team_members.id`, when the host has an active connection. */
+  teamMemberId: string | null
+  name: string
+  role: string | null
+  title: string | null
+  avatarUrl: string | null
+  /** Decorated scheduling URL — prefilled and attribution-stamped. */
+  url: string
+  /** True for the firm round-robin entry ("no preference"). */
+  isTeam: boolean
+}
+
+/**
+ * Every person a prospect can book a discovery call with, plus the firm
+ * round-robin.
+ *
+ * ── Why Calendly is the allowlist ───────────────────────────────────
+ * Membership is "has an active Discovery Meeting event type in
+ * Calendly". That is already the firm's own signal for who takes first
+ * meetings — if you shouldn't take them, you don't have the event type.
+ * Deriving it that way means no second config to maintain and no risk of
+ * the Hub offering someone Calendly would reject.
+ *
+ * Two exclusions:
+ *   • `profile_type = 'Team'` becomes the round-robin default rather
+ *     than a named person.
+ *   • The firm's own shared inbox profile (a User-type event type named
+ *     after the firm, e.g. `mottafinancial-info`) is dropped — it is an
+ *     org mailbox, not somebody a prospect can ask for, and it merely
+ *     duplicates the round-robin.
+ *
+ * Slug-less `/d/…` links are excluded for the same reason the single
+ * resolver skips them: they can be single-use or capped, and handing one
+ * to a prospect risks a dead URL by the time they click.
+ *
+ * Names come from the Hub team member when a connection exists (which
+ * also gives role/title/avatar) and fall back to Calendly's own
+ * `profile_name` otherwise — so a teammate who takes discovery calls but
+ * has never authorized the Hub still appears, just without the extras.
+ */
+export async function listDiscoveryBookingHosts(
+  supabase: SupabaseClient,
+  input: BookingLinkInput,
+): Promise<{ hosts: DiscoveryHost[]; defaultUrl: string }> {
+  const config = await getFirmConfig().catch(() => null)
+  const firmName = config?.name ?? "Motta Financial"
+  const fallbackUrl =
+    config?.discoveryBookingUrl || "https://calendly.com/motta-financial/discovery-meeting"
+
+  const [{ data: eventTypes }, { data: connections }] = await Promise.all([
+    supabase
+      .from("calendly_event_types")
+      .select("scheduling_url, profile_name, profile_type, calendly_user_uri, slug, name")
+      .eq("active", true)
+      .ilike("name", DISCOVERY_NAME_PATTERN)
+      .not("scheduling_url", "is", null)
+      .not("slug", "is", null),
+    supabase
+      .from("calendly_connections")
+      .select("calendly_user_uri, team_member_id, team_members(id, full_name, role, title, avatar_url)")
+      .eq("is_active", true),
+  ])
+
+  const byUri = new Map<string, any>()
+  for (const c of connections ?? []) {
+    if (c.calendly_user_uri) byUri.set(c.calendly_user_uri, c.team_members)
+  }
+
+  const hosts: DiscoveryHost[] = []
+  let teamUrl: string | null = null
+
+  for (const et of eventTypes ?? []) {
+    const url = et.scheduling_url as string
+    if (et.profile_type === "Team") {
+      teamUrl = url
+      continue
+    }
+    const profileName = (et.profile_name as string | null)?.trim() || null
+    // Drop the firm's shared inbox profile — an org mailbox, not a person.
+    if (!profileName || profileName.toLowerCase() === firmName.toLowerCase()) continue
+
+    const tm = byUri.get(et.calendly_user_uri as string)
+    hosts.push({
+      teamMemberId: tm?.id ?? null,
+      name: tm?.full_name || profileName,
+      role: tm?.role ?? null,
+      title: tm?.title ?? null,
+      avatarUrl: tm?.avatar_url ?? null,
+      url: decorate(url, input),
+      isTeam: false,
+    })
+  }
+
+  // Stable, de-duplicated, alphabetical. Duplicates are possible when a
+  // teammate owns more than one Discovery-ish event type.
+  const seen = new Set<string>()
+  const deduped = hosts
+    .filter((h) => (seen.has(h.name) ? false : (seen.add(h.name), true)))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  return {
+    hosts: deduped,
+    defaultUrl: decorate(teamUrl ?? fallbackUrl, input),
+  }
+}
