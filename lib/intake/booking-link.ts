@@ -150,14 +150,19 @@ function decorate(baseUrl: string, input: BookingLinkInput): string {
   // field — despite the name it has nothing to do with Salesforce and
   // is the documented way to carry your own record id through a
   // booking. It round-trips into invitee.tracking on the webhook.
-  url.searchParams.set("salesforce_uuid", input.submissionId)
+  //
+  // Only emitted when we actually have an id. `/api/public/booking-hosts`
+  // can be called without one (a standalone "book a call" page has no
+  // intake row), and setting it unconditionally put a meaningless
+  // `salesforce_uuid=` on every link a prospect sees. Harmless — the
+  // webhook's uuid check rejects an empty string — but it's noise in a
+  // user-visible URL and a red herring when debugging attribution.
+  if (input.submissionId) {
+    url.searchParams.set("salesforce_uuid", input.submissionId)
+  }
   url.searchParams.set("utm_source", "hub_intake")
   url.searchParams.set("utm_medium", "intake_form")
   url.searchParams.set("utm_campaign", "discovery_call")
-
-  // Collapse Calendly's own "back to event list" chrome — the prospect
-  // came here to book one specific thing.
-  url.searchParams.set("hide_event_type_details", "0")
 
   return url.toString()
 }
