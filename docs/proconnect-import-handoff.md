@@ -84,26 +84,38 @@ will be wrong. Diff a fresh Export instead. See §2.
 
 ---
 
-# 1. Ship the retest work — DO THIS FIRST
+# 1. Set the write allowlist — the last gap before route-driven commits
 
-Nothing above is deployed. Uncommitted right now:
+**Shipped:** the two-host fix, the harness, and the docs merged in PR #329
+(`b9374b5`, 2026-08-07).
 
+**Still missing: `PROCONNECT_WRITE_ALLOWED_RETURN_IDS` is set in _no_ Vercel
+environment** — not production, preview, or development (verified 2026-08-07 via
+`vercel env ls`). The route's allowlist **fails closed**, so commit-mode imports
+through the Hub are refused with no other symptom. This is why today's six
+commits went through `scripts/376` instead: the harness bypasses the route and
+carries its own hard-coded allowlist.
+
+```bash
+printf 'de74b2b2-ab40-4867-8a2a-d52f1518c58d' | npx vercel@latest env add PROCONNECT_WRITE_ALLOWED_RETURN_IDS production
 ```
- M lib/proconnect/data.ts                  the two-host fix (IMPORT_BASE_URL + baseUrl on authedRequest)
- M skills/proconnect-1040-mapping/SKILL.md endpoints, the 403 rule, defect table
- M docs/proconnect-api-coverage-status.md
- M docs/proconnect-integration-review.md
- ?? scripts/376-retest-intuit-import-defects.ts   the harness — commit it
-```
 
-**Prod Import is still broken until `data.ts` merges** — the deployed build posts
-Import to the Export host and 403s on every call. Branch, PR, merge, confirm the
-Vercel deploy. Consider setting `PROCONNECT_IMPORT_BASE_URL` in Vercel explicitly
-rather than relying on the code default.
+Add `preview` too if you want to exercise commit mode on a preview deploy before
+it reaches production — that's the natural way to test §4. **A redeploy is
+required either way**; Vercel injects env at deploy time, and the PR #329 build
+predates the variable.
 
-Also confirm `PROCONNECT_WRITE_ALLOWED_RETURN_IDS` is set in Vercel and contains
-the sentinel id. It is not in `.env.local`, and it **fails closed** — commit-mode
-imports get refused with no other symptom.
+What works without it: Export, and Import **dry runs** through the route on any
+return — dry runs bypass both write gates. That's the safe half of the pipeline
+and it needs no config.
+
+**Do NOT set `PROCONNECT_IMPORT_BASE_URL`.** An earlier draft of this doc
+suggested it; that was wrong. `PROCONNECT_TAX_RETURNS_BASE_URL` (the Export host)
+is set in no environment either — Export has run off its code default for weeks.
+Setting only the Import one creates a second source of truth that can drift, and
+the drift failure mode is a 403 indistinguishable from deprovisioning: the exact
+trap that cost weeks twice. Both defaults are verified against live 200s. Set
+these only if Intuit moves a host.
 
 ---
 
@@ -223,6 +235,6 @@ Shipped and live; two items stayed open.
 
 ## Suggested order
 
-§1 today (prod Import is broken until it merges) → §2 (small, and §4 depends on
-it) → §3 whenever the next Intuit call lands → §4 → §5 as cleanup. §6 and §7 are
-independent.
+§1 whenever the next deploy goes out (it needs a redeploy anyway, and only §4
+depends on it) → §2 (small, and §4 depends on it) → §3 whenever the next Intuit
+call lands → §4 → §5 as cleanup. §6 and §7 are independent.
