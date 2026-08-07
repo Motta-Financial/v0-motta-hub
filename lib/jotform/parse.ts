@@ -141,14 +141,18 @@ function addressAnswer(a: JotformAnswer | undefined): {
   city: string | null
   state: string | null
   zip: string | null
+  street: string | null
 } {
   const o = jsonAnswer(a)
-  if (!o) return { full: null, city: null, state: null, zip: null }
+  if (!o) return { full: null, city: null, state: null, zip: null, street: null }
   // Jotform address fields: addr_line1, addr_line2, city, state, postal, country
   const city = (o.city as string | undefined)?.trim() || null
   const state = (o.state as string | undefined)?.trim() || null
   const zip = (o.postal as string | undefined)?.trim() || null
-  return { full: o, city, state, zip }
+  const line1 = (o.addr_line1 as string | undefined)?.trim() || null
+  const line2 = (o.addr_line2 as string | undefined)?.trim() || null
+  const street = [line1, line2].filter(Boolean).join(", ") || null
+  return { full: o, city, state, zip, street }
 }
 
 /**
@@ -222,6 +226,19 @@ export type ParsedIntakeFields = {
   pending_tax_notices: string | null
   current_cpa_status: string | null
   cpa_switch_reason: string | null
+
+  // ── Consent (parity with the retired Jotform form) ─────────────────
+  // All three were answered on 220/220 real Jotform submissions, and two
+  // carry real variance — 47 people declined data storage and 38
+  // declined marketing contact. They were only ever kept inside
+  // `raw_answers`; promoting them to columns is what let the Jotform be
+  // retired without losing a documented consent record.
+  terms_accepted: string | null
+  consent_store_data: string | null
+  consent_marketing_contact: string | null
+
+  /** Street line of the business address (`whatIs` / `whatIs82`). */
+  business_street_address: string | null
 }
 
 export function parseIntakeAnswers(answers: AnswerMap): ParsedIntakeFields {
@@ -306,6 +323,15 @@ export function parseIntakeAnswers(answers: AnswerMap): ParsedIntakeFields {
     pending_tax_notices: strAnswer(findByName(answers, "pendingNotices")),
     current_cpa_status: strAnswer(findByName(answers, "currentCpa")),
     cpa_switch_reason: strAnswer(findByName(answers, "switchReason")),
+
+    // Consent. `typeA` is Jotform's Terms & Conditions widget, `canWe49`
+    // the data-storage question and `canWe` the marketing one. The Hub
+    // wizard synthesizes the same slugs so both sources land identically.
+    terms_accepted: strAnswer(findByName(answers, "typeA")),
+    consent_store_data: strAnswer(findByName(answers, "canWe49")),
+    consent_marketing_contact: strAnswer(findByName(answers, "canWe")),
+
+    business_street_address: existingBizAddr.street ?? newBizAddr.street,
   }
 }
 

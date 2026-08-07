@@ -34,6 +34,8 @@ type Status = {
     live_submission_count: number | null
     stored_submission_count: number
     last_synced_at: string | null
+    retired_at?: string | null
+    retired_reason?: string | null
   }
   jotform_api: { ok: boolean; error: string | null }
   webhook: {
@@ -58,6 +60,7 @@ type Status = {
     unlinked_30d: number
     link_errors_30d: number
     awaiting_booking_30d: number
+    retired_form_submissions_30d: number
   }
 }
 
@@ -292,6 +295,25 @@ export function JotformStatusCard({ formId }: { formId?: string } = {}) {
             </ul>
           </div>
         )}
+        {data.form.retired_at && (
+          <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+            <strong className="font-semibold">This form is retired.</strong>{" "}
+            {data.form.retired_reason ??
+              "Superseded by the Hub's native intake form."}{" "}
+            {(data.pipeline?.retired_form_submissions_30d ?? 0) > 0 ? (
+              <span className="text-amber-800">
+                It has still received{" "}
+                {data.pipeline?.retired_form_submissions_30d} submission
+                {data.pipeline?.retired_form_submissions_30d === 1 ? "" : "s"} in
+                the last 30 days — those are being ingested normally, but
+                something is still linking to it. Worth tracking down.
+              </span>
+            ) : (
+              <span>No submissions in the last 30 days.</span>
+            )}
+          </div>
+        )}
+
         {data.deliveries.last_failure_at && data.deliveries.failed_24h > 0 && (
           <div className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">
             <strong className="font-semibold">Last failure</strong> {relativeTime(data.deliveries.last_failure_at)}

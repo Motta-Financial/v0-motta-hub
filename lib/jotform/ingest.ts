@@ -950,11 +950,12 @@ export async function getFormByWebhookToken(token: string): Promise<{
   jotform_form_id: string
   kind: "intake" | "feedback" | "debrief" | "other"
   webhook_secret: string
+  retired_at: string | null
 } | null> {
   const supabase = getServiceClient()
   const { data, error } = await supabase
     .from("jotform_forms")
-    .select("id, jotform_form_id, kind, webhook_secret")
+    .select("id, jotform_form_id, kind, webhook_secret, retired_at")
     .eq("webhook_secret", token)
     .maybeSingle()
   if (error) {
@@ -968,6 +969,7 @@ export async function getFormByWebhookToken(token: string): Promise<{
   return {
     ...data,
     kind: (data.kind as "intake" | "feedback" | "debrief" | "other") ?? "intake",
+    retired_at: (data.retired_at as string | null) ?? null,
   }
 }
 

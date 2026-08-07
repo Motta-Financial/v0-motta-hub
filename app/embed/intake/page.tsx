@@ -170,6 +170,27 @@ interface FormState {
   referral_source: string
   preferred_team_member: string
 
+  // ── Parity with the retired Jotform form ──────────────────────────
+  // Fields the Jotform collected that this wizard originally dropped.
+  // `business_situation` ("Which best describes your situation?") was
+  // answered 117/220, `business_summary` 102/220, `additional_notes`
+  // 53/220 — all real signal the team read.
+  business_street_address: string
+  business_city: string
+  business_zip: string
+  business_situation: string
+  business_summary: string
+  additional_notes: string
+
+  // ── Consent ───────────────────────────────────────────────────────
+  // Answered on 220/220 Jotform submissions, and two of them carry real
+  // variance: 47 people declined data storage and 38 declined marketing
+  // contact. Dropping these would silently start treating every new
+  // prospect as opted in.
+  terms_accepted: boolean
+  consent_store_data: boolean
+  consent_marketing_contact: boolean
+
   // Honeypot — must stay empty.
   website: string
 }
@@ -203,8 +224,28 @@ const INITIAL_STATE: FormState = {
   cpa_switch_reason: "",
   referral_source: "",
   preferred_team_member: "",
+  business_street_address: "",
+  business_city: "",
+  business_zip: "",
+  business_situation: "",
+  business_summary: "",
+  additional_notes: "",
+  terms_accepted: false,
+  // Default ON for the two optional consents — matches the Jotform,
+  // where the overwhelming majority accepted, while leaving the
+  // decline a single click away. Terms stays OFF because acceptance
+  // must be an affirmative act.
+  consent_store_data: true,
+  consent_marketing_contact: true,
   website: "",
 }
+
+const BUSINESS_SITUATION_OPTIONS: QualifyingOption[] = [
+  { value: "I have an existing business", label: "I have an existing business" },
+  { value: "I'm starting a new business", label: "I'm starting a new business", sub: "Formation, entity choice, setup" },
+  { value: "I'm buying or selling a business", label: "I'm buying or selling a business" },
+  { value: "Personal only — no business", label: "No business", sub: "Personal taxes and planning only" },
+]
 
 // Option sets for the qualifying step. Values are stored verbatim on
 // `jotform_intake_submissions` and rendered as-is in the team email, so
@@ -350,6 +391,22 @@ export default function IntakeWizardPage() {
         pending_tax_notices: state.pending_tax_notices || undefined,
         current_cpa_status: state.current_cpa_status || undefined,
         cpa_switch_reason: state.cpa_switch_reason.trim() || undefined,
+
+        // Parity fields carried over from the Jotform.
+        business_situation: state.business_situation || undefined,
+        business_summary: state.business_summary.trim() || undefined,
+        business_street_address: state.business_street_address.trim() || undefined,
+        business_city: state.business_city.trim() || undefined,
+        business_zip: state.business_zip.trim() || undefined,
+        additional_notes: state.additional_notes.trim() || undefined,
+
+        // Consent. Sent as the Jotform's own vocabulary so the 230
+        // historical rows and every new one share one set of values.
+        terms_accepted: state.terms_accepted ? "Accepted" : undefined,
+        consent_store_data: state.consent_store_data ? "I accept" : "I don't accept",
+        consent_marketing_contact: state.consent_marketing_contact
+          ? "I accept"
+          : "I don't accept",
 
         referral_source: state.referral_source.trim() || undefined,
         preferred_team_member:
@@ -987,6 +1044,66 @@ function buildSteps(state: FormState): Step[] {
       ),
     },
 
+    // 8b — Business detail carried over from the Jotform. Only shown to
+    // prospects who indicated a business focus, so a personal-only filer
+    // never sees it.
+    wantsBusiness && {
+      id: "business-detail",
+      alfred:
+        "This is the context I use to research your company before the call — a sentence or two is plenty.",
+      render: ({ state, update }) => (
+        <StepShell
+          eyebrow="Your business"
+          title="A bit more about the business"
+          subtitle="All optional. The Jotform asked these and the team read every one, so they're worth the extra thirty seconds."
+        >
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium text-foreground">
+              Which best describes your situation?
+            </p>
+            {BUSINESS_SITUATION_OPTIONS.map((opt) => (
+              <RadioCard
+                key={opt.value}
+                name="business_situation"
+                value={opt.value}
+                label={opt.label}
+                description={opt.sub}
+                checked={state.business_situation === opt.value}
+                onChange={() => update("business_situation", opt.value)}
+              />
+            ))}
+          </div>
+
+          <Textarea
+            label="Brief summary of the business"
+            value={state.business_summary}
+            onChange={(v) => update("business_summary", v)}
+            placeholder="What you do, who you serve, roughly how long you've been running."
+            rows={4}
+          />
+
+          <Field
+            label="Business street address"
+            value={state.business_street_address}
+            onChange={(v) => update("business_street_address", v)}
+            placeholder="Optional — helps us set up state filings correctly"
+          />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field
+              label="Business city"
+              value={state.business_city}
+              onChange={(v) => update("business_city", v)}
+            />
+            <Field
+              label="Business ZIP"
+              value={state.business_zip}
+              onChange={(v) => update("business_zip", v)}
+            />
+          </div>
+        </StepShell>
+      ),
+    },
+
     // 9 — Qualifying questions (all optional)
     //
     // Deliberately placed AFTER the freeform "how can we help" step:
@@ -1091,6 +1208,52 @@ function buildSteps(state: FormState): Step[] {
             onChange={(v) => update("preferred_team_member", v)}
             placeholder="No preference is fine — we&apos;ll match you up."
           />
+          <Textarea
+            label="Anything else that would help us prepare?"
+            value={state.additional_notes}
+            onChange={(v) => update("additional_notes", v)}
+            placeholder="Deadlines, a prior accountant we should contact, documents you already have…"
+            rows={3}
+          />
+        </StepShell>
+      ),
+    },
+
+    // 10b — Consent. Carried over from the Jotform, where all three were
+    // required and two had real variance (47 of 230 declined data
+    // storage, 38 declined marketing contact). Terms must be an
+    // affirmative act, so it gates the submit; the other two default on
+    // and are one click to decline.
+    {
+      id: "consent",
+      alfred: "Standard housekeeping — and your answers here are honored, not decorative.",
+      validate: (s) =>
+        !s.terms_accepted ? "Please accept the terms and conditions to continue." : null,
+      render: ({ state, update }) => (
+        <StepShell
+          eyebrow="Almost there"
+          title="Permissions"
+          subtitle="You can change any of these later by replying to any email from us."
+        >
+          <CheckboxRow
+            label="I accept the terms and conditions"
+            checked={state.terms_accepted}
+            onChange={(v) => update("terms_accepted", v)}
+          />
+          <CheckboxRow
+            label="Motta may store the information I've provided"
+            checked={state.consent_store_data}
+            onChange={(v) => update("consent_store_data", v)}
+          />
+          <CheckboxRow
+            label="Motta may contact me about products and services"
+            checked={state.consent_marketing_contact}
+            onChange={(v) => update("consent_marketing_contact", v)}
+          />
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Declining the last two won&apos;t stop us helping you — we just won&apos;t
+            add you to anything beyond the conversation you asked for.
+          </p>
         </StepShell>
       ),
     },

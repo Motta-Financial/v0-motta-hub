@@ -274,7 +274,7 @@ Phases A, B and C are implemented on `claude/intake-form-automation-f3y37k`.
 
 | # | Finding | Status |
 | --- | --- | --- |
-| D1 | No debrief linked to its meeting | ⚠️ partly — see below |
+| D1 | No debrief linked to its meeting | ✅ done — reminder + picker |
 | D2 | Zoom recording/summary never reach the form | ✅ done |
 | D3 | Multi work-item is display-only | ✅ done |
 | D4 | No work-item creation from templates | ✅ done |
@@ -300,8 +300,21 @@ Zoom heard, the follow-ups it picked up, and links to **watch the recording**,
 **read the transcript**, and **open the deal in the Hub**. The CTA changes from
 "Submit Debrief" to "Review & submit debrief" when a draft is waiting.
 
-D1 is marked partial because the *other* entry point — clicking "New Debrief"
-from scratch — still has no meeting picker. That's a small follow-up.
+The other entry point is now covered too: opening the form without a meeting
+shows a **"Which meeting was this?"** picker listing recent un-debriefed
+meetings (`/api/debriefs/candidate-meetings`). Picking one sets the link, pulls
+the Zoom draft, and back-fills the date and client.
+
+**Phone and in-person meetings are listed deliberately.** They produce no
+recording so nothing pre-fills — but the firm's rule is a debrief for *every*
+meeting, and a picker that quietly omitted the un-recorded ones would make the
+un-recorded ones the easy ones to skip. A `Recording` badge marks which will
+arrive with a draft, without hiding the rest. The reminder cron already treats
+them the same way: non-video meetings skip the artifact wait entirely and are
+reminded as soon as they end.
+
+A Calendly booking and the Zoom meeting it spawned are de-duplicated in the
+list, so one conversation can't be debriefed twice.
 
 **What was built**
 

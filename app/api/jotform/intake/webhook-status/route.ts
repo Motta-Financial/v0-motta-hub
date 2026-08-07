@@ -33,7 +33,7 @@ export async function GET() {
   //    when we ran the subscribe step).
   const { data: formRow } = await supabase
     .from("jotform_forms")
-    .select("jotform_form_id, title, webhook_url, webhook_subscribed, last_synced_at")
+    .select("jotform_form_id, title, webhook_url, webhook_subscribed, last_synced_at, retired_at, retired_reason")
     .eq("jotform_form_id", INTAKE_FORM_ID)
     .maybeSingle()
 
@@ -115,6 +115,14 @@ export async function GET() {
   //    page teammates already look at. Scoped to 30 days so ancient
   //    pre-fix rows don't permanently redden the card.
   const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  // Submissions still arriving on the retired form. Non-zero means
+  // something out there — an email signature, a QR code, a stale link on
+  // the marketing site — is still sending people to Jotform.
+  const { count: retiredTraffic } = await supabase
+    .from("jotform_intake_submissions")
+    .select("*", { count: "exact", head: true })
+    .eq("jotform_form_id", INTAKE_FORM_ID)
+    .gte("jotform_created_at", since30d)
   const [recentTotal, recentUnlinked, recentLinkErrors, notBooked] = await Promise.all([
     supabase
       .from("jotform_intake_submissions")
@@ -149,6 +157,11 @@ export async function GET() {
       live_submission_count: jotformForm?.count ?? null,
       stored_submission_count: totalRows.count ?? 0,
       last_synced_at: formRow?.last_synced_at ?? null,
+      // Retired means "no longer offered", not "rejected" — the receiver
+      // still ingests so a stale link can't drop a real prospect. The
+      // count below is what tells us whether anything still points here.
+      retired_at: formRow?.retired_at ?? null,
+      retired_reason: formRow?.retired_reason ?? null,
     },
     jotform_api: {
       ok: jotformError === null,
@@ -175,6 +188,7 @@ export async function GET() {
       unlinked_30d: recentUnlinked.count ?? 0,
       link_errors_30d: recentLinkErrors.count ?? 0,
       awaiting_booking_30d: notBooked.count ?? 0,
+      retired_form_submissions_30d: retiredTraffic ?? 0,
     },
   })
 }

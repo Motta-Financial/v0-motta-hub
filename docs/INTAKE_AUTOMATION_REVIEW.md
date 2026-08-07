@@ -373,7 +373,7 @@ Phases 1–3 are implemented on `claude/intake-form-automation-f3y37k`.
 | F9 | Four qualifying fields nothing collected | ✅ added to the wizard |
 | F10 | Karbon work item was manual-only | ✅ auto-fires on qualify |
 | F11 | Triage queue unused (1 of 100 worked) | ⚠️ **needs a decision** |
-| F12 | Two live intake forms | ⚠️ **needs a decision** |
+| F12 | Two live intake forms | ✅ Jotform retired |
 
 Plus one addition not in the original list: a **48-hour booking nudge**
 (`/api/cron/intake-booking-nudge`, weekdays 10:00 ET) — one reminder, ever, to
@@ -440,14 +440,11 @@ has already moved the lead off `new`, or if the intake is over 14 days old.
 - The prospect confirmation email copy — it's the first thing a new lead reads
   from the firm and should get a partner's eye before it goes live. Same for
   the 48-hour nudge in `lib/intake/booking-nudge.ts`.
-- **F12 — two live intake forms.** Both are still enabled and accepting
-  submissions. Everything built above landed on the shared pipeline, so both
-  benefit, but the *forms themselves* are separate: the qualifying questions
-  (F9) exist only on the Hub's native wizard, and the Jotform one will keep
-  producing intakes without them. Retiring one is a business call — it's a
-  live client-facing surface, so I haven't touched it. When you decide:
-  disable `jotform_forms.is_enabled` for `242306172162144` and unregister its
-  webhook, or point motta.cpa away from `/embed/intake`.
+- **F12 — the Jotform intake form is retired** (migration 390), gated on a
+  parity test. One manual step remains that no code here can do: **unpublish
+  or redirect the form inside the Jotform account itself**. Until that
+  happens the URL stays live, and the `/intake` card will show a count of
+  any submissions still arriving on it.
 - **F11 — is the triage queue the product, or is the email?** 1 of 100 intakes
   in the last 12 months had its `lead_status` moved off `new`. Worth noting the
   new work-item automation is *triggered by* qualification, so it only pays off
