@@ -207,10 +207,15 @@ export async function computeClientProfile(
     firstName = c.first_name
     lastName = c.last_name
   } else {
+    // NOTE: `organizations` has no `tags`, `is_prospect` or
+    // `legacy_motta_client_id` column. Naming any of them here makes
+    // PostgREST reject the whole select, which made `o` null and returned
+    // early — so NO organization could ever get a profile row. That is why
+    // client_profile_summaries held 1 row (a contact) for 2,191 clients.
     const { data: o } = await supabase
       .from("organizations")
       .select(
-        "id, name, legal_name, entity_type, primary_email, phone, city, state, status, karbon_organization_key, user_defined_identifier, tags",
+        "id, name, legal_name, entity_type, primary_email, phone, city, state, status, karbon_organization_key, user_defined_identifier",
       )
       .eq("id", clientId)
       .single()
@@ -224,7 +229,7 @@ export async function computeClientProfile(
     status = o.status
     karbonOrganizationKey = o.karbon_organization_key
     userDefinedIdentifier = o.user_defined_identifier
-    tags = Array.isArray(o.tags) ? o.tags : []
+    tags = [] // organizations carries no tags column
     businessName = displayName
   }
 
@@ -273,12 +278,24 @@ export async function computeClientProfile(
 
   const debriefList = debriefs || []
   const lastDebrief = debriefList[0] || null
+  // CAVEAT: no writer currently stamps completion onto action items — none of
+  // the items on file carry a `status`, `completed` or `completed_at` key — so
+  // this count is effectively "total action items" and cannot decrease yet.
+  // The extra keys are honoured so the number starts meaning something the
+  // moment the debrief UI records completion, without another migration.
   let openActionItems = 0
   for (const d of debriefList) {
-    const ai = d.action_items as { items?: { status?: string }[] } | null
+    const ai = d.action_items as {
+      items?: { status?: string; completed?: boolean; completed_at?: string }[]
+    } | null
     if (ai?.items?.length) {
       for (const item of ai.items) {
-        if (item.status !== "completed" && item.status !== "done") openActionItems++
+        const done =
+          item.status === "completed" ||
+          item.status === "done" ||
+          item.completed === true ||
+          !!item.completed_at
+        if (!done) openActionItems++
       }
     }
   }
@@ -356,44 +373,101 @@ export async function computeClientProfile(
   }
   const recurringFrequency =
     Object.entries(freqCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null
-  const ignitionClientId = propList.find((p) => p.ignition_client_id)?.ignition_client_id || null
+
+  // Ignition identifier: read the native link first. Sourcing this from
+  // proposals alone (the previous behaviour) left 517 Ignition-linked
+  // clients with a null identifier simply because they had no proposal.
+  const igCol = kind === "contact" ? "contact_id" : "organization_id"
+  const { data: igRows } = await supabase
+    .from("ignition_clients")
+    .select("ignition_client_id")
+    .eq(igCol, clientId)
+    .order("ignition_client_id", { ascending: true })
+  const ignitionClientId =
+    (igRows || [])[0]?.ignition_client_id ||
+    propList.find((p) => p.ignition_client_id)?.ignition_client_id ||
+    null
 
   // ── Financial: invoices (Karbon + Ignition) ─────────────────────────────
   const invFilter =
     kind === "contact" ? { contact_id: clientId } : { organization_id: clientId }
 
-  const [{ data: kInv }, { data: igInv }] = await Promise.all([
+  const [{ data: kInv }, { data: igInv }, { data: igPay }] = await Promise.all([
     supabase
       .from("karbon_invoices")
       .select("id, total_amount, status, issued_date, paid_date")
       .match(invFilter),
     supabase
       .from("ignition_invoices")
-      .select("ignition_invoice_id, amount, amount_paid, status, invoice_date, paid_at")
+      .select(
+        "ignition_invoice_id, amount, amount_paid, amount_outstanding, status, invoice_date, paid_at",
+      )
+      .match(invFilter),
+    supabase
+      .from("ignition_payments")
+      .select("ignition_payment_id, amount, refund_amount, payment_status, paid_at")
       .match(invFilter),
   ])
+
+  // Statuses that should not contribute to totals or revenue at all.
+  const DEAD_INVOICE_STATUS = new Set(["voided", "archived", "draft"])
 
   const allInvoices = [
     ...(kInv || []).map((i) => ({
       total: Number(i.total_amount) || 0,
-      paid: /paid/i.test(i.status || "") ? Number(i.total_amount) || 0 : 0,
+      // Exact allow-list, not /paid/i — that regex also matches "Unpaid"
+      // and "PartiallyPaid", which are real Karbon statuses.
+      paid: ["paid", "paidinfull", "fullypaid"].includes(
+        (i.status || "").toLowerCase().replace(/[\s_-]/g, ""),
+      )
+        ? Number(i.total_amount) || 0
+        : 0,
+      outstanding: null as number | null,
       issued: i.issued_date,
       paidAt: i.paid_date,
       status: i.status,
     })),
-    ...(igInv || []).map((i) => ({
-      total: Number(i.amount) || 0,
-      paid: Number(i.amount_paid) || 0,
-      issued: i.invoice_date,
-      paidAt: i.paid_at,
-      status: i.status,
-    })),
+    ...(igInv || [])
+      .filter((i) => !DEAD_INVOICE_STATUS.has((i.status || "").toLowerCase()))
+      .map((i) => ({
+        total: Number(i.amount) || 0,
+        paid: Number(i.amount_paid) || 0,
+        // Ignition publishes an authoritative outstanding figure. Deriving
+        // it as total-minus-paid instead booked ~$903k of scheduled future
+        // billing ('issued' invoices) as receivable across the firm.
+        outstanding: i.amount_outstanding == null ? null : Number(i.amount_outstanding),
+        issued: i.invoice_date,
+        paidAt: i.paid_at,
+        status: i.status,
+      })),
   ]
+
+  // Collections live in TWO disjoint places, an artefact of two eras of the
+  // Ignition sync: invoices with status 'paid' carry amount_paid and have no
+  // payment rows, while invoices with status 'issued' carry amount_paid = null
+  // and record collection in ignition_payments. Reading only amount_paid
+  // (the previous behaviour) understated firm-wide revenue by ~72%.
+  const collectedPayments = (igPay || [])
+    .filter((p) => ["disbursed", "collected"].includes((p.payment_status || "").toLowerCase()))
+    .reduce((s, p) => s + (Number(p.amount) || 0) - (Number(p.refund_amount) || 0), 0)
+
   const invoicesTotal = allInvoices.reduce((s, i) => s + i.total, 0)
-  const invoicesPaid = allInvoices.reduce((s, i) => s + i.paid, 0)
-  const invoicesOutstanding = Math.max(0, invoicesTotal - invoicesPaid)
+  const invoicesPaid = allInvoices.reduce((s, i) => s + i.paid, 0) + collectedPayments
+  const nativeOutstanding = allInvoices.reduce(
+    (s, i) => s + (i.outstanding ?? 0),
+    0,
+  )
+  const invoicesOutstanding = allInvoices.some((i) => i.outstanding != null)
+    ? Math.max(0, nativeOutstanding)
+    : Math.max(0, invoicesTotal - invoicesPaid)
+
   const issuedDates = allInvoices.map((i) => i.issued).filter(Boolean) as string[]
-  const paidDates = allInvoices.map((i) => i.paidAt).filter(Boolean) as string[]
+  const paidDates = [
+    ...allInvoices.map((i) => i.paidAt),
+    ...(igPay || [])
+      .filter((p) => ["disbursed", "collected"].includes((p.payment_status || "").toLowerCase()))
+      .map((p) => p.paid_at),
+  ].filter(Boolean) as string[]
   issuedDates.sort()
   paidDates.sort()
   const lastInvoiceDate = issuedDates[issuedDates.length - 1] || null
@@ -402,16 +476,22 @@ export async function computeClientProfile(
   const lifetimeRevenue = invoicesPaid
 
   // ── Cross-system: ProConnect ────────────────────────────────────────────
-  // Resolve via legacy_motta_client_id -> proconnect_clients
-  let proconnectClientId: string | null = null
-  if (legacyMottaClientId) {
-    const { data: pc } = await supabase
-      .from("proconnect_clients")
-      .select("proconnect_client_id")
-      .eq("legacy_motta_client_id", legacyMottaClientId)
-      .maybeSingle()
-    proconnectClientId = pc?.proconnect_client_id || null
-  }
+  // Resolve off the native hub link columns. The previous implementation
+  // queried proconnect_clients.legacy_motta_client_id — a column that does
+  // not exist — so this was dead code and every profile reported null even
+  // though 1,442 of 2,191 clients carry a real ProConnect link.
+  const pcCol = kind === "contact" ? "hub_contact_id" : "hub_organization_id"
+  const { data: pcRows } = await supabase
+    .from("proconnect_clients")
+    .select("proconnect_client_id, created_at")
+    .eq(pcCol, clientId)
+    .order("created_at", { ascending: true })
+
+  // A client legitimately holds several ProConnect records (spouse and
+  // entity returns). The scalar column keeps the earliest for stability;
+  // ordering makes the pick deterministic rather than arbitrary.
+  const proconnectClientId: string | null =
+    (pcRows || [])[0]?.proconnect_client_id || null
 
   // ── Quality / attention ─────────────────────────────────────────────────
   let completeness = 0
@@ -490,7 +570,11 @@ export async function computeClientProfile(
     lastDebriefNotes: lastDebrief?.notes ? lastDebrief.notes.slice(0, 500) : null,
     lastDebriefId: lastDebrief?.id || null,
     openActionItems,
-    totalCalendlyEvents: (calEvents || []).length,
+    // Cancelled events are excluded from last/next_meeting_at above, so
+    // excluding them here too keeps the count and the timestamps consistent.
+    totalCalendlyEvents: (
+      (calEvents || []) as { status: string | null }[]
+    ).filter((e) => !(e.status && /cancel/i.test(e.status))).length,
     totalZoomMeetings: (zoomMeetings || []).length,
     lastMeetingAt,
     nextMeetingAt,
