@@ -37,9 +37,25 @@ Work was classified into two tiers and only one tier was applied:
 | Firm-wide lifetime revenue on profiles | $337,658 (would-be) | **$1,197,517** |
 | Firm-wide AR on profiles | $985,118 (would-be) | **$120,109** |
 
+Intake-driven field enrichment (fill-only-if-empty, from each client's latest
+intake):
+
+| Field | Contacts before → after | Organizations before → after |
+|---|---|---|
+| `address_line1` | 128 → **254** | 0 → **21** |
+| `address_line2` | — → +43 | — |
+| `zip_code` | 164 → **253** | 63 → **78** |
+| `city` | 513 → **522** | — |
+| `state` | 574 → **577** | — |
+| `phone_primary` / `phone` | 740 → **743** | 157 → **162** |
+| `referred_by` | 0 → **140** | 0 → **25** |
+| `employer` | 0 → **67** | n/a |
+
 Scripts: `391_fix_master_client_mapping_view.sql`,
 `392_backfill_meeting_client_links.sql`,
-`393_backfill_client_profile_summaries.sql`. All idempotent.
+`393_backfill_client_profile_summaries.sql`,
+`394_link_intakes_and_debriefs_deterministic.sql`,
+`395_enrich_clients_from_intakes.sql`. All idempotent.
 
 ---
 
