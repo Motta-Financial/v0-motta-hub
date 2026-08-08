@@ -292,11 +292,42 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  // Redirect authenticated users away from login page to home
+  // Redirect authenticated users away from login page. Honor a safe
+  // ?redirect= param pointing at an https *.motta.cpa URL — alfred-chat
+  // sends unauthenticated visitors to /login with one, and app/login/
+  // page.tsx honors it after a fresh sign-in. Without this mirror check,
+  // a user who ALREADY has a Hub session (e.g. the alfred side held a
+  // stale host-only cookie) gets bounced to the Hub home page instead of
+  // back to ALFRED, dead-ending the SSO handoff.
   if (user && isLoginPage) {
     const url = request.nextUrl.clone()
     url.pathname = "/"
-    return NextResponse.redirect(url)
+    url.search = ""
+    let target: URL = url
+    const redirectParam = request.nextUrl.searchParams.get("redirect")
+    if (redirectParam) {
+      try {
+        const candidate = new URL(redirectParam)
+        const host = candidate.hostname.toLowerCase()
+        if (
+          candidate.protocol === "https:" &&
+          (host === "motta.cpa" || host.endsWith(".motta.cpa"))
+        ) {
+          target = candidate
+        }
+      } catch {
+        // Malformed URL — fall through to the home redirect.
+      }
+    }
+    const redirectResponse = NextResponse.redirect(target)
+    // Carry any session cookies updateSession refreshed on this request
+    // across the redirect. Dropping them here would discard a rotated
+    // refresh token and the destination (especially a cross-subdomain
+    // one re-running its own middleware) would be left with a stale one.
+    supabaseResponse.cookies
+      .getAll()
+      .forEach((cookie) => redirectResponse.cookies.set(cookie))
+    return redirectResponse
   }
 
   return supabaseResponse
