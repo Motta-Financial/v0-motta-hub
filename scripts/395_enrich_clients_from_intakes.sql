@@ -46,10 +46,42 @@
 --
 -- Run: psql "$POSTGRES_URL_NON_POOLING" -f scripts/395_enrich_clients_from_intakes.sql
 
+--  5. PLACEHOLDER AND TEST-FIXTURE FREE TEXT. `referral_source` and
+--     `business_name` are free-text, and clients type 'NA', 'N/A', '-' into
+--     them; the intake table also holds test submissions. A first run of this
+--     script without a guard wrote 'NA' / 'N/a' / 'TEST' into referred_by (4
+--     rows) and 'N/A' / 'John Snow Test' / 'Bobby Tran New Business' into
+--     employer (3 rows) — junk in a CPA firm's CRM. Those rows were cleaned and
+--     the guard below now rejects placeholder tokens, values containing no
+--     letters, and anything carrying a 'test' marker.
+--
 -- Verified before running: 126 address_line1, 89 zip_code and 3 state fills on
 -- contacts, with 0 unmappable state values.
 
 begin;
+
+-- Guard used by both statements below. Immutable and side-effect free, so it is
+-- safe to create alongside the enrichment and reuse from any future backfill.
+create or replace function public.is_meaningful_free_text(v text)
+returns boolean
+language sql
+immutable
+as $$
+  select v is not null
+     and btrim(v) <> ''
+     -- must contain at least one letter ('-', '.', '1000' are not names)
+     and btrim(v) ~ '[A-Za-z]'
+     -- reject placeholder tokens, ignoring punctuation/spacing ('N/A' -> 'NA')
+     and upper(regexp_replace(btrim(v), '[^A-Za-z]', '', 'g'))
+           not in ('NA','N','NONE','NIL','NONA','TEST','UNKNOWN','TBD','NOONE','SELF')
+     -- reject test-fixture values
+     and btrim(v) !~* '\mtest\M';
+$$;
+
+comment on function public.is_meaningful_free_text(text) is
+  'True when a free-text answer looks like a real name/value rather than a '
+  'placeholder (NA, none, -), a value with no letters, or test-fixture data. '
+  'Used to keep intake free text out of contacts.referred_by / employer.';
 
 -- ── Contacts ────────────────────────────────────────────────────────────
 with sm(name, code) as (values
@@ -82,10 +114,23 @@ latest as (
     substring(coalesce(nullif(trim(submitter_address->>'postal'), ''), nullif(trim(submitter_zip), ''))
               from '^(\d{5})')                                                          as zip,
     nullif(trim(submitter_phone), '')                                                   as phone,
-    nullif(trim(business_name), '')                                                     as biz,
-    nullif(trim(referral_source), '')                                                   as refsrc
+    -- JUNK GUARD (see note 5): free-text answers include placeholder tokens and
+    -- test-fixture values. Writing 'NA' as a referrer name or 'John Snow Test'
+    -- as an employer puts junk in a CPA firm's CRM. Reject placeholders, values
+    -- with no letters at all, and anything carrying a 'test' marker.
+    case when public.is_meaningful_free_text(business_name)   then nullif(trim(business_name), '')   end as biz,
+    case when public.is_meaningful_free_text(referral_source) then nullif(trim(referral_source), '') end as refsrc
   from public.jotform_intake_submissions
   where contact_id is not null
+    -- Reject the whole submission when it is itself a test fixture. Checking
+    -- only the written value is not enough: 'Bobby Tran New Business' looks
+    -- like a real employer, but its submission's submitter_full_name is
+    -- 'Bobby Test' and a sibling submission names 'Bobby Tran Test LLC'.
+    and not exists (
+      select 1 from public.jotform_intake_submissions j2
+      where j2.contact_id = jotform_intake_submissions.contact_id
+        and (j2.submitter_full_name ~* '\mtest\M' or j2.business_name ~* '\mtest\M')
+    )
   order by contact_id, jotform_created_at desc nulls last
 ),
 resolved as (
@@ -145,7 +190,7 @@ latest as (
     coalesce(nullif(trim(business_address->>'state'), ''), nullif(trim(business_state), '')) as state_raw,
     substring(nullif(trim(business_address->>'postal'), '') from '^(\d{5})')             as zip,
     nullif(trim(business_phone), '')                                                     as phone,
-    nullif(trim(referral_source), '')                                                    as refsrc
+    case when public.is_meaningful_free_text(referral_source) then nullif(trim(referral_source), '') end as refsrc
   from public.jotform_intake_submissions
   where organization_id is not null
   order by organization_id, jotform_created_at desc nulls last
