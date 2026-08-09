@@ -59,6 +59,37 @@ Scripts: `391_fix_master_client_mapping_view.sql`,
 
 ---
 
+### Verification status of what was applied
+
+Every mapping *mutation* proposed during this audit went through an independent
+adversarial re-verification pass, and all of them failed it — see "Rejected
+changes". Those are not applied.
+
+The changes that **were** applied fall into two groups:
+
+- **Adversarially verified**: the intake email links and the debrief Karbon-key
+  links. One finding from that pass was acted on — junk free text (`NA`,
+  `John Snow Test`) had been written into `referred_by` / `employer`; those 8
+  rows were cleaned and guarded.
+- **Verified by direct reconciliation only** — the adversarial pass for these
+  hit a session limit and did not complete: the 152 Calendly links, the 81 Zoom
+  bridge links, and the 2,191-row profile backfill. What was checked instead:
+  - all 233 meeting links corroborated by exact invitee↔contact email equality
+    (152/152 and 81/81), strictly 1:1 with no fan-out, 0 contradictions with
+    existing links, 0 Motta team members mislinked as clients, 0 constraint
+    violations, 0 orphan FKs
+  - the profile backfill reconciles to the cent
+    (`billed 1,317,626.09 − collected 1,197,516.89 = outstanding 120,109.20`),
+    emits exactly 2,191 rows for 2,191 clients, with 0 duplicate keys, 0 orphan
+    profiles and 0 clients missing a profile
+  - 3 Zoom meetings carry more than one contact; all 3 predate this work
+    (manual links from 2026-05-30 and an `auto_created` batch) and are
+    legitimate household/multi-party meetings
+
+  These are derived-cache and mirror operations rather than new identity claims,
+  and all are idempotent and recomputable — but a second adversarial pass over
+  them is still worth running.
+
 ## Root causes found
 
 ### 1. No organization could ever have a profile
