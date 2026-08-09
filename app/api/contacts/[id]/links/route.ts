@@ -49,11 +49,16 @@ async function resolveEntity(
 ): Promise<{ kind: EntityKind; row: any } | null> {
   if (!UUID_RE.test(id)) return null
 
+  // NOTE: `contacts` has NO `ignition_client_id` column. Naming it here made
+  // PostgREST reject the whole select, so `contact` came back null, the
+  // function fell through to organizations, and every caller 404'd with
+  // "contact not found" — breaking the Platform Links panel for EVERY contact
+  // in the Hub. The column was never actually used either: Ignition is read
+  // natively from `ignition_clients` further down (a client can have several
+  // Ignition records, so a scalar on `contacts` could not represent it).
   const { data: contact } = await supabase
     .from("contacts")
-    .select(
-      "id, full_name, primary_email, karbon_contact_key, ignition_client_id",
-    )
+    .select("id, full_name, primary_email, karbon_contact_key")
     .eq("id", id)
     .maybeSingle()
   if (contact) return { kind: "contact", row: contact }
@@ -68,12 +73,36 @@ async function resolveEntity(
   return null
 }
 
+/** client_mapping stores ONE platform per row, keyed by source_system. */
+const SOURCE_SYSTEM_FOR_COLUMN = {
+  karbon_client_id: "KARBON",
+  proconnect_client_id: "PROCONNECT",
+  ignition_client_id: "IGNITION",
+} as const
+
+type MappingColumn = keyof typeof SOURCE_SYSTEM_FOR_COLUMN
+
 /**
- * Mirror the current link state into client_mapping. We use upsert on
- * the (internal_client_id, client_type) tuple so reruns are idempotent.
- * The view master_client_mapping reads straight off this table, so the
- * admin dashboard reflects link changes immediately without a cron
- * tick.
+ * Mirror the current link state into client_mapping, one row per platform.
+ *
+ * Two bugs were fixed here, both of which would fire on the very first write:
+ *
+ *  1. It selected the existing row with `.eq(internal_client_id).maybeSingle()`.
+ *     That is NOT unique — client_mapping holds one row per
+ *     (internal_client_id, source_system), so any client already linked to two
+ *     platforms has two rows and maybeSingle() errors. This is common, not an
+ *     edge case: 361 clients have more than one ProConnect mapping row.
+ *  2. It inserted `source_system: 'motta_hub'`, which violates
+ *     client_mapping_source_system_check — the column only permits
+ *     'PROCONNECT', 'KARBON', 'IGNITION' or 'MANUAL', so every insert raised
+ *     23514. Each platform now writes its own correct source_system.
+ *
+ * NOTE ON THE VIEW: master_client_mapping no longer reads from this table for
+ * ProConnect/Ignition — it reads the native columns those systems write, because
+ * nothing kept client_mapping current (see
+ * scripts/391_fix_master_client_mapping_view.sql). This mirror is retained for
+ * consumers that still query client_mapping directly, but it is no longer what
+ * drives the admin dashboard.
  */
 async function syncMappingRow(
   supabase: ReturnType<typeof createAdminClient>,
@@ -85,24 +114,35 @@ async function syncMappingRow(
     ignition_client_id?: string | null
   },
 ) {
-  const { data: existing } = await supabase
-    .from("client_mapping")
-    .select("id")
-    .eq("internal_client_id", internalClientId)
-    .maybeSingle()
+  for (const column of Object.keys(patch) as MappingColumn[]) {
+    const value = patch[column]
+    if (value === undefined) continue
+    const sourceSystem = SOURCE_SYSTEM_FOR_COLUMN[column]
 
-  if (existing) {
-    await supabase
+    // Target this client's row for THIS platform specifically.
+    const { data: rows } = await supabase
       .from("client_mapping")
-      .update({ ...patch, updated_at: new Date().toISOString() })
-      .eq("id", existing.id)
-  } else {
-    await supabase.from("client_mapping").insert({
-      internal_client_id: internalClientId,
-      client_type: clientType,
-      source_system: "motta_hub",
-      ...patch,
-    })
+      .select("id")
+      .eq("internal_client_id", internalClientId)
+      .eq("source_system", sourceSystem)
+      .order("updated_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+
+    const existing = rows?.[0]
+    if (existing) {
+      await supabase
+        .from("client_mapping")
+        .update({ [column]: value, updated_at: new Date().toISOString() })
+        .eq("id", existing.id)
+    } else if (value !== null) {
+      // Only mint a row when there is actually a link to record.
+      await supabase.from("client_mapping").insert({
+        internal_client_id: internalClientId,
+        client_type: clientType,
+        source_system: sourceSystem,
+        [column]: value,
+      })
+    }
   }
 }
 
@@ -151,13 +191,16 @@ export async function GET(
         .order("ignition_updated_at", { ascending: false, nullsFirst: false })
         .limit(5),
 
+      // client_mapping holds one row per (internal_client_id, source_system),
+      // so a client linked to several platforms has several rows and
+      // .maybeSingle() would error. Fetch them all and fold below.
       supabase
         .from("client_mapping")
         .select(
           "id, karbon_client_id, ignition_client_id, proconnect_client_id, source_system, updated_at",
         )
         .eq("internal_client_id", row.id)
-        .maybeSingle(),
+        .order("updated_at", { ascending: false, nullsFirst: false }),
     ])
 
     const karbonKey: string | null = isOrg
@@ -199,7 +242,37 @@ export async function GET(
           match_confidence: c.match_confidence,
         })),
       },
-      mapping: mappingRes.data ?? null,
+      // Fold the per-platform rows back into the single snapshot shape the UI
+      // already expects, so widening the query above is not a breaking change.
+      // Rows arrive newest-first, so `??=` keeps the freshest value per column.
+      mapping: (() => {
+        const rows = mappingRes.data ?? []
+        if (rows.length === 0) return null
+        const folded: {
+          id: string | null
+          karbon_client_id: string | null
+          ignition_client_id: string | null
+          proconnect_client_id: string | null
+          source_systems: string[]
+          updated_at: string | null
+        } = {
+          id: null,
+          karbon_client_id: null,
+          ignition_client_id: null,
+          proconnect_client_id: null,
+          source_systems: [],
+          updated_at: null,
+        }
+        for (const r of rows as Record<string, string | null>[]) {
+          folded.id ??= r.id ?? null
+          folded.karbon_client_id ??= r.karbon_client_id ?? null
+          folded.ignition_client_id ??= r.ignition_client_id ?? null
+          folded.proconnect_client_id ??= r.proconnect_client_id ?? null
+          folded.updated_at ??= r.updated_at ?? null
+          if (r.source_system) folded.source_systems.push(r.source_system)
+        }
+        return folded
+      })(),
     })
   } catch (err) {
     console.error("[v0] GET /api/contacts/[id]/links failed:", err)
