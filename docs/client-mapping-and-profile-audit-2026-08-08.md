@@ -28,8 +28,8 @@ Work was classified into two tiers and only one tier was applied:
 | ProConnect-linked clients visible in master mapping | 1,329 | **1,442** |
 | Clients linked to all three systems | 815 | **846** |
 | ProConnect + Ignition links visible (not collapsed) | 2,449 | **3,118** |
-| `calendly_event_clients` | 53 | **205** |
-| `zoom_meeting_clients` | 139 | **220** |
+| `calendly_event_clients` | 53 | **205** (1 flagged for review) |
+| `zoom_meeting_clients` | 139 | **219** (11 flagged for review) |
 | Clients with Calendly history on profile | ~40 | **137** |
 | Clients with Zoom history on profile | ~60 | **147** |
 | Unlinked intakes | 50 | **41** |
@@ -71,13 +71,40 @@ The changes that **were** applied fall into two groups:
   links. One finding from that pass was acted on — junk free text (`NA`,
   `John Snow Test`) had been written into `referred_by` / `employer`; those 8
   rows were cleaned and guarded.
-- **Verified by direct reconciliation only** — the adversarial pass for these
-  hit a session limit and did not complete: the 152 Calendly links, the 81 Zoom
-  bridge links, and the 2,191-row profile backfill. What was checked instead:
-  - all 233 meeting links corroborated by exact invitee↔contact email equality
-    (152/152 and 81/81), strictly 1:1 with no fan-out, 0 contradictions with
-    existing links, 0 Motta team members mislinked as clients, 0 constraint
-    violations, 0 orphan FKs
+- **Adversarially verified on a resumed run, and corrected as a result.** The
+  first verification pass hit a session limit before reaching the meeting
+  mirrors; resuming it found a real defect in the Zoom bridge that the original
+  self-check had missed, because that check verified the *contact* side (invitee
+  email equality) and never asked whether the Zoom meeting and the Calendly
+  event are the same meeting. `zoom_meetings.calendly_event_id` is itself a
+  heuristic bridge and mis-fires on reused static rooms: **"Dat Le's Personal
+  Meeting Room" was bridged to a booking 295.9 days away**, attaching an
+  unrelated contact.
+
+  Measured across the 81 rows written: 69 clean, 12 implausible (11 more than
+  5 minutes apart, 2 cancelled invitees, 2 cancelled events, 1 static room).
+  Of the 12, **11 have the Zoom topic independently naming the contact's
+  surname** — ordinary rescheduled bookings whose attribution is still correct.
+  Exactly **1 was both implausible and uncorroborated**, and it was deleted.
+  The 11 are kept but stamped `needs_review = true, confidence = 0.60` with a
+  reason, answering the fair criticism that writing them at `confidence = 1.00,
+  needs_review = false` hid the doubtful ones from the only surface a reviewer
+  would check. Zoom links: 220 → **219**. Script 392 now carries the
+  plausibility gate, verified to insert 0 rows on a re-run and unable to
+  reintroduce the deleted link.
+
+  One Calendly row was also flagged (`confidence = 0.70`): its invitee email
+  matches **two duplicate contact records for the same person**, so the human is
+  right but the record chosen is arbitrary — the contacts need deduping.
+
+  Two of that pass's claims did **not** hold, checked rather than accepted: its
+  headline false positive ("Micaela Palacios' Zoom Meeting" → William Randolph
+  III) is a **pre-existing** `match_method='email'` row from 2026-05-30, not from
+  this work; and the 5 invitee links with no email agreement are pre-existing
+  `name_phone`/`name` rows. All 152 rows written here are email-corroborated.
+
+- **Verified by direct reconciliation only** — the adversarial pass for the
+  2,191-row profile backfill did not complete. What was checked instead:
   - the profile backfill reconciles to the cent
     (`billed 1,317,626.09 − collected 1,197,516.89 = outstanding 120,109.20`),
     emits exactly 2,191 rows for 2,191 clients, with 0 duplicate keys, 0 orphan

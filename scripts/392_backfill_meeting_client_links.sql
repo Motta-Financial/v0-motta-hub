@@ -19,17 +19,34 @@
 --   organization_id alongside contact_id, and all 53 pre-existing rows are
 --   contact-only, so this follows the established pattern.
 --
--- PART 2 — Zoom (81 rows).
+-- PART 2 — Zoom (80 rows after the plausibility gate below).
 --   zoom_meetings.calendly_event_id is populated on 124 meetings — a native
 --   bridge to the Calendly invitee, and therefore to that invitee's contact.
 --   Verified before writing:
 --     * 81 candidate pairs over 81 DISTINCT meetings (1:1, no fan-out)
---     * 81/81 email-corroborated
+--     * 81/81 email-corroborated between invitee and contact
 --     * 0 contradict an existing zoom_meeting_clients link
---     * 77 of the affected meetings have no client link at all today
 --   link_source='calendly_bridge' is already an allowed value in
 --   zoom_meeting_clients_link_source_check, i.e. the schema anticipated
 --   exactly this path.
+--
+--   PLAUSIBILITY GATE — added after adversarial review, which found the
+--   original version's weakness: it verified the CONTACT side (invitee email
+--   equality) but never checked that the Zoom meeting and the Calendly event
+--   are the same meeting. zoom_meetings.calendly_event_id is itself the output
+--   of a heuristic bridging job, and it mis-fires badly on reused static rooms:
+--   'Dat Le's Personal Meeting Room' was bridged to a booking 295.9 days away,
+--   attaching an unrelated contact. A personal meeting room is reused for every
+--   call, so it is the worst possible bridge candidate.
+--   Measured across the 81: 69 clean, 12 implausible (11 over 5 minutes apart,
+--   2 cancelled invitees, 2 cancelled events, 1 static room). Of those 12, 11
+--   have the Zoom TOPIC independently naming the contact's surname — those are
+--   ordinary rescheduled bookings where the attribution is still right, so they
+--   are kept but stamped needs_review with confidence 0.60. Exactly 1 was both
+--   implausible AND uncorroborated (the static room); it is excluded here.
+--   Rows are NOT written at confidence 1.00 / needs_review false unless they
+--   pass the gate — stamping a doubtful link as certain hides it from the only
+--   surface a reviewer would look at.
 --
 -- NOT ADDRESSED HERE (deliberately): Zoom's real problem is sync coverage, not
 -- matching — 355 of 403 past meetings have zero participants synced and 380
@@ -78,33 +95,57 @@ where i.contact_id is not null
 on conflict do nothing;
 
 -- ── Part 2: zoom_meetings.calendly_event_id bridge → zoom_meeting_clients ─
+with candidate as (
+  select distinct
+    zm.id as zoom_meeting_id,
+    ci.contact_id,
+    abs(extract(epoch from (zm.start_time - ce.start_time))) / 60.0 as gap_min,
+    -- Does the Zoom topic independently name the contact? That is the evidence
+    -- that survives a loose bridge: a rescheduled booking still belongs to the
+    -- person the meeting is titled after.
+    (c.last_name is not null
+       and zm.topic ~* ('\m' || regexp_replace(c.last_name, '([^a-zA-Z0-9])', '\\\1', 'g') || '\M')
+    ) as topic_names_contact,
+    (zm.topic ~* 'personal meeting room' or zm.topic ~* 'my meeting') as is_static_room,
+    (coalesce(ci.status, '') ~* 'cancel' or ci.canceled_at is not null
+       or coalesce(ce.status, '') ~* 'cancel') as cancelled
+  from public.zoom_meetings zm
+  join public.calendly_invitees ci on ci.calendly_event_id = zm.calendly_event_id
+  join public.calendly_events ce on ce.id = zm.calendly_event_id
+  join public.contacts c on c.id = ci.contact_id
+  where zm.calendly_event_id is not null
+    and ci.contact_id is not null
+    -- contact side: exact email agreement with the invitee
+    and (
+      lower(trim(c.primary_email))   = lower(trim(ci.email)) or
+      lower(trim(c.secondary_email)) = lower(trim(ci.email))
+    )
+    and not exists (
+      select 1 from public.zoom_meeting_clients zc
+      where zc.zoom_meeting_id = zm.id and zc.contact_id = ci.contact_id
+    )
+),
+gated as (
+  select *,
+    (gap_min > 5 or cancelled or is_static_room) as doubtful
+  from candidate
+  -- Drop only what is BOTH doubtful and uncorroborated by the topic.
+  where not ((gap_min > 5 or cancelled or is_static_room) and not topic_names_contact)
+)
 insert into public.zoom_meeting_clients
-  (zoom_meeting_id, contact_id, link_source, match_method, confidence, needs_review)
-select distinct
-  zm.id,
-  ci.contact_id,
+  (zoom_meeting_id, contact_id, link_source, match_method, confidence, needs_review, alfred_reason)
+select
+  zoom_meeting_id,
+  contact_id,
   'calendly_bridge',      -- allowed value, purpose-built for this path
   'calendly_event_bridge',
-  1.0,
-  false
-from public.zoom_meetings zm
-join public.calendly_invitees ci
-  on ci.calendly_event_id = zm.calendly_event_id
-where zm.calendly_event_id is not null
-  and ci.contact_id is not null
-  and exists (
-    select 1 from public.contacts c
-    where c.id = ci.contact_id
-      and (
-        lower(trim(c.primary_email))   = lower(trim(ci.email)) or
-        lower(trim(c.secondary_email)) = lower(trim(ci.email))
-      )
-  )
-  and not exists (
-    select 1 from public.zoom_meeting_clients zc
-    where zc.zoom_meeting_id = zm.id
-      and zc.contact_id = ci.contact_id
-  )
+  case when doubtful then 0.60 else 1.0 end,
+  doubtful,
+  case when doubtful then
+    'calendly bridge: booking rescheduled or cancelled (' || round(gap_min)
+      || ' min from Zoom start); contact corroborated by meeting topic'
+  end
+from gated
 on conflict do nothing;
 
 commit;
