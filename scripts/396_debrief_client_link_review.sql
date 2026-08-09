@@ -53,6 +53,60 @@
 
 begin;
 
+-- ── The review surface itself ─────────────────────────────────────────────
+-- Kept here rather than in supabase/migrations/ to follow this repo's
+-- convention (166 SQL files in scripts/, 1 in supabase/migrations/). Without
+-- this block the INSERT below fails on a fresh database with "relation
+-- debrief_client_link_candidates does not exist".
+create table if not exists public.debrief_client_link_candidates (
+  id uuid primary key default gen_random_uuid(),
+  debrief_id uuid not null references public.debriefs(id) on delete cascade,
+  contact_id uuid references public.contacts(id) on delete cascade,
+  organization_id uuid references public.organizations(id) on delete cascade,
+  match_method text not null,
+  confidence numeric(3,2) not null check (confidence >= 0 and confidence <= 1),
+  reason text,
+  evidence jsonb,
+  -- The rejection ledger: a rejected row stays, so a re-run of the generator
+  -- cannot resurrect a candidate a human already declined.
+  status text not null default 'pending'
+    check (status in ('pending', 'accepted', 'rejected')),
+  decided_by_team_member_id uuid references public.team_members(id) on delete set null,
+  decided_at timestamptz,
+  created_at timestamptz not null default now(),
+  -- exactly one target, mirroring calendly_event_clients.one_client_target
+  constraint debrief_candidate_one_target check (
+    (contact_id is not null and organization_id is null) or
+    (contact_id is null and organization_id is not null)
+  )
+);
+
+-- One candidate per (debrief, target). Partial indexes because a plain UNIQUE
+-- over a nullable pair treats NULLs as distinct and would allow duplicates.
+create unique index if not exists debrief_candidate_uniq_contact
+  on public.debrief_client_link_candidates (debrief_id, contact_id)
+  where contact_id is not null;
+create unique index if not exists debrief_candidate_uniq_org
+  on public.debrief_client_link_candidates (debrief_id, organization_id)
+  where organization_id is not null;
+create index if not exists debrief_candidate_pending_idx
+  on public.debrief_client_link_candidates (debrief_id) where status = 'pending';
+
+alter table public.debrief_client_link_candidates enable row level security;
+drop policy if exists zz_deny_all_debrief_candidates on public.debrief_client_link_candidates;
+create policy zz_deny_all_debrief_candidates on public.debrief_client_link_candidates
+  for all using (false);
+
+comment on table public.debrief_client_link_candidates is
+  'Scored, human-reviewable debrief->client link candidates. Populated only for '
+  'debriefs whose client cannot be resolved deterministically. Rows are NOT links: '
+  'status stays pending until a person accepts or rejects. Rejected rows are kept '
+  'deliberately so the generator cannot re-propose them. See '
+  'docs/client-mapping-and-profile-audit-2026-08-08.md.';
+comment on column public.debrief_client_link_candidates.confidence is
+  'Measured precision of the method on the linked holdout, not a guess: '
+  'legacy_client_code = 0.88 (133 of 151 correct).';
+
 -- ── TIER A: the debrief_work_items junction (99.4% on a 530-row holdout) ──
 -- This is an explicit work-item FK, not a heuristic. Restricted to debriefs whose
 -- junction names exactly ONE work item so the target is unambiguous.
