@@ -33,7 +33,7 @@ Work was classified into two tiers and only one tier was applied:
 | Clients with Calendly history on profile | ~40 | **137** |
 | Clients with Zoom history on profile | ~60 | **147** |
 | Unlinked intakes | 50 | **41** |
-| Unlinked debriefs | 354 | **352** |
+| Unlinked debriefs | 354 | **351** (25 staged for review, 326 not recoverable) |
 | Client-attributed lifetime revenue on profiles | $337,658 (would-be) | **$1,214,939** |
 | Client-attributed AR on profiles | $985,118 (would-be) | **$102,687** |
 
@@ -310,6 +310,56 @@ deterministic link signal.
    enrichment is transient. Deferred pending this answer.
 
 ---
+
+## Debriefs: every path, measured against a holdout
+
+All 915 live debriefs were reviewed. Each candidate linkage path was validated
+against the **already-linked debriefs** — where the true answer is known — before
+being trusted, and the measured precision decided the action:
+
+| Path | Candidates | Precision (holdout) | Action |
+|---|---|---|---|
+| Exact Karbon key → contact/org | 2 | 100% | applied (script 394) |
+| `debrief_work_items` junction, single work item | 1 | **99.4%** (527/530) | **applied** |
+| Legacy Airtable code → `user_defined_identifier` | 25 | **88.1%** (133/151) | staged for review |
+| Notes name exactly one organisation | 16 | **15.2%** (26/171) | **discarded** |
+| Debrief author + date → that member's meetings | 57 | **24.6%** (14/57) | **discarded** |
+| `karbon_work_url` → `#/work/` or `#/contacts/` key | 15 | n/a | dead end — 0 of 15 keys exist in the Hub |
+
+Two paths look attractive and are not. **Notes-name-an-organisation** is noise:
+names like "SEED" or "Ramp" occur in ordinary prose, and 89 of its 171 holdout
+hits were on debriefs actually linked to a *contact*. **Author + date** fails
+because team members hold several meetings a day and debriefs aren't written the
+same day. Staging either would have handed a reviewer mostly-wrong rows.
+
+The legacy-code path could not be lifted: requiring the notes to mention the
+resolved contact's surname — a genuinely independent signal — moved precision
+from 87.7% to 89.7% across 29 rows, i.e. no useful lift.
+
+**Final accounting (sums to 915, verified):** 564 linked · 25 staged · 3 carrying
+a code that matches zero or several clients · **323 with no structured signal of
+any kind**.
+
+### Why 323 cannot be tied to a client
+
+They are short (avg 177 characters) human meeting notes that name people by
+**first name only** — *"Talked to Greg about pricing"*, *"Met with Sarah who is a
+friend of Andrew's"*, *"Caught up with David briefly"*. First-name matching
+across a 1,460-contact book is a guess, not a link. Many are prospect or referral
+conversations with no client record by design, and at least one is a vendor
+meeting (*"Met with Steve and Juan from Intuit ProConnect"*) that correctly has
+no client. Recovering these needs a human who was in the room, or the
+Karbon/Airtable source that originally held the association.
+
+New table `debrief_client_link_candidates` holds the 25, with the measured
+precision travelling on each row. It carries a **rejection ledger** — rejected
+rows are kept, so the generator can never re-propose a candidate a human has
+already declined — which was the gap adversarial review flagged in every earlier
+review-surface proposal.
+
+Also found: **12 exact-duplicate debrief rows** (same notes and same
+`debrief_date`). None has a linked twin, so they offer no linkage shortcut, but
+they inflate every debrief count by 12 and should be deduped.
 
 ## The profile cache has no working invalidation
 
