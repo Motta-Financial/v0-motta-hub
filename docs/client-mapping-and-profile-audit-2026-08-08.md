@@ -297,6 +297,41 @@ deterministic link signal.
 
 ---
 
+## `needs_review` is not a safety net — treat it as a to-do list
+
+Worth knowing before anyone relies on the flag: `needs_review` is honoured in
+some consumers and ignored in others.
+
+- **Ignored**: `lib/clients/profile.ts:308-309` selects from
+  `calendly_event_clients` and `zoom_meeting_clients` with no `needs_review`
+  predicate, and `app/api/clients/[id]/context/route.ts` does the same. A
+  flagged link therefore counts as a **confirmed** communication on the client
+  profile and in ALFRED's context.
+- **Honoured**: `lib/meetings/sync-hub-meetings.ts` `bestLink()` demotes flagged
+  rows, and `lib/zoom/summarize-transcript.ts` prefers unflagged ones — but
+  `bestLink()` still returns a flagged row when it is the *only* link, and it
+  writes `organization_id`/`contact_id` onto `public.meetings` and can feed deal
+  creation from there.
+
+This is why the one genuinely-wrong Zoom bridge link was **deleted rather than
+flagged**. For the 12 rows kept-and-flagged the downstream use is correct, and
+that was measured, not assumed: all 11 flagged Zoom rows have the meeting topic
+independently naming the linked contact's surname (7 of them are the sole link
+on their meeting), and the 1 flagged Calendly row points at one of two duplicate
+records for the right person.
+
+If the flag is meant to gate anything, the profile and context readers need the
+predicate added.
+
+## Also found: the invitee matcher has no ambiguity guard
+
+`lib/calendly-invitee-match.ts` resolves a contact by email with
+`.or(primary_email.ilike, secondary_email.ilike).limit(1).maybeSingle()` — no
+check that exactly one contact matched, so it picks an arbitrary row when several
+share an address. `lib/calendly-sync.ts:591-604` then upserts that `contact_id`
+onto `calendly_invitees` unconditionally on conflict. That is the upstream cause
+of the duplicate-record link flagged above, and it will keep producing them.
+
 ## Pipeline problems no SQL can fix
 
 - **The `website` intake channel has a 92% link-failure rate** (12 of 13
