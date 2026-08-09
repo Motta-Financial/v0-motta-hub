@@ -340,9 +340,52 @@ from 87.7% to 89.7% across 29 rows, i.e. no useful lift.
 a code that matches zero or several clients · **323 with no structured signal of
 any kind**.
 
-### Why 323 cannot be tied to a client
+### The Karbon work-item path works — and is already fully exploited
 
-They are short (avg 177 characters) human meeting notes that name people by
+`debriefs.karbon_work_url` holds a Karbon work key (`…#/work/<key>`) that joins to
+`work_items.karbon_work_item_key`, and from there to the client. The formats match
+exactly (same alphabet, 10–12 chars, identical URL shape). Measured:
+
+| | Debriefs | Key resolves to a work item | Linked |
+|---|---|---|---|
+| Debriefs with a `#/work/` key | **481** | **468** | **468 (100% of resolvable)** |
+| …whose key resolves to nothing | 13 | 0 | 0 |
+
+Every debrief whose work key resolves **is already linked**. The path is not
+under-used; it is the mechanism that produced most of the existing links.
+
+The 13 that fail do so because the work items themselves are **absent from the
+Hub** — 8 distinct keys, checked against `work_items`, `busy_season_work_items`,
+`karbon_notes`, `karbon_tasks`, `karbon_timesheets`, `karbon_invoices`,
+`tax_return_links`, `project_mapping` and `work_items.related_work_keys`: zero
+hits anywhere. They were deleted in Karbon or never synced. Recovering them means
+re-fetching those 8 work items from the Karbon API (`KARBON_ACCESS_KEY` /
+`KARBON_BEARER_TOKEN` — not present in this environment), not more SQL.
+
+### Three eras explain the whole backlog
+
+Splitting by date makes the shape obvious:
+
+| Era | Debriefs | Linked | Have a work key | Have a client code | Unlinked with **no signal at all** |
+|---|---|---|---|---|---|
+| **1. Legacy Airtable** (pre 2024‑Q4) | 247 | **0 (0%)** | 0 | 0 | **247** |
+| **2. Karbon work-item** (2024‑Q4 → 2025) | 580 | 480 (83%) | 481 | 508 | 59 |
+| **3. Current** (2026+) | 88 | 84 (95%) | 0 | 82 | 3 |
+
+So **247 of the 351 unlinked debriefs (70%) predate the Karbon work-item
+integration entirely** — they carry no work URL, no client code, nothing. No
+work-item strategy can reach them, because there was no work item when they were
+written. Era 3 links at 95% without a work key at all, via a newer direct path.
+
+**Where era 1's client associations actually live:** the original Airtable base.
+`public.meeting_notes_debriefs` is a **0-row staging table** whose columns are
+exactly what is needed — `client_name`, `client_number`, `karbon_client_id`,
+`karbon_contact_url`, `client_owner`, `client_manager`. It was built to receive
+that export and never populated. Importing it is the only route to those 247.
+
+### Why the remaining 309 cannot be tied to a client from Supabase alone
+
+These are short (avg 177 characters) human meeting notes that name people by
 **first name only** — *"Talked to Greg about pricing"*, *"Met with Sarah who is a
 friend of Andrew's"*, *"Caught up with David briefly"*. First-name matching
 across a 1,460-contact book is a guess, not a link. Many are prospect or referral
