@@ -359,8 +359,29 @@ Hub** — 8 distinct keys, checked against `work_items`, `busy_season_work_items
 `karbon_notes`, `karbon_tasks`, `karbon_timesheets`, `karbon_invoices`,
 `tax_return_links`, `project_mapping` and `work_items.related_work_keys`: zero
 hits anywhere. They were deleted in Karbon or never synced. Recovering them means
-re-fetching those 8 work items from the Karbon API (`KARBON_ACCESS_KEY` /
-`KARBON_BEARER_TOKEN` — not present in this environment), not more SQL.
+re-fetching those 8 work items from the Karbon API, not more SQL —
+`scripts/397_resolve_missing_karbon_work_items.ts` is written and ready to run.
+
+**Credential state (checked 2026-08-09).** Karbon needs two static headers:
+`AccessKey` (Tenant AccessKey) and `Authorization: Bearer <token>`, both from
+Settings → Connected Apps → API Applications. Tested against
+`https://api.karbonhq.com/v3/WorkItems`:
+
+- The **AccessKey is valid.** A deliberately wrong AccessKey returns
+  `Unauthorized. Static Key is missing or invalid`, whereas the real one gets
+  past that check.
+- The **Bearer token is not.** It returns `Unauthorized. Auth token is missing
+  or invalid` — *byte-identical to the response for a made-up UUID*. Every
+  permutation was tried: both header orders, with and without the `Bearer `
+  prefix, `Token ` prefix, both credentials in both slots, and the `us2`
+  regional hosts implied by the AccessKey's `reg` claim (neither resolves, so
+  `api.karbonhq.com` is right).
+
+The AccessKey JWT carries `iat` 2025-05-21 — 444 days old, with no `exp` claim —
+so the likely explanation is that the bearer token was rotated or revoked while
+the AccessKey stayed valid. **A fresh Authorization token is needed.** The two
+failure messages are distinguishable, which is how to tell which credential to
+rotate next time.
 
 ### Three eras explain the whole backlog
 
