@@ -400,7 +400,7 @@ export async function computeClientProfile(
     supabase
       .from("ignition_invoices")
       .select(
-        "ignition_invoice_id, amount, amount_paid, amount_outstanding, status, invoice_date, paid_at",
+        "ignition_invoice_id, amount, amount_paid, amount_outstanding, status, payment_state, invoice_date, paid_at",
       )
       .match(invFilter),
     supabase
@@ -429,39 +429,42 @@ export async function computeClientProfile(
     })),
     ...(igInv || [])
       .filter((i) => !DEAD_INVOICE_STATUS.has((i.status || "").toLowerCase()))
-      .map((i) => ({
-        total: Number(i.amount) || 0,
-        paid: Number(i.amount_paid) || 0,
-        // Ignition publishes an authoritative outstanding figure. Deriving
-        // it as total-minus-paid instead booked ~$903k of scheduled future
-        // billing ('issued' invoices) as receivable across the firm.
-        outstanding: i.amount_outstanding == null ? null : Number(i.amount_outstanding),
-        issued: i.invoice_date,
-        paidAt: i.paid_at,
-        status: i.status,
-      })),
+      .map((i) => {
+        // payment_state is Ignition's authoritative collection flag and the
+        // only column that reconciles. The 1,918 rows with status 'issued' and
+        // payment_state 'paid' ($886,401 collected) carry amount_paid = 0 AND
+        // amount_outstanding = 0, so summing amount_paid understates revenue by
+        // $886k, summing amount_outstanding erases the genuinely-unpaid
+        // 'issued' remainder, and netting the ignition_payments ledger is still
+        // $17,422 short (payments in 'uncollected'/'cancelled' states, plus paid
+        // invoices with no payment row). Reading payment_state first gives, for
+        // the whole book: billed 1,322,244.59 = collected 1,218,908.89 + owed
+        // 103,335.70.
+        const isCollected =
+          (i.payment_state || "").toLowerCase() === "paid" ||
+          (i.status || "").toLowerCase() === "paid"
+        return {
+          total: Number(i.amount) || 0,
+          paid: isCollected
+            ? Number(i.amount_paid) || Number(i.amount) || 0
+            : 0,
+          issued: i.invoice_date,
+          paidAt: isCollected ? i.paid_at : null,
+          status: i.status,
+        }
+      }),
   ]
 
-  // Collections live in TWO disjoint places, an artefact of two eras of the
-  // Ignition sync: invoices with status 'paid' carry amount_paid and have no
-  // payment rows, while invoices with status 'issued' carry amount_paid = null
-  // and record collection in ignition_payments. Reading only amount_paid
-  // (the previous behaviour) understated firm-wide revenue by ~72%.
-  const collectedPayments = (igPay || [])
-    .filter((p) => ["disbursed", "collected"].includes((p.payment_status || "").toLowerCase()))
-    .reduce((s, p) => s + (Number(p.amount) || 0) - (Number(p.refund_amount) || 0), 0)
-
   const invoicesTotal = allInvoices.reduce((s, i) => s + i.total, 0)
-  const invoicesPaid = allInvoices.reduce((s, i) => s + i.paid, 0) + collectedPayments
-  const nativeOutstanding = allInvoices.reduce(
-    (s, i) => s + (i.outstanding ?? 0),
-    0,
-  )
-  const invoicesOutstanding = allInvoices.some((i) => i.outstanding != null)
-    ? Math.max(0, nativeOutstanding)
-    : Math.max(0, invoicesTotal - invoicesPaid)
+  const invoicesPaid = allInvoices.reduce((s, i) => s + i.paid, 0)
+  // Billed minus collected. No partial collections exist in the data —
+  // amount_paid is either 0 or the full amount on every row — so the binary
+  // rule above is exact; revisit if Ignition starts recording part-payments.
+  const invoicesOutstanding = Math.max(0, invoicesTotal - invoicesPaid)
 
   const issuedDates = allInvoices.map((i) => i.issued).filter(Boolean) as string[]
+  // The payments ledger is used only to DATE a collection whose invoice has no
+  // paid_at — never for the amount.
   const paidDates = [
     ...allInvoices.map((i) => i.paidAt),
     ...(igPay || [])

@@ -20,22 +20,27 @@
 --     value booked twice. Here every fact is attributed to
 --     coalesce(organization_id, contact_id), i.e. the organization wins, which
 --     is the firm's canonical rule (scripts/378).
---  2. LIFETIME REVENUE. Collections live in TWO DISJOINT places — an artefact
---     of two eras of the Ignition sync, verified row by row:
---       * invoices with status 'paid'   → amount_paid populated, ZERO payment rows
---       * invoices with status 'issued' → amount_paid NULL, collection recorded
---                                         in ignition_payments (all 1,764 of them)
---     Reading only amount_paid reported $337,658 firm-wide. The true figure is
---     $1,197,517 across 344 clients — a 72% understatement — and it also
---     included $5,150.50 of amount_paid sitting on VOIDED invoices.
---     This script sums both sources, nets refunds, and excludes
---     voided/archived/draft.
---  3. INVOICES OUTSTANDING uses Ignition's own amount_outstanding rather than
---     total-minus-paid. The derived form booked the 1,957 'issued' invoices
---     ($906,795 of scheduled forward billing that Ignition reports as neither
---     paid nor outstanding) as receivable: $985,118 derived vs $82,293 native,
---     a 12x overstatement that also fired a false "$X outstanding" attention
---     reason on 322 clients.
+--  2. LIFETIME REVENUE comes from ignition_invoices.payment_state, which is the
+--     only column that reconciles. Three plausible sources were tried and
+--     measured against the book before settling on it:
+--       * amount_paid alone        -> $337,658  (72% understated)
+--       * + the ignition_payments ledger -> $1,197,517 (still $17,422 short:
+--         payments sit in 'uncollected'/'cancelled' states, and some paid
+--         invoices have no payment row at all)
+--       * payment_state            -> $1,218,909 firm-wide, RECONCILES
+--     The 1,918 invoices with status='issued' and payment_state='paid'
+--     ($886,401.00) carry amount_paid = 0 AND amount_outstanding = 0, which is
+--     what defeats the first two approaches. Voided/archived/draft are excluded
+--     (they held $5,150.50 of amount_paid that was previously counted).
+--  3. INVOICES OUTSTANDING is billed minus collected, which follows from the
+--     same rule: $103,336 firm-wide, $102,687 client-attributed. Neither raw
+--     column works on its own — amount_outstanding is 0 on every 'issued' row
+--     (so summing it erases $20,394 of genuinely unpaid 'issued'/'unpaid'
+--     invoices), while the old total-minus-amount_paid form booked the whole
+--     $886k of collected 'issued' billing as receivable ($985,118, an 8x
+--     overstatement that fired a false "$X outstanding" reason on 322 clients).
+--     Verification identity, firm-wide:
+--       billed 1,322,244.59 = collected 1,218,908.89 + owed 103,335.70
 --  4. KARBON INVOICE PAID TEST is an exact allow-list, not /paid/i — that
 --     regex also matches 'Unpaid' and 'PartiallyPaid', both real Karbon
 --     statuses. (No impact today: karbon_invoices holds 3 rows, all null
@@ -252,15 +257,13 @@ prop_freq as (
     group by 1, 2
   ) f order by client_id, n desc, recurring_frequency
 ),
--- ── Payments, folded onto their invoice ─────────────────────────────────
--- Every one of the 1,764 payments carries an ignition_invoice_id, so
--- attributing collections through the invoice is both lossless and better
--- attributed than reading ignition_payments' own client FKs (3 payments have
--- none, but their invoice does).
+-- ── Payments, only for their timestamp ──────────────────────────────────
+-- Used purely to date a collection where the invoice has no paid_at. The
+-- payments ledger is NOT used for the amount: it lags the invoice's own
+-- payment_state by $17,422.50 firm-wide (payments in 'uncollected' and
+-- 'cancelled' states, plus paid invoices with no payment row at all).
 pay_per_inv as (
-  select ignition_invoice_id,
-         sum(coalesce(amount, 0) - coalesce(refund_amount, 0)) as collected,
-         max(paid_at)                                          as last_paid_at
+  select ignition_invoice_id, max(paid_at) as last_paid_at
   from public.ignition_payments
   where lower(coalesce(payment_status, '')) in ('disbursed', 'collected')
     and ignition_invoice_id is not null
@@ -272,8 +275,7 @@ inv as (
          coalesce(total_amount, 0) as amount,
          case when replace(replace(lower(coalesce(status, '')), ' ', ''), '_', '')
                    in ('paid', 'paidinfull', 'fullypaid')
-              then coalesce(total_amount, 0) else 0 end as paid,
-         null::numeric  as outstanding_native,
+              then coalesce(total_amount, 0) else 0 end as collected,
          issued_date    as issued,
          paid_date::timestamptz as paid_at
   from public.karbon_invoices
@@ -281,13 +283,25 @@ inv as (
   union all
   select coalesce(i.organization_id, i.contact_id),
          coalesce(i.amount, 0),
-         -- Collections for one invoice come from whichever era it belongs to:
-         -- amount_paid ('paid' invoices) or its payment rows ('issued' ones).
-         -- The two are disjoint, so adding them cannot double count.
-         coalesce(i.amount_paid, 0) + coalesce(pp.collected, 0),
-         i.amount_outstanding,
+         -- ignition_invoices.payment_state is Ignition's authoritative
+         -- collection flag, and it is the ONLY column that yields a
+         -- reconciling figure. The 1,918 rows with status='issued' and
+         -- payment_state='paid' ($886,401.00 collected) carry amount_paid = 0
+         -- AND amount_outstanding = 0, so:
+         --   * summing amount_paid alone understates revenue by $886k
+         --   * summing amount_outstanding alone erases their remainder
+         --   * netting the payments ledger understates by $17,422.50
+         -- Reading payment_state first reconciles exactly, firm-wide:
+         --   billed 1,322,244.59 = collected 1,218,908.89 + owed 103,335.70
+         case when lower(coalesce(i.payment_state, '')) = 'paid'
+                then coalesce(i.amount, 0)
+              when lower(coalesce(i.status, '')) = 'paid'
+                then coalesce(i.amount_paid, i.amount, 0)
+              else 0 end,
          i.invoice_date,
-         greatest(i.paid_at, pp.last_paid_at)
+         case when lower(coalesce(i.payment_state, '')) = 'paid'
+                or lower(coalesce(i.status, '')) = 'paid'
+              then coalesce(i.paid_at, pp.last_paid_at) end
   from public.ignition_invoices i
   left join pay_per_inv pp on pp.ignition_invoice_id = i.ignition_invoice_id
   where coalesce(i.organization_id, i.contact_id) is not null
@@ -296,16 +310,13 @@ inv as (
 inv_agg as (
   select client_id,
          count(*)::int as total_invoices,
-         coalesce(sum(amount), 0) as invoices_total,
-         coalesce(sum(paid), 0)   as invoices_paid,
-         -- Per invoice: Ignition's reported figure when it gives one, else
-         -- billed-minus-collected. amount_outstanding is NULL (not 0) on all
-         -- 1,957 'issued' invoices, so a blanket sum of it would silently drop
-         -- their unpaid remainder; a blanket derivation would instead re-book
-         -- the $866k already collected against them as receivable. Deciding
-         -- per row is what makes the total reconcile:
-         --   billed 1,322,244.59 - collected 1,198,953.39 = 123,291.20.
-         coalesce(sum(coalesce(outstanding_native, greatest(0, amount - paid))), 0)
+         coalesce(sum(amount), 0)    as invoices_total,
+         coalesce(sum(collected), 0) as invoices_paid,
+         -- Billed minus collected. No partial collections exist in the data
+         -- (amount_paid is either 0 or the full amount on every row), so the
+         -- binary rule above is exact; revisit if Ignition starts recording
+         -- part-payments.
+         greatest(0, coalesce(sum(amount), 0) - coalesce(sum(collected), 0))
            as invoices_outstanding,
          max(issued)  as last_invoice_date,
          max(paid_at) as last_payment_at

@@ -34,8 +34,8 @@ Work was classified into two tiers and only one tier was applied:
 | Clients with Zoom history on profile | ~60 | **147** |
 | Unlinked intakes | 50 | **41** |
 | Unlinked debriefs | 354 | **352** |
-| Firm-wide lifetime revenue on profiles | $337,658 (would-be) | **$1,197,517** |
-| Firm-wide AR on profiles | $985,118 (would-be) | **$120,109** |
+| Client-attributed lifetime revenue on profiles | $337,658 (would-be) | **$1,214,939** |
+| Client-attributed AR on profiles | $985,118 (would-be) | **$102,687** |
 
 Intake-driven field enrichment (fill-only-if-empty, from each client's latest
 intake):
@@ -105,10 +105,9 @@ The changes that **were** applied fall into two groups:
 
 - **Verified by direct reconciliation only** — the adversarial pass for the
   2,191-row profile backfill did not complete. What was checked instead:
-  - the profile backfill reconciles to the cent
-    (`billed 1,317,626.09 − collected 1,197,516.89 = outstanding 120,109.20`),
-    emits exactly 2,191 rows for 2,191 clients, with 0 duplicate keys, 0 orphan
-    profiles and 0 clients missing a profile
+  - the profile backfill reconciles to the cent, firm-wide and on every client
+    row, and emits exactly 2,191 rows for 2,191 clients with 0 duplicate keys,
+    0 orphan profiles and 0 clients missing a profile
   - 3 Zoom meetings carry more than one contact; all 3 predate this work
     (manual links from 2026-05-30 and an `auto_created` batch) and are
     legitimate household/multi-party meetings
@@ -136,31 +135,43 @@ while 1,442 clients held a real link. Proven with a live example: Lane Krai
 carries ProConnect `9341456793252377` in both `proconnect_clients.hub_contact_id`
 and `client_mapping`, yet the cached profile recorded null.
 
-### 3. Revenue was understated by 72%
+### 3. Revenue was understated by 72%, and it took three attempts to get right
 
-Collections live in **two disjoint places**, an artefact of two eras of the
-Ignition sync — verified invoice by invoice:
+The authoritative collection flag is **`ignition_invoices.payment_state`**, and
+it is the only source that reconciles. The trap is that 1,918 invoices carry
+`status='issued'` with `payment_state='paid'` — **$886,401 genuinely collected**
+— while their `amount_paid` **and** `amount_outstanding` are *both* 0.00. Three
+sources were measured against the book before settling:
 
-| Invoice status | Rows | `amount_paid` | Payment rows | Collection recorded in |
-|---|---|---|---|---|
-| `paid` | 749 | $332,507.89 | **0** | `amount_paid` |
-| `issued` | 1,957 | **NULL** | **1,764** | `ignition_payments` |
+| Source | Revenue | Verdict |
+|---|---|---|
+| `amount_paid` alone (original code) | $337,658 | 72% understated |
+| `amount_paid` + `ignition_payments` ledger | $1,197,517 | still $17,422 short |
+| **`payment_state`** | **$1,218,909** firm-wide | **reconciles** |
 
-Reading only `amount_paid` reported $337,658 against a true **$1,197,517**, and
-included $5,150.50 of `amount_paid` sitting on *voided* invoices.
+The payments ledger falls short because some payments sit in `uncollected` or
+`cancelled` states and some paid invoices have no payment row at all. It is now
+used only to *date* a collection, never to size one. Voided/archived/draft are
+excluded — they held $5,150.50 of `amount_paid` that was previously counted.
 
 ### 4. AR was overstated 8x
 
-`invoices_outstanding` was derived as total-minus-paid, which booked the 1,957
-`issued` invoices ($906,795 of scheduled forward billing) as receivable.
-`amount_outstanding` is **NULL, not 0**, on exactly those rows — so neither a
-blanket sum of it (drops their unpaid remainder) nor a blanket derivation
-(re-books the $866k already collected) is right. It has to be decided per
-invoice. Doing so makes the book reconcile exactly:
+Outstanding follows from the same rule as billed-minus-collected. Neither raw
+column works alone: `amount_outstanding` is 0.00 on every `issued` row (so
+summing it erases $20,394 of genuinely unpaid `issued`/`unpaid` invoices), while
+the original total-minus-`amount_paid` booked the whole $886k of *collected*
+`issued` billing as receivable — $985,118, an 8x overstatement that fired a
+false "$X outstanding" attention reason on 322 clients.
+
+Verification identity, which now holds firm-wide **and on every single client
+row** (0 violations of `billed = collected + outstanding`):
 
 ```
-billed 1,317,626.09 − collected 1,197,516.89 = outstanding 120,109.20
+firm-wide:          billed 1,322,244.59 = collected 1,218,908.89 + owed 103,335.70
+client-attributed:  billed 1,317,626.09 = collected 1,214,939.39 + owed 102,686.70
 ```
+
+The two differ only by the 10 invoices that carry no client link.
 
 ### 5. The master mapping was hiding links two ways
 
@@ -265,9 +276,12 @@ deterministic link signal.
    old computation. Organization rows survive (the old code returns before its
    UPSERT) but the API returns null for them. **The data backfill and the
    `lib/clients/profile.ts` fix must ship together.**
-2. **AR semantics.** Are the 1,957 `issued` invoices ($906,795) scheduled future
-   billing, or genuinely receivable? This audit treats them as billed-minus-
-   collected, giving $120,109 AR. Confirm with the Ignition owner.
+2. **AR semantics — largely resolved, one thing to confirm.** `payment_state`
+   answers it: of the `issued` invoices, 1,918 ($886,401) are collected and 39
+   ($20,394) are genuinely unpaid, giving $102,687 client-attributed AR. The one
+   assumption left is that **no partial collections exist** — true today, since
+   `amount_paid` is either 0 or the full amount on every row. If Ignition starts
+   recording part-payments, the binary rule needs revisiting.
 3. **`needs_attention` is true for 2,191 of 2,191 clients**, driven by "No
    owner/manager assigned" (2,189) and "Missing phone" (1,294). Gating on the
    actionable reasons only (overdue work OR outstanding balance) would flag
