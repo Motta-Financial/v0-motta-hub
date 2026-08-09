@@ -297,6 +297,43 @@ deterministic link signal.
 
 ---
 
+## The profile cache has no working invalidation
+
+`lib/clients/profile.ts` exports two invalidation hooks. One of them is **never
+called at all**:
+
+- `markClientProfilesStaleForRefs()` — defined, exported, **zero callers**.
+- `markClientProfileStale()` — exactly one caller,
+  `app/api/contacts/[id]/organizations/route.ts`.
+
+So nothing invalidates a profile when a work item, debrief, invoice, payment or
+meeting changes. Demonstrated within 15 hours of the backfill: 7 work items were
+created after it ran (first at 2026-08-09 00:07Z) and **5 clients' cached work
+counts drifted** while `stale_at` stayed NULL on all 2,191 rows. Those 5 were
+refreshed, and drift is now 0 — but it will recur.
+
+Two things follow, and they matter more than the backfill itself:
+
+1. The ingest paths need to call the batch hook. Until they do, the cache is only
+   as fresh as the last full rebuild.
+2. `getClientProfile()` defaults `maxAgeSeconds = 600`, so a read falls back to
+   the ~13-round-trip per-client recompute after 10 minutes. Any scheduled
+   rebuild window must be **shorter** than that, or raise the read default —
+   otherwise the batch job never actually relieves the read path.
+
+One further caveat on the backfill worth stating plainly: `proconnect_client_id`
+and `ignition_client_id` on `client_profile_summaries` are **scalar**, but 437
+clients hold 2–6 ProConnect records and 178 hold 2–7 Ignition records. The
+earliest-created pick is deterministic and stable, but it is still a *choice* —
+11 of those clients have ProConnect records with conflicting surnames and 34 with
+conflicting emails, so the scalar cannot be read as "the" identifier. The mapping
+view exposes `proconnect_client_ids` / `ignition_client_ids` arrays with counts;
+the profile table should gain the same, which is a schema change and is listed in
+the open questions rather than done here.
+
+Also note `client_profile_summaries` has RLS enabled with a deny-all policy, so
+all access is via the service role.
+
 ## `needs_review` is not a safety net — treat it as a to-do list
 
 Worth knowing before anyone relies on the flag: `needs_review` is honoured in
