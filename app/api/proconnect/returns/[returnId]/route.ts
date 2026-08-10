@@ -101,7 +101,8 @@ export async function GET(
       const code = c.series_id && c.code_id ? catalog.get(`${c.series_id}/${c.code_id}`) : undefined
       return {
         ...c,
-        field_title: code?.screenTitle || code?.description || null,
+        // The CSV's description identifies the specific field; screenTitle is only the broad section name.
+        field_title: code?.description || code?.screenTitle || null,
       }
     })
 
