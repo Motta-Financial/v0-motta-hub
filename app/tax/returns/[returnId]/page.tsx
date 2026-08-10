@@ -52,6 +52,14 @@ type Cell = {
   scope: string | null
 }
 
+type FieldMapping = {
+  agency: string
+  series: string
+  code: string
+  description: string
+  screenTitle: string
+}
+
 type ReturnDetail = {
   returnId: string
   engagement: Record<string, unknown> | null
@@ -75,6 +83,43 @@ const fetcher = async (url: string) => {
   const r = await fetch(url)
   if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `HTTP ${r.status}`)
   return r.json()
+}
+
+function parseCsvLine(line: string) {
+  const values: string[] = []
+  let value = ""
+  let quoted = false
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i]
+    if (char === '"') {
+      if (quoted && line[i + 1] === '"') {
+        value += '"'
+        i += 1
+      } else {
+        quoted = !quoted
+      }
+    } else if (char === "," && !quoted) {
+      values.push(value)
+      value = ""
+    } else {
+      value += char
+    }
+  }
+
+  values.push(value)
+  return values
+}
+
+const fieldMappingFetcher = async (url: string) => {
+  const r = await fetch(url)
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  const lines = (await r.text()).split(/\\r?\\n/).filter(Boolean)
+  const headers = parseCsvLine(lines[0] ?? "")
+  return lines.slice(1).map((line) => {
+    const values = parseCsvLine(line)
+    return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])) as FieldMapping
+  })
 }
 
 /** proconnect_engagements.efile_latest — see lib/proconnect/sync.EfileLatest. */
@@ -144,6 +189,10 @@ export default function ReturnDataPage({
   const { data, error, isLoading, mutate } = useSWR<ReturnDetail>(
     `/api/proconnect/returns/${returnId}`,
     fetcher,
+  )
+  const { data: fieldMappings } = useSWR<FieldMapping[]>(
+    "/data/ind-2025-all-series-code-mappings.csv",
+    fieldMappingFetcher,
   )
 
   async function refreshFromProConnect() {
@@ -330,11 +379,16 @@ export default function ReturnDataPage({
                               // Determine which key the cell uses — prefer val, fall back to desc
                               const writeKey: "val" | "desc" = c.val !== null ? "val" : "desc"
                               const currentValue = c.val ?? c.description ?? null
+                              const fieldKey = `${c.prefix_id}/${c.code_id}/${c.suffix_id}`
+                              const fieldTitle = fieldMappings?.find(
+                                (mapping) => mapping.series === seriesId && mapping.code === c.code_id,
+                              )?.description
 
                               return (
                                 <tr key={i} className="border-t">
-                                  <td className="whitespace-nowrap px-3 py-1.5 font-mono">
-                                    {c.prefix_id}/{c.code_id}/{c.suffix_id}
+                                  <td className="px-3 py-1.5">
+                                    <div className="font-medium">{fieldTitle ?? c.description ?? "Unknown field"}</div>
+                                    <code className="text-[10px] text-muted-foreground">{fieldKey}</code>
                                   </td>
                                   <td className="max-w-56 truncate px-3 py-1.5">{c.val ?? "—"}</td>
                                   <td className="max-w-64 truncate px-3 py-1.5 text-muted-foreground">
