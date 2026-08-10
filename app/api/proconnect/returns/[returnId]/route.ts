@@ -90,9 +90,11 @@ export async function GET(
       ? await lookupCodes(
           sb,
           Number(snapshot.tax_year),
-          snapshot.return_type ?? "IND",
+          (snapshot.return_type ?? "IND").toUpperCase(),
           cells.flatMap((c) =>
-            c.series_id && c.code_id ? [{ seriesId: c.series_id, codeId: c.code_id }] : [],
+            c.series_id && c.code_id
+              ? [{ seriesId: c.series_id.toLowerCase(), codeId: c.code_id.toLowerCase() }]
+              : [],
           ),
         )
       : new Map()
