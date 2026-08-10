@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { fetchAllPaged } from "@/lib/supabase/fetch-all"
+import { lookupCodes } from "@/lib/proconnect/catalog"
 
 export const dynamic = "force-dynamic"
 
@@ -85,9 +86,28 @@ export async function GET(
         .order("code_id"),
     )
 
-    const bySeries: Record<string, typeof cells> = {}
-    for (const c of cells) {
-      ;(bySeries[c.series_id] ??= [] as NonNullable<typeof cells>).push(c)
+    const catalog = snapshot?.tax_year
+      ? await lookupCodes(
+          sb,
+          Number(snapshot.tax_year),
+          snapshot.return_type ?? "IND",
+          cells.flatMap((c) =>
+            c.series_id && c.code_id ? [{ seriesId: c.series_id, codeId: c.code_id }] : [],
+          ),
+        )
+      : new Map()
+
+    const enrichedCells = cells.map((c) => {
+      const code = c.series_id && c.code_id ? catalog.get(`${c.series_id}/${c.code_id}`) : undefined
+      return {
+        ...c,
+        field_title: code?.screenTitle || code?.description || null,
+      }
+    })
+
+    const bySeries: Record<string, typeof enrichedCells> = {}
+    for (const c of enrichedCells) {
+      ;(bySeries[c.series_id] ??= []).push(c)
     }
 
     return NextResponse.json({

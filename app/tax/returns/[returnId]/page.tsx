@@ -50,15 +50,8 @@ type Cell = {
   src: string | null
   tsj: string | null
   scope: string | null
-}
-
-type FieldMapping = {
-  agency: string
-  series: string
-  code: string
-  description: string
-  screenTitle: string
-}
+  field_title: string | null
+  }
 
 type ReturnDetail = {
   returnId: string
@@ -83,43 +76,6 @@ const fetcher = async (url: string) => {
   const r = await fetch(url)
   if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `HTTP ${r.status}`)
   return r.json()
-}
-
-function parseCsvLine(line: string) {
-  const values: string[] = []
-  let value = ""
-  let quoted = false
-
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i]
-    if (char === '"') {
-      if (quoted && line[i + 1] === '"') {
-        value += '"'
-        i += 1
-      } else {
-        quoted = !quoted
-      }
-    } else if (char === "," && !quoted) {
-      values.push(value)
-      value = ""
-    } else {
-      value += char
-    }
-  }
-
-  values.push(value)
-  return values
-}
-
-const fieldMappingFetcher = async (url: string) => {
-  const r = await fetch(url)
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
-  const lines = (await r.text()).split(/\\r?\\n/).filter(Boolean)
-  const headers = parseCsvLine(lines[0] ?? "")
-  return lines.slice(1).map((line) => {
-    const values = parseCsvLine(line)
-    return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])) as FieldMapping
-  })
 }
 
 /** proconnect_engagements.efile_latest — see lib/proconnect/sync.EfileLatest. */
@@ -190,11 +146,6 @@ export default function ReturnDataPage({
     `/api/proconnect/returns/${returnId}`,
     fetcher,
   )
-  const { data: fieldMappings } = useSWR<FieldMapping[]>(
-    "/data/ind-2025-all-series-code-mappings.csv",
-    fieldMappingFetcher,
-  )
-
   async function refreshFromProConnect() {
     if (!clientId) {
       toast.error("Missing clientId — open this page from the returns table")
@@ -380,9 +331,7 @@ export default function ReturnDataPage({
                               const writeKey: "val" | "desc" = c.val !== null ? "val" : "desc"
                               const currentValue = c.val ?? c.description ?? null
                               const fieldKey = `${c.prefix_id}/${c.code_id}/${c.suffix_id}`
-                              const fieldTitle = fieldMappings?.find(
-                                (mapping) => mapping.series === seriesId && mapping.code === c.code_id,
-                              )?.description
+                              const fieldTitle = c.field_title
 
                               return (
                                 <tr key={i} className="border-t">
