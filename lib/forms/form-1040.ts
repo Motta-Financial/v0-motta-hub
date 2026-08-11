@@ -45,6 +45,15 @@ function admin() {
 export const DEFAULT_RETURN_TYPE = "IND"
 
 /**
+ * Default IRS artifact. The schema keys on (tax_year, form, line_code, cell)
+ * — see scripts/387 — so a Schedule D or Schedule 1 is a data load, not a
+ * migration. `form` is NOT the same axis as `returnType`: returnType is the
+ * ProConnect module (IND/COR/PAR/…), form is the artifact within it. A 1040
+ * and a Schedule D are both IND.
+ */
+export const DEFAULT_FORM = "1040"
+
+/**
  * Wildcard prefix_id for mappings that aggregate across every instance of
  * a repeating input screen (e.g. all W-2s on s11, where p1/p2/p3 are the
  * first/second/third W-2). The renderer sums the mapped cell_field over
@@ -111,6 +120,8 @@ export type Computation =
 export interface Form1040Line {
   id: number
   taxYear: number
+  /** IRS artifact the line appears on ('1040', 'Schedule 1', …). */
+  form: string
   lineCode: string
   parentCode: string | null
   ordinal: number
@@ -178,7 +189,25 @@ export function isValuePredicate(m: ProConnectMapping): boolean {
   return m.condition !== null && m.condition.cell === undefined
 }
 
+/**
+ * What a mapped cell contributes to its line
+ * (form_1040_proconnect_map.cell_role, scripts/387). Mirrors the taxonomy
+ * in form_1040_line_inputs.role (scripts/360), plus `detail`.
+ *
+ *   primary        the cell whose value IS the line — the default
+ *   detail         one row of an expansion grid behind a primary total
+ *                  (e.g. the s200M/c11 suffix rows behind line 8's "other
+ *                  income" total). Carried by the schema so a drill-down
+ *                  has somewhere to live; NOT consumed as a line value.
+ *   override       an [Override] field that displaces a computation
+ *   discriminator  routes a value to one line vs another (e.g. s14/c2)
+ *   control        changes which branch computes
+ */
+export type CellRole = "primary" | "detail" | "override" | "discriminator" | "control"
+
 export interface ProConnectMapping {
+  /** IRS artifact ('1040', 'Schedule 1', …) — see DEFAULT_FORM. */
+  form: string
   lineCode: string
   returnType: string
   seriesId: string
@@ -186,6 +215,25 @@ export interface ProConnectMapping {
   codeId: string
   suffixId: string
   cellField: CellField
+  cellRole: CellRole
+  /** `(series, prefix, code, suffix)` as one value — the "cell" half of the key. */
+  cellKey: string
+  /**
+   * True when this cell is a raw ProConnect INPUT the tax team may write.
+   * Derived in the database (scripts/387), never set by hand: false for
+   * aggregates, instance-gated mappings, non-value-bearing roles, computed
+   * or N/A lines, and any cell with no catalog definition.
+   *
+   * It matches what the API can actually do — Export returns only raw input
+   * cells, never calculated values, so writing to a calculated cell is
+   * meaningless. This flag makes that a data rule rather than a UI habit.
+   *
+   * It is NOT the post-e-file lock (tracked separately): it means "writable
+   * in principle", not "writable right now".
+   */
+  editable: boolean
+  /** Why `editable` holds its value — audit trail from the derivation. */
+  editableBasis: string | null
   confidence: "unknown" | "inferred" | "confirmed"
   /**
    * Optional code→label translation for enum-coded ProConnect values
@@ -233,6 +281,14 @@ export type Form1040Data = Record<
     value: string | number | boolean | MaskedValue | null
     line: Form1040Line
     source: "proconnect" | "computed" | "input" | "estimated"
+    /**
+     * True when the line is backed by a writable raw-input cell. Carried
+     * from the mapping's `editable` flag so the UI gates on data, not on a
+     * convention. Absent/false means: do not offer an edit control.
+     */
+    editable?: boolean
+    /** Why `editable` holds its value — surfaced for tooltips/diagnostics. */
+    editableBasis?: string | null
     /** Mapping confidence from form_1040_proconnect_map (mapped lines only). */
     confidence?: "unknown" | "inferred" | "confirmed"
     /** Code→label map carried through from the mapping row, if any. */
@@ -257,8 +313,9 @@ const schemaCache = new Map<string, LoadedSchema>()
 export async function loadSchema(
   taxYear: number,
   returnType: string = DEFAULT_RETURN_TYPE,
+  form: string = DEFAULT_FORM,
 ): Promise<LoadedSchema> {
-  const cacheKey = `${taxYear}:${returnType}`
+  const cacheKey = `${taxYear}:${returnType}:${form}`
   const cached = schemaCache.get(cacheKey)
   if (cached) return cached
 
@@ -267,9 +324,10 @@ export async function loadSchema(
     sb
       .from("form_1040_lines")
       .select(
-        "id, tax_year, line_code, parent_code, ordinal, section, label, short_label, data_type, enum_options, is_computed, computation, schedule_ref, worksheet_ref, attaches_form, is_refund_path, not_applicable, notes",
+        "id, tax_year, form, line_code, parent_code, ordinal, section, label, short_label, data_type, enum_options, is_computed, computation, schedule_ref, worksheet_ref, attaches_form, is_refund_path, not_applicable, notes",
       )
       .eq("tax_year", taxYear)
+      .eq("form", form)
       .order("ordinal"),
     sb
       .from("form_1040_constants")
@@ -278,10 +336,11 @@ export async function loadSchema(
     sb
       .from("form_1040_proconnect_map")
       .select(
-        "line_code, return_type, series_id, prefix_id, code_id, suffix_id, cell_field, confidence, value_decode, condition, notes",
+        "form, line_code, return_type, series_id, prefix_id, code_id, suffix_id, cell_field, cell_role, cell_key, editable, editable_basis, confidence, value_decode, condition, notes",
       )
       .eq("tax_year", taxYear)
-      .eq("return_type", returnType),
+      .eq("return_type", returnType)
+      .eq("form", form),
   ])
 
   if (linesRes.error) throw linesRes.error
@@ -291,6 +350,7 @@ export async function loadSchema(
   const lines: Form1040Line[] = (linesRes.data ?? []).map((r) => ({
     id: r.id,
     taxYear: r.tax_year,
+    form: (r.form as string) ?? DEFAULT_FORM,
     lineCode: r.line_code,
     parentCode: r.parent_code,
     ordinal: r.ordinal,
@@ -321,6 +381,7 @@ export async function loadSchema(
   const mappings: ProConnectMapping[] = (mapRes.data ?? [])
     .filter((r) => r.series_id && r.code_id)
     .map((r) => ({
+      form: (r.form as string) ?? DEFAULT_FORM,
       lineCode: r.line_code,
       returnType: r.return_type,
       seriesId: r.series_id as string,
@@ -328,6 +389,15 @@ export async function loadSchema(
       codeId: r.code_id as string,
       suffixId: (r.suffix_id as string) ?? "x1000",
       cellField: ((r.cell_field as CellField) ?? "val") as CellField,
+      cellRole: ((r.cell_role as CellRole) ?? "primary") as CellRole,
+      cellKey:
+        (r.cell_key as string) ??
+        `${r.series_id ?? ""}/${r.prefix_id ?? ""}/${r.code_id ?? ""}/${r.suffix_id ?? ""}`,
+      // Default FALSE, not true: a row predating scripts/387 (or an
+      // environment where the derivation has not run) must not become
+      // silently writable. Editing is opt-in via the derivation.
+      editable: (r.editable as boolean) ?? false,
+      editableBasis: (r.editable_basis as string | null) ?? null,
       confidence: (r.confidence as ProConnectMapping["confidence"]) ?? "unknown",
       valueDecode: (r.value_decode as Record<string, string> | null) ?? null,
       condition: (r.condition as MappingCondition | null) ?? null,
@@ -483,8 +553,21 @@ export async function renderForm1040(
   taxYear: number,
   cells: FieldCell[],
   returnType: string = DEFAULT_RETURN_TYPE,
+  form: string = DEFAULT_FORM,
 ): Promise<Form1040Data> {
-  const { lines, constants, mappings } = await loadSchema(taxYear, returnType)
+  const { lines, constants, mappings: allMappings } = await loadSchema(
+    taxYear,
+    returnType,
+    form,
+  )
+
+  // Since scripts/387 a line may carry SEVERAL cells — the key is
+  // (tax_year, form, line, cell). Only value-bearing roles resolve to the
+  // line's scalar value; `detail` rows are the expansion-grid rows behind a
+  // total (e.g. the s200M/c11 suffix rows behind line 8) and belong to a
+  // drill-down, not to the line itself. Folding them in here would make the
+  // line's value depend on map iteration order.
+  const mappings = allMappings.filter((m) => m.cellRole !== "detail")
 
   const cellKey = (c: {
     seriesId: string
@@ -561,6 +644,8 @@ export async function renderForm1040(
           : coerceToLineType(raw, line.dataType),
         line,
         source: "proconnect",
+        editable: mapping.editable,
+        editableBasis: mapping.editableBasis,
         confidence: mapping.confidence,
         valueDecode: mapping.valueDecode,
       }
@@ -616,6 +701,8 @@ export async function renderForm1040(
         value: sum,
         line,
         source: "proconnect",
+        editable: mapping?.editable ?? false,
+        editableBasis: mapping?.editableBasis ?? null,
         confidence: mapping?.confidence,
         valueDecode: mapping?.valueDecode ?? null,
       }
@@ -628,6 +715,8 @@ export async function renderForm1040(
         value: coerceToLineType(first.raw, line.dataType),
         line,
         source: "proconnect",
+        editable: mapping?.editable ?? false,
+        editableBasis: mapping?.editableBasis ?? null,
         confidence: mapping?.confidence,
         valueDecode: mapping?.valueDecode ?? null,
       }
@@ -669,6 +758,14 @@ function buildEntry(
   mapping: ProConnectMapping,
   entry: Form1040Data[string],
 ): ImportEntry | null {
+  // The data rule (form_1040_proconnect_map.editable, scripts/387) is the
+  // outermost gate: only raw INPUT cells are writable. It already subsumes
+  // the two structural refusals below — and, beyond them, refuses cells with
+  // no catalog definition (the M-series detail grids behind totals like
+  // line 8). The specific checks stay as defence in depth in case a caller
+  // hands us a mapping assembled outside loadSchema.
+  if (!mapping.editable) return null
+
   // Aggregate mappings ("*" prefix) are render-only: the value is a total
   // across every instance of a repeating screen, and there is no single
   // cell to write it to. Emitting "*" as a literal prefixId would corrupt
@@ -755,17 +852,21 @@ export async function composeImportEntries(
   taxYear: number,
   data: Form1040Data,
   returnType: string = DEFAULT_RETURN_TYPE,
+  form: string = DEFAULT_FORM,
 ): Promise<ComposedSeries[]> {
-  const { mappings } = await loadSchema(taxYear, returnType)
+  const { mappings } = await loadSchema(taxYear, returnType, form)
 
-  // Group usable mappings by seriesId. Aggregate ("*"-prefix) and
-  // instance-gated mappings are excluded up front — the former describe a
-  // cross-instance total, not a writable cell, and the latter's sibling
-  // condition cannot be verified on the write target (buildEntry also
-  // refuses both as a second guard). Value predicates stay in: they
-  // resolve to writing the coded value when the line is true.
+  // Group writable mappings by seriesId. `editable` (scripts/387) is the
+  // gate: only raw ProConnect input cells compose into an Import. That
+  // excludes aggregate ("*"-prefix) mappings — a cross-instance total is
+  // not a writable cell — instance-gated mappings, whose sibling condition
+  // cannot be verified on the write target, and any cell without a catalog
+  // definition. Those two structural cases are also checked explicitly so
+  // the intent survives a bad `editable` value. Value predicates stay in:
+  // they resolve to writing the coded value when the line is true.
   const bySeries = new Map<string, ProConnectMapping[]>()
   for (const m of mappings) {
+    if (!m.editable) continue
     if (isAggregateMapping(m) || m.condition?.cell) continue
     const arr = bySeries.get(m.seriesId) ?? []
     arr.push(m)

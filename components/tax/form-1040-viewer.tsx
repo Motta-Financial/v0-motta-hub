@@ -55,6 +55,16 @@ type LineValue = {
   source: "proconnect" | "computed" | "input" | "estimated"
   confidence?: "unknown" | "inferred" | "confirmed"
   decodeMissing?: boolean
+  /**
+   * True when the line is backed by a writable raw-input cell
+   * (form_1040_proconnect_map.editable, scripts/387). Any edit affordance
+   * must gate on this rather than on `!line.isComputed` — ProConnect derives
+   * every total from the underlying entries, and the Export/Import API only
+   * carries raw inputs, so a write to a computed cell is meaningless.
+   */
+  editable?: boolean
+  /** Why `editable` holds its value — suitable for a tooltip. */
+  editableBasis?: string | null
 }
 
 type Form1040Response = {
@@ -66,6 +76,8 @@ type Form1040Response = {
   exportedAt: string | null
   lineCount: number
   mappedLineCount: number
+  /** Mapped lines backed by a writable raw-input cell (scripts/387). */
+  editableLineCount?: number
   computedLineCount?: number
   estimatedLineCount?: number
   lines: Record<string, LineValue>
@@ -600,7 +612,11 @@ export function Form1040Viewer({
               <span>Exported: {new Date(data.exportedAt).toLocaleString()}</span>
             )}
             <span>
-              Source: ProConnect Phase 1 API — {data.mappedLineCount} mapped input lines. Amber “estimated” values are Hub-calculated from IRS worksheets, not from Intuit — verify against the filed return.
+              Source: ProConnect Phase 1 API — {data.mappedLineCount} mapped input lines
+              {typeof data.editableLineCount === "number"
+                ? `, ${data.editableLineCount} of them editable raw entries`
+                : ""}
+              . Amber “estimated” values are Hub-calculated from IRS worksheets, not from Intuit — verify against the filed return.
             </span>
           </div>
         </footer>

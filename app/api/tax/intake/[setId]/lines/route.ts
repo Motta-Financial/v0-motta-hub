@@ -127,6 +127,11 @@ async function loadSetAndSchema(setId: string) {
       "line_code, ordinal, section, label, short_label, data_type, enum_options, is_computed, computation, schedule_ref, notes",
     )
     .eq("tax_year", set.tax_year)
+    // Direct entry renders the 1040 FACE. form_1040_lines is keyed on
+    // (tax_year, form, line_code) since scripts/387, so loading Schedule 1
+    // or Schedule D lines into the table must not leak them into this
+    // screen — nor collide with the 1040's own line numbering.
+    .eq("form", "1040")
     .order("ordinal")
   if (lineErr) throw new Error(lineErr.message)
 

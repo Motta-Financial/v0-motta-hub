@@ -241,28 +241,57 @@ async function main() {
       console.warn(`  ${line}: prefix_id=${r.prefix_id}${r.condition != null ? ` condition=${JSON.stringify(r.condition)}` : ""}`)
   }
 
+  // Since scripts/387 the map keys on (tax_year, form, line_code, cell) —
+  // one line may hold SEVERAL cells. That breaks a bare upsert: relabeling a
+  // line to a different tuple would ADD a second mapping rather than replace
+  // the first, and the renderer would then pick between them by iteration
+  // order. So delete this script's own rows for the line first.
+  //
+  // The delete is scoped to cell_role='primary'. Hand-added detail rows (an
+  // expansion-grid row behind a total) and override/discriminator rows are
+  // not this script's to remove — it only ever discovers the primary cell.
+  const FORM = "1040"
   for (const p of writable) {
+    const cellKey = `${p.series_id}/${p.prefix_id}/${p.code_id}/${p.suffix_id}`
+    const { error: delErr } = await sb
+      .from("form_1040_proconnect_map")
+      .delete()
+      .eq("tax_year", taxYear)
+      .eq("return_type", "IND")
+      .eq("form", FORM)
+      .eq("line_code", p.line_code)
+      .eq("cell_role", "primary")
+      .neq("cell_key", cellKey)
+    if (delErr) {
+      console.error(`  ${p.line_code}: stale-row cleanup FAILED: ${delErr.message} — skipping to avoid a duplicate mapping`)
+      continue
+    }
+
     const { error } = await sb.from("form_1040_proconnect_map").upsert(
       {
         tax_year: taxYear,
         return_type: "IND",
+        form: FORM,
         line_code: p.line_code,
         series_id: p.series_id,
         prefix_id: p.prefix_id,
         code_id: p.code_id,
         suffix_id: p.suffix_id,
         cell_field: "val",
+        cell_role: "primary",
         confidence: "confirmed",
         discovered_at: new Date().toISOString(),
         discovered_from: snap?.id ?? null,
         notes: `Labeled via PTO manual entry + export diff on return ${returnId} (Intuit-sanctioned path, no field catalog yet).`,
       },
-      { onConflict: "tax_year,return_type,line_code" },
+      // cell_key is a generated column — supply the four parts, not the key.
+      { onConflict: "tax_year,return_type,form,line_code,cell_key" },
     )
     if (error) console.error(`  upsert ${p.line_code} FAILED: ${error.message}`)
     else console.log(`  upsert ${p.line_code} ok`)
   }
   console.log("\nDone. Note: the 1040 viewer caches the schema per lambda instance; new mappings appear on a fresh instance (or after the next deploy).")
+  console.log("`editable` is DERIVED — re-run scripts/387 after this to refresh it for the new mappings.")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

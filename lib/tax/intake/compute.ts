@@ -57,6 +57,21 @@ export interface Form1040Constants {
   saltPhaseoutFloor: number
   saltPhaseoutFloorMfs: number
   charitableMileageRate: number
+  /**
+   * Schedule 1-A Parts II-IV (scripts/389). Tips and overtime share one
+   * phase-out whose thousands quotient rounds DOWN; QPVLI rounds UP.
+   */
+  tipsDeductionCap: number
+  overtimeDeductionCap: number
+  overtimeDeductionCapMfj: number
+  tipsOvertimePhaseoutStart: number
+  tipsOvertimePhaseoutStartMfj: number
+  tipsOvertimePhaseoutPer1000: number
+  /** Part V senior deduction (scripts/386). */
+  seniorDeductionMax: number
+  seniorDeductionPhaseoutStart: number
+  seniorDeductionPhaseoutStartMfj: number
+  seniorDeductionPhaseoutRate: number
 }
 
 export type FilingStatus = "single" | "mfj" | "mfs" | "hoh" | "qss"
@@ -134,6 +149,15 @@ export interface ComputeInput {
   filingStatus: FilingStatus
   /** Count of taxpayer/spouse who are 65+ or blind, for IRC 63(f). */
   additionalStdCount?: number
+  /**
+   * How many of the taxpayer/spouse were born before 1961-01-02, for the
+   * Schedule 1-A Part V enhanced deduction for seniors. Distinct from
+   * `additionalStdCount`, which counts aged AND blind boxes together and so
+   * cannot stand in for it — a blind 50-year-old adds a 63(f) box but no
+   * senior deduction. Left undefined the deduction is omitted rather than
+   * guessed, and that omission is reported in `outOfScope`.
+   */
+  seniorCount?: number
   w2s: W2Input[]
   int1099s?: Int1099Input[]
   div1099s?: Div1099Input[]
@@ -510,21 +534,16 @@ export function computeForm1040Preview(
   const line9 = dollars(line1z + line2b + line3b + line4b + line5b + line7 + line8)
 
   // ── Adjustments (Schedule 1 part II) ──
+  // OBBBA qualified tips and overtime are NOT here. They are Schedule 1-A
+  // deductions and land on line 13b, below the line — see the line 13b block
+  // further down. Putting them on line 10 (as this did until 2026-08-11)
+  // understates AGI by their full amount, and AGI drives Social Security
+  // taxability, the CTC phaseout, NIIT, and the phase-outs of these very
+  // deductions.
   const tips = sum(w2s.map((w) => w.obbbaQualifiedTips))
   const overtime = sum(w2s.map((w) => w.obbbaQualifiedOvertime))
   const earlyWithdrawal = sum(ints.map((i) => i.earlyWithdrawalPenalty))
-  const line10 = dollars(tips + overtime + earlyWithdrawal)
-  if (tips > 0 || overtime > 0) {
-    notes.push(
-      `Line 10 includes OBBBA deductions: ${tips > 0 ? `qualified tips ${dollars(tips).toLocaleString()}` : ""}` +
-        `${tips > 0 && overtime > 0 ? " and " : ""}` +
-        `${overtime > 0 ? `qualified overtime ${dollars(overtime).toLocaleString()}` : ""}. ` +
-        "Statutory caps (§224 / §225) and their income phase-outs are NOT applied here — ProConnect will apply them.",
-    )
-    outOfScope.push(
-      "OBBBA §224/§225 caps and phase-outs are not modelled. The preview may overstate the deduction, so treat line 10 onward as indicative.",
-    )
-  }
+  const line10 = dollars(earlyWithdrawal)
   if (earlyWithdrawal > 0) {
     notes.push(
       `Line 10 includes ${dollars(earlyWithdrawal).toLocaleString()} of early-withdrawal penalty ` +
@@ -589,7 +608,84 @@ export function computeForm1040Preview(
   }
 
   const line13 = 0 // no QBI computation
-  const line14 = line12 === null ? null : line12 + line13
+
+  // ── Line 13b: Schedule 1-A additional deductions ──
+  // Below the line, so AGI (line 11) is already final and is the MAGI these
+  // phase-outs read. MAGI proper is Schedule 1-A line 3 = AGI plus excluded
+  // Puerto Rico income and the Form 2555/4563 exclusions, none of which the
+  // intake documents show; on a domestic return AGI is the whole of it.
+  //
+  // Parts II-V all require a joint return if married, so an MFS filer claims
+  // none of them.
+  const isJoint = input.filingStatus === "mfj"
+  const sch1aEligible = input.filingStatus !== "mfs"
+  const magi = line11
+
+  // Parts II/III: reduced by $100 per WHOLE $1,000 over the threshold — the
+  // quotient rounds DOWN (Schedule 1-A lines 11 and 19).
+  const tipsOvertimeReduction = (() => {
+    const start = isJoint ? c.tipsOvertimePhaseoutStartMfj : c.tipsOvertimePhaseoutStart
+    const over = Math.max(0, magi - start)
+    return Math.floor(over / 1000) * c.tipsOvertimePhaseoutPer1000
+  })()
+  const tipsDeduction = sch1aEligible
+    ? Math.max(0, Math.min(tips, c.tipsDeductionCap) - tipsOvertimeReduction)
+    : 0
+  const overtimeDeduction = sch1aEligible
+    ? Math.max(
+        0,
+        Math.min(overtime, isJoint ? c.overtimeDeductionCapMfj : c.overtimeDeductionCap) -
+          tipsOvertimeReduction,
+      )
+    : 0
+
+  // Part V: 6% of MAGI over the threshold, per eligible person.
+  const seniorCount = sch1aEligible ? Math.min(input.seniorCount ?? 0, isJoint ? 2 : 1) : 0
+  const seniorPerPerson = Math.max(
+    0,
+    c.seniorDeductionMax -
+      c.seniorDeductionPhaseoutRate *
+        Math.max(0, magi - (isJoint ? c.seniorDeductionPhaseoutStartMfj : c.seniorDeductionPhaseoutStart)),
+  )
+  const seniorDeduction = seniorCount * seniorPerPerson
+
+  const line13b = dollars(tipsDeduction + overtimeDeduction + seniorDeduction)
+
+  if (tips > 0 || overtime > 0) {
+    notes.push(
+      `Line 13b includes OBBBA Schedule 1-A deductions: ` +
+        `${tips > 0 ? `qualified tips ${dollars(tipsDeduction).toLocaleString()} (of ${dollars(tips).toLocaleString()} reported)` : ""}` +
+        `${tips > 0 && overtime > 0 ? " and " : ""}` +
+        `${overtime > 0 ? `qualified overtime ${dollars(overtimeDeduction).toLocaleString()} (of ${dollars(overtime).toLocaleString()} reported)` : ""}. ` +
+        "These are below-the-line deductions, so they do NOT reduce AGI on line 11.",
+    )
+    if (!sch1aEligible) {
+      notes.push(
+        "Filing status is married filing separately, so no Schedule 1-A deduction is allowed — each part requires a joint return.",
+      )
+    }
+    outOfScope.push(
+      "Schedule 1-A caps and phase-outs are applied, but eligibility is not verified: qualified tips count only in an occupation on the IRS.gov/TippedOccupations list, and every part requires a valid SSN.",
+    )
+  }
+  if (seniorCount > 0) {
+    notes.push(
+      `Line 13b includes the enhanced deduction for seniors: ${seniorCount} × ` +
+        `${Math.round(seniorPerPerson).toLocaleString()} = ${Math.round(seniorDeduction).toLocaleString()}.`,
+    )
+  } else if (sch1aEligible && input.seniorCount === undefined) {
+    outOfScope.push(
+      "The enhanced deduction for seniors (up to 6,000 per person 65+, Schedule 1-A Part V) is not included: the intake does not record how many of the taxpayer/spouse were born before 1961-01-02. It is derived from date of birth, not entered, so ProConnect's line 13b will be higher for a 65+ household.",
+    )
+  }
+  // Vehicle loan interest (Part IV) has no intake field at all.
+  if (line13b > 0 || tips > 0 || overtime > 0) {
+    outOfScope.push(
+      "Qualified passenger vehicle loan interest (Schedule 1-A Part IV) is never included — the intake does not gather vehicle loan interest or VINs.",
+    )
+  }
+
+  const line14 = line12 === null ? null : line12 + line13 + line13b
   const line15 = line14 === null ? null : Math.max(0, line11 - line14) // taxable income
 
   // ── Tax ──
@@ -673,6 +769,11 @@ export function computeForm1040Preview(
       unavailable: line12Unavailable,
     },
     { lineCode: "13", label: "Qualified business income deduction", value: line13 },
+    {
+      lineCode: "13b",
+      label: "Additional deductions (Schedule 1-A)",
+      value: line13b,
+    },
     { lineCode: "14", label: "Total deductions", value: line14, unavailable: line12Unavailable },
     { lineCode: "15", label: "Taxable income", value: line15, unavailable: line12Unavailable },
     { lineCode: "16", label: "Tax", value: line16, unavailable: taxUnavailable },

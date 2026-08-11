@@ -98,9 +98,11 @@ treat a missing property as null.**
 | `scope` | e.g. `Federal`, `State`, `Global` |
 | `source` | Data-entry source indicator (free string) |
 | `cityAbbrev` | City abbreviation for fields keyed on city |
+| `docRefSource` | Undocumented — not in Intuit's field model, observed on 4 M-series cells across our 51 snapshots (2026-08-11). Presumably a reference to the source document. Don't write it |
 | `importSource` | Array describing the channel that populated the value. `isDetailImport` is *intended* to mean it was written via this Import API (Appendix B) — but see the caveat below |
 
-> **`isDetailImport` is still broken — re-verified end-to-end 2026-08-07.** We committed
+> **`isDetailImport` is still broken — re-verified end-to-end 2026-08-07 and again
+> 2026-08-11.** We committed
 > a real Import write and re-exported the cell: it came back as `{"desc": "..."}` with
 > **no `importSource` key at all**. Not a wrong flag — an absent one. By contrast, cells
 > on the same return populated by other channels do carry it (`["isDocImport"]`,
@@ -216,19 +218,20 @@ a legitimate way to learn catalog facts (max value, maxLength) from real returns
 Audit rows are written for every attempt, including dry runs and validation failures that
 never reach Intuit. They record field **addresses** and has-value flags only, never values.
 
-## Known Intuit defects — retested 2026-08-07
+## Known Intuit defects — retested 2026-08-07, defects 3 & 4 again 2026-08-11
 
 Four defects were confirmed by Intuit on the 2026-07-27 call with a target fix of
 ~2026-08-03. All four were re-tested on 2026-08-07 against the sentinel return
 (`de74b2b2-…`), using `scripts/376-retest-intuit-import-defects.ts`. **Two are fixed,
-two are not.**
+two are not.** The two open ones were re-tested on 2026-08-11 before reporting back to
+Intuit — **both unchanged, with byte-identical symptoms.**
 
 | # | Defect | Status 2026-08-07 | Evidence |
 |---|---|---|---|
 | 1 | Hard cap of **20 instances for dispositions** | ✅ **FIXED** | A dry run of 25 disposition instances (s52 `p1`…`p25`) validated clean, and a real commit at `s52/p25/c800` returned `importedCount: 1`. Instance 25 exists on the return. |
 | 2 | **M-screens are not importable** | ✅ **FIXED** | Two independent checks. Routing: `s100M`/`s200M` answer `INVALID_CODE — Code 'c999999999' is not valid for series 's100M'`, identical in shape to the numeric control `s100`, so the series resolves. End-to-end: echoing a real populated M cell (`s200M/p0/c11/x1000`) back as a dry run returned `totalImported: 1, totalErrors: 0`. |
-| 3 | **No delete or clear** | ❌ **STILL OPEN** | Five clear shapes tried against a populated cell — `desc:""`, `desc:null`, `val:""`, `val:null`, and omitting the value sub-field entirely. All five returned HTTP 200 with `importedCount: 1`, and the value was unchanged after each. |
-| 4 | **API-written flag not set** | ❌ **STILL OPEN** | See the `isDetailImport` note above — the API-written cell came back with no `importSource` key at all. |
+| 3 | **No delete or clear** | ❌ **STILL OPEN** (re-confirmed 2026-08-11) | Five clear shapes tried against a populated cell — `desc:""`, `desc:null`, `val:""`, `val:null`, and omitting the value sub-field entirely. All five returned HTTP 200 with `importedCount: 1`, and the value was unchanged after each. Re-run 2026-08-11 against the same cell (`s52/p25/c800/x1000`): same five shapes, same HTTP 200 / `importedCount: 1` / version bump, value still `RETEST 20260807 DEFECT PROBE`. |
+| 4 | **API-written flag not set** | ❌ **STILL OPEN** (re-confirmed 2026-08-11) | See the `isDetailImport` note above — the API-written cell came back with no `importSource` key at all. Re-tested 2026-08-11 with a **fresh** write to an untouched instance (`s52/p26/c800/x1000`, tid `1-6a7ae1cc-31dac7367db124cc68101087`): committed clean, re-export shows `{"desc":"RETEST 20260811 DEFECT PROBE"}` — still no `importSource`. A read-only census of the same return found 338 populated cells with `isDocImport` (49), `isCalculated` (29), `default` (22), absent (238) — and zero `isDetailImport`. |
 
 > **Defect 3 has a sharper edge than "no delete".** A clear attempt doesn't fail — it
 > reports **success**. `{"summary":{"totalImported":1,"totalErrors":0}}`, a bumped series
@@ -238,10 +241,47 @@ two are not.**
 
 > **M-screens import fine but are undocumented.** Defect 2 is closed, yet the field
 > catalog Intuit supplied contains **zero** M-series rows (748 Federal series, all
-> `^s\d+$`) while live returns carry `s100M` and `s200M` cells. So we can write to an M
-> address we've already observed in an Export, but we don't know what any M code *means*
-> and can't discover new ones. That's a catalog-delivery gap, not an API bug — a separate
-> ask for the next call.
+> `^s\d+$`) while live returns carry M-series cells. So we can write to an M address we've
+> already observed in an Export, but we don't know what any M code *means* and can't
+> discover new ones. That's a catalog-delivery gap, not an API bug — raised with Intuit
+> 2026-08-11.
+>
+> Census over `proconnect_return_snapshots` (51 exports on file, 2026-08-11): **39 of 51
+> returns (76%)** carry at least one M series — **20 distinct M screens**, **233 populated
+> cells** across **105 distinct `series/code` addresses**. Most-seen: `s5619M` and `s200M`
+> (13 returns each), then `s4600M` (8), `s5100M` (7), `s100M` and `s2400M` (6), `s52M` and
+> `s31M` (4). This is most of the client base, not a quirk of the sentinel return.
+>
+> Note on shape when re-deriving this: `proconnect_return_snapshots.raw_data` **is** the
+> series map itself — there is no `raw_data.data` wrapper, unlike the live Export payload
+> that `exportReturnData()` returns. Reading `raw_data.data` yields a silent zero.
+
+#### Decoding an M code by hand — Customer Support Tools
+
+Steve's workaround (2026-08-11), the only decode path we have while the catalog has no M
+rows. Inside a ProConnect return: **Return Actions** (blue button, top right) → **Customer
+Support Tools** → "Batch Edit Data". Pick a series and it lists every populated cell as a
+grid: `SERIES | PREFIX | CODE | SUFFIX | STATEID | CITYID | SOURCE | TSJ | VALUE |
+DESCRIPTION`. Confirmed this way: **`s52M` = capital loss carryovers.**
+
+Two limits. It lists only codes **already entered** on that return, so it can't say what an
+unpopulated code means or enumerate what a series accepts — it decodes, it doesn't
+dictionary. And the screen carries an Intuit warning that it's for use while in contact with
+Customer Support, so treat it as read-only reconnaissance; don't edit through it.
+
+#### Open question: is STATEID part of the address?
+
+The Batch Edit grid has a `STATEID` column, and Export carries the same idea as `src`.
+Across our 51 snapshots, M cells show `src` for 8 agencies (MA 36, CO 33, NH 13, CA 10,
+US 9, NE 2, FL 2, VA 1), and `s52M/p0/c201/x1000` holds `src=NE` on one return and `MA` on
+another — *different* returns, one state each. **We have never observed one return holding
+two states at the same series/prefix/code/suffix**, and the Export JSON could not represent
+it if it did: the map bottoms out at suffix, one leaf per address.
+
+So it's unresolved whether `src`/STATEID is a fifth address dimension or a property of a
+single cell. It matters for Import: if two states can share an address, writes need STATEID
+to target the right one, and a multi-state return would silently collapse on Export. Ask
+Intuit whether that grid can ever show two rows identical except STATEID.
 
 Defect 3 remains the reason test writes belong on a disposable copy of a return rather
 than on anything real: if a write goes wrong, the recovery is deleting the return, not
@@ -252,9 +292,12 @@ undoing the write.
 ```
 npx tsx scripts/376-retest-intuit-import-defects.ts survey   # read-only
 npx tsx scripts/376-retest-intuit-import-defects.ts probe    # defects 1, 2 — dryRun only
-npx tsx scripts/376-retest-intuit-import-defects.ts write --i-understand-this-writes
 npx tsx scripts/376-retest-intuit-import-defects.ts clear --i-understand-this-writes
+npx tsx scripts/376-retest-intuit-import-defects.ts write --prefix p27 --i-understand-this-writes
 ```
+
+Defect 3 means every `write` burns an instance permanently, so each re-test needs a new
+`--prefix`: `p25` (2026-08-07), `p26` (2026-08-11), so `p27` next.
 
 `write` and `clear` refuse any return other than the sentinel, and `write` runs its own
 dry run first. Both record audit rows in `proconnect_import_jobs`.

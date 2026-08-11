@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { fetchAllPaged } from "@/lib/supabase/fetch-all"
+import { lockFromCachedEfile } from "@/lib/proconnect/efile-lock"
 
 export const dynamic = "force-dynamic"
 
@@ -47,6 +48,25 @@ export async function GET(
     if (detailErr) {
       return NextResponse.json({ error: detailErr.message }, { status: 500 })
     }
+
+    // Post-e-file edit lock, for the viewer's badge and disabled state.
+    //
+    // ADVISORY ONLY. This is derived from the cached filings so a page view
+    // costs no ProConnect call; the authoritative check runs live inside the
+    // import route, which is the actual write boundary. A stale or blanked
+    // cache here can only mislabel a badge, never let a write through.
+    //
+    // Reads proconnect_engagements rather than the enriched view because
+    // efile_filings is deliberately kept out of that view (it would drag a
+    // jsonb blob into every dashboard query) — and the full filings array is
+    // exactly what the predicate needs: the headline efile_status cannot
+    // tell an accepted 4868 from an accepted return.
+    const { data: efileRow } = await sb
+      .from("proconnect_engagements")
+      .select("efile_filings, efile_synced_at")
+      .eq("engagement_id", returnId)
+      .maybeSingle()
+    const lock = lockFromCachedEfile(efileRow ?? {})
 
     // Snapshot row (authoritative export metadata, incl. tombstone).
     const { data: snapshot } = await sb
@@ -93,6 +113,7 @@ export async function GET(
     return NextResponse.json({
       returnId,
       engagement: detail ?? null,
+      lock,
       snapshot: snapshot ?? null,
       cellCount: cells.length,
       seriesCount: Object.keys(bySeries).length,

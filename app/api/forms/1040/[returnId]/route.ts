@@ -118,10 +118,38 @@ export async function GET(
   // 4. Load schema for metadata
   const schema = await loadSchema(taxYear, returnType)
 
-  // 5. Estimate the deterministic PTO-calculated lines (12a, 6b, 16, 19)
-  // from mapped inputs + constants. These carry source:"estimated" for the
-  // viewer badge and are never written back to ProConnect.
-  const form1040 = estimateDeterministicLines(rendered, cells, schema.lines, schema.constants)
+  // 5. Estimate the deterministic PTO-calculated lines (6b, 12a, 13b, 16, 19,
+  // 27, 28) from mapped inputs + constants. These carry source:"estimated"
+  // for the viewer badge and are never written back to ProConnect.
+  //
+  // The derivation rows come along so the estimator can gate line 12a on
+  // whether Schedule A could beat the standard deduction. They are fetched
+  // here rather than in loadSchema because the addresses are
+  // partner-confidential: they exist only in the database, never in this
+  // repository. A missing table or a failed read yields an empty array, which
+  // leaves the gate inert rather than breaking the render.
+  const { data: lineInputRows } = await sb
+    .from("form_1040_line_inputs")
+    .select("line_code, source_kind, source_ref, series_id, code_id, role")
+    .eq("tax_year", taxYear)
+    .eq("return_type", returnType)
+
+  const lineInputs = (lineInputRows ?? []).map((r) => ({
+    lineCode: r.line_code as string,
+    sourceKind: r.source_kind as string,
+    sourceRef: (r.source_ref ?? null) as string | null,
+    seriesId: (r.series_id ?? null) as string | null,
+    codeId: (r.code_id ?? null) as string | null,
+    role: r.role as string,
+  }))
+
+  const form1040 = estimateDeterministicLines(
+    rendered,
+    cells,
+    schema.lines,
+    schema.constants,
+    lineInputs,
+  )
 
   // 6. Post-process the final data before anything leaves the server
   //    (after estimation, so estimates ran over raw values):
@@ -168,7 +196,15 @@ export async function GET(
     // Denominator excludes lines that can never hold a value (line 30
     // "Reserved", 12b N/A for TY2025).
     lineCount: schema.lines.filter((l) => !l.notApplicable).length,
-    mappedLineCount: schema.mappings.length,
+    // Distinct LINES, not mapping rows: since scripts/387 the map keys on
+    // (tax_year, form, line, cell), so one line may carry several cells and
+    // mappings.length would overcount coverage.
+    mappedLineCount: new Set(schema.mappings.map((m) => m.lineCode)).size,
+    // Of those, how many are raw input cells the tax team may edit. The
+    // rest are aggregates, gated instances, or totals ProConnect computes.
+    editableLineCount: new Set(
+      schema.mappings.filter((m) => m.editable).map((m) => m.lineCode),
+    ).size,
     // Lines the renderer derives from mapped inputs (sums, AGI, etc.) —
     // they populate without a mapping of their own, so raw
     // mapped/lineCount badly understates real coverage.
@@ -245,6 +281,38 @@ export async function POST(
       : { value: null, line, source: "input" }
   }
 
+  // 2b. Report every submitted line the composer will NOT write, and why.
+  //     Composition silently skips non-editable mappings by design, and a
+  //     silent skip reads to the caller as success — the exact failure mode
+  //     behind the "Write to return was a silent no-op" fix. Surface it.
+  const mappingByLine = new Map(mappings.map((m) => [m.lineCode, m]))
+  const refused = Object.keys(body.lines ?? {})
+    .filter((lineCode) => {
+      const v = body.lines[lineCode]
+      return v !== undefined && v !== null && v !== "" && typeof v !== "object"
+    })
+    .map((lineCode) => {
+      const m = mappingByLine.get(lineCode)
+      if (!m) {
+        return {
+          lineCode,
+          reason: lines.some((l) => l.lineCode === lineCode)
+            ? "No ProConnect mapping discovered for this line — nothing to write to."
+            : "Unknown line code for this tax year / form.",
+        }
+      }
+      if (!m.editable) {
+        return {
+          lineCode,
+          reason:
+            m.editableBasis ??
+            "Not a writable raw-input cell (form_1040_proconnect_map.editable = false).",
+        }
+      }
+      return null
+    })
+    .filter((r): r is { lineCode: string; reason: string } => r !== null)
+
   // 3. Evaluate computed lines
   const evaluated = evaluateComputedLines(data, lines, constants)
 
@@ -261,6 +329,9 @@ export async function POST(
     reason: body.reason ?? null,
     evaluatedLines: evaluated,
     importPayloads,
+    // Submitted values that will NOT reach ProConnect, with the reason.
+    // Empty array = everything submitted composed into a payload.
+    refused,
     hint:
       "POST each entry in importPayloads to /api/proconnect/returns/" +
       returnId +

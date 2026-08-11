@@ -181,6 +181,17 @@ export async function loadForm1040Constants(
     saltPhaseoutFloor: num("salt_phaseout_floor"),
     saltPhaseoutFloorMfs: num("salt_phaseout_floor_mfs"),
     charitableMileageRate: num("charitable_mileage_rate", 0.14),
+    // Schedule 1-A Parts II-V (scripts/389 + 386).
+    tipsDeductionCap: num("tips_deduction_cap"),
+    overtimeDeductionCap: num("overtime_deduction_cap"),
+    overtimeDeductionCapMfj: num("overtime_deduction_cap_mfj"),
+    tipsOvertimePhaseoutStart: num("tips_overtime_phaseout_start"),
+    tipsOvertimePhaseoutStartMfj: num("tips_overtime_phaseout_start_mfj"),
+    tipsOvertimePhaseoutPer1000: num("tips_overtime_phaseout_per_1000"),
+    seniorDeductionMax: num("senior_deduction_max"),
+    seniorDeductionPhaseoutStart: num("senior_deduction_phaseout_start"),
+    seniorDeductionPhaseoutStartMfj: num("senior_deduction_phaseout_start_mfj"),
+    seniorDeductionPhaseoutRate: num("senior_deduction_phaseout_rate"),
   }
 }
 
