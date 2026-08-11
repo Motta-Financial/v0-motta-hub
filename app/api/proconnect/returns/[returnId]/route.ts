@@ -13,8 +13,9 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { readFile } from "node:fs/promises"
+import path from "node:path"
 import { fetchAllPaged } from "@/lib/supabase/fetch-all"
-import { lookupCodes } from "@/lib/proconnect/catalog"
 
 export const dynamic = "force-dynamic"
 
@@ -26,6 +27,47 @@ function admin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false },
   })
+}
+
+function parseCsvLine(line: string) {
+  const values: string[] = []
+  let value = ""
+  let quoted = false
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i]
+    if (char === '"') {
+      if (quoted && line[i + 1] === '"') {
+        value += '"'
+        i += 1
+      } else quoted = !quoted
+    } else if (char === "," && !quoted) {
+      values.push(value)
+      value = ""
+    } else value += char
+  }
+  values.push(value)
+  return values
+}
+
+async function loadFieldMappings() {
+  const csv = await readFile(
+    path.join(process.cwd(), "data/ind-2025-all-series-code-mappings.csv"),
+    "utf8",
+  )
+  const lines = csv.split(/\\r?\\n/).filter(Boolean)
+  const headers = parseCsvLine(lines[0] ?? "")
+  const mappings = new Map<string, { description: string; screenTitle: string }>()
+  for (const line of lines.slice(1)) {
+    const values = parseCsvLine(line)
+    const row = Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]))
+    if (row.series && row.code) {
+      mappings.set(`${row.series.toLowerCase()}/${row.code.toLowerCase()}`, {
+        description: row.description,
+        screenTitle: row.screenTitle,
+      })
+    }
+  }
+  return mappings
 }
 
 export async function GET(
@@ -86,25 +128,19 @@ export async function GET(
         .order("code_id"),
     )
 
-    const catalog = snapshot?.tax_year
-      ? await lookupCodes(
-          sb,
-          Number(snapshot.tax_year),
-          (snapshot.return_type ?? "IND").toUpperCase(),
-          cells.flatMap((c) =>
-            c.series_id && c.code_id
-              ? [{ seriesId: c.series_id.toLowerCase(), codeId: c.code_id.toLowerCase() }]
-              : [],
-          ),
-        )
-      : new Map()
+    const fieldMappings =
+      Number(snapshot?.tax_year) === 2025 && (snapshot?.return_type ?? "IND").toUpperCase() === "IND"
+        ? await loadFieldMappings()
+        : new Map<string, { description: string; screenTitle: string }>()
 
     const enrichedCells = cells.map((c) => {
-      const code = c.series_id && c.code_id ? catalog.get(`${c.series_id}/${c.code_id}`) : undefined
+      const mapping = c.series_id && c.code_id
+        ? fieldMappings.get(`${c.series_id.toLowerCase()}/${c.code_id.toLowerCase()}`)
+        : undefined
       return {
         ...c,
-        // The CSV's description identifies the specific field; screenTitle is only the broad section name.
-        field_title: code?.description || code?.screenTitle || null,
+        // The supplied Intuit CSV describes fields by series/code; prefix and suffix identify instances.
+        field_title: mapping?.description || mapping?.screenTitle || null,
       }
     })
 

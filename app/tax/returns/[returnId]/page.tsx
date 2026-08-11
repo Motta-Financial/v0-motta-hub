@@ -55,7 +55,7 @@ type Cell = {
 
 function cleanFieldLabel(label: string | null, rawPath: string) {
   if (!label) return { visible: rawPath, note: null }
-  const match = label.match(/^(.*?)(\\s*\\([^)]*\\))\\s*$/)
+  const match = label.match(/^(.*?)(\s*\([^)]*\))\s*$/)
   return {
     visible: (match?.[1] ?? label).trim() || rawPath,
     note: match?.[2]?.trim() ?? null,
