@@ -643,7 +643,7 @@ interface RawEngagement {
   taxFiling?: RawTaxFiling
 }
 
-interface RawFilingStatus {
+export interface RawFilingStatus {
   status?: string
   /** Intuit's human label for the same state: "Rejected", "Received by Agency". */
   userMessage?: string
@@ -652,17 +652,25 @@ interface RawFilingStatus {
   errorInfo?: Array<{ errorCode?: string; problemMessage?: string }>
 }
 
-interface RawFiling {
+export interface RawFiling {
   filingType?: string
   filingLevel?: string
   jurisdiction?: string
   primaryFiling?: boolean
+  /**
+   * Identifies WHICH filing this is: `{entity}.{jurisdiction}[.{kind}]` —
+   * `ind.us` is the 1040 itself, `ind.us.ext` the 4868, `ind.us.amd` the
+   * 1040-X, `ind.us.fbar` FinCEN 114. Present on 100% of live filings
+   * (2,383 of 2,383, 2026-08-11) and agrees with `filingType` everywhere
+   * it overlaps, so ./efile-lock reads both and takes the stricter answer.
+   */
+  filingKey?: { filingId?: string; instance?: string }
   filingStatuses?: RawFilingStatus[]
   /** Nested filings — an extension hangs off the return it extends. */
   children?: RawFiling[]
 }
 
-interface RawTaxFiling {
+export interface RawTaxFiling {
   filings?: RawFiling[]
   derivedStatus?: string | null
 }
@@ -683,7 +691,7 @@ export interface EfileLatest {
 }
 
 /** Depth-first flatten of filings[] including nested children[]. */
-function flattenFilings(filings: RawFiling[] | undefined): RawFiling[] {
+export function flattenFilings(filings: RawFiling[] | undefined): RawFiling[] {
   const out: RawFiling[] = []
   for (const f of filings || []) {
     out.push(f)
@@ -706,7 +714,13 @@ function filingRank(f: RawFiling): number {
   )
 }
 
-function latestStatusOf(f: RawFiling): RawFilingStatus | null {
+/**
+ * The CURRENT status of one filing: the entry with the newest
+ * `statusUpdateTimestamp`. Never `filingStatuses.at(-1)` — the history is
+ * append-only but arrives unordered (1,505 of 2,383 live filings are not in
+ * chronological array order, measured 2026-08-11).
+ */
+export function latestStatusOf(f: RawFiling): RawFilingStatus | null {
   let latest: RawFilingStatus | null = null
   let latestDate = -Infinity
   for (const s of f.filingStatuses || []) {
@@ -855,12 +869,23 @@ const EFILE_HYDRATE_MAX =
 const EFILE_HYDRATE_BUDGET_MS =
   Number(process.env.PROCONNECT_EFILE_HYDRATE_BUDGET_MS) || 150_000
 
-interface EfileHydrateResult {
+export interface EfileHydrateResult {
   ok: boolean
   /** True when the engagement came back with at least one filing. */
   hasFilings: boolean
   status: string | null
   latest: EfileLatest | null
+  /**
+   * The verbatim `taxFiling` payload, set whenever the GET itself succeeded
+   * — including when the DB write afterwards did not. Callers that need to
+   * reason about ALL filings rather than the single headline status (the
+   * post-e-file edit lock, ./efile-lock) read this; `fetchedOk` says whether
+   * it is trustworthy, since a null here is otherwise ambiguous between
+   * "nothing filed" and "we never got an answer".
+   */
+  taxFiling?: RawTaxFiling | null
+  /** True when GET /v2/engagements/{id} returned a payload we could read. */
+  fetchedOk: boolean
   /** True when no proconnect_engagements row matched the id. */
   missingRow?: boolean
   /** True when ProConnect no longer has this engagement (404). */
@@ -909,6 +934,7 @@ export async function hydrateEngagementEfile(
         hasFilings: false,
         status: null,
         latest: null,
+        fetchedOk: false,
         notFound: true,
         error: resp.error || "404 not found in ProConnect",
       }
@@ -918,6 +944,7 @@ export async function hydrateEngagementEfile(
       hasFilings: false,
       status: null,
       latest: null,
+      fetchedOk: false,
       error: resp.error || `fetch failed (${resp.status})`,
     }
   }
@@ -941,14 +968,32 @@ export async function hydrateEngagementEfile(
     .select("engagement_id")
 
   const status = latest?.status ?? null
+  // fetchedOk / taxFiling are set on every branch below: the GET already
+  // succeeded, so the filings are usable even when the DB write is not.
   if (error) {
-    return { ok: false, hasFilings, status, latest, error: error.message }
+    return {
+      ok: false,
+      hasFilings,
+      status,
+      latest,
+      taxFiling,
+      fetchedOk: true,
+      error: error.message,
+    }
   }
   if (!data || data.length === 0) {
-    return { ok: false, hasFilings, status, latest, missingRow: true }
+    return {
+      ok: false,
+      hasFilings,
+      status,
+      latest,
+      taxFiling,
+      fetchedOk: true,
+      missingRow: true,
+    }
   }
 
-  return { ok: true, hasFilings, status, latest }
+  return { ok: true, hasFilings, status, latest, taxFiling, fetchedOk: true }
 }
 
 /**

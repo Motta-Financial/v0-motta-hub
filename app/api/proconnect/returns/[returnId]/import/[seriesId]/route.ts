@@ -17,10 +17,22 @@
  *   POST https://api.intuit.com/v2/clients/{clientId}/returns/{returnId}/import/series/{seriesId}
  *
  * Write safety:
- *   Two independent gates stand in front of a commit. The return must be
- *   on PROCONNECT_WRITE_ALLOWED_RETURN_IDS (fails closed when unset), and
- *   a clean dry run of the same shape must have happened in the last 30
- *   minutes. Dry runs bypass both — they persist nothing.
+ *   Three independent gates stand in front of a commit. The return must not
+ *   be locked by an accepted e-filing (see lib/proconnect/efile-lock), it
+ *   must be on PROCONNECT_WRITE_ALLOWED_RETURN_IDS (fails closed when
+ *   unset), and a clean dry run of the same shape must have happened in the
+ *   last 30 minutes. Dry runs are refused by none of them — they persist
+ *   nothing — but they DO carry the lock verdict back on `lock` so the
+ *   editor can say a commit will be refused before anyone tries it.
+ *
+ *   The e-file lock is THE enforcement point for firm policy that a filed
+ *   return is final. The viewer disables editing on a locked return too,
+ *   but that is a courtesy: a disabled input is a UI convention, this route
+ *   is the boundary. It re-reads the engagement from ProConnect on every
+ *   commit rather than trusting a cached column, because the cached
+ *   efile_* columns are hydrated by a separate pass and a list-derived
+ *   upsert that reintroduced them would blank them nightly — which would
+ *   quietly unlock every filed return.
  *
  * Audit policy:
  *   We record EVERY attempt — including dry runs and validation failures
@@ -49,6 +61,7 @@ import {
   type ImportVerification,
 } from "@/lib/proconnect/data"
 import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
+import { resolveReturnLock } from "@/lib/proconnect/efile-lock"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -133,6 +146,25 @@ export async function POST(
     )
   }
 
+  // ------------------------------------------------------------------ post-e-file lock
+  // Firm policy: once a return has been e-filed and accepted, its data is
+  // final. This route is where that is enforced.
+  //
+  // The predicate is existential over the engagement's filings, not a read
+  // of the headline efile_status. An accepted Form 4868 must NOT lock the
+  // return it extends — 66 of 919 live engagements are in exactly that
+  // state, nearly all TY2025 1040s still being worked — while a return with
+  // an acceptance anywhere in its filings must stay locked even when a
+  // later rejection is the newer news. See lib/proconnect/efile-lock.
+  //
+  // Read live and fail closed. Dry runs are evaluated but never blocked —
+  // they persist nothing, and carrying the decision back lets the editor
+  // warn before anyone spends a dry run on a return the commit will refuse.
+  const lock = await resolveReturnLock(returnId)
+  if (!dryRun && lock.locked) {
+    return NextResponse.json({ error: lock.reason, lock, returnId }, { status: 423 })
+  }
+
   // ------------------------------------------------------------------ dryRun-first gate
   // There is no ProConnect sandbox — a commit writes onto a live return.
   // A non-dry-run commit is only allowed when a CLEAN dry run (zero
@@ -175,6 +207,10 @@ export async function POST(
   }
   if (body.actor) triggerCtx.declared_actor = body.actor
   if (body.reason) triggerCtx.reason = body.reason
+  // What the lock said at the moment of the attempt. On a commit this is
+  // always an unlocked verdict — recording it makes "why was this return
+  // writable on that date" answerable later without re-deriving it.
+  triggerCtx.efile_lock = lock
   const { data: jobRow, error: jobErr } = await sb
     .from("proconnect_import_jobs")
     .insert({
@@ -242,7 +278,7 @@ export async function POST(
       .eq("id", jobId)
 
     return NextResponse.json(
-      { jobId, error: result.error, intuitTid: result.intuitTid },
+      { jobId, error: result.error, lock, intuitTid: result.intuitTid },
       { status: result.error.status || 500 },
     )
   }
@@ -318,6 +354,7 @@ export async function POST(
     jobId,
     ...result.data,
     verification,
+    lock,
     intuitTid: result.intuitTid,
   })
 }

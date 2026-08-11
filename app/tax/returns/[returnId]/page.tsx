@@ -24,6 +24,7 @@ import {
   ArrowLeft,
   Clock,
   FileText,
+  Lock,
   Pencil,
   RefreshCw,
   Table2,
@@ -47,9 +48,31 @@ type Cell = {
   scope: string | null
 }
 
+/**
+ * Post-e-file edit lock — lib/proconnect/efile-lock.LockDecision.
+ *
+ * Cosmetic here. The API serves an advisory verdict computed from cached
+ * filings; the import route re-derives it live and is what actually refuses
+ * a write. Never treat a `locked: false` from this page as permission.
+ */
+type LockDecision = {
+  locked: boolean
+  code: string
+  reason: string
+  failedClosed: boolean
+  filing: {
+    filingType?: string | null
+    filingLevel?: string | null
+    jurisdiction?: string | null
+    statusUpdateTimestamp?: string | null
+    confirmationNumber?: string | null
+  } | null
+}
+
 type ReturnDetail = {
   returnId: string
   engagement: Record<string, unknown> | null
+  lock: LockDecision | null
   snapshot: {
     exported_at: string | null
     deleted_at: string | null
@@ -125,6 +148,38 @@ function EfileSummary({
   )
 }
 
+/**
+ * Why this return cannot be edited. Shown once, at the top of the field
+ * table, rather than as a tooltip on each of ~5,000 disabled pencils.
+ */
+function LockBanner({ lock }: { lock: LockDecision }) {
+  const f = lock.filing
+  const scope = f
+    ? [
+        f.filingLevel === "flState" ? f.jurisdiction || "state" : "federal",
+        (f.filingType || "").toLowerCase(),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : null
+
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+      <Lock className="mt-0.5 size-4 shrink-0" />
+      <div>
+        <p className="font-medium">
+          {lock.failedClosed ? "Editing is locked pending review" : "This return has been filed"}
+        </p>
+        <p className="text-xs opacity-90">
+          {lock.reason}
+          {scope ? ` (${scope})` : ""}
+          {f?.confirmationNumber ? ` · confirmation ${f.confirmationNumber}` : ""}
+        </p>
+      </div>
+    </div>
+  )
+}
+
 export default function ReturnDataPage({
   params,
 }: {
@@ -178,6 +233,11 @@ export default function ReturnDataPage({
   const clientName =
     data?.snapshot?.client_name ?? (eng.client_display_name as string) ?? null
   const is1040 = (data?.snapshot?.return_type ?? eng.return_type) === "IND"
+  // Cosmetic gate. The server refuses a locked write regardless of what this
+  // says; the point of hiding the pencil is that a preparer shouldn't have
+  // to be told no after typing. Defaults to locked while the verdict is
+  // still loading, so the control never flashes enabled on a filed return.
+  const locked = data?.lock ? data.lock.locked : true
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
@@ -296,6 +356,7 @@ export default function ReturnDataPage({
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                {locked && data.lock && <LockBanner lock={data.lock} />}
                 {Object.entries(data.cellsBySeries).map(([seriesId, cells]) => {
                   // Find the version stamp for this series from the snapshot
                   const seriesVersion =
@@ -338,7 +399,7 @@ export default function ReturnDataPage({
                                   <td className="px-3 py-1.5">{c.tsj ?? "—"}</td>
                                   <td className="px-3 py-1.5 text-muted-foreground">{c.src ?? "—"}</td>
                                   <td className="px-3 py-1.5 text-right">
-                                    {clientId && (
+                                    {clientId && !locked && (
                                       <Button
                                         variant="ghost"
                                         size="icon"

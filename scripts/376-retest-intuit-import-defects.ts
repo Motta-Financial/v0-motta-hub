@@ -116,9 +116,17 @@ async function main() {
   if (!["survey", "screens", "shape", "paths", "history", "selftest", "probe", "write", "clear"].includes(cmd)) {
     console.error(
       "usage: survey|screens|shape|paths|history|probe|write|clear [--return <id>] " +
-        "[--grep <text>] [--series <sid>] [--i-understand-this-writes]",
+        "[--grep <text>] [--series <sid>] [--prefix <pN>] [--i-understand-this-writes]",
     )
     process.exit(1)
+  }
+  if (opts["prefix"]) {
+    const prefixId = String(opts["prefix"])
+    if (!/^p\d{1,4}$/.test(prefixId)) {
+      console.error(`--prefix must look like p26, got "${prefixId}"`)
+      process.exit(1)
+    }
+    ACTIVE = { ...TARGET, prefixId }
   }
 
   const { createClient } = await import("@supabase/supabase-js")
@@ -180,10 +188,21 @@ async function main() {
 // would) while also creating the cell defects 3 and 4 need. Text field, no
 // tax consequence, on a return that will never be filed.
 // ---------------------------------------------------------------------------
+// Defect 3 means p25 can never be emptied again, so each later re-test of
+// defect 4 needs its own untouched instance: --prefix p26, p27, …
 const TARGET = { seriesId: "s52", prefixId: "p25", codeId: "c800", suffixId: "x1000" }
 const TARGET_TEXT = "RETEST 20260807 DEFECT PROBE"
 
-function readCell(exp: any, t = TARGET) {
+/** TARGET with --prefix applied. `clear` leaves it at p25; `write` moves it on. */
+let ACTIVE = { ...TARGET }
+
+/** Date-stamped so the export shows which run left which cell behind. */
+function probeText(now: Date) {
+  const stamp = now.toISOString().slice(0, 10).replace(/-/g, "")
+  return `RETEST ${stamp} DEFECT PROBE`
+}
+
+function readCell(exp: any, t = ACTIVE) {
   return exp.data?.[t.seriesId]?.[t.prefixId]?.[t.codeId]?.[t.suffixId] ?? null
 }
 
@@ -254,15 +273,18 @@ async function write(sb: any, clientId: string, returnId: string) {
   }
   const existing = readCell(before.data)
   console.log(
-    `target ${TARGET.seriesId}/${TARGET.prefixId}/${TARGET.codeId}/${TARGET.suffixId} — ` +
+    `target ${ACTIVE.seriesId}/${ACTIVE.prefixId}/${ACTIVE.codeId}/${ACTIVE.suffixId} — ` +
       `currently ${existing ? "POPULATED" : "empty"}`,
   )
   if (existing) {
-    console.error("refusing: target cell already holds data. Pick an unused instance.")
+    console.error(
+      "refusing: target cell already holds data. Pick an unused instance with --prefix pN\n" +
+        "(defect 3 means a populated cell can never be emptied again).",
+    )
     process.exit(1)
   }
-  const version = getSeriesVersion(before.data, TARGET.seriesId)
-  const entry = { ...TARGET, desc: TARGET_TEXT }
+  const version = getSeriesVersion(before.data, ACTIVE.seriesId)
+  const entry = { ...ACTIVE, desc: probeText(new Date()) }
   const { seriesId, ...entryBody } = entry
 
   // Gate 2, same as the API route: a clean dry run of the exact shape first.
@@ -282,14 +304,14 @@ async function write(sb: any, clientId: string, returnId: string) {
   console.log(`  ${JSON.stringify(commit.body).slice(0, 600)}`)
 
   verdict(
-    "defect 1 (real commit at instance 25)",
+    `defect 1 (real commit at instance ${ACTIVE.prefixId.slice(1)})`,
     commit.status === 200 && (commit.body?.summary?.totalImported ?? 0) === 1
       ? true
       : commit.status === 200
         ? false
         : null,
     commit.status === 200 && (commit.body?.summary?.totalImported ?? 0) === 1
-      ? "disposition instance 25 committed — the 20-instance cap is gone"
+      ? `disposition instance ${ACTIVE.prefixId.slice(1)} committed — the 20-instance cap is gone`
       : `commit did not persist: ${JSON.stringify(commit.body?.results?.[0]?.errors ?? commit.body).slice(0, 300)}`,
   )
 
@@ -345,7 +367,7 @@ async function clear(sb: any, clientId: string, returnId: string) {
       verdict("defect 3 (no delete/clear)", true, "the cell no longer appears in the export")
       return
     }
-    const { seriesId, ...addr } = TARGET
+    const { seriesId, ...addr } = ACTIVE
     const version = getSeriesVersion(exp.data, seriesId)
     const entryBody = { ...addr, ...patch }
 

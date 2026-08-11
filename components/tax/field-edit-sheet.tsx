@@ -76,6 +76,13 @@ type ImportResult = {
     }>
   }>
   verification: Verification | null
+  /**
+   * Post-e-file edit lock, as the server decided it at the moment of this
+   * request — lib/proconnect/efile-lock.LockDecision. Present on every
+   * response including a 423 refusal, so the reason shown here is the
+   * server's own words rather than a guess made in the browser.
+   */
+  lock?: { locked: boolean; code: string; reason: string } | null
   intuitTid?: string
 }
 
@@ -92,7 +99,7 @@ type CommitState =
   | { status: "success"; jobId: string; landed: number }
   | { status: "partial"; jobId: string; unlanded: UnlandedEntry[] }
   | { status: "unverified"; jobId: string }
-  | { status: "error"; message: string; statusCode?: number }
+  | { status: "error"; message: string; statusCode?: number; lockReason?: string }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -124,6 +131,11 @@ export function FieldEditSheet({
   const [dryRun, setDryRun] = useState<DryRunState>({ status: "idle" })
   const [commit, setCommit] = useState<CommitState>({ status: "idle" })
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // The dry-run response carries the server's live lock verdict. Dry runs
+  // are allowed on a locked return — they write nothing — so this is the
+  // earliest honest moment to say the commit will be refused, without
+  // waiting for the user to click Apply and collect a 423.
+  const [lockWarning, setLockWarning] = useState<string | null>(null)
 
   // Reset state when the sheet opens for a new target
   function handleOpenChange(o: boolean) {
@@ -146,6 +158,7 @@ export function FieldEditSheet({
       setNewValue(target.currentValue ?? "")
       setDryRun({ status: "idle" })
       setCommit({ status: "idle" })
+      setLockWarning(null)
     }
   }
 
@@ -178,6 +191,8 @@ export function FieldEditSheet({
         setDryRun({ status: "error", message: body.error ?? `HTTP ${res.status}` })
         return
       }
+
+      setLockWarning(body.lock?.locked ? body.lock.reason : null)
 
       const errors = body.results?.[0]?.errors ?? []
       if (errors.length > 0) {
@@ -223,7 +238,12 @@ export function FieldEditSheet({
           setCommit({ status: "error", message: "stale-dry-run", statusCode: 409 })
           setDryRun({ status: "idle" })
         } else if (statusCode === 423) {
-          setCommit({ status: "error", message: "locked", statusCode: 423 })
+          setCommit({
+            status: "error",
+            message: "locked",
+            statusCode: 423,
+            lockReason: body.lock?.reason ?? body.error,
+          })
         } else if (statusCode === 429) {
           setCommit({ status: "error", message: "rate-limited", statusCode: 429 })
         } else {
@@ -253,6 +273,7 @@ export function FieldEditSheet({
 
   const applyEnabled =
     dryRun.status === "clean" &&
+    !lockWarning &&
     commit.status !== "running" &&
     commit.status !== "success"
 
@@ -279,6 +300,17 @@ export function FieldEditSheet({
           <div className="flex flex-col gap-4 overflow-y-auto px-4 py-2">
             {target && (
               <>
+                {lockWarning && (
+                  <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
+                    <p className="font-medium">This return has been filed.</p>
+                    <p className="mt-1">{lockWarning}</p>
+                    <p className="mt-1">
+                      Validation still runs, but the write will be refused. Make the change in
+                      ProConnect.
+                    </p>
+                  </div>
+                )}
+
                 {/* Current value */}
                 <div className="space-y-1">
                   <p className="text-xs font-medium text-muted-foreground">Current value</p>
@@ -396,7 +428,11 @@ export function FieldEditSheet({
 
                 {commit.status === "error" && commit.statusCode === 423 && (
                   <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
-                    This return is locked upstream. No writes can be applied until it is unlocked in ProConnect.
+                    <p className="font-medium">Locked — no write was attempted.</p>
+                    <p className="mt-1">
+                      {commit.lockReason ??
+                        "This return cannot be edited here. Make the change in ProConnect."}
+                    </p>
                   </div>
                 )}
 
