@@ -55,20 +55,57 @@ type MapRow = {
   form_1040_lines: { label: string | null; short_label: string | null } | { label: string | null; short_label: string | null }[] | null
 }
 
-async function loadFieldMappings(sb: SupabaseClient, taxYear: number, returnType: string) {
-  const mappings = new Map<string, CatalogEntry>()
+/**
+ * proconnect_field_catalog is only ever loaded one export at a time, so a
+ * return whose own tax_year has never been imported (today: anything but
+ * 2025/IND — see scripts/ for the load history) would otherwise get zero
+ * catalog hits even though series/code numbering for stable screens like
+ * W-2 (s11) barely changes year to year. Rather than hardcode "2025" as a
+ * fallback, ask the catalog itself which years it actually has for this
+ * return_type and pick the closest one — so this keeps working with no
+ * code change once a real 2023/2024 export lands, and produces no fallback
+ * at all once every year is covered.
+ */
+async function resolveFallbackTaxYear(
+  sb: SupabaseClient,
+  taxYear: number,
+  returnType: string,
+): Promise<number | null> {
+  const { data } = await sb
+    .from("proconnect_field_catalog")
+    .select("tax_year")
+    .eq("return_type", returnType)
+  const years = [...new Set((data ?? []).map((r) => Number(r.tax_year)).filter((y) => y !== taxYear))]
+  if (years.length === 0) return null
+  years.sort((a, b) => Math.abs(a - taxYear) - Math.abs(b - taxYear))
+  return years[0]
+}
 
+async function loadCatalogRows(sb: SupabaseClient, taxYear: number, returnType: string) {
   // proconnect_field_catalog holds 60k+ rows even filtered to one
   // tax_year/return_type — PostgREST silently caps a single response at
   // 1,000 rows, so this MUST page through fetchAllPaged or the vast
   // majority of the catalog is dropped without any error.
-  const catalogRows = await fetchAllPaged<CatalogRow>(() =>
+  return fetchAllPaged<CatalogRow>(() =>
     sb
       .from("proconnect_field_catalog")
       .select("series_id, code_id, description, screen_title")
       .eq("tax_year", taxYear)
       .eq("return_type", returnType),
   )
+}
+
+async function loadFieldMappings(sb: SupabaseClient, taxYear: number, returnType: string) {
+  const mappings = new Map<string, CatalogEntry>()
+
+  let catalogRows = await loadCatalogRows(sb, taxYear, returnType)
+  let usedFallbackYear: number | null = null
+  if (catalogRows.length === 0) {
+    usedFallbackYear = await resolveFallbackTaxYear(sb, taxYear, returnType)
+    if (usedFallbackYear !== null) {
+      catalogRows = await loadCatalogRows(sb, usedFallbackYear, returnType)
+    }
+  }
   for (const row of catalogRows) {
     if (!row.series_id || !row.code_id) continue
     mappings.set(`${row.series_id.toLowerCase()}/${row.code_id.toLowerCase()}`, {
@@ -101,7 +138,7 @@ async function loadFieldMappings(sb: SupabaseClient, taxYear: number, returnType
     })
   }
 
-  return mappings
+  return { mappings, catalogYearUsed: usedFallbackYear ?? taxYear, usedFallbackYear }
 }
 
 export async function GET(
@@ -181,9 +218,9 @@ export async function GET(
         .order("code_id"),
     )
 
-    const fieldMappings = snapshot?.tax_year
+    const { mappings: fieldMappings, usedFallbackYear } = snapshot?.tax_year
       ? await loadFieldMappings(sb, Number(snapshot.tax_year), (snapshot.return_type ?? "IND").toUpperCase())
-      : new Map<string, CatalogEntry>()
+      : { mappings: new Map<string, CatalogEntry>(), usedFallbackYear: null }
 
     const enrichedCells = cells.map((c) => {
       let mapping: CatalogEntry | undefined
@@ -218,6 +255,11 @@ export async function GET(
       cellCount: cells.length,
       seriesCount: Object.keys(bySeries).length,
       cellsBySeries: bySeries,
+      // Set when this return's own tax_year has no proconnect_field_catalog
+      // rows and labels were borrowed from the nearest year that does (see
+      // resolveFallbackTaxYear). Lets the viewer flag that field titles are
+      // approximate rather than confirmed for this return's actual year.
+      fieldLabelFallbackYear: usedFallbackYear,
     })
   } catch (err) {
     return NextResponse.json(

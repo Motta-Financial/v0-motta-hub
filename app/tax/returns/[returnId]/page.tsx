@@ -102,6 +102,9 @@ type ReturnDetail = {
   cellCount: number
   seriesCount: number
   cellsBySeries: Record<string, Cell[]>
+  /** Set when field labels were borrowed from a different tax year's catalog
+   *  because this return's own year has no proconnect_field_catalog rows yet. */
+  fieldLabelFallbackYear: number | null
 }
 
 const fetcher = async (url: string) => {
@@ -338,6 +341,15 @@ export default function ReturnDataPage({
                     <code className="rounded bg-muted px-1 py-0.5 text-xs">
                       v {data.snapshot.version.slice(0, 8)}…
                     </code>
+                  )}
+                  {data.fieldLabelFallbackYear !== null && (
+                    <span
+                      className="flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-800 dark:text-amber-300"
+                      title={`This return is tax year ${data.snapshot.tax_year}, which has no field catalog loaded yet. Field titles below are borrowed from the ${data.fieldLabelFallbackYear} catalog and may not match this return's actual screens exactly.`}
+                    >
+                      <AlertTriangle className="size-3" />
+                      Field titles from {data.fieldLabelFallbackYear} catalog
+                    </span>
                   )}
                 </div>
               ) : (
