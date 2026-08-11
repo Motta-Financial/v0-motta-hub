@@ -54,7 +54,7 @@ async function loadFieldMappings() {
     path.join(process.cwd(), "data/ind-2025-all-series-code-mappings.csv"),
     "utf8",
   )
-  const lines = csv.split(/\\r?\\n/).filter(Boolean)
+  const lines = csv.split(/\r?\n/).filter(Boolean)
   const headers = parseCsvLine(lines[0] ?? "")
   const mappings = new Map<string, { description: string; screenTitle: string }>()
   for (const line of lines.slice(1)) {
