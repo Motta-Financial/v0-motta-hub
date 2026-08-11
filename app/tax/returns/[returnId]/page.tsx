@@ -51,6 +51,16 @@ type Cell = {
   src: string | null
   tsj: string | null
   scope: string | null
+  field_title: string | null
+  }
+
+function cleanFieldLabel(label: string | null, rawPath: string) {
+  if (!label) return { visible: rawPath, note: null }
+  const match = label.match(/^(.*?)(\s*\([^)]*\))\s*$/)
+  return {
+    visible: (match?.[1] ?? label).trim() || rawPath,
+    note: match?.[2]?.trim() ?? null,
+  }
 }
 
 /**
@@ -200,7 +210,6 @@ export default function ReturnDataPage({
     `/api/proconnect/returns/${returnId}`,
     fetcher,
   )
-
   async function refreshFromProConnect() {
     if (!clientId) {
       toast.error("Missing clientId — open this page from the returns table")
@@ -391,11 +400,19 @@ export default function ReturnDataPage({
                               // Determine which key the cell uses — prefer val, fall back to desc
                               const writeKey: "val" | "desc" = c.val !== null ? "val" : "desc"
                               const currentValue = c.val ?? c.description ?? null
+                              const fieldKey = `${c.prefix_id}/${c.code_id}/${c.suffix_id}`
+                              const fieldLabel = cleanFieldLabel(c.field_title, fieldKey)
 
                               return (
                                 <tr key={i} className="border-t">
-                                  <td className="whitespace-nowrap px-3 py-1.5 font-mono">
-                                    {c.prefix_id}/{c.code_id}/{c.suffix_id}
+                                  <td className="px-3 py-1.5">
+                                    <div
+                                      className="font-medium"
+                                      title={fieldLabel.note ?? undefined}
+                                    >
+                                      {fieldLabel.visible}
+                                    </div>
+                                    <code className="text-[10px] text-muted-foreground">{fieldKey}</code>
                                   </td>
                                   <td className="max-w-56 truncate px-3 py-1.5">{c.val ?? "—"}</td>
                                   <td className="max-w-64 truncate px-3 py-1.5 text-muted-foreground">

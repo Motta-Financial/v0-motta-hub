@@ -12,7 +12,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { lockFromCachedEfile } from "@/lib/proconnect/efile-lock"
 
@@ -26,6 +26,82 @@ function admin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false },
   })
+}
+
+type CatalogEntry = { description: string | null; screenTitle: string | null }
+
+/**
+ * Field labels come from two live tables, never a bundled file — a
+ * static CSV in the repo drifts from proconnect_field_catalog (67,810
+ * rows, loaded from Intuit's full export) the moment either one is
+ * updated independently.
+ *
+ * Priority order:
+ *   1. form_1040_proconnect_map — hand-verified via the sentinel-diff
+ *      procedure (see the in-repo-proconnect-1040-mapping skill). This is
+ *      the ONLY source that covers M-series codes (s19M, s200M, ...),
+ *      since Intuit's own catalog export has zero M-series rows.
+ *   2. proconnect_field_catalog — Intuit's bulk export. Covers the vast
+ *      majority of Federal codes but is missing some series/codes
+ *      entirely (a data gap, not a lookup bug).
+ * Cells matching neither show only the raw series/prefix/code/suffix
+ * path — never a guessed or hallucinated label.
+ */
+type CatalogRow = { series_id: string | null; code_id: string | null; description: string | null; screen_title: string | null }
+type MapRow = {
+  series_id: string | null
+  code_id: string | null
+  confidence: string | null
+  form_1040_lines: { label: string | null; short_label: string | null } | { label: string | null; short_label: string | null }[] | null
+}
+
+async function loadFieldMappings(sb: SupabaseClient, taxYear: number, returnType: string) {
+  const mappings = new Map<string, CatalogEntry>()
+
+  // proconnect_field_catalog holds 60k+ rows even filtered to one
+  // tax_year/return_type — PostgREST silently caps a single response at
+  // 1,000 rows, so this MUST page through fetchAllPaged or the vast
+  // majority of the catalog is dropped without any error.
+  const catalogRows = await fetchAllPaged<CatalogRow>(() =>
+    sb
+      .from("proconnect_field_catalog")
+      .select("series_id, code_id, description, screen_title")
+      .eq("tax_year", taxYear)
+      .eq("return_type", returnType),
+  )
+  for (const row of catalogRows) {
+    if (!row.series_id || !row.code_id) continue
+    mappings.set(`${row.series_id.toLowerCase()}/${row.code_id.toLowerCase()}`, {
+      description: row.description,
+      screenTitle: row.screen_title,
+    })
+  }
+
+  // Hand-verified overrides take precedence — applied after the bulk
+  // catalog so they win on any series/code collision. Small table (under
+  // 1,000 rows today) but paged defensively for the same reason.
+  const confirmedRows = await fetchAllPaged<MapRow>(() =>
+    sb
+      .from("form_1040_proconnect_map")
+      .select("series_id, code_id, confidence, form_1040_lines(label, short_label)")
+      .eq("tax_year", taxYear)
+      .eq("return_type", returnType)
+      .not("series_id", "is", null)
+      .not("code_id", "is", null)
+      .in("confidence", ["confirmed", "inferred"]),
+  )
+  for (const row of confirmedRows) {
+    if (!row.series_id || !row.code_id) continue
+    const line = Array.isArray(row.form_1040_lines) ? row.form_1040_lines[0] : row.form_1040_lines
+    const label = line?.label ?? line?.short_label
+    if (!label) continue
+    mappings.set(`${row.series_id.toLowerCase()}/${row.code_id.toLowerCase()}`, {
+      description: label,
+      screenTitle: null,
+    })
+  }
+
+  return mappings
 }
 
 export async function GET(
@@ -105,9 +181,33 @@ export async function GET(
         .order("code_id"),
     )
 
-    const bySeries: Record<string, typeof cells> = {}
-    for (const c of cells) {
-      ;(bySeries[c.series_id] ??= [] as NonNullable<typeof cells>).push(c)
+    const fieldMappings = snapshot?.tax_year
+      ? await loadFieldMappings(sb, Number(snapshot.tax_year), (snapshot.return_type ?? "IND").toUpperCase())
+      : new Map<string, CatalogEntry>()
+
+    const enrichedCells = cells.map((c) => {
+      let mapping: CatalogEntry | undefined
+      if (c.series_id && c.code_id) {
+        const series = c.series_id.toLowerCase()
+        const code = c.code_id.toLowerCase()
+        // Direct match first. Some series are recorded on the return as the
+        // bare number (e.g. "s95") but cataloged by Intuit with a trailing
+        // "00" (e.g. "s9500") — same screen, different series id convention.
+        // Only fall back to the padded form when the direct lookup misses,
+        // so it can never shadow a real direct match.
+        mapping = fieldMappings.get(`${series}/${code}`) ?? fieldMappings.get(`${series}00/${code}`)
+      }
+      return {
+        ...c,
+        // Field labels come from proconnect_field_catalog / form_1040_proconnect_map
+        // (see loadFieldMappings); prefix and suffix identify the specific instance.
+        field_title: mapping?.description || mapping?.screenTitle || null,
+      }
+    })
+
+    const bySeries: Record<string, typeof enrichedCells> = {}
+    for (const c of enrichedCells) {
+      ;(bySeries[c.series_id] ??= []).push(c)
     }
 
     return NextResponse.json({

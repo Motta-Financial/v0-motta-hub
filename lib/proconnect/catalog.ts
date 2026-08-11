@@ -177,7 +177,7 @@ export async function lookupCodes(
       if (error) throw error
       for (const r of data ?? []) {
         const code = toCode(r as Record<string, unknown>)
-        out.set(`${code.seriesId}/${code.codeId}`, code)
+            out.set(`${code.seriesId.toLowerCase()}/${code.codeId.toLowerCase()}`, code)
       }
     }
   }
