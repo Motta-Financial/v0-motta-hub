@@ -134,9 +134,17 @@ export async function GET(
         : new Map<string, { description: string; screenTitle: string }>()
 
     const enrichedCells = cells.map((c) => {
-      const mapping = c.series_id && c.code_id
-        ? fieldMappings.get(`${c.series_id.toLowerCase()}/${c.code_id.toLowerCase()}`)
-        : undefined
+      let mapping: { description: string; screenTitle: string } | undefined
+      if (c.series_id && c.code_id) {
+        const series = c.series_id.toLowerCase()
+        const code = c.code_id.toLowerCase()
+        // Direct match first. Some series are recorded on the return as the
+        // bare number (e.g. "s95") but cataloged in the Intuit CSV with a
+        // trailing "00" (e.g. "s9500") — same screen, different series id
+        // convention. Only fall back to the padded form when the direct
+        // lookup misses, so it can never shadow a real direct match.
+        mapping = fieldMappings.get(`${series}/${code}`) ?? fieldMappings.get(`${series}00/${code}`)
+      }
       return {
         ...c,
         // The supplied Intuit CSV describes fields by series/code; prefix and suffix identify instances.
