@@ -45,6 +45,8 @@ type LineValue = {
     shortLabel: string | null
     dataType: string
     section: string
+    /** Display order within the section (form_1040_lines.ordinal). */
+    ordinal: number
     isComputed: boolean
     notApplicable?: boolean
     scheduleRef: string | null
@@ -101,6 +103,7 @@ const fetcher = (url: string) =>
 
 // Section display order and labels — keys match form_1040_lines.section
 const CATEGORY_ORDER = [
+  { key: "header", label: "Taxpayer Information" },
   { key: "filing_status", label: "Filing Status" },
   { key: "digital_assets", label: "Digital Assets" },
   { key: "dependents", label: "Dependents" },
@@ -263,7 +266,7 @@ export function Form1040Viewer({
     }
   }
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(["income", "tax_credits", "payments", "refund", "amount_owed"])
+    new Set(["header", "income", "tax_credits", "payments", "refund", "amount_owed"])
   )
   const [showAllLines, setShowAllLines] = useState(false)
 
@@ -287,12 +290,16 @@ export function Form1040Viewer({
       grouped.get(cat)!.push(lineVal)
     }
 
-    // Sort lines within each section by line code (numeric part, then suffix)
+    // Sort lines within each section by `ordinal` — the column that exists
+    // precisely to carry form order. The previous sort keyed on the digits
+    // in the line code, which is only meaningful for numbered lines: every
+    // slug-coded line (fs_*, dep_*, hdr_*) parsed to 0 and fell through to
+    // an alphabetical tiebreak. That printed filing status as HOH, MFJ,
+    // MFS, QSS, Single, and would have printed the header block with the
+    // spouse above the taxpayer and the address above both.
     for (const [_, lines] of grouped) {
       lines.sort((a, b) => {
-        const numA = parseInt(a.line.lineCode.replace(/\D/g, "")) || 0
-        const numB = parseInt(b.line.lineCode.replace(/\D/g, "")) || 0
-        if (numA !== numB) return numA - numB
+        if (a.line.ordinal !== b.line.ordinal) return a.line.ordinal - b.line.ordinal
         return a.line.lineCode.localeCompare(b.line.lineCode)
       })
     }
