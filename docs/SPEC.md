@@ -537,6 +537,62 @@ is stored whole in `efile_latest` alongside the `efile_status` scalar, because
 an `ACK_REJECTED` on an EXTENSION is not a rejected return and the scalar
 alone cannot say which it was.
 
+### 6.3.1 The post-e-file edit lock
+
+Firm policy: once a return has been e-filed and **accepted**, its data is
+final. Returns still in progress stay fully editable. `lib/proconnect/efile-lock.ts`
+is the predicate; the gate lives in the import route (§6.4), which is the
+only path that writes to ProConnect — the viewer's disabled pencil is a
+courtesy, not the boundary.
+
+**Do not implement this as `efile_status === 'ACK_SUCCEEDED'.`** That column
+is a headline across all filings, which is a different question from "was the
+return accepted", and it is wrong in both directions. Measured over all 919
+live engagements (2026-08-11): the naive read locks 696, the correct predicate
+locks 633 — **66 false locks**, every one an accepted Form 4868 on a return
+that was never transmitted (nearly all TY2025 1040s still being worked), and
+**3 missed locks**, where a state return was accepted and the federal rejected
+an hour later so the headline reports the rejection.
+
+The predicate is therefore existential over the flattened `children[]` tree:
+locked when *some* filing **of the return itself** has a current status of
+`ACK_SUCCEEDED`. Three things it depends on:
+
+- **`ACK_SUCCEEDED` is what "accepted" is called.** No status contains the
+  word ACCEPTED. The whole vocabulary, exhaustive over 3,313 live status
+  entries, is `PENDING_EFE`, `PENDING_AGENCY`, `ACK_SUCCEEDED`, `ACK_REJECTED`.
+  Anything outside those four locks, as an unrecognized status.
+- **`filingKey.filingId` names the form**, as `{entity}.{jurisdiction}[.{kind}]`
+  — `ind.us` is the 1040, `ind.us.ext` the 4868, `ind.us.amd` the 1040-X,
+  `ind.us.fbar` FinCEN 114 (typed `REGULAR` but filed separately, so it must
+  not lock the return). Read alongside `filingType`; the stricter answer wins.
+- **Current status is newest by `statusUpdateTimestamp`**, never array
+  position — 1,505 of 2,383 live filings are not in chronological order.
+
+**Fail closed.** Unknown status, unreadable engagement, or an engagement whose
+e-file state was never hydrated all lock. The one case that is *not* unknown
+is a hydrated engagement with no filings: that is a positive "we looked,
+nothing is filed" and it unlocks — 207 engagements are in that state, and
+collapsing the two would freeze the firm's entire in-progress book.
+
+The write path re-reads the engagement from ProConnect on every commit rather
+than trusting the cached `efile_*` columns, because those are hydrated by a
+separate pass and a list-derived upsert that reintroduced them would blank
+them nightly (§6.2) — which would silently unlock every filed return. The
+read path (`GET /api/proconnect/returns/[returnId]`) serves an advisory
+verdict off the cache for the badge only.
+
+`scripts/388-verify-efile-lock.ts` is the test: 17 fixtures plus a replay over
+every engagement in the DB, asserting that nothing locks with zero filings and
+nothing unlocks with an accepted return filing. Run it after touching the
+predicate or the hydration path.
+
+Two open policy questions, both one condition in `isReturnFiling`: an accepted
+**state** return currently locks even when the federal was rejected (the 3
+cases above), which blocks fixing that rejection in the Hub; and an accepted
+**amended** return locks, chosen as the safe direction rather than designed
+for. Amended returns are otherwise unaddressed in the viewer.
+
 ### 6.4 The field model — Export and Import
 
 This is the part worth understanding before touching tax code.
@@ -574,8 +630,20 @@ partial success is normal and must be handled: `ImportSeriesResult` and
 `ImportEntryError` carry per-entry `ErrorDetail`s, persisted to
 `proconnect_import_jobs` and `proconnect_import_entry_results`.
 
-Import is the only genuinely destructive operation in the subsystem. It is
-gated on `requireLeadership`.
+Import is the only genuinely destructive operation in the subsystem, and the
+only path that writes to ProConnect — every write surface in the app (the
+field-edit sheet, the intake client, the composed 1040 payload) POSTs to it,
+so it is the single place write policy is enforced. Beyond
+`requireLeadership`, a commit passes three independent gates:
+
+1. **The post-e-file edit lock** (§6.3.1) — refuses with **423** on a return
+   whose own filing an agency has accepted, re-read live from ProConnect.
+2. **`PROCONNECT_WRITE_ALLOWED_RETURN_IDS`** — the return must be explicitly
+   designated for writing. Fails closed when unset.
+3. **dryRun-first** — a clean, same-shape dry run within the last 30 minutes.
+
+Dry runs are refused by none of them (they persist nothing) but carry the
+lock verdict back on `lock` so the editor can warn before a commit is tried.
 
 ### 6.5 The field catalog and pre-validation
 
