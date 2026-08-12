@@ -788,6 +788,17 @@ console.log("\nCTC / ODC (19) and ACTC (28)")
     val(run({ status: "hoh", deps: [{ type: 4, dob: "2015-01-01" }, { type: 5, dob: "2015-01-01" }], lines: { "1z": 120000, "12a": 0 } }), "19"),
     null,
   )
+  // Empty expansion-grid slots: 15 of the 42 live s2 dependent rows carry no
+  // Type at all (measured 2026-08-11) and must earn neither CTC nor ODC.
+  // Constructed here without a `type`, which is how they arrive.
+  {
+    const grid = { dob: "2015-01-01", ctcFlag: 0 } as unknown as Dependent
+    check(
+      "a dependent row with no Type earns nothing",
+      val(run({ status: "mfj", deps: [grid], lines: { "1z": 120000, "12a": 0 } }), "19"),
+      null,
+    )
+  }
   // Phaseout: 50 per 1,000 or fraction thereof over 400,000 (MFJ).
   // 410,500 -> ceil(10.5) = 11 -> 550. 4,400 - 550 = 3,850.
   check(

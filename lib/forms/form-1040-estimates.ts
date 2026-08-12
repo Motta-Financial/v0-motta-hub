@@ -635,6 +635,18 @@ export function estimateDeterministicLines(
   // ── Dependent census (shared by stages 19, 27, 28) ──────────────────
   // The credit flags are "1 = when applicable" preparer inputs, so
   // eligibility is derived here: Type + age gates per credit.
+  //
+  // MEASURED 2026-08-11, 42 s2 dependent rows across the live TY2025 book:
+  // requiring ctcFlag === 1 was the worry here — a preparer leaving the cell
+  // blank would silently zero both 19 and 28, and "CTC = 0" reads as a
+  // legitimate answer. It does not happen. All 24 Type-1/2 dependents who
+  // pass the under-17 test carry ctcFlag = 1; none was absent or held
+  // another value. ProConnect appears to always write it.
+  //
+  // The 15 rows with NO Type are exactly the rows whose ctcFlag is absent
+  // (11) or 0 (4) — empty expansion-grid slots, not people. Every filter
+  // below requires `type !== undefined`, so they earn nothing, which is
+  // right. Re-measure if a return ever shows a Type with no credit flag.
   const taxYear = lines[0]?.taxYear ?? 2025
   const ctcDobFloor = new Date(`${taxYear - 16}-01-01T00:00:00Z`) // under 17 at 12/31
   const eicDobFloor = new Date(`${taxYear - 18}-01-01T00:00:00Z`) // under 19 at 12/31

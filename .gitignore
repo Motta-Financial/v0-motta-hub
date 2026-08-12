@@ -38,3 +38,6 @@ proconnect-catalog*.csv
 # Field VALUES, and this repo is public. Regenerate with
 # `scripts/376-retest-intuit-import-defects.ts survey`.
 scripts/.sentinel-baseline-*.json
+
+# macOS
+.DS_Store
