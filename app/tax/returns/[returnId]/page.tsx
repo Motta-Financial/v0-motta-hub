@@ -52,6 +52,15 @@ type Cell = {
   tsj: string | null
   scope: string | null
   field_title: string | null
+  /**
+   * Advisory write verdict from the API (see cellWriteVerdict there).
+   * False when ProConnect calculated the value, or when the cell backs a
+   * 1040 line the mapping marks non-editable. Older cached responses omit
+   * it — treat `undefined` as editable so the page degrades to its previous
+   * behaviour rather than locking everything.
+   */
+  editable?: boolean
+  not_editable_reason?: string | null
   }
 
 function cleanFieldLabel(label: string | null, rawPath: string) {
@@ -394,6 +403,12 @@ export default function ReturnDataPage({
                               const currentValue = c.val ?? c.description ?? null
                               const fieldKey = `${c.prefix_id}/${c.code_id}/${c.suffix_id}`
                               const fieldLabel = cleanFieldLabel(c.field_title, fieldKey)
+                              // Cell-level write verdict from the API. `undefined`
+                              // (older cached response) means editable, so the page
+                              // degrades to its prior behaviour instead of locking
+                              // every row. The e-file `locked` check above is the
+                              // return-level gate; this is the per-cell one.
+                              const cellEditable = c.editable !== false
 
                               return (
                                 <tr key={i} className="border-t">
@@ -413,7 +428,7 @@ export default function ReturnDataPage({
                                   <td className="px-3 py-1.5">{c.tsj ?? "—"}</td>
                                   <td className="px-3 py-1.5 text-muted-foreground">{c.src ?? "—"}</td>
                                   <td className="px-3 py-1.5 text-right">
-                                    {clientId && !locked && (
+                                    {clientId && !locked && cellEditable && (
                                       <Button
                                         variant="ghost"
                                         size="icon"
@@ -435,6 +450,21 @@ export default function ReturnDataPage({
                                       >
                                         <Pencil className="size-4" />
                                       </Button>
+                                    )}
+                                    {clientId && !locked && !cellEditable && (
+                                      // Show WHY rather than an empty cell — a
+                                      // missing pencil with no explanation reads as
+                                      // a bug, and the reason is the useful part.
+                                      <span
+                                        className="inline-flex size-6 items-center justify-center text-muted-foreground/50"
+                                        title={
+                                          c.not_editable_reason ??
+                                          "Not a writable raw input."
+                                        }
+                                        aria-label={`Read-only: ${c.not_editable_reason ?? "not a writable raw input"}`}
+                                      >
+                                        <Lock className="size-3.5" />
+                                      </span>
                                     )}
                                   </td>
                                 </tr>

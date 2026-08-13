@@ -39,6 +39,15 @@ type MaskedValue = {
 
 type LineValue = {
   value: string | number | boolean | MaskedValue | null
+  /**
+   * One entry per occurrence of a repeating line — the dependents grid
+   * (scripts/389). Present only on non-numeric aggregate mappings; `value`
+   * mirrors instances[0]. Sensitive instances are masked individually.
+   */
+  instances?: Array<{
+    prefixId: string
+    value: string | number | boolean | MaskedValue | null
+  }>
   line: {
     lineCode: string
     label: string
@@ -155,48 +164,55 @@ export function Form1040Viewer({
   const [showSensitive, setShowSensitive] = useState(false)
   const revealTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
-  const maskLine = useCallback((lineCode: string) => {
+  // Reveal state is keyed per OCCURRENCE, not per line: dep_ssn carries one
+  // SSN per dependent (scripts/389), and revealing the second child's SSN
+  // must not unmask the first child's.
+  const revealKey = (lineCode: string, prefixId?: string) =>
+    prefixId ? `${lineCode}|${prefixId}` : lineCode
+
+  const maskLine = useCallback((key: string) => {
     setRevealedValues((prev) => {
-      if (!(lineCode in prev)) return prev
+      if (!(key in prev)) return prev
       const next = { ...prev }
-      delete next[lineCode]
+      delete next[key]
       return next
     })
-    const timer = revealTimers.current.get(lineCode)
+    const timer = revealTimers.current.get(key)
     if (timer) {
       clearTimeout(timer)
-      revealTimers.current.delete(lineCode)
+      revealTimers.current.delete(key)
     }
   }, [])
 
   const revealLine = useCallback(
-    async (lineCode: string) => {
-      setRevealingLines((prev) => new Set(prev).add(lineCode))
+    async (lineCode: string, prefixId?: string) => {
+      const key = prefixId ? `${lineCode}|${prefixId}` : lineCode
+      setRevealingLines((prev) => new Set(prev).add(key))
       try {
         const res = await fetch(`/api/forms/1040/${returnId}/reveal`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lineCode, taxYear }),
+          body: JSON.stringify({ lineCode, taxYear, prefixId }),
         })
         if (!res.ok) return
         const payload = (await res.json()) as { value: string | number | null }
         setRevealedValues((prev) => ({
           ...prev,
-          [lineCode]: payload.value === null ? "" : String(payload.value),
+          [key]: payload.value === null ? "" : String(payload.value),
         }))
         // Auto re-mask after 30s. Reset any existing timer.
-        const existing = revealTimers.current.get(lineCode)
+        const existing = revealTimers.current.get(key)
         if (existing) clearTimeout(existing)
         revealTimers.current.set(
-          lineCode,
-          setTimeout(() => maskLine(lineCode), REVEAL_TIMEOUT_MS)
+          key,
+          setTimeout(() => maskLine(key), REVEAL_TIMEOUT_MS)
         )
       } catch {
         // Leave the field masked on failure.
       } finally {
         setRevealingLines((prev) => {
           const next = new Set(prev)
-          next.delete(lineCode)
+          next.delete(key)
           return next
         })
       }
@@ -213,21 +229,34 @@ export function Form1040Viewer({
     }
   }, [])
 
-  // All populated sensitive line codes (masked by the server).
-  const sensitiveLineCodes = useMemo(() => {
-    if (!data?.lines) return []
-    return Object.values(data.lines)
-      .filter((lv) => isMasked(lv.value))
-      .map((lv) => lv.line.lineCode)
+  // Every masked target on the page, as (line, occurrence) pairs. A
+  // repeating line contributes one target per instance (each dependent's
+  // SSN is masked separately), so "show all" must walk instances too —
+  // otherwise it would unmask the first dependent and quietly leave the
+  // rest hidden, which reads as "there is only one".
+  const sensitiveTargets = useMemo(() => {
+    if (!data?.lines) return [] as Array<{ lineCode: string; prefixId?: string }>
+    const out: Array<{ lineCode: string; prefixId?: string }> = []
+    for (const lv of Object.values(data.lines)) {
+      if (lv.instances?.length) {
+        for (const inst of lv.instances) {
+          if (isMasked(inst.value)) out.push({ lineCode: lv.line.lineCode, prefixId: inst.prefixId })
+        }
+      } else if (isMasked(lv.value)) {
+        out.push({ lineCode: lv.line.lineCode })
+      }
+    }
+    return out
   }, [data])
 
   const handleGlobalSensitiveToggle = () => {
     if (!showSensitive) {
-      for (const code of sensitiveLineCodes) {
-        if (revealedValues[code] === undefined) void revealLine(code)
+      for (const t of sensitiveTargets) {
+        const key = revealKey(t.lineCode, t.prefixId)
+        if (revealedValues[key] === undefined) void revealLine(t.lineCode, t.prefixId)
       }
     } else {
-      for (const code of sensitiveLineCodes) maskLine(code)
+      for (const t of sensitiveTargets) maskLine(revealKey(t.lineCode, t.prefixId))
     }
     setShowSensitive(!showSensitive)
   }
@@ -510,7 +539,7 @@ export function Form1040Viewer({
             </Button>
           </div>
           <div className="flex items-center gap-4">
-            {sensitiveLineCodes.length > 0 && (
+            {sensitiveTargets.length > 0 && (
               <Button
                 variant="outline"
                 size="sm"
@@ -548,6 +577,13 @@ export function Form1040Viewer({
             const visibleLines = showAllLines ? lines : populatedLines
             if (visibleLines.length === 0 && !showAllLines) return null
 
+            // A section whose lines repeat (dependents) renders as a grid,
+            // one row per occurrence, rather than one row per line.
+            const hasInstances = lines.some((l) => (l.instances?.length ?? 0) > 0)
+            const instanceCount = hasInstances
+              ? new Set(lines.flatMap((l) => (l.instances ?? []).map((i) => i.prefixId))).size
+              : 0
+
             const isExpanded = expandedCategories.has(key)
             const categoryTotal = lines.reduce((sum, l) => {
               if (l.line.dataType === "currency" && typeof l.value === "number") {
@@ -570,7 +606,9 @@ export function Form1040Viewer({
                           )}
                           <CardTitle className="text-base">{label}</CardTitle>
                           <span className="text-xs text-muted-foreground">
-                            {populatedLines.length} of {lines.length} lines
+                            {hasInstances
+                              ? `${instanceCount} ${instanceCount === 1 ? "dependent" : "dependents"}`
+                              : `${populatedLines.length} of ${lines.length} lines`}
                           </span>
                         </div>
                         {categoryTotal !== 0 && (
@@ -583,18 +621,47 @@ export function Form1040Viewer({
                   </CollapsibleTrigger>
                   <CollapsibleContent className="print:block">
                     <CardContent className="pt-0">
-                      <div className="divide-y divide-border/60">
-                        {visibleLines.map((lineVal) => (
-                          <LineRow
-                            key={lineVal.line.lineCode}
-                            lineVal={lineVal}
-                            revealedValue={revealedValues[lineVal.line.lineCode]}
-                            isRevealing={revealingLines.has(lineVal.line.lineCode)}
+                      {hasInstances ? (
+                        <>
+                          <DependentsTable
+                            lines={lines}
+                            revealedValues={revealedValues}
+                            revealingLines={revealingLines}
                             onReveal={revealLine}
                             onMask={maskLine}
                           />
-                        ))}
-                      </div>
+                          {/* Anything in this section that is NOT part of the
+                              repeating grid (dep_odc, which has no ProConnect
+                              cell) still renders as an ordinary row. */}
+                          <div className="divide-y divide-border/60">
+                            {visibleLines
+                              .filter((lv) => !lv.instances?.length)
+                              .map((lineVal) => (
+                                <LineRow
+                                  key={lineVal.line.lineCode}
+                                  lineVal={lineVal}
+                                  revealedValue={revealedValues[lineVal.line.lineCode]}
+                                  isRevealing={revealingLines.has(lineVal.line.lineCode)}
+                                  onReveal={revealLine}
+                                  onMask={maskLine}
+                                />
+                              ))}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="divide-y divide-border/60">
+                          {visibleLines.map((lineVal) => (
+                            <LineRow
+                              key={lineVal.line.lineCode}
+                              lineVal={lineVal}
+                              revealedValue={revealedValues[lineVal.line.lineCode]}
+                              isRevealing={revealingLines.has(lineVal.line.lineCode)}
+                              onReveal={revealLine}
+                              onMask={maskLine}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </CardContent>
                   </CollapsibleContent>
                 </Collapsible>
@@ -672,6 +739,149 @@ function SummaryValue({
 }
 
 // Individual line row
+/**
+ * Dependents are a GRID, not five independent values.
+ *
+ * ProConnect keeps them on a repeating screen (s2, where p1/p2/p3 are the
+ * first/second/third dependent), so since scripts/389 each dep_* line
+ * carries one value PER DEPENDENT on `instances`. Rendered as ordinary
+ * line rows, a family of three showed a single name, a single SSN and a
+ * single relationship — three children collapsed into one, with nothing
+ * on the page to say the other two existed.
+ *
+ * One row per dependent, one column per field. Each SSN masks and reveals
+ * independently, and every reveal is logged against that dependent's
+ * occurrence, not just against "dep_ssn".
+ */
+const DEPENDENT_COLUMNS: Array<{ code: string; label: string }> = [
+  { code: "dep_name", label: "First name" },
+  { code: "dep_last", label: "Last name" },
+  { code: "dep_ssn", label: "SSN" },
+  { code: "dep_rel", label: "Relationship" },
+  { code: "dep_ctc", label: "CTC" },
+]
+
+function DependentsTable({
+  lines,
+  revealedValues,
+  revealingLines,
+  onReveal,
+  onMask,
+}: {
+  lines: LineValue[]
+  revealedValues: Record<string, string>
+  revealingLines: Set<string>
+  onReveal: (lineCode: string, prefixId?: string) => void
+  onMask: (key: string) => void
+}) {
+  const byCode = new Map(lines.map((l) => [l.line.lineCode, l]))
+
+  // Union of occurrences across every dependent field, in screen order. A
+  // union rather than one line's list because a dependent may be missing a
+  // field (no SSN entered yet) and must still get a row.
+  const prefixNum = (p: string) => {
+    const n = Number.parseInt(p.replace(/^p/, ""), 10)
+    return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER
+  }
+  const prefixes = Array.from(
+    new Set(lines.flatMap((l) => (l.instances ?? []).map((i) => i.prefixId))),
+  ).sort((a, b) => prefixNum(a) - prefixNum(b) || a.localeCompare(b))
+
+  if (prefixes.length === 0) return null
+
+  const columns = DEPENDENT_COLUMNS.filter((c) => byCode.has(c.code))
+
+  const renderCell = (code: string, prefixId: string) => {
+    const lv = byCode.get(code)
+    const inst = lv?.instances?.find((i) => i.prefixId === prefixId)
+    const value = inst?.value ?? null
+    if (value === null || value === "") {
+      return <span className="text-muted-foreground/40">—</span>
+    }
+    if (lv && lv.line.dataType === "boolean") {
+      return value ? (
+        <CheckCircle2 className="h-4 w-4 inline-block" style={{ color: "#9CA757" }} aria-label="Yes" />
+      ) : (
+        <Minus className="h-4 w-4 text-muted-foreground/40 inline-block" aria-label="No" />
+      )
+    }
+    if (isMasked(value)) {
+      const key = `${code}|${prefixId}`
+      const revealed = revealedValues[key]
+      const isRevealed = revealed !== undefined
+      const busy = revealingLines.has(key)
+      const maskedStr = maskedDisplay(lv!.line.dataType, value)
+      const who = `${lv!.line.label}, dependent ${prefixNum(prefixId)}`
+      return (
+        <span className="inline-flex items-center gap-1.5">
+          {/* Print always shows the masked form regardless of reveal state */}
+          <span className="font-mono text-sm hidden print:inline">{maskedStr}</span>
+          <span className="font-mono text-sm print:hidden">
+            {isRevealed ? revealed || "—" : maskedStr}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground focus-visible:ring-2 print:hidden"
+            aria-label={isRevealed ? `Hide ${who}` : `Reveal ${who} (access is logged)`}
+            title={isRevealed ? `Hide ${who}` : `Reveal ${who} — access is logged`}
+            disabled={busy}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (isRevealed) onMask(key)
+              else onReveal(code, prefixId)
+            }}
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : isRevealed ? (
+              <EyeOff className="h-3.5 w-3.5" />
+            ) : (
+              <Eye className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        </span>
+      )
+    }
+    return <span>{String(value)}</span>
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm border-collapse">
+        <thead>
+          <tr className="border-b border-border/60">
+            <th className="text-left font-medium text-xs uppercase tracking-wider text-muted-foreground py-2 pr-3 w-8">
+              #
+            </th>
+            {columns.map((c) => (
+              <th
+                key={c.code}
+                className="text-left font-medium text-xs uppercase tracking-wider text-muted-foreground py-2 pr-3 whitespace-nowrap"
+              >
+                {c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {prefixes.map((p, i) => (
+            <tr key={p} className="border-b border-border/40 last:border-0 hover:bg-muted/40 transition-colors">
+              <td className="py-2.5 pr-3 text-xs font-mono text-muted-foreground/60 align-top">{i + 1}</td>
+              {columns.map((c) => (
+                <td key={c.code} className="py-2.5 pr-3 align-top">
+                  {renderCell(c.code, p)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function LineRow({
   lineVal,
   revealedValue,
