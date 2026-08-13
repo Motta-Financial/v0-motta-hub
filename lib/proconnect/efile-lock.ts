@@ -70,6 +70,7 @@ import {
   flattenFilings,
   latestStatusOf,
   type RawFiling,
+  type RawFilingStatus,
   type RawTaxFiling,
 } from "./sync"
 
@@ -195,8 +196,28 @@ function describe(f: RawFiling, status: ReturnType<typeof latestStatusOf>): Lock
 }
 
 function label(f: RawFiling): string {
-  const level = f.filingLevel === "flState" ? f.jurisdiction || "state" : "federal"
-  return `${level} ${(f.filingType || "return").toLowerCase()} filing`
+  const where = f.filingLevel === "flState" ? f.jurisdiction || "state" : "federal"
+  // REGULAR is the unremarkable case and reads as Intuit jargon on a
+  // preparer's screen. Name the filing type only when it changes what the
+  // acceptance means — an accepted AMENDED return is worth spelling out.
+  const kind =
+    f.filingType && f.filingType !== "REGULAR" ? ` ${f.filingType.toLowerCase()}` : ""
+  return `${where}${kind} return`
+}
+
+/**
+ * Which accepted filing to NAME when several were accepted.
+ *
+ * The lock is existential — any accepted return filing locks — but the
+ * message should cite the most meaningful one. Federal outranks state, and
+ * a primary filing outranks a secondary. Without this the message names
+ * whichever filing happens to sit first in the array, and array order is
+ * arbitrary: a live TY2025 1040 accepted federally on 2026-04-09 reported
+ * itself locked because of "PA", which reads like the state-only edge case
+ * and invites doubt about a lock that is in fact solid.
+ */
+function acceptanceRank(f: RawFiling): number {
+  return (f.filingLevel === "flFederal" ? 2 : 0) + (f.primaryFiling ? 1 : 0)
 }
 
 /**
@@ -216,22 +237,29 @@ export function evaluateEfileLock(
   const returnFilings = filings.filter(isReturnFiling)
 
   // Locked, in priority order: a real acceptance first, so the message names
-  // the filing that actually locked the return.
+  // the filing that actually locked the return. Any acceptance locks, but
+  // the highest-ranked one is the one worth citing — see acceptanceRank.
+  let accepted: { filing: RawFiling; status: RawFilingStatus } | null = null
   for (const f of returnFilings) {
     const status = latestStatusOf(f)
-    if (status?.status === ACCEPTED_STATUS) {
-      return {
-        locked: true,
-        code: "return_accepted",
-        reason: `The ${label(f)} was accepted${
-          status.statusUpdateTimestamp
-            ? ` on ${status.statusUpdateTimestamp.slice(0, 10)}`
-            : ""
-        }. Filed returns are final and cannot be edited here.`,
-        filing: describe(f, status),
-        source,
-        failedClosed: false,
-      }
+    if (status?.status !== ACCEPTED_STATUS) continue
+    if (!accepted || acceptanceRank(f) > acceptanceRank(accepted.filing)) {
+      accepted = { filing: f, status }
+    }
+  }
+  if (accepted) {
+    const { filing: f, status } = accepted
+    return {
+      locked: true,
+      code: "return_accepted",
+      reason: `The ${label(f)} was accepted${
+        status.statusUpdateTimestamp
+          ? ` on ${status.statusUpdateTimestamp.slice(0, 10)}`
+          : ""
+      }. Filed returns are final and cannot be edited here.`,
+      filing: describe(f, status),
+      source,
+      failedClosed: false,
     }
   }
 
