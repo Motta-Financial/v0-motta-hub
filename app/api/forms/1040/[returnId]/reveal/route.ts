@@ -6,8 +6,12 @@
  * this is the only endpoint that does, and every reveal is logged to
  * sensitive_field_access_log with the requesting user.
  *
- * Body: { lineCode: string, taxYear?: number }
- * Response: { lineCode, value } — Cache-Control: no-store, always.
+ * Body: { lineCode: string, taxYear?: number, prefixId?: string }
+ * Response: { lineCode, prefixId, value } — Cache-Control: no-store, always.
+ *
+ * `prefixId` selects one occurrence of a repeating line (dep_ssn carries
+ * one value per dependent, scripts/389). Omit it for scalar lines. The
+ * occurrence is recorded in the audit log alongside the line code.
  */
 
 import { NextRequest, NextResponse } from "next/server"
@@ -39,7 +43,7 @@ export async function POST(
 ) {
   const { returnId } = await params
 
-  let body: { lineCode?: string; taxYear?: number }
+  let body: { lineCode?: string; taxYear?: number; prefixId?: string }
   try {
     body = await request.json()
   } catch {
@@ -129,8 +133,26 @@ export async function POST(
 
   const form1040 = await renderForm1040(taxYear, cells, returnType)
   const entry = form1040[lineCode]
-  const value =
-    entry && !isMaskedValue(entry.value) ? (entry.value ?? null) : null
+
+  // Repeating lines (dep_ssn — one value per dependent) carry `instances`.
+  // `prefixId` selects one; without it the caller gets the scalar, which is
+  // instances[0]. An unknown prefix reveals NOTHING rather than falling back
+  // to the first dependent, which would disclose the wrong person's SSN.
+  const prefixId = typeof body.prefixId === "string" ? body.prefixId : null
+  let raw: typeof entry.value | null
+  if (prefixId !== null) {
+    const match = entry?.instances?.find((i) => i.prefixId === prefixId)
+    if (!match) {
+      return NextResponse.json(
+        { error: `Line ${lineCode} has no instance ${prefixId}` },
+        { status: 400, headers: NO_STORE },
+      )
+    }
+    raw = match.value
+  } else {
+    raw = entry?.value ?? null
+  }
+  const value = raw !== null && !isMaskedValue(raw) ? raw : null
 
   // 4. Resolve the requesting user the same way other authenticated
   //    routes do (local JWT verification, no GoTrue round-trip).
@@ -150,6 +172,9 @@ export async function POST(
   const { error: logErr } = await sb.from("sensitive_field_access_log").insert({
     return_id: returnId,
     line_code: lineCode,
+    // Which occurrence, so the log can answer "whose SSN was shown" on a
+    // repeating line (scripts/389). NULL for scalar lines.
+    instance_prefix: prefixId,
     accessed_by: accessedBy,
     context: "1040-viewer",
   })
@@ -161,5 +186,5 @@ export async function POST(
     )
   }
 
-  return NextResponse.json({ lineCode, value }, { headers: NO_STORE })
+  return NextResponse.json({ lineCode, prefixId, value }, { headers: NO_STORE })
 }

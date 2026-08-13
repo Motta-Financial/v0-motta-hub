@@ -279,6 +279,26 @@ export type Form1040Data = Record<
   string,
   {
     value: string | number | boolean | MaskedValue | null
+    /**
+     * Every occurrence of a REPEATING non-numeric line, in prefix order —
+     * the dependents grid (s2: p1/p2/p3 = first/second/third dependent) is
+     * the case this exists for. Set only on aggregate ('*' prefix) mappings
+     * whose line is not currency/integer; numeric repeats sum into `value`
+     * instead and carry no instances.
+     *
+     * `value` mirrors instances[0], so a consumer that only understands a
+     * scalar keeps working and simply shows the first occurrence. Anything
+     * presenting the line to a human should render `instances` when present
+     * — showing one of three dependents is how this line lied before.
+     *
+     * Values here are subject to the same masking as `value`: a sensitive
+     * data type (dep_ssn) is masked per instance before leaving the server.
+     */
+    instances?: Array<{
+      /** ProConnect prefix — the occurrence id on the repeating screen. */
+      prefixId: string
+      value: string | number | boolean | MaskedValue | null
+    }>
     line: Form1040Line
     source: "proconnect" | "computed" | "input" | "estimated"
     /**
@@ -652,13 +672,24 @@ export async function renderForm1040(
     }
   }
 
-  // Aggregate mappings: fold every prefix instance into the line. Numeric
-  // lines sum across instances (three W-2s → one wages total); non-numeric
-  // lines take the lowest-numbered instance, so a stray "*" on a text line
-  // degrades to first-instance behavior instead of garbage.
+  // Aggregate mappings: fold every prefix instance into the line.
+  //
+  //   NUMERIC lines SUM across instances — three W-2s become one wages total.
+  //
+  //   NON-NUMERIC lines KEEP EVERY INSTANCE, in prefix order, on `instances`.
+  //   A repeating screen whose values are text cannot be summed and must not
+  //   be silently truncated: the dependents grid (s2, p1/p2/p3 = first,
+  //   second, third dependent) is the motivating case. Before this, the
+  //   renderer kept only the lowest-numbered instance, so a family with
+  //   three children rendered one child and dropped the rest with no
+  //   indication anything was missing.
+  //
+  //   `value` stays the FIRST instance so every existing scalar consumer
+  //   (the composer, the estimator, computed-line operands, the summary
+  //   tiles) behaves exactly as before; `instances` is purely additive.
   if (aggregateMap.size > 0) {
     const numericAcc = new Map<string, number>()
-    const firstInstance = new Map<string, { prefixNum: number; raw: string }>()
+    const perInstance = new Map<string, Array<{ prefixNum: number; prefixId: string; raw: string }>>()
     // Carry mapping metadata (confidence / valueDecode) into the final
     // aggregate assignments below.
     const mappingByLine = new Map<string, ProConnectMapping>()
@@ -682,14 +713,14 @@ export async function renderForm1040(
             numericAcc.set(line.lineCode, (numericAcc.get(line.lineCode) ?? 0) + n)
           }
         } else {
-          const prefixNum = Number.parseInt(cell.prefixId.replace(/^p/, ""), 10)
-          const prev = firstInstance.get(line.lineCode)
-          if (!prev || (Number.isFinite(prefixNum) && prefixNum < prev.prefixNum)) {
-            firstInstance.set(line.lineCode, {
-              prefixNum: Number.isFinite(prefixNum) ? prefixNum : Number.MAX_SAFE_INTEGER,
-              raw,
-            })
-          }
+          const parsed = Number.parseInt(cell.prefixId.replace(/^p/, ""), 10)
+          const arr = perInstance.get(line.lineCode) ?? []
+          arr.push({
+            prefixNum: Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER,
+            prefixId: cell.prefixId,
+            raw,
+          })
+          perInstance.set(line.lineCode, arr)
         }
       }
     }
@@ -707,12 +738,23 @@ export async function renderForm1040(
         valueDecode: mapping?.valueDecode ?? null,
       }
     }
-    for (const [lineCode, first] of firstInstance) {
+    for (const [lineCode, found] of perInstance) {
       const line = lineByCode.get(lineCode)
       if (!line) continue
       const mapping = mappingByLine.get(lineCode)
+      // Prefix order is the screen order the preparer entered, and it is the
+      // order the 1040 expects its dependent rows in. Ties (a non-numeric
+      // prefix) fall back to the raw prefix string so the result is stable
+      // rather than dependent on cell iteration order.
+      const ordered = [...found].sort(
+        (a, b) => a.prefixNum - b.prefixNum || a.prefixId.localeCompare(b.prefixId),
+      )
       data[lineCode] = {
-        value: coerceToLineType(first.raw, line.dataType),
+        value: coerceToLineType(ordered[0].raw, line.dataType),
+        instances: ordered.map((i) => ({
+          prefixId: i.prefixId,
+          value: coerceToLineType(i.raw, line.dataType),
+        })),
         line,
         source: "proconnect",
         editable: mapping?.editable ?? false,

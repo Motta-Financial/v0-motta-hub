@@ -1,5 +1,18 @@
 -- 387: form-agnostic mapping key + per-cell `editable` flag.
 --
+-- ═══ NUMBERING: 387 IS USED TWICE — deliberately left that way ════════
+-- `scripts/387_intake_booking_nudge.sql` (PR #335) also claims 387 and
+-- landed first. Both are applied to prod. Not renamed, because:
+--   * the two touch disjoint tables (form_1040_* here, intake/booking
+--     there), so relative order between them is meaningless; and
+--   * scripts/386-run-schedule-1a-senior-deduction.mjs has a hard
+--     PREFLIGHT that refuses to run unless "387" — this file — is applied,
+--     and scripts/386_form_1040_ty2025_schedule_1a_senior_deduction.sql
+--     cites 387 for the generated cell_key. Renumbering would break a
+--     dependency that a parallel workstream already shipped.
+-- If you are replaying migrations in order, run either 387 first; the
+-- outcome is identical.
+--
 -- Two changes, one migration, because they touch the same table and there
 -- is no reason to rewrite form_1040_proconnect_map twice.
 --

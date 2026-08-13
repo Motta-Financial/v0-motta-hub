@@ -159,30 +159,43 @@ export async function GET(
   //     - Enum-coded values with a value_decode map are translated to
   //       their label (e.g. 35c "2" → "checking"); unknown codes pass
   //       through as "Code <n>" with decodeMissing set.
-  for (const entry of Object.values(form1040)) {
-    const { value, line } = entry
-    if (value === null || value === "" || isMaskedValue(value)) continue
+  //    Repeating lines (`instances`, e.g. the dependents grid) run through
+  //    the SAME transform per occurrence. Masking only `value` would leave
+  //    every dependent SSN after the first in clear — the scalar is just
+  //    instances[0].
+  const postProcess = (
+    value: Form1040Data[string]["value"],
+    line: Form1040Data[string]["line"],
+    valueDecode: Record<string, string> | null | undefined,
+  ): { value: Form1040Data[string]["value"]; decodeMissing?: true } => {
+    if (value === null || value === "" || isMaskedValue(value)) return { value }
 
     if (SENSITIVE_DATA_TYPES.has(line.dataType)) {
       const raw = String(value)
-      const masked: MaskedValue = {
-        masked: true,
-        last4: raw.slice(-4),
-        length: raw.length,
-      }
-      entry.value = masked
-      continue
+      return { value: { masked: true, last4: raw.slice(-4), length: raw.length } as MaskedValue }
     }
 
-    if (entry.valueDecode && typeof value !== "object") {
+    if (valueDecode && typeof value !== "object") {
       const code = String(value)
-      const label = entry.valueDecode[code]
-      if (label !== undefined) {
-        entry.value = label
-      } else {
-        entry.value = `Code ${code}`
-        entry.decodeMissing = true
-      }
+      const label = valueDecode[code]
+      if (label !== undefined) return { value: label }
+      return { value: `Code ${code}`, decodeMissing: true }
+    }
+
+    return { value }
+  }
+
+  for (const entry of Object.values(form1040)) {
+    const scalar = postProcess(entry.value, entry.line, entry.valueDecode)
+    entry.value = scalar.value
+    if (scalar.decodeMissing) entry.decodeMissing = true
+
+    if (entry.instances) {
+      entry.instances = entry.instances.map((inst) => {
+        const out = postProcess(inst.value, entry.line, entry.valueDecode)
+        if (out.decodeMissing) entry.decodeMissing = true
+        return { prefixId: inst.prefixId, value: out.value }
+      })
     }
   }
 

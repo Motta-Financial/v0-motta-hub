@@ -55,6 +55,87 @@ type MapRow = {
   form_1040_lines: { label: string | null; short_label: string | null } | { label: string | null; short_label: string | null }[] | null
 }
 
+/**
+ * Per-cell write verdict for the raw-cell browser.
+ *
+ * The 1040 viewer gates edits on form_1040_proconnect_map.editable
+ * (scripts/387), but that only covers the ~50 cells mapped to a 1040 line.
+ * This page lists EVERY cell on the return, so it needs its own verdict —
+ * and it is the surface where the concern was actually raised: could
+ * editing here overwrite something ProConnect computed?
+ *
+ * Two signals, both precise. Deliberately NOT a third:
+ *
+ *   1. `isCalculated` in the cell's own importSource. This is Intuit's own
+ *      marker that the value was derived rather than typed — W-2 social
+ *      security / Medicare wages and tax (computed from box 1), names
+ *      auto-filled from the client record. Writing one is meaningless: it
+ *      is recomputed. 291 of 13,879 IND cells today.
+ *   2. A mapped cell whose mapping says editable = false. The data rule
+ *      already decided; this page must not disagree with the 1040 viewer.
+ *      11 cells today.
+ *
+ * NOT used: "absent from proconnect_field_catalog". It is the right gate
+ * for the mapping derivation, which authorizes AUTOMATED writes to a 1040
+ * line, but far too blunt here — it would block 1,464 cells including 556
+ * legitimate Client Information fields, breaking the manual-entry workflow
+ * this page exists to serve.
+ *
+ * Advisory only, exactly like `lock` above: the import route re-derives its
+ * own refusal. Never treat `editable: true` from this page as permission.
+ */
+function cellWriteVerdict(
+  cell: { series_id: string; prefix_id: string | null; code_id: string | null; suffix_id: string | null; import_source: string[] | null },
+  nonEditableCells: Set<string>,
+): { editable: boolean; reason: string | null } {
+  if ((cell.import_source ?? []).includes("isCalculated")) {
+    return {
+      editable: false,
+      reason:
+        "ProConnect calculated this value from other entries — a write here is recomputed away. Edit the underlying entry instead.",
+    }
+  }
+  const key = `${cell.series_id}/${cell.prefix_id ?? ""}/${cell.code_id ?? ""}/${cell.suffix_id ?? ""}`
+  const mapped = nonEditableCells.has(key)
+  if (mapped) {
+    return {
+      editable: false,
+      reason:
+        "This cell backs a 1040 line that is not a writable raw input (form_1040_proconnect_map.editable = false).",
+    }
+  }
+  return { editable: true, reason: null }
+}
+
+/** Cell keys mapped to a 1040 line whose mapping is NOT editable. */
+async function loadNonEditableCells(sb: SupabaseClient, taxYear: number, returnType: string) {
+  const rows = await fetchAllPaged<{
+    series_id: string | null
+    prefix_id: string | null
+    code_id: string | null
+    suffix_id: string | null
+  }>(() =>
+    sb
+      .from("form_1040_proconnect_map")
+      .select("series_id, prefix_id, code_id, suffix_id")
+      .eq("tax_year", taxYear)
+      .eq("return_type", returnType)
+      .eq("editable", false)
+      .not("series_id", "is", null)
+      .not("code_id", "is", null),
+  )
+  const set = new Set<string>()
+  for (const r of rows) {
+    // '*' is the aggregate prefix — it matches no literal cell, and an
+    // aggregate is non-editable for every instance, so expand it to a
+    // wildcard the verdict can't express. Skip: the individual W-2 cell a
+    // preparer edits is genuinely editable; only the 1040 TOTAL is not.
+    if (r.prefix_id === "*") continue
+    set.add(`${r.series_id}/${r.prefix_id ?? ""}/${r.code_id}/${r.suffix_id ?? ""}`)
+  }
+  return set
+}
+
 async function loadFieldMappings(sb: SupabaseClient, taxYear: number, returnType: string) {
   const mappings = new Map<string, CatalogEntry>()
 
@@ -170,11 +251,12 @@ export async function GET(
       src: string | null
       tsj: string | null
       scope: string | null
+      import_source: string[] | null
     }
     const cells = await fetchAllPaged<CellRow>(() =>
       sb
         .from("proconnect_return_field_cells")
-        .select("series_id, prefix_id, code_id, suffix_id, val, description, src, tsj, scope")
+        .select("series_id, prefix_id, code_id, suffix_id, val, description, src, tsj, scope, import_source")
         .eq("return_id", returnId)
         .order("series_id")
         .order("prefix_id")
@@ -184,6 +266,10 @@ export async function GET(
     const fieldMappings = snapshot?.tax_year
       ? await loadFieldMappings(sb, Number(snapshot.tax_year), (snapshot.return_type ?? "IND").toUpperCase())
       : new Map<string, CatalogEntry>()
+
+    const nonEditableCells = snapshot?.tax_year
+      ? await loadNonEditableCells(sb, Number(snapshot.tax_year), (snapshot.return_type ?? "IND").toUpperCase())
+      : new Set<string>()
 
     const enrichedCells = cells.map((c) => {
       let mapping: CatalogEntry | undefined
@@ -197,11 +283,15 @@ export async function GET(
         // so it can never shadow a real direct match.
         mapping = fieldMappings.get(`${series}/${code}`) ?? fieldMappings.get(`${series}00/${code}`)
       }
+      const verdict = cellWriteVerdict(c, nonEditableCells)
       return {
         ...c,
         // Field labels come from proconnect_field_catalog / form_1040_proconnect_map
         // (see loadFieldMappings); prefix and suffix identify the specific instance.
         field_title: mapping?.description || mapping?.screenTitle || null,
+        // Advisory write verdict — see cellWriteVerdict.
+        editable: verdict.editable,
+        not_editable_reason: verdict.reason,
       }
     })
 
