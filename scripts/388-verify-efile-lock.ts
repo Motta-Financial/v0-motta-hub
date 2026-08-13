@@ -58,6 +58,10 @@ const filing = (
 ): RawFiling => ({
   filingType,
   filingLevel: filingId.split(".")[1] === "us" ? "flFederal" : "flState",
+  // Live payloads carry this on every filing ("US", "PA", "MA") and the
+  // lock message reads it, so fixtures must too or they test a shape that
+  // does not occur.
+  jurisdiction: (filingId.split(".")[1] ?? "").toUpperCase() || undefined,
   filingKey: { filingId, instance: "" },
   filingStatuses: statuses,
   ...extra,
@@ -70,6 +74,8 @@ interface Case {
   payload: RawTaxFiling | null | undefined
   locked: boolean
   code: LockCode
+  /** Substring the reason must contain — pins WHICH filing gets named. */
+  reasonHas?: string
 }
 
 const CASES: Case[] = [
@@ -159,6 +165,33 @@ const CASES: Case[] = [
     code: "return_accepted",
   },
   {
+    // Live case 13defd12 (TY2025 1040): PA, US and WI all accepted, with PA
+    // first in the array. The banner cited "PA", which reads like the
+    // state-only edge case and undercuts a lock that is in fact solid.
+    name: "federal + state both accepted — must name the FEDERAL return",
+    payload: tf(
+      filing("ind.pa", "REGULAR", [st("ACK_SUCCEEDED", "2026-04-09T14:00:00Z")]),
+      filing("ind.us", "REGULAR", [st("ACK_SUCCEEDED", "2026-04-09T15:00:00Z")], {
+        filingLevel: "flFederal",
+        primaryFiling: true,
+      }),
+      filing("ind.wi", "REGULAR", [st("ACK_SUCCEEDED", "2026-04-10T09:00:00Z")]),
+    ),
+    locked: true,
+    code: "return_accepted",
+    reasonHas: "federal return was accepted",
+  },
+  {
+    name: "state-only acceptance still names the state honestly",
+    payload: tf(
+      filing("ind.us", "REGULAR", [], { filingLevel: "flFederal" }),
+      filing("ind.pa", "REGULAR", [st("ACK_SUCCEEDED", "2026-04-09T14:00:00Z")]),
+    ),
+    locked: true,
+    code: "return_accepted",
+    reasonHas: "PA return was accepted",
+  },
+  {
     name: "state return accepted, federal not yet filed",
     payload: tf(
       filing("ind.us", "REGULAR", []),
@@ -228,12 +261,15 @@ function runCases(): number {
   console.log("─── fixtures ───────────────────────────────────────────────")
   for (const c of CASES) {
     const d = evaluateEfileLock(c.payload)
-    const ok = d.locked === c.locked && d.code === c.code
+    const reasonOk = !c.reasonHas || d.reason.includes(c.reasonHas)
+    const ok = d.locked === c.locked && d.code === c.code && reasonOk
     if (!ok) failed++
     console.log(
       `${ok ? "  ok  " : "  FAIL"}  ${c.name}\n` +
-        `          expected ${c.locked ? "LOCKED" : "open  "} / ${c.code}\n` +
-        `          got      ${d.locked ? "LOCKED" : "open  "} / ${d.code}`,
+        `          expected ${c.locked ? "LOCKED" : "open  "} / ${c.code}` +
+        (c.reasonHas ? ` / reason ~ "${c.reasonHas}"` : "") +
+        `\n          got      ${d.locked ? "LOCKED" : "open  "} / ${d.code}` +
+        (c.reasonHas ? `\n          reason:  ${d.reason}` : ""),
     )
   }
   console.log(`\n${CASES.length - failed}/${CASES.length} fixtures passed`)

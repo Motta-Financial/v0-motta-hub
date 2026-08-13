@@ -169,14 +169,6 @@ function EfileSummary({
  */
 function LockBanner({ lock }: { lock: LockDecision }) {
   const f = lock.filing
-  const scope = f
-    ? [
-        f.filingLevel === "flState" ? f.jurisdiction || "state" : "federal",
-        (f.filingType || "").toLowerCase(),
-      ]
-        .filter(Boolean)
-        .join(" ")
-    : null
 
   return (
     <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
@@ -185,9 +177,9 @@ function LockBanner({ lock }: { lock: LockDecision }) {
         <p className="font-medium">
           {lock.failedClosed ? "Editing is locked pending review" : "This return has been filed"}
         </p>
+        {/* `reason` already names the filing — don't repeat it here. */}
         <p className="text-xs opacity-90">
           {lock.reason}
-          {scope ? ` (${scope})` : ""}
           {f?.confirmationNumber ? ` · confirmation ${f.confirmationNumber}` : ""}
         </p>
       </div>
