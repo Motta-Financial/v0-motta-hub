@@ -4,8 +4,9 @@ import { NextRequest, NextResponse } from "next/server"
 
 /**
  * GET /api/client-portal/client-info
- * Returns the Karbon contact snapshot for the current portal user's client.
- * Also returns all portal_users linked to the same client_id (authorized contacts).
+ * Returns the contact/organization snapshot(s) for every entity linked to
+ * the current portal login, plus the other active portal users who share
+ * access to those same entities (authorized contacts).
  */
 export async function GET() {
   const auth = await requirePortalAuth()
@@ -14,41 +15,59 @@ export async function GET() {
   const { portalUser } = auth
   const supabase = await createClient()
 
-  // Try contact first, then organization
-  let contact: Record<string, unknown> | null = null
+  const [{ data: contacts }, { data: organizations }] = await Promise.all([
+    portalUser.contactIds.length > 0
+      ? supabase
+          .from("contacts")
+          .select(
+            "id, full_name, first_name, last_name, primary_email, phone_primary, mailing_address_line1, mailing_city, mailing_state, mailing_zip_code, client_manager_key, client_partner_key",
+          )
+          .in("id", portalUser.contactIds)
+      : Promise.resolve({ data: [] }),
+    portalUser.organizationIds.length > 0
+      ? supabase
+          .from("organizations")
+          .select("id, name, primary_email, phone, client_manager_key, client_partner_key")
+          .in("id", portalUser.organizationIds)
+      : Promise.resolve({ data: [] }),
+  ])
 
-  const { data: c } = await supabase
-    .from("supabase_contacts")
-    .select(`
-      id, first_name, last_name, email,
-      phone_numbers, physical_addresses,
-      client_manager_key, client_partner_key
-    `)
-    .eq("id", portalUser.clientId)
-    .maybeSingle()
+  // Other active portal users who have access to any of the same
+  // contact/organization entities (authorized contacts on this account).
+  const { data: sharedAccess } = await supabase
+    .from("portal_user_access")
+    .select("portal_user_id")
+    .or(
+      [
+        portalUser.contactIds.length > 0
+          ? `contact_id.in.(${portalUser.contactIds.join(",")})`
+          : null,
+        portalUser.organizationIds.length > 0
+          ? `organization_id.in.(${portalUser.organizationIds.join(",")})`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(","),
+    )
 
-  if (c) {
-    contact = c
-  } else {
-    const { data: org } = await supabase
-      .from("supabase_organizations")
-      .select("id, name, email, phone_number, address")
-      .eq("id", portalUser.clientId)
-      .maybeSingle()
-    if (org) contact = org
+  const sharedUserIds = Array.from(
+    new Set((sharedAccess ?? []).map((a) => a.portal_user_id)),
+  ).filter((id) => id !== portalUser.id)
+
+  let authorizedContacts: unknown[] = []
+  if (sharedUserIds.length > 0) {
+    const { data: users } = await supabase
+      .from("portal_users")
+      .select("id, full_name, email")
+      .in("id", sharedUserIds)
+      .eq("is_active", true)
+    authorizedContacts = users ?? []
   }
 
-  // Other portal users on this account (authorized contacts)
-  const { data: contacts } = await supabase
-    .from("portal_users")
-    .select("id, full_name, email, role")
-    .eq("client_id", portalUser.clientId)
-    .eq("is_active", true)
-    .neq("id", portalUser.id)
-
   return NextResponse.json({
-    contact,
-    authorizedContacts: contacts ?? [],
+    contacts: contacts ?? [],
+    organizations: organizations ?? [],
+    authorizedContacts,
   })
 }
 

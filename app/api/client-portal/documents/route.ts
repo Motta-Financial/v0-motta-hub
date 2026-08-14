@@ -13,6 +13,7 @@
 
 import { requirePortalAuth } from "@/lib/portal/require-portal-auth"
 import { createClient } from "@/lib/supabase/server"
+import { applyPortalEntityFilter } from "@/lib/portal/entity-filter"
 import { NextResponse } from "next/server"
 
 export async function GET() {
@@ -24,10 +25,12 @@ export async function GET() {
 
   // Resolve this client's work items first — used both to scope the
   // document query and to label each file with its task title.
-  const { data: workItems, error: wiError } = await supabase
-    .from("work_items")
-    .select("id, title, work_type_name")
-    .eq("client_key", portalUser.clientId)
+  const workItemsQuery = supabase.from("work_items").select("id, title, work_type")
+
+  const { data: workItems, error: wiError } = await applyPortalEntityFilter(
+    workItemsQuery,
+    portalUser,
+  )
 
   if (wiError) {
     return NextResponse.json({ error: wiError.message }, { status: 500 })
@@ -39,7 +42,7 @@ export async function GET() {
   }
 
   const titleById = new Map(
-    (workItems ?? []).map((w) => [w.id, { title: w.title, type: w.work_type_name }]),
+    (workItems ?? []).map((w) => [w.id, { title: w.title, type: w.work_type }]),
   )
 
   const { data: documents, error: docError } = await supabase
