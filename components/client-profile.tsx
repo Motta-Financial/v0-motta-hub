@@ -87,6 +87,7 @@ import { summarizePayments, isPaid } from "@/lib/ignition/payments"
 import { cn } from "@/lib/utils"
 import { getKarbonWorkItemUrl } from "@/lib/karbon-utils"
 import { PlatformLinksCard } from "@/components/clients/platform-links-card"
+import { PortalAccessCard } from "@/components/clients/portal-access-card"
 import {
   LinkOrganizationDialog,
   type LinkOrganizationInitial,
@@ -2954,6 +2955,15 @@ function PeopleTab({
           )}
         </CardContent>
       </Card>
+
+      {/* Client portal access */}
+      <div className="lg:col-span-2">
+        <PortalAccessCard
+          kind={isOrg ? "organization" : "contact"}
+          entityId={clientId}
+          defaultName={client.clientName}
+        />
+      </div>
 
       {/* Platform links */}
       <div className="lg:col-span-2">

@@ -22,11 +22,19 @@ interface FilterableQuery {
  * tables (e.g. `work_items.contact_id` when querying comments through a
  * join) without hardcoding column names.
  */
-export function applyPortalEntityFilter<T extends FilterableQuery>(
+export function applyPortalEntityFilter<T>(
   query: T,
   portalUser: Pick<PortalUser, "contactIds" | "organizationIds">,
   { contactColumn = "contact_id", organizationColumn = "organization_id" } = {},
 ): T {
+  // Deliberately unconstrained generic + a manual cast to the minimal
+  // FilterableQuery shape below, rather than `T extends FilterableQuery`.
+  // The real Supabase query builder type is a deeply recursive generic —
+  // asking the compiler to structurally unify it against an interface
+  // blows past TS's instantiation depth limit (TS2589). Callers still get
+  // their concrete builder type back via the final `as T` casts.
+  const q = query as unknown as FilterableQuery
+
   const orFilters: string[] = []
   if (portalUser.contactIds.length > 0) {
     orFilters.push(`${contactColumn}.in.(${portalUser.contactIds.join(",")})`)
@@ -39,8 +47,8 @@ export function applyPortalEntityFilter<T extends FilterableQuery>(
   // empty in practice. Guard anyway so a bug here fails closed (returns
   // nothing) rather than open (returns everything via an empty .or()).
   if (orFilters.length === 0) {
-    return query.eq("id", "00000000-0000-0000-0000-000000000000") as T
+    return q.eq("id", "00000000-0000-0000-0000-000000000000") as unknown as T
   }
 
-  return query.or(orFilters.join(",")) as T
+  return q.or(orFilters.join(",")) as unknown as T
 }
