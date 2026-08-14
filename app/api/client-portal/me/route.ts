@@ -2,12 +2,27 @@ import { requirePortalAuth } from "@/lib/portal/require-portal-auth"
 import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
 
+interface TeamMemberSnapshot {
+  karbon_user_key: string
+  first_name: string | null
+  last_name: string | null
+  title: string | null
+  role: string | null
+  email: string | null
+}
+
 /**
  * GET /api/client-portal/me
  * Returns the current portal user's profile and every linked contact/
  * organization snapshot. A single login can be tied to more than one
  * entity (e.g. a personal 1040 contact plus a business organization),
  * so this returns arrays rather than a single "clientId" record.
+ *
+ * Also resolves `client_manager_key`/`client_partner_key` (raw Karbon
+ * user keys) against `team_members` so the "Your Team" card can show
+ * real names/titles instead of just an opaque key — those two fields
+ * are the only handle the portal has on which staff members work this
+ * account.
  */
 export async function GET() {
   const auth = await requirePortalAuth()
@@ -33,9 +48,31 @@ export async function GET() {
       : Promise.resolve({ data: [] }),
   ])
 
+  const teamKeys = Array.from(
+    new Set(
+      [...(contacts ?? []), ...(organizations ?? [])].flatMap((e) => [
+        e.client_manager_key,
+        e.client_partner_key,
+      ]),
+    ),
+  ).filter((k): k is string => Boolean(k))
+
+  let team: Record<string, TeamMemberSnapshot> = {}
+  if (teamKeys.length > 0) {
+    const { data: teamRows } = await supabase
+      .from("team_members")
+      .select("karbon_user_key, first_name, last_name, title, role, email")
+      .in("karbon_user_key", teamKeys)
+
+    team = Object.fromEntries(
+      (teamRows ?? []).map((t) => [t.karbon_user_key as string, t]),
+    )
+  }
+
   return NextResponse.json({
     portalUser,
     contacts: contacts ?? [],
     organizations: organizations ?? [],
+    team,
   })
 }

@@ -27,63 +27,6 @@ interface PortalDocumentWithTask extends PortalDocument {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
-// ── Preview mock data ─────────────────────────────────────────────────────────
-
-const PREVIEW_DOCUMENTS: PortalDocumentWithTask[] = [
-  {
-    id: "d-1",
-    name: "W-2 2024 — Acme Corp.pdf",
-    file_type: "pdf",
-    file_size_bytes: 248_000,
-    document_type: "W-2",
-    status: "uploaded",
-    uploaded_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-    uploaded_by_role: "client",
-    work_item_id: "wi-1",
-    work_item_title: "2024 Individual Tax Return",
-    work_item_type: "Tax Return",
-  },
-  {
-    id: "d-2",
-    name: "2024 Tax Organizer.pdf",
-    file_type: "pdf",
-    file_size_bytes: 1_340_000,
-    document_type: "Organizer",
-    status: "uploaded",
-    uploaded_at: new Date(Date.now() - 18 * 24 * 60 * 60 * 1000).toISOString(),
-    uploaded_by_role: "team",
-    work_item_id: "wi-1",
-    work_item_title: "2024 Individual Tax Return",
-    work_item_type: "Tax Return",
-  },
-  {
-    id: "d-3",
-    name: "1040-X Draft — 2023.pdf",
-    file_type: "pdf",
-    file_size_bytes: 512_000,
-    document_type: "Return",
-    status: "uploaded",
-    uploaded_at: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString(),
-    uploaded_by_role: "team",
-    work_item_id: "wi-2",
-    work_item_title: "2023 Amended Return (1040-X)",
-    work_item_type: "Amended Return",
-  },
-  {
-    id: "d-4",
-    name: "Brokerage 1099-B 2023.pdf",
-    file_type: "pdf",
-    file_size_bytes: 890_000,
-    document_type: "1099",
-    status: "uploaded",
-    uploaded_at: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-    uploaded_by_role: "client",
-    work_item_id: "wi-2",
-    work_item_title: "2023 Amended Return (1040-X)",
-    work_item_type: "Amended Return",
-  },
-]
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function DocumentsPage() {
@@ -94,7 +37,7 @@ export default function DocumentsPage() {
 
   const [query, setQuery] = useState("")
 
-  const documents = data?.documents ?? PREVIEW_DOCUMENTS
+  const documents = data?.documents ?? []
 
   // Filter first, then group, so a search that empties a task group
   // hides that group entirely rather than leaving a bare heading.

@@ -38,93 +38,47 @@ interface PortalMessage {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
-// ── Preview mock data (remove when real API is wired up) ──────────────────────
-
-// Motta status color palette — used everywhere in the portal
-const STATUS_COLORS: Record<string, string> = {
-  "In Progress":         "#8E9B79",
-  "Under Review":        "#6B745D",
-  "Awaiting Info":       "#B5BFA8",
-  "Complete":            "#4A5240",
-  "Awaiting Signature":  "#8E9B79",
-}
-function statusColor(label: string): string {
-  return STATUS_COLORS[label] ?? "#6B745D"
-}
-
-const PREVIEW_WORK: WorkItem[] = [
-  {
-    id: "1",
-    title: "2024 Individual Tax Return",
-    work_type_name: "Tax Return",
-    statusDisplay: { label: "In Progress", color: statusColor("In Progress") },
-    assignee_name: "Sarah Martinez",
-    due_date: new Date(Date.now() + 12 * 24 * 60 * 60 * 1000).toISOString(),
-    has_blocking_todos: true,
-    progressPct: 45,
-  },
-  {
-    id: "2",
-    title: "Q3 2024 Bookkeeping",
-    work_type_name: "Bookkeeping",
-    statusDisplay: { label: "Under Review", color: statusColor("Under Review") },
-    assignee_name: "James Motta",
-    due_date: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
-    has_blocking_todos: false,
-    progressPct: 80,
-  },
-  {
-    id: "3",
-    title: "2023 Amended Return",
-    work_type_name: "Amended Return",
-    statusDisplay: { label: "Complete", color: statusColor("Complete") },
-    assignee_name: "Sarah Martinez",
-    due_date: null,
-    has_blocking_todos: false,
-    progressPct: 100,
-  },
-]
-
-const PREVIEW_MESSAGES: PortalMessage[] = [
-  {
-    id: "1",
-    sender_role: "team",
-    sender_name: "Sarah Martinez",
-    body: "Hi Alex! We need a few more documents to complete your 2024 return — specifically your W-2 from your second employer and any 1099s.",
-    created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-    read_at: null,
-  },
-  {
-    id: "2",
-    sender_role: "client",
-    sender_name: "Alex Johnson",
-    body: "Got it, I'll upload those today. Thank you!",
-    created_at: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
-    read_at: new Date().toISOString(),
-  },
-  {
-    id: "3",
-    sender_role: "team",
-    sender_name: "James Motta",
-    body: "Your Q3 bookkeeping looks good. Just a couple of questions on some transactions — I'll send over details shortly.",
-    created_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-    read_at: null,
-  },
-]
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+interface TeamMemberSnapshot {
+  karbon_user_key: string
+  first_name: string | null
+  last_name: string | null
+  title: string | null
+  role: string | null
+  email: string | null
+}
+
+interface MeResponse {
+  contacts: Array<{
+    first_name: string | null
+    last_name: string | null
+    full_name: string | null
+    client_manager_key: string | null
+    client_partner_key: string | null
+  }>
+  organizations: Array<{
+    name: string | null
+    client_manager_key: string | null
+    client_partner_key: string | null
+  }>
+  team: Record<string, TeamMemberSnapshot>
+}
+
 export default function PortalDashboardPage() {
-  const { data: meData } = useSWR("/api/client-portal/me", fetcher)
+  const { data: meData } = useSWR<MeResponse>("/api/client-portal/me", fetcher)
   const { data: workData } = useSWR("/api/client-portal/work-items", fetcher)
   const { data: msgData } = useSWR("/api/client-portal/messages", fetcher)
 
-  const isLoading = false // preview always has data
+  const isLoading = !workData || !msgData
 
-  const firstName = "Alex"
+  const primaryContact = meData?.contacts?.[0]
+  const primaryOrg = meData?.organizations?.[0]
+  const firstName =
+    primaryContact?.first_name ?? primaryOrg?.name?.split(" ")[0] ?? "there"
 
-  const workItems: WorkItem[] = workData?.workItems ?? PREVIEW_WORK
-  const messages: PortalMessage[] = msgData?.messages ?? PREVIEW_MESSAGES
+  const workItems: WorkItem[] = workData?.workItems ?? []
+  const messages: PortalMessage[] = msgData?.messages ?? []
 
   const activeCount = workItems.length
   const hasBlockingItems = workItems.some((w) => w.has_blocking_todos)
@@ -280,7 +234,7 @@ export default function PortalDashboardPage() {
       </div>
 
       {/* Your team */}
-      <YourTeamCard meData={meData} isLoading={isLoading} />
+      <YourTeamCard meData={meData} isLoading={!meData} />
     </div>
   )
 }
@@ -395,12 +349,13 @@ function YourTeamCard({
   meData,
   isLoading,
 }: {
-  meData: Record<string, unknown> | undefined
+  meData: MeResponse | undefined
   isLoading: boolean
 }) {
-  const contact = meData?.contact as Record<string, string | null> | undefined
-  const managerKey = contact?.client_manager_key
-  const partnerKey = contact?.client_partner_key
+  const entity = meData?.contacts?.[0] ?? meData?.organizations?.[0]
+  const managerKey = entity?.client_manager_key ?? null
+  const partnerKey = entity?.client_partner_key ?? null
+  const team = meData?.team ?? {}
 
   return (
     <Card className="shadow-sm border-0">
@@ -419,10 +374,10 @@ function YourTeamCard({
         ) : (
           <div className="flex flex-wrap items-center gap-4">
             {managerKey ? (
-              <TeamMemberBadge label="Client Manager" karbon_key={managerKey} />
+              <TeamMemberBadge label="Client Manager" member={team[managerKey]} />
             ) : null}
             {partnerKey ? (
-              <TeamMemberBadge label="Partner" karbon_key={partnerKey} />
+              <TeamMemberBadge label="Partner" member={team[partnerKey]} />
             ) : null}
             {!managerKey && !partnerKey && (
               <p className="text-sm text-gray-500">
@@ -449,24 +404,35 @@ function YourTeamCard({
 
 function TeamMemberBadge({
   label,
-  karbon_key,
+  member,
 }: {
   label: string
-  karbon_key: string
+  member: TeamMemberSnapshot | undefined
 }) {
-  // We don't have the name here without a separate lookup, so show the label
-  // for now. The team's display names will be resolved in a future enhancement.
+  const fullName = member
+    ? [member.first_name, member.last_name].filter(Boolean).join(" ")
+    : null
+  const initials =
+    member?.first_name && member?.last_name
+      ? `${member.first_name[0]}${member.last_name[0]}`.toUpperCase()
+      : "MF"
+
   return (
     <div className="flex items-center gap-2.5">
       <div
         className="flex h-9 w-9 items-center justify-center rounded-full text-white text-sm font-semibold"
         style={{ backgroundColor: "#6B745D" }}
       >
-        MF
+        {initials}
       </div>
       <div>
         <p className="text-xs text-gray-500">{label}</p>
-        <p className="text-sm font-medium text-gray-800">Motta Financial</p>
+        <p className="text-sm font-medium text-gray-800">
+          {fullName || "Motta Financial"}
+        </p>
+        {member?.title && (
+          <p className="text-xs text-gray-400">{member.title}</p>
+        )}
       </div>
     </div>
   )

@@ -20,8 +20,8 @@ import {
   User2,
 } from "lucide-react"
 import { format, parseISO } from "date-fns"
-import { TaskCommentThread, type TaskComment } from "@/components/portal/task-comment-thread"
-import { TaskDocuments, type PortalDocument } from "@/components/portal/task-documents"
+import { TaskCommentThread } from "@/components/portal/task-comment-thread"
+import { TaskDocuments } from "@/components/portal/task-documents"
 
 const DEEP_GREEN = "#6B745D"
 const MID_GREEN = "#8E9B79"
@@ -42,69 +42,6 @@ interface TaskDetail {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
-// ── Preview mock data ─────────────────────────────────────────────────────────
-
-const PREVIEW_TASK: TaskDetail = {
-  id: "wi-1",
-  title: "2024 Individual Tax Return",
-  work_type_name: "Tax Return",
-  statusDisplay: { label: "In Progress", color: MID_GREEN },
-  assignee_name: "Sarah Martinez",
-  due_date: new Date(Date.now() + 12 * 24 * 60 * 60 * 1000).toISOString(),
-  start_date: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-  has_blocking_todos: true,
-  progressPct: 45,
-  completed_todo_count: 5,
-  todo_count: 11,
-}
-
-const PREVIEW_COMMENTS: TaskComment[] = [
-  {
-    id: "c-1",
-    author_role: "team",
-    author_name: "Sarah Martinez",
-    body: "Hi! I've started on your 2024 return. Could you upload your W-2 and the 1099-INT from your savings account when you get a chance?",
-    created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: "c-2",
-    author_role: "client",
-    author_name: "You",
-    body: "Just uploaded the W-2. Still waiting on the 1099 from the bank — should have it next week.",
-    created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: "c-3",
-    author_role: "team",
-    author_name: "Sarah Martinez",
-    body: "Perfect, thanks. No rush on the 1099 — we have until April. I'll keep working on everything else in the meantime.",
-    created_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-  },
-]
-
-const PREVIEW_DOCUMENTS: PortalDocument[] = [
-  {
-    id: "d-1",
-    name: "W-2 2024 — Acme Corp.pdf",
-    file_type: "pdf",
-    file_size_bytes: 248_000,
-    document_type: "W-2",
-    status: "uploaded",
-    uploaded_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-    uploaded_by_role: "client",
-  },
-  {
-    id: "d-2",
-    name: "2024 Tax Organizer.pdf",
-    file_type: "pdf",
-    file_size_bytes: 1_340_000,
-    document_type: "Organizer",
-    status: "uploaded",
-    uploaded_at: new Date(Date.now() - 18 * 24 * 60 * 60 * 1000).toISOString(),
-    uploaded_by_role: "team",
-  },
-]
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function TaskDetailPage() {
@@ -116,8 +53,35 @@ export default function TaskDetailPage() {
     fetcher,
   )
 
-  const task = data?.workItem ?? PREVIEW_TASK
-  const isPreview = !data?.workItem
+  const task = data?.workItem ?? null
+
+  // While loading (or if the id doesn't resolve to a work item this
+  // client can see), render just the skeleton — every section below
+  // reads directly off `task`, so it must be non-null past this point.
+  if (isLoading || !task) {
+    return (
+      <div className="max-w-3xl space-y-6">
+        <a
+          href="/client-portal/tax"
+          className="inline-flex items-center gap-1.5 text-sm text-gray-500 transition-colors hover:text-gray-900"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to Tax
+        </a>
+        {isLoading ? (
+          <Skeleton className="h-20 w-full rounded-xl" />
+        ) : (
+          <Card className="border-0 shadow-sm">
+            <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
+              <p className="text-sm text-gray-500">
+                We couldn&apos;t find that task, or you don&apos;t have access to it.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -131,26 +95,22 @@ export default function TaskDetailPage() {
       </a>
 
       {/* Header */}
-      {isLoading && !task ? (
-        <Skeleton className="h-20 w-full rounded-xl" />
-      ) : (
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-balance text-gray-900">
-              {task.title}
-            </h1>
-            {task.work_type_name && (
-              <p className="mt-1 text-sm text-gray-500">{task.work_type_name}</p>
-            )}
-          </div>
-          <span
-            className="mt-1 inline-flex shrink-0 items-center rounded-full px-3 py-1 text-xs font-semibold text-white"
-            style={{ backgroundColor: task.statusDisplay.color }}
-          >
-            {task.statusDisplay.label}
-          </span>
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold text-balance text-gray-900">
+            {task.title}
+          </h1>
+          {task.work_type_name && (
+            <p className="mt-1 text-sm text-gray-500">{task.work_type_name}</p>
+          )}
         </div>
-      )}
+        <span
+          className="mt-1 inline-flex shrink-0 items-center rounded-full px-3 py-1 text-xs font-semibold text-white"
+          style={{ backgroundColor: task.statusDisplay.color }}
+        >
+          {task.statusDisplay.label}
+        </span>
+      </div>
 
       {/* Action needed banner */}
       {task.has_blocking_todos && (
@@ -248,16 +208,10 @@ export default function TaskDetailPage() {
       </Card>
 
       {/* Documents for this task */}
-      <TaskDocuments
-        workItemId={id}
-        previewDocuments={isPreview ? PREVIEW_DOCUMENTS : undefined}
-      />
+      <TaskDocuments workItemId={id} />
 
       {/* Per-task discussion */}
-      <TaskCommentThread
-        workItemId={id}
-        previewComments={isPreview ? PREVIEW_COMMENTS : undefined}
-      />
+      <TaskCommentThread workItemId={id} />
     </div>
   )
 }

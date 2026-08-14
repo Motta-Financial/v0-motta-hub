@@ -22,22 +22,25 @@ import { toast } from "sonner"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+// Real shape returned by /api/client-portal/client-info — a contact
+// (individual) or organization (business) record, whichever this login
+// is linked to. The two tables have different field names for the same
+// concepts (e.g. contacts.primary_email vs. organizations.primary_email
+// are the same, but contacts split first/last name while organizations
+// just have `name`), so this covers both.
 interface ContactInfo {
   first_name?: string | null
   last_name?: string | null
-  email?: string | null
-  phone_numbers?: Array<{ number: string; type?: string }> | null
-  physical_addresses?: Array<{
-    line1?: string
-    line2?: string
-    city?: string
-    state?: string
-    postal_code?: string
-  }> | null
-  // Org fields
+  full_name?: string | null
+  primary_email?: string | null
+  phone_primary?: string | null
+  mailing_address_line1?: string | null
+  mailing_city?: string | null
+  mailing_state?: string | null
+  mailing_zip_code?: string | null
+  // Organization fields
   name?: string | null
-  phone_number?: string | null
-  address?: string | null
+  phone?: string | null
 }
 
 interface AuthorizedContact {
@@ -49,44 +52,17 @@ interface AuthorizedContact {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
-// ── Preview mock data ─────────────────────────────────────────────────────────
-
-const PREVIEW_CONTACT: ContactInfo = {
-  first_name: "Alex",
-  last_name: "Johnson",
-  email: "alex.johnson@example.com",
-  phone_numbers: [{ number: "(512) 555-0147", type: "Mobile" }],
-  physical_addresses: [
-    {
-      line1: "4821 Barton Springs Rd",
-      line2: "Apt 3B",
-      city: "Austin",
-      state: "TX",
-      postal_code: "78704",
-    },
-  ],
-}
-
-const PREVIEW_AUTHORIZED_CONTACTS: AuthorizedContact[] = [
-  {
-    id: "ac-1",
-    full_name: "Jordan Johnson",
-    email: "jordan.johnson@example.com",
-    role: "client_contact",
-  },
-]
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ClientInfoPage() {
-  const { data } = useSWR<{
-    contact: ContactInfo | null
+  const { data, isLoading } = useSWR<{
+    contacts: ContactInfo[]
+    organizations: ContactInfo[]
     authorizedContacts: AuthorizedContact[]
   }>("/api/client-portal/client-info", fetcher)
 
-  const isLoading = false
-  const contact = data?.contact ?? PREVIEW_CONTACT
-  const authorizedContacts = data?.authorizedContacts ?? PREVIEW_AUTHORIZED_CONTACTS
+  const contact = data?.contacts?.[0] ?? data?.organizations?.[0] ?? null
+  const authorizedContacts = data?.authorizedContacts ?? []
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -133,21 +109,24 @@ function ContactCard({
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
 
-  // Read the primary phone + address for display
-  const primaryPhone =
-    contact?.phone_numbers?.[0]?.number ??
-    contact?.phone_number ??
-    ""
+  // Read the primary phone + address for display. `contacts` and
+  // `organizations` use different column names for the same concepts —
+  // contacts.phone_primary vs. organizations.phone, and contacts have a
+  // structured mailing address vs. organizations having none on file yet.
+  const primaryPhone = contact?.phone_primary ?? contact?.phone ?? ""
 
-  const addr = contact?.physical_addresses?.[0]
-  const addressLine = addr
-    ? [addr.line1, addr.city, addr.state, addr.postal_code]
-        .filter(Boolean)
-        .join(", ")
-    : contact?.address ?? ""
+  const addressLine = [
+    contact?.mailing_address_line1,
+    contact?.mailing_city,
+    contact?.mailing_state,
+    contact?.mailing_zip_code,
+  ]
+    .filter(Boolean)
+    .join(", ")
 
   const displayName =
     contact?.name ??
+    contact?.full_name ??
     [contact?.first_name, contact?.last_name].filter(Boolean).join(" ") ??
     "—"
 
@@ -235,7 +214,7 @@ function ContactCard({
 
         {/* Read-only fields */}
         <InfoRow label="Full name" value={isLoading ? null : displayName} />
-        <InfoRow label="Email" value={isLoading ? null : contact?.email ?? "—"} />
+        <InfoRow label="Email" value={isLoading ? null : contact?.primary_email ?? "—"} />
 
         {/* Editable: phone */}
         <div>
