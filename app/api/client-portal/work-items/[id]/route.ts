@@ -10,6 +10,7 @@
 import { requirePortalAuth } from "@/lib/portal/require-portal-auth"
 import { createClient } from "@/lib/supabase/server"
 import { mapStatus } from "@/lib/portal/map-status"
+import { applyPortalEntityFilter } from "@/lib/portal/entity-filter"
 import { NextResponse } from "next/server"
 
 function isUuid(s: string): boolean {
@@ -31,7 +32,7 @@ export async function GET(
   const { portalUser } = auth
   const supabase = await createClient()
 
-  const { data: workItem, error } = await supabase
+  const baseQuery = supabase
     .from("work_items")
     .select(`
       id,
@@ -47,8 +48,11 @@ export async function GET(
       created_at
     `)
     .eq("id", id)
-    .eq("client_key", portalUser.clientId)
-    .maybeSingle()
+
+  const { data: workItem, error } = await applyPortalEntityFilter(
+    baseQuery,
+    portalUser,
+  ).maybeSingle()
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })

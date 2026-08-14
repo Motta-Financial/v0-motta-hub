@@ -12,8 +12,9 @@
  * prospect attachment route uses.
  */
 
-import { requirePortalAuth } from "@/lib/portal/require-portal-auth"
+import { requirePortalAuth, type PortalUser } from "@/lib/portal/require-portal-auth"
 import { createClient } from "@/lib/supabase/server"
+import { applyPortalEntityFilter } from "@/lib/portal/entity-filter"
 import { del, put } from "@vercel/blob"
 import { type NextRequest, NextResponse } from "next/server"
 
@@ -26,19 +27,22 @@ function isUuid(s: string): boolean {
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 const DOCUMENT_FIELDS =
-  "id, name, file_type, mime_type, file_size_bytes, storage_url, document_type, tax_year, status, uploaded_at, uploaded_by_role, created_at"
+  "id, name, file_type, mime_type, file_size_bytes, storage_path, document_type, tax_year, status, uploaded_at, uploaded_by_role, created_at"
 
 async function assertOwnsWorkItem(
   supabase: Awaited<ReturnType<typeof createClient>>,
   workItemId: string,
-  clientId: string,
-): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
-  const { data, error } = await supabase
+  portalUser: PortalUser,
+): Promise<
+  | { ok: true; contactId: string | null; organizationId: string | null }
+  | { ok: false; response: NextResponse }
+> {
+  const baseQuery = supabase
     .from("work_items")
-    .select("id")
+    .select("id, contact_id, organization_id")
     .eq("id", workItemId)
-    .eq("client_key", clientId)
-    .maybeSingle()
+
+  const { data, error } = await applyPortalEntityFilter(baseQuery, portalUser).maybeSingle()
 
   if (error) {
     return {
@@ -52,7 +56,7 @@ async function assertOwnsWorkItem(
       response: NextResponse.json({ error: "Not found" }, { status: 404 }),
     }
   }
-  return { ok: true }
+  return { ok: true, contactId: data.contact_id, organizationId: data.organization_id }
 }
 
 export async function GET(
@@ -68,7 +72,7 @@ export async function GET(
   if (!auth.ok) return auth.response
 
   const supabase = await createClient()
-  const owns = await assertOwnsWorkItem(supabase, id, auth.portalUser.clientId)
+  const owns = await assertOwnsWorkItem(supabase, id, auth.portalUser)
   if (!owns.ok) return owns.response
 
   const { data, error } = await supabase
@@ -121,13 +125,18 @@ export async function POST(
 
     // Verify ownership BEFORE uploading so a bad id can't leave an
     // orphaned blob behind.
-    const owns = await assertOwnsWorkItem(supabase, id, portalUser.clientId)
+    const owns = await assertOwnsWorkItem(supabase, id, portalUser)
     if (!owns.ok) return owns.response
 
-    const blob = await put(`client-portal/${portalUser.clientId}/${id}/${file.name}`, file, {
-      access: "public",
-      addRandomSuffix: true,
-    })
+    // Tax documents are sensitive — never uploaded with `access: "public"`.
+    // Clients and staff both retrieve these through the authenticated
+    // download proxy (/api/client-portal/documents/[id]/download), which
+    // re-checks RLS-equivalent ownership before streaming the file.
+    const blob = await put(
+      `client-portal/${portalUser.id}/${id}/${file.name}`,
+      file,
+      { access: "private", addRandomSuffix: true },
+    )
 
     const extension = file.name.includes(".")
       ? file.name.split(".").pop()!.toLowerCase()
@@ -137,6 +146,8 @@ export async function POST(
       .from("documents")
       .insert({
         work_item_id: id,
+        contact_id: owns.contactId,
+        organization_id: owns.organizationId,
         name: file.name,
         file_type: extension,
         mime_type: file.type || "application/octet-stream",

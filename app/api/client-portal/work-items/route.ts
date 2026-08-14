@@ -1,6 +1,7 @@
 import { requirePortalAuth } from "@/lib/portal/require-portal-auth"
 import { createClient } from "@/lib/supabase/server"
 import { mapStatus } from "@/lib/portal/map-status"
+import { applyPortalEntityFilter } from "@/lib/portal/entity-filter"
 import { NextResponse } from "next/server"
 
 /**
@@ -14,7 +15,7 @@ export async function GET() {
   const { portalUser } = auth
   const supabase = await createClient()
 
-  const { data: workItems, error } = await supabase
+  const baseQuery = supabase
     .from("work_items")
     .select(`
       id,
@@ -29,10 +30,11 @@ export async function GET() {
       start_date,
       created_at
     `)
-    .eq("client_key", portalUser.clientId)
     .not("status", "ilike", "%complete%")
     .not("status", "ilike", "%filed%")
     .order("due_date", { ascending: true, nullsFirst: false })
+
+  const { data: workItems, error } = await applyPortalEntityFilter(baseQuery, portalUser)
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
