@@ -28,7 +28,7 @@ export async function GET() {
     portalUser.organizationIds.length > 0
       ? supabase
           .from("organizations")
-          .select("id, name, primary_email, phone_primary, client_manager_key, client_partner_key")
+          .select("id, name, primary_email, phone, client_manager_key, client_partner_key")
           .in("id", portalUser.organizationIds)
       : Promise.resolve({ data: [] }),
   ])
