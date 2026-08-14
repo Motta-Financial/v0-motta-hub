@@ -99,11 +99,21 @@ export async function POST(request: NextRequest) {
   const lines = entries.map(([field, value]) => `• ${field}: ${value}`)
   const body = `Information update request:\n\n${lines.join("\n")}\n\nPlease update these details in Karbon.`
 
+  // portal_messages has no client_id — attach the change request to the
+  // caller's first linked entity (prefer a personal contact record).
+  const contactId = portalUser.contactIds[0] ?? null
+  const organizationId = contactId ? null : portalUser.organizationIds[0] ?? null
+
+  if (!contactId && !organizationId) {
+    return NextResponse.json({ error: "No linked account found" }, { status: 400 })
+  }
+
   const supabase = await createClient()
 
   const { error } = await supabase.from("portal_messages").insert({
-    client_id: portalUser.clientId,
-    sender_id: portalUser.id,
+    contact_id: contactId,
+    organization_id: organizationId,
+    sender_portal_user_id: portalUser.id,
     sender_role: "client",
     sender_name: portalUser.fullName ?? portalUser.email,
     body,
