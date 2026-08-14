@@ -7,9 +7,13 @@
  * parallel store, so files uploaded by a client in the portal show up
  * against the same work item on the internal hub side.
  *
- * Uploads go to the Vercel Blob store with `addRandomSuffix: true` so
- * URLs are unguessable — the same private-by-obscurity pattern the
- * prospect attachment route uses.
+ * Uploads go to the dedicated private Blob store
+ * (CLIENT_PORTAL_BLOB_READ_WRITE_TOKEN) rather than the project's
+ * general-purpose public store — tax documents can contain SSNs and
+ * financial data, so `access: "private"` is required. Files are only
+ * ever readable through the authenticated download proxy at
+ * /api/client-portal/documents/[id]/download, which re-checks ownership
+ * before streaming.
  */
 
 import { requirePortalAuth, type PortalUser } from "@/lib/portal/require-portal-auth"
@@ -135,7 +139,11 @@ export async function POST(
     const blob = await put(
       `client-portal/${portalUser.id}/${id}/${file.name}`,
       file,
-      { access: "private", addRandomSuffix: true },
+      {
+        access: "private",
+        addRandomSuffix: true,
+        token: process.env.CLIENT_PORTAL_BLOB_READ_WRITE_TOKEN,
+      },
     )
 
     const extension = file.name.includes(".")
@@ -163,7 +171,9 @@ export async function POST(
 
     if (error) {
       // Roll back the blob so we don't strand a file no row points at.
-      void del(blob.url).catch(() => {})
+      void del(blob.url, {
+        token: process.env.CLIENT_PORTAL_BLOB_READ_WRITE_TOKEN,
+      }).catch(() => {})
       throw error
     }
 
