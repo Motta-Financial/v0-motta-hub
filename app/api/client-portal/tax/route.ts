@@ -60,17 +60,25 @@ export async function GET() {
     )
 
     if (proconnectClientIds.length > 0) {
+      // proconnect_tax_returns does not exist — the synced ProConnect
+      // engagement data lives in proconnect_engagements_enriched.
       const { data: returns } = await supabase
-        .from("proconnect_tax_returns")
+        .from("proconnect_engagements_enriched")
         .select(`
-          id, tax_year, form_type, status,
-          description, last_updated_at, assigned_user_name
+          engagement_id, tax_year, form_type, status,
+          engagement_name, updated_at, preparer_name
         `)
         .in("proconnect_client_id", proconnectClientIds)
         .order("tax_year", { ascending: false })
 
       taxReturns = (returns ?? []).map((r) => ({
-        ...r,
+        id: r.engagement_id,
+        tax_year: r.tax_year,
+        form_type: r.form_type,
+        status: r.status,
+        description: r.engagement_name,
+        last_updated_at: r.updated_at,
+        assigned_user_name: r.preparer_name,
         statusDisplay: mapReturnStatus(r.status),
       }))
     }
