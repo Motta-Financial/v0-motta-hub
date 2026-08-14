@@ -53,7 +53,6 @@ export async function GET() {
       file_type,
       mime_type,
       file_size_bytes,
-      storage_url,
       document_type,
       tax_year,
       status,

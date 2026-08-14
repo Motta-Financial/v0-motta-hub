@@ -24,7 +24,6 @@ export interface PortalDocument {
   name: string
   file_type: string | null
   file_size_bytes: number | null
-  storage_url: string | null
   document_type: string | null
   status: string | null
   uploaded_at: string | null
@@ -68,19 +67,14 @@ export function DocumentRow({ doc }: { doc: PortalDocument }) {
           </p>
         </div>
       </div>
-      {doc.storage_url && (
-        <a
-          href={doc.storage_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          download
-          className="flex shrink-0 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-gray-100"
-          style={{ color: DEEP_GREEN }}
-        >
-          <Download className="h-3.5 w-3.5" />
-          <span className="sr-only sm:not-sr-only">Download</span>
-        </a>
-      )}
+      <a
+        href={`/api/client-portal/documents/${doc.id}/download`}
+        className="flex shrink-0 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-gray-100"
+        style={{ color: DEEP_GREEN }}
+      >
+        <Download className="h-3.5 w-3.5" />
+        <span className="sr-only sm:not-sr-only">Download</span>
+      </a>
     </div>
   )
 }
