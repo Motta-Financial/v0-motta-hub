@@ -2,9 +2,9 @@
  * GET /api/client-portal/work-items/[id]
  *
  * Returns a single work item for the current portal user's client.
- * Scoped by `client_key` so a client can never read another client's
- * task by guessing its uuid — the filter is part of the query, not a
- * post-fetch check.
+ * Scoped via applyPortalEntityFilter (contact_id/organization_id) so a
+ * client can never read another client's task by guessing its uuid — the
+ * filter is part of the query, not a post-fetch check.
  */
 
 import { requirePortalAuth } from "@/lib/portal/require-portal-auth"
@@ -37,7 +37,7 @@ export async function GET(
     .select(`
       id,
       title,
-      work_type_name,
+      work_type,
       status,
       assignee_name,
       due_date,

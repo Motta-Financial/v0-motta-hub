@@ -20,7 +20,7 @@ export async function GET() {
     .select(`
       id,
       title,
-      work_type_name,
+      work_type,
       status,
       assignee_name,
       due_date,
