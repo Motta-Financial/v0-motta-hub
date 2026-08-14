@@ -20,12 +20,12 @@ export async function GET() {
   const workItemsQuery = supabase
     .from("work_items")
     .select(`
-      id, title, work_type_name, status,
+      id, title, work_type, status,
       assignee_name, due_date,
       completed_todo_count, todo_count, has_blocking_todos,
       start_date, created_at
     `)
-    .ilike("work_type_name", "%tax%")
+    .ilike("work_type", "%tax%")
     .order("due_date", { ascending: true, nullsFirst: false })
 
   const { data: rawWorkItems } = await applyPortalEntityFilter(workItemsQuery, portalUser)
