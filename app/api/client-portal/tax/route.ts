@@ -1,5 +1,6 @@
 import { requirePortalAuth } from "@/lib/portal/require-portal-auth"
 import { createClient } from "@/lib/supabase/server"
+import { applyPortalEntityFilter } from "@/lib/portal/entity-filter"
 import { NextResponse } from "next/server"
 
 /**
@@ -16,7 +17,7 @@ export async function GET() {
   const supabase = await createClient()
 
   // ── Tax-specific Karbon work items ──────────────────────────────────────────
-  const { data: rawWorkItems } = await supabase
+  const workItemsQuery = supabase
     .from("work_items")
     .select(`
       id, title, work_type_name, status,
@@ -24,9 +25,10 @@ export async function GET() {
       completed_todo_count, todo_count, has_blocking_todos,
       start_date, created_at
     `)
-    .eq("client_key", portalUser.clientId)
     .ilike("work_type_name", "%tax%")
     .order("due_date", { ascending: true, nullsFirst: false })
+
+  const { data: rawWorkItems } = await applyPortalEntityFilter(workItemsQuery, portalUser)
 
   const taxWorkItems = (rawWorkItems ?? []).map((w) => ({
     ...w,
@@ -38,29 +40,40 @@ export async function GET() {
   }))
 
   // ── ProConnect tax returns ──────────────────────────────────────────────────
-  // Resolve the ProConnect client ID via master_client_mapping
-  const { data: mapping } = await supabase
-    .from("master_client_mapping")
-    .select("proconnect_client_id")
-    .eq("karbon_contact_key", portalUser.clientId)
-    .maybeSingle()
+  // Resolve ProConnect client ids via master_client_mapping. internal_client_id
+  // is the same uuid as contacts.id / organizations.id, so we can match it
+  // directly against every entity this portal login has access to.
+  const entityIds = [...portalUser.contactIds, ...portalUser.organizationIds]
 
   let taxReturns: unknown[] = []
 
-  if (mapping?.proconnect_client_id) {
-    const { data: returns } = await supabase
-      .from("proconnect_tax_returns")
-      .select(`
-        id, tax_year, form_type, status,
-        description, last_updated_at, assigned_user_name
-      `)
-      .eq("proconnect_client_id", mapping.proconnect_client_id)
-      .order("tax_year", { ascending: false })
+  if (entityIds.length > 0) {
+    const { data: mappings } = await supabase
+      .from("master_client_mapping")
+      .select("proconnect_client_ids")
+      .in("internal_client_id", entityIds)
 
-    taxReturns = (returns ?? []).map((r) => ({
-      ...r,
-      statusDisplay: mapReturnStatus(r.status),
-    }))
+    const proconnectClientIds = Array.from(
+      new Set(
+        (mappings ?? []).flatMap((m) => (m.proconnect_client_ids as string[] | null) ?? []),
+      ),
+    )
+
+    if (proconnectClientIds.length > 0) {
+      const { data: returns } = await supabase
+        .from("proconnect_tax_returns")
+        .select(`
+          id, tax_year, form_type, status,
+          description, last_updated_at, assigned_user_name
+        `)
+        .in("proconnect_client_id", proconnectClientIds)
+        .order("tax_year", { ascending: false })
+
+      taxReturns = (returns ?? []).map((r) => ({
+        ...r,
+        statusDisplay: mapReturnStatus(r.status),
+      }))
+    }
   }
 
   return NextResponse.json({ taxWorkItems, taxReturns })

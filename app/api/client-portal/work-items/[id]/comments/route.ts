@@ -12,8 +12,9 @@
  * client's task thread by guessing a uuid.
  */
 
-import { requirePortalAuth } from "@/lib/portal/require-portal-auth"
+import { requirePortalAuth, type PortalUser } from "@/lib/portal/require-portal-auth"
 import { createClient } from "@/lib/supabase/server"
+import { applyPortalEntityFilter } from "@/lib/portal/entity-filter"
 import { type NextRequest, NextResponse } from "next/server"
 
 function isUuid(s: string): boolean {
@@ -23,20 +24,20 @@ function isUuid(s: string): boolean {
 const MAX_COMMENT_LENGTH = 5000
 
 /**
- * Confirms the work item exists AND belongs to this client.
- * Returns the work item id on success, or a NextResponse to bail with.
+ * Confirms the work item exists AND belongs to one of the caller's linked
+ * contact/organization entities. `portal_task_comments` has no client_id
+ * column of its own — comments are scoped entirely through the parent
+ * work item, so ownership must be checked here rather than at the RLS
+ * level on this table alone.
  */
 async function assertOwnsWorkItem(
   supabase: Awaited<ReturnType<typeof createClient>>,
   workItemId: string,
-  clientId: string,
+  portalUser: PortalUser,
 ): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
-  const { data, error } = await supabase
-    .from("work_items")
-    .select("id")
-    .eq("id", workItemId)
-    .eq("client_key", clientId)
-    .maybeSingle()
+  const baseQuery = supabase.from("work_items").select("id").eq("id", workItemId)
+
+  const { data, error } = await applyPortalEntityFilter(baseQuery, portalUser).maybeSingle()
 
   if (error) {
     return {
@@ -66,7 +67,7 @@ export async function GET(
   if (!auth.ok) return auth.response
 
   const supabase = await createClient()
-  const owns = await assertOwnsWorkItem(supabase, id, auth.portalUser.clientId)
+  const owns = await assertOwnsWorkItem(supabase, id, auth.portalUser)
   if (!owns.ok) return owns.response
 
   const { data, error } = await supabase
@@ -115,16 +116,17 @@ export async function POST(
   }
 
   const supabase = await createClient()
-  const owns = await assertOwnsWorkItem(supabase, id, portalUser.clientId)
+  const owns = await assertOwnsWorkItem(supabase, id, portalUser)
   if (!owns.ok) return owns.response
 
   // author_role is derived from the authenticated session, never from the
   // request body, so a client can't impersonate a team member.
+  // portal_task_comments has no client_id column — ownership is scoped
+  // entirely through work_item_id, verified above.
   const { data, error } = await supabase
     .from("portal_task_comments")
     .insert({
       work_item_id: id,
-      client_id: portalUser.clientId,
       author_role: "client",
       author_name: portalUser.fullName ?? portalUser.email,
       body,
