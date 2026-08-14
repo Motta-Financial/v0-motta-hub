@@ -146,6 +146,9 @@ grant execute on function public.portal_accessible_organization_ids() to authent
 
 drop policy if exists "Allow all on work_items" on public.work_items;
 drop policy if exists "work_items_select_auth" on public.work_items;
+drop policy if exists "work_items_insert_auth" on public.work_items;
+drop policy if exists "work_items_update_auth" on public.work_items;
+drop policy if exists "work_items_delete_auth" on public.work_items;
 
 create policy "work_items_select_scoped" on public.work_items
   for select
@@ -200,8 +203,7 @@ create policy "documents_delete_staff_only" on public.documents
 -- 4. portal_task_comments -- scope by joining through work_items
 -- ---------------------------------------------------------------------
 
-drop policy if exists "portal_task_comments_select" on public.portal_task_comments;
-drop policy if exists "portal_task_comments_insert" on public.portal_task_comments;
+drop policy if exists "zz_deny_all_anon_auth__portal_task_comments" on public.portal_task_comments;
 
 create policy "portal_task_comments_select_scoped" on public.portal_task_comments
   for select
