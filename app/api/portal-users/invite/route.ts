@@ -217,6 +217,7 @@ export async function POST(request: NextRequest) {
       actionUrl: actionUrl.toString(),
       mode: "invite",
       expiresInHours: 24,
+      audience: "portal",
     })
 
     const sendResult = await sendEmail({

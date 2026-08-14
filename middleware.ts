@@ -22,6 +22,14 @@ export async function middleware(request: NextRequest) {
 
   const { supabaseResponse, supabase, user } = result
 
+  // Whether the current session belongs to a team_members row (staff),
+  // regardless of active/inactive status. Populated below when `user` is
+  // set, and consumed by the generic `/api/*` staff gate further down --
+  // that gate must reject portal clients (who ARE real, authenticated
+  // Supabase users, just not staff) from ever reaching internal APIs like
+  // /api/clients/[id] that only check "is there a session".
+  let hasStaffRow = false
+
   // Enforce platform-level deactivation. A team_member can be marked inactive
   // (Alumni / deactivated) independently of their Karbon profile -- when that
   // happens we sign them out immediately, even if their session cookie is
@@ -60,6 +68,7 @@ export async function middleware(request: NextRequest) {
         .maybeSingle()
       tm = byEmail.data
     }
+    hasStaffRow = tm !== null
 
     // If we found a row and it's explicitly inactive, terminate the session.
     // (No row = brand new auth user that hasn't been provisioned yet -- let
@@ -299,9 +308,17 @@ export async function middleware(request: NextRequest) {
     return supabaseResponse
   }
 
-  // API routes require authentication
+  // API routes require authentication AND a staff (team_members) identity.
+  // Every carve-out above already exempted the paths that intentionally
+  // serve non-staff callers (portal clients, public forms, webhooks, cron,
+  // ALFRED bearer/secret calls, OAuth callbacks). Anything that reaches this
+  // point is an internal staff API, so a portal client's session -- a real,
+  // authenticated Supabase user, just not a team_members row -- must be
+  // rejected here, not just an anonymous request. Without this, any signed-in
+  // portal client could call e.g. /api/clients/[id] directly, since that
+  // handler trusts middleware and does no additional role check itself.
   const isApiRoute = pathname.startsWith("/api")
-  if (isApiRoute && !user) {
+  if (isApiRoute && (!user || !hasStaffRow)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
