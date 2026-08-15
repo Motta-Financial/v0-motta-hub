@@ -110,8 +110,19 @@ function LoginContent() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [showForgotPassword, setShowForgotPassword] = useState(false)
   const [resetEmailSent, setResetEmailSent] = useState(false)
+  const [mode, setMode] = useState<"team" | "client">("team")
   const router = useRouter()
   const searchParams = useSearchParams()
+
+  const switchMode = (nextMode: "team" | "client") => {
+    if (nextMode === mode) return
+    setMode(nextMode)
+    setError(null)
+    setSuccessMessage(null)
+    setShowForgotPassword(false)
+    setResetEmailSent(false)
+    setPassword("")
+  }
 
   useEffect(() => {
     // Recovery / invite hash-fragment forwarder.
@@ -252,6 +263,10 @@ function LoginContent() {
     if (reason === "deactivated") {
       setError("Your account has been deactivated. Please contact an administrator.")
     }
+
+    if (searchParams.get("portal") === "client") {
+      setMode("client")
+    }
   }, [searchParams])
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -308,6 +323,35 @@ function LoginContent() {
           setError(msg)
         }
         setIsLoading(false)
+        return
+      }
+
+      if (mode === "client") {
+        // Client mode: verify a portal_users row exists (not just any
+        // Supabase auth user) and is active, mirroring the standalone
+        // /client-portal/login page's checks.
+        const { data: portalUser, error: portalError } = await supabase
+          .from("portal_users")
+          .select("id, is_active")
+          .eq("email", email)
+          .maybeSingle()
+
+        if (portalError || !portalUser) {
+          await supabase.auth.signOut()
+          setError("This account does not have client portal access. Please contact your Motta Financial advisor.")
+          setIsLoading(false)
+          return
+        }
+
+        if (!portalUser.is_active) {
+          await supabase.auth.signOut()
+          setError("Your portal access has been deactivated. Please contact your Motta Financial advisor.")
+          setIsLoading(false)
+          return
+        }
+
+        router.push("/client-portal")
+        router.refresh()
         return
       }
 
@@ -586,16 +630,66 @@ function LoginContent() {
             />
           </div>
 
+          {/* Team / Client pill toggle -- one login surface serves both
+              staff (team_members) and client-portal (portal_users)
+              accounts. Switching modes changes which table the sign-in
+              verifies against and where it redirects on success. */}
+          <div
+            role="tablist"
+            aria-label="Sign-in type"
+            className="mb-6 inline-flex items-center gap-1 p-1 rounded-full bg-[#6B745D]/10 w-full max-w-[280px]"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "team"}
+              onClick={() => switchMode("team")}
+              className={`flex-1 h-8 rounded-full text-sm font-medium transition-colors ${
+                mode === "team"
+                  ? "bg-[#6B745D] text-white shadow-sm"
+                  : "text-[#5A5A5A] hover:text-[#2D2D2D]"
+              }`}
+            >
+              Team
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "client"}
+              onClick={() => switchMode("client")}
+              className={`flex-1 h-8 rounded-full text-sm font-medium transition-colors ${
+                mode === "client"
+                  ? "bg-[#6B745D] text-white shadow-sm"
+                  : "text-[#5A5A5A] hover:text-[#2D2D2D]"
+              }`}
+            >
+              Client
+            </button>
+          </div>
+
           {/* Left-aligned heading -- modern auth forms drop the
               centered-title-and-tagline stack in favor of a confident
               left-aligned greeting that sits flush with the inputs. */}
           <div className="mb-8">
-            <h1 className="text-2xl font-semibold text-[#2D2D2D] tracking-tight">
-              Sign in to <span suppressHydrationWarning>ALFRED Hub</span>
-            </h1>
-            <p className="text-sm text-[#7A7A7A] mt-2" suppressHydrationWarning>
-              Welcome back. Powered by ALFRED AI.
-            </p>
+            {mode === "team" ? (
+              <>
+                <h1 className="text-2xl font-semibold text-[#2D2D2D] tracking-tight">
+                  Sign in to <span suppressHydrationWarning>ALFRED Hub</span>
+                </h1>
+                <p className="text-sm text-[#7A7A7A] mt-2" suppressHydrationWarning>
+                  Welcome back. Powered by ALFRED AI.
+                </p>
+              </>
+            ) : (
+              <>
+                <h1 className="text-2xl font-semibold text-[#2D2D2D] tracking-tight">
+                  Sign in to your <span suppressHydrationWarning>Client Portal</span>
+                </h1>
+                <p className="text-sm text-[#7A7A7A] mt-2">
+                  Access your tax documents, work status, and team messages.
+                </p>
+              </>
+            )}
           </div>
 
           <form onSubmit={handleLogin} className="space-y-5">
@@ -633,13 +727,22 @@ function LoginContent() {
                 <Label htmlFor="password" className="text-[#4A4A4A] text-sm font-medium">
                   Password
                 </Label>
-                <button
-                  type="button"
-                  onClick={() => setShowForgotPassword(true)}
-                  className="text-xs font-medium text-[#6B745D] hover:text-[#8E9B79] transition-colors"
-                >
-                  Forgot password?
-                </button>
+                {mode === "team" ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowForgotPassword(true)}
+                    className="text-xs font-medium text-[#6B745D] hover:text-[#8E9B79] transition-colors"
+                  >
+                    Forgot password?
+                  </button>
+                ) : (
+                  <a
+                    href="mailto:info@mottafinancial.com"
+                    className="text-xs font-medium text-[#6B745D] hover:text-[#8E9B79] transition-colors"
+                  >
+                    Contact your advisor
+                  </a>
+                )}
               </div>
               <div className="relative">
                 <Input
