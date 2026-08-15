@@ -81,16 +81,14 @@ export default function WelcomePage() {
             </span>
           </Link>
           <nav className="flex items-center gap-2">
-            <a
-              href="https://motta.cpa"
-              target="_blank"
-              rel="noopener noreferrer"
+            <Link
+              href="/login"
               className="inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold transition-colors hover:opacity-90"
               style={{ backgroundColor: COLORS.forest, color: COLORS.cream }}
             >
-              Visit motta.cpa
+              Log in
               <ArrowRight className="h-4 w-4" />
-            </a>
+            </Link>
           </nav>
         </div>
       </header>
