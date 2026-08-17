@@ -78,7 +78,22 @@ type LineValue = {
 
 type Form1040Response = {
   returnId: string
+  /** The year whose LAYOUT was rendered. */
   taxYear: number
+  /** The return's own year, which can differ from `taxYear` — see below. */
+  snapshotTaxYear?: number | null
+  /**
+   * Set when the return's own year has no form_1040_lines at all and we
+   * borrowed the nearest year that does. Real exported values under a
+   * borrowed layout — better than an empty form, but the preparer is told.
+   */
+  layoutFallbackYear?: number | null
+  /**
+   * False when this year's layout was inherited from another year rather than
+   * checked against that year's IRS form (form_1040_constants.layout_verified,
+   * scripts/401). Absent/true for TY2025, which is the verified one.
+   */
+  layoutVerified?: boolean
   clientName: string | null
   returnType: string | null
   version: number | null
@@ -139,15 +154,23 @@ const CATEGORY_ORDER = [
 
 export function Form1040Viewer({
   returnId,
-  taxYear = 2025,
+  taxYear,
   clientId,
 }: {
   returnId: string
+  /**
+   * Omit to render the return's OWN year — the API resolves it from the
+   * snapshot. This used to default to 2025, which meant a TY2024 return was
+   * rendered against the TY2025 form and headed "Tax Year 2025". Pass a year
+   * only to deliberately view a return under a different year's layout.
+   */
   taxYear?: number
   clientId?: string
 }) {
   const { data, isLoading, error, mutate } = useSWR(
-    `/api/forms/1040/${returnId}?taxYear=${taxYear}`,
+    taxYear === undefined
+      ? `/api/forms/1040/${returnId}`
+      : `/api/forms/1040/${returnId}?taxYear=${taxYear}`,
     fetcher
   )
   const [exporting, setExporting] = useState(false)
@@ -184,6 +207,13 @@ export function Form1040Viewer({
     }
   }, [])
 
+  // The year the API actually rendered, which is the return's own year unless
+  // the caller overrode it. The reveal endpoint must be asked for the SAME year
+  // the displayed form came from, or it looks the line up in a different
+  // schema — so this uses the resolved year, never the (possibly undefined)
+  // prop.
+  const resolvedTaxYear = data?.taxYear ?? taxYear
+
   const revealLine = useCallback(
     async (lineCode: string, prefixId?: string) => {
       const key = prefixId ? `${lineCode}|${prefixId}` : lineCode
@@ -192,7 +222,7 @@ export function Form1040Viewer({
         const res = await fetch(`/api/forms/1040/${returnId}/reveal`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lineCode, taxYear, prefixId }),
+          body: JSON.stringify({ lineCode, taxYear: resolvedTaxYear, prefixId }),
         })
         if (!res.ok) return
         const payload = (await res.json()) as { value: string | number | null }
@@ -217,7 +247,7 @@ export function Form1040Viewer({
         })
       }
     },
-    [returnId, taxYear, maskLine]
+    [returnId, resolvedTaxYear, maskLine]
   )
 
   // Clear all pending re-mask timers on unmount.
@@ -450,7 +480,9 @@ export function Form1040Viewer({
                 </h1>
                 <span className="flex items-center gap-1 text-sm text-muted-foreground whitespace-nowrap">
                   <Calendar className="h-3.5 w-3.5 flex-shrink-0" />
-                  Tax Year {data.taxYear}
+                  {/* Name the RETURN's year. Naming the layout year is the bug
+                      this replaces — a 2024 return read "Tax Year 2025". */}
+                  Tax Year {data.snapshotTaxYear ?? data.taxYear}
                 </span>
                 {data.clientName && (
                   <span className="flex items-center gap-1 text-sm text-muted-foreground whitespace-nowrap">
@@ -480,6 +512,55 @@ export function Form1040Viewer({
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-6 space-y-6">
+        {/*
+          Layout provenance. Deliberately NOT print:hidden — if someone prints
+          a 2024 return rendered on an unverified layout and hands it to a
+          client, the caveat has to be on the paper too.
+
+          Two distinct situations, most severe first:
+            - no layout for this year at all, so another year's was borrowed
+            - a layout exists but was inherited rather than verified
+        */}
+        {data.layoutFallbackYear != null ? (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+            <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            <div>
+              <p className="font-medium">
+                No Form 1040 layout is loaded for tax year{" "}
+                {data.snapshotTaxYear ?? "this return"} — showing the{" "}
+                {data.layoutFallbackYear} layout
+              </p>
+              <p className="text-xs opacity-90">
+                The amounts are this return&apos;s real exported ProConnect data, but the
+                line numbers, labels and section order come from{" "}
+                {data.layoutFallbackYear}. Anything the {data.layoutFallbackYear} form
+                numbers differently will be mislabelled here. Calculated lines are
+                reported as unavailable rather than computed with the wrong year&apos;s
+                figures.
+              </p>
+            </div>
+          </div>
+        ) : data.layoutVerified === false ? (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+            <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            <div>
+              <p className="font-medium">
+                TY{data.taxYear} layout is inherited, not verified
+              </p>
+              <p className="text-xs opacity-90">
+                The line inventory for {data.taxYear} was copied from a later year
+                (scripts/401) and has not been checked against the IRS{" "}
+                {data.taxYear} Form 1040, so a line number or label may not match
+                the form this return was actually filed on. Amounts are real
+                exported data. Tax, credits and other calculated lines are
+                reported as unavailable because {data.taxYear} constants
+                (brackets, standard deduction, EIC, CTC, SALT) are not loaded —
+                the Hub will not compute them from another year&apos;s figures.
+              </p>
+            </div>
+          </div>
+        ) : null}
+
         {/* Summary card */}
         {summaryValues && (
           <Card className="print:shadow-none print:border-none">

@@ -18,7 +18,10 @@ interface PageProps {
 export default async function Form1040Page({ params, searchParams }: PageProps) {
   const { returnId } = await params
   const { taxYear, clientId } = await searchParams
-  const year = taxYear ? parseInt(taxYear, 10) : 2025
+  // No year in the URL means "use the return's own year" — the API resolves it
+  // from the snapshot. It used to default to 2025 here, which silently rendered
+  // every TY2024 return as a 2025 form.
+  const year = taxYear ? parseInt(taxYear, 10) : undefined
 
   return (
     <Form1040Viewer
@@ -33,10 +36,18 @@ export default async function Form1040Page({ params, searchParams }: PageProps) 
 export async function generateMetadata({ params, searchParams }: PageProps) {
   const { returnId } = await params
   const { taxYear } = await searchParams
-  const year = taxYear || "2025"
 
-  return {
-    title: `Form 1040 - TY${year} | Motta Hub`,
-    description: `View Form 1040 (U.S. Individual Income Tax Return) for Tax Year ${year}`,
-  }
+  // The tab title cannot name a year we have not resolved yet — the return's
+  // year lives on the snapshot and the API decides it. Naming a year here would
+  // reintroduce the same lie in the tab title, so stay generic unless the URL
+  // was explicit.
+  return taxYear
+    ? {
+        title: `Form 1040 - TY${taxYear} | Motta Hub`,
+        description: `View Form 1040 (U.S. Individual Income Tax Return) for Tax Year ${taxYear}`,
+      }
+    : {
+        title: "Form 1040 | Motta Hub",
+        description: "View Form 1040 (U.S. Individual Income Tax Return)",
+      }
 }

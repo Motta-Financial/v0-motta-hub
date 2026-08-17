@@ -60,14 +60,12 @@ export async function POST(
       { status: 400, headers: NO_STORE },
     )
   }
-  const taxYear = body.taxYear ?? 2025
-
   const sb = admin()
 
-  // 1. Snapshot → return type (and existence check).
+  // 1. Snapshot → return type and tax year (and existence check).
   const { data: snapshot, error: snapErr } = await sb
     .from("proconnect_return_snapshots")
-    .select("id, return_type")
+    .select("id, return_type, tax_year")
     .eq("return_id", returnId)
     .maybeSingle()
 
@@ -84,6 +82,12 @@ export async function POST(
     )
   }
   const returnType = snapshot.return_type ?? "IND"
+  // Default to the return's OWN year rather than a hardcoded 2025. This route
+  // decides whether a line is sensitive by looking it up in that year's schema,
+  // so the wrong year can mean the lookup misses and an SSN-typed line is not
+  // recognised as sensitive. The GET endpoint resolves the year the same way,
+  // and the viewer sends back the year it actually rendered.
+  const taxYear = body.taxYear ?? (snapshot.tax_year === null ? 2025 : Number(snapshot.tax_year))
 
   // 2. Only sensitive-typed lines are revealable — everything else is
   //    already visible on the GET endpoint and needs no audit trail.

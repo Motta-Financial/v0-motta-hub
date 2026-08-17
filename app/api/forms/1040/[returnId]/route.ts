@@ -18,6 +18,7 @@ import {
   evaluateComputedLines,
   SENSITIVE_DATA_TYPES,
   isMaskedValue,
+  DEFAULT_FORM,
   type Form1040Data,
   type FieldCell,
   type MaskedValue,
@@ -43,7 +44,11 @@ export async function GET(
 ) {
   const { returnId } = await params
   const { searchParams } = new URL(request.url)
-  const taxYear = parseInt(searchParams.get("taxYear") ?? "2025", 10)
+  // An explicit ?taxYear= still wins, but the DEFAULT is the return's own year,
+  // not a hardcoded 2025. Hardcoding it meant every TY2024 return was rendered
+  // against the TY2025 form and its header read "Tax Year 2025" — real values,
+  // wrong year, nothing on screen admitting it.
+  const taxYearOverride = searchParams.get("taxYear")
 
   const sb = admin()
 
@@ -63,6 +68,50 @@ export async function GET(
       { status: 404 },
     )
   }
+
+  // 1b. Resolve the year to render, and be honest about how good that
+  //     year's layout is.
+  //
+  //     `layoutFallbackYear` is set when the requested year has NO
+  //     form_1040_lines at all — we then render against the nearest year that
+  //     does, because showing real exported values under a borrowed layout
+  //     beats showing an empty form, but the viewer must say so.
+  //
+  //     `layoutVerified` is the form_1040_constants gate (scripts/401). False
+  //     means the layout for this year was INHERITED from another year rather
+  //     than checked against that year's IRS form, so line numbers and labels
+  //     are unconfirmed.
+  const requestedYear = taxYearOverride
+    ? parseInt(taxYearOverride, 10)
+    : Number(snapshot.tax_year ?? 2025)
+
+  const { data: yearRows } = await sb
+    .from("form_1040_lines")
+    .select("tax_year")
+    .eq("form", DEFAULT_FORM)
+  const yearsWithLayout = [...new Set((yearRows ?? []).map((r) => Number(r.tax_year)))]
+
+  let taxYear = requestedYear
+  let layoutFallbackYear: number | null = null
+  if (yearsWithLayout.length > 0 && !yearsWithLayout.includes(requestedYear)) {
+    // Nearest year, so this keeps working as more years are seeded and stops
+    // falling back at all once every year is covered.
+    const nearest = yearsWithLayout
+      .slice()
+      .sort((a, b) => Math.abs(a - requestedYear) - Math.abs(b - requestedYear))[0]
+    taxYear = nearest
+    layoutFallbackYear = nearest
+  }
+
+  const { data: gate } = await sb
+    .from("form_1040_constants")
+    .select("value")
+    .eq("tax_year", taxYear)
+    .eq("key", "layout_verified")
+    .maybeSingle()
+  // Absent means "never gated" — the TY2025 layout predates the gate and is
+  // the verified one, so absence must not read as unverified.
+  const layoutVerified = gate ? gate.value === true : true
 
   // 2. Fetch the flat field cells. We read every leaf field (not just
   //    `val`) so the renderer can resolve mappings whose cell_field points
@@ -202,6 +251,12 @@ export async function GET(
   return NextResponse.json({
     returnId,
     taxYear,
+    /** The return's own year, even when we rendered a different one's layout. */
+    snapshotTaxYear: snapshot.tax_year === null ? null : Number(snapshot.tax_year),
+    /** Set when `taxYear` is a borrowed layout because the return's year has none. */
+    layoutFallbackYear,
+    /** False when this year's layout is inherited, not verified (scripts/401). */
+    layoutVerified,
     clientName: snapshot.client_name,
     returnType: snapshot.return_type,
     version: snapshot.version,
@@ -255,7 +310,30 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
 
-  const taxYear = body.taxYear ?? 2025
+  // Resolve the year from the RETURN, not a hardcoded 2025. This is a write
+  // path, so the old default was worse here than on the read side: posting to a
+  // TY2024 return with no explicit taxYear would have loaded the TY2025
+  // mappings — whose cells ARE editable — and composed a live import against a
+  // 2024 return using another year's field map. Mismatches are refused outright
+  // rather than silently coerced.
+  const { data: snap } = await admin()
+    .from("proconnect_return_snapshots")
+    .select("tax_year")
+    .eq("return_id", returnId)
+    .maybeSingle()
+  const snapshotYear = snap?.tax_year === null || snap?.tax_year === undefined ? null : Number(snap.tax_year)
+
+  if (body.taxYear !== undefined && snapshotYear !== null && body.taxYear !== snapshotYear) {
+    return NextResponse.json(
+      {
+        error:
+          `taxYear ${body.taxYear} does not match this return's tax year (${snapshotYear}). ` +
+          `Refusing: composing a write from another year's field map can target the wrong cell.`,
+      },
+      { status: 400 },
+    )
+  }
+  const taxYear = body.taxYear ?? snapshotYear ?? 2025
   const returnType = body.returnType ?? "IND"
 
   // 1. Load schema (lines + constants + discovered ProConnect mappings)
