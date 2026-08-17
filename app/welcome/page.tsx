@@ -81,15 +81,6 @@ export default function WelcomePage() {
             </span>
           </Link>
           <nav className="flex items-center gap-2">
-            <a
-              href="https://motta.cpa"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hidden rounded-full px-4 py-2 text-sm font-medium transition-colors sm:inline-block"
-              style={{ color: COLORS.ink }}
-            >
-              motta.cpa
-            </a>
             <Link
               href="/login"
               className="inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold transition-colors hover:opacity-90"
@@ -147,25 +138,15 @@ export default function WelcomePage() {
               the work that matters.
             </p>
             <div className="flex flex-wrap items-center gap-3 pt-2">
-              <Link
-                href="/login"
-                className="inline-flex items-center gap-2 rounded-full px-6 py-3 text-sm font-semibold transition-transform hover:-translate-y-0.5"
-                style={{ backgroundColor: COLORS.sage, color: COLORS.forest }}
-              >
-                Team log in
-                <ArrowRight className="h-4 w-4" />
-              </Link>
               <a
                 href="https://motta.cpa"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 rounded-full border px-6 py-3 text-sm font-semibold transition-colors"
-                style={{
-                  borderColor: "rgba(244,239,232,0.4)",
-                  color: COLORS.cream,
-                }}
+                className="inline-flex items-center gap-2 rounded-full px-6 py-3 text-sm font-semibold transition-transform hover:-translate-y-0.5"
+                style={{ backgroundColor: COLORS.sage, color: COLORS.forest }}
               >
                 Visit motta.cpa
+                <ArrowRight className="h-4 w-4" />
               </a>
             </div>
           </div>
@@ -357,13 +338,6 @@ export default function WelcomePage() {
               style={{ color: COLORS.inkMuted }}
             >
               Privacy
-            </Link>
-            <Link
-              href="/login"
-              className="font-semibold transition-colors hover:opacity-70"
-              style={{ color: COLORS.ink }}
-            >
-              Team log in
             </Link>
           </div>
         </div>
