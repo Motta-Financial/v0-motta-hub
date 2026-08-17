@@ -282,12 +282,17 @@ export function Form1040Viewer({
             ? (errObj as { kind?: string }).kind
             : undefined
         if (kind === "scope_missing") {
-          // The stored token already carries the taxreturns scope — a 403
-          // here means Intuit hasn't allow-listed the app for the Phase 1
-          // data endpoints. Re-consenting does NOT fix this; don't send
-          // admins on that loop.
+          // `scope_missing` is our bucket for ANY 401 and for any 403 whose
+          // errorCode is neither RETURN_LOCKED nor ACCESS_DENIED — see
+          // classify() in lib/proconnect/data.ts. It does not establish that
+          // Intuit hasn't allow-listed the app, and asserting that it does
+          // sent the team to Intuit's provisioning queue on 2026-08-17 when
+          // the real cause was a promoted deploy that had reverted the Export
+          // URL to the pre-`oii-client/` form (a 403 on every call) with a
+          // perfectly healthy token. List the causes in the order they have
+          // actually occurred, cheapest to check first.
           setExportError(
-            "Intuit is rejecting return-data exports for this firm. The app isn't allow-listed for the ProConnect data endpoints yet — this needs a request to the Intuit ProConnect API team (then re-consent from Tax Settings). See the Phase 1 status on /tax/settings.",
+            "Intuit rejected the export with a 403. The stored token carries the taxreturns scope, so the cause is most likely the deployed Export URL (a stale or promoted deployment reverts it to a form that always 403s), then a revoked token, and only then a genuine allow-listing gap. Check which commit production is serving and the Phase 1 status on /tax/settings before raising a ticket with Intuit.",
           )
         } else if (typeof errObj === "string") {
           setExportError(errObj)
