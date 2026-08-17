@@ -337,10 +337,28 @@ async function maybeSendPhase1ExportAlert(
       return's field data from <code>api.intuit.com</code> is rejected. Until
       this is resolved, <code>proconnect_return_snapshots</code> stays stale/empty
       and the return-data viewer and import (write-back) features cannot work.</p>
-      <h3>Most likely cause</h3>
-      <p><strong>${kind === "scope_missing" ? "The app is not allow-listed for the Phase 1 data endpoints." : "The token's firm does not have access to this return."}</strong>
-      The OAuth token already carries <code>com.intuit.proconnect.taxreturns</code>, so a
-      ${kind === "scope_missing" ? "403 here usually means Intuit must enable the export/import endpoints for the app — contact the Intuit ProConnect API partner team (realm 9130356180193146), then re-run the OAuth consent from /tax/settings." : "review of the client/return ownership is needed."}</p>
+      <h3>What to check, in order</h3>
+      ${
+        kind === "scope_missing"
+          ? `<p><strong>Do not open a ticket with Intuit first.</strong> <code>scope_missing</code> is
+      this app's label for any 401 and for any 403 whose errorCode is neither
+      RETURN_LOCKED nor ACCESS_DENIED — it does not prove anything about
+      allow-listing. Check in this order:</p>
+      <ol>
+        <li><strong>Which commit is production serving?</strong> On 2026-08-15 a promoted
+        preview reverted the Export path to <code>/v2/clients/{id}/returns/{id}/data</code>
+        (no <code>oii-client/</code> segment), which 403s on every call. Production must be
+        serving <code>main</code>; a deployment whose meta shows <code>action: "promote"</code>
+        and a <code>githubCommitRef</code> other than <code>main</code> is the bug.</li>
+        <li><strong>Token health</strong> — <code>proconnect_oauth_tokens</code>:
+        <code>expires_at</code> in the future and <code>last_refresh_error</code> null.</li>
+        <li><strong>Only then</strong> allow-listing: contact the Intuit ProConnect API
+        partner team (realm 9130356180193146) and give them their own errorCode and
+        intuit-tid from the logs, not this classification.</li>
+      </ol>`
+          : `<p><strong>The token's firm does not have access to this return.</strong>
+      Review the client/return ownership for this engagement.</p>`
+      }
       <p>Details: docs/proconnect-integration-review.md · This alert repeats at most once per day while the failure persists.</p>
     `,
   })

@@ -173,6 +173,59 @@ function EfileSummary({
 }
 
 /**
+ * Turn a failed export into something a preparer can act on.
+ *
+ * This used to answer every `scope_missing` with "the app is not yet
+ * allow-listed for the Phase 1 data endpoints" — stated as fact. It is not a
+ * fact. `scope_missing` is OUR bucket for any 401 and for any 403 whose
+ * errorCode is neither RETURN_LOCKED nor ACCESS_DENIED (see classify() in
+ * lib/proconnect/data.ts), so a wrong URL, a revoked token and a genuine
+ * provisioning gap all render identically.
+ *
+ * That cost real time on 2026-08-17: a promoted deployment had reverted the
+ * Export path to the pre-`oii-client/` URL, which 403s unconditionally, and
+ * the banner sent everyone to Intuit's provisioning queue while the token was
+ * healthy the whole time. So report what Intuit actually said — their
+ * errorCode and the intuit-tid they need to look anything up — and describe
+ * our classification as an inference rather than a diagnosis.
+ */
+function describeExportFailure(
+  body: { error?: { kind?: string; status?: number; body?: string }; intuitTid?: string | null } | null,
+  httpStatus: number,
+): string {
+  const err = body?.error
+  if (!err) return `Export failed (HTTP ${httpStatus})`
+
+  // Intuit's Phase 1 errors are {errorCode, errorMessage}; fall back to the
+  // raw body when it isn't JSON, truncated so a toast stays readable.
+  let upstream: string | null = null
+  if (err.body) {
+    try {
+      const parsed = JSON.parse(err.body)
+      upstream = parsed?.errorCode ?? parsed?.errorMessage ?? null
+    } catch {
+      upstream = err.body.slice(0, 120)
+    }
+  }
+
+  const parts = [`Export failed — HTTP ${err.status ?? httpStatus}`]
+  if (upstream) parts.push(`Intuit said: ${upstream}`)
+  if (body?.intuitTid) parts.push(`intuit-tid ${body.intuitTid}`)
+
+  if (err.kind === "locked") {
+    return `${parts.join(" · ")}. This return is locked in ProConnect.`
+  }
+  if (err.kind === "access_denied") {
+    return `${parts.join(" · ")}. This firm's token does not own this return.`
+  }
+  if (err.kind === "scope_missing") {
+    // Deliberately hedged, and ordered by what has actually been the cause.
+    return `${parts.join(" · ")}. Cause is unconfirmed: most often a wrong Export URL or a stale deploy, sometimes a revoked token — check /tax/settings before assuming Intuit needs to allow-list the app.`
+  }
+  return parts.join(" · ")
+}
+
+/**
  * Why this return cannot be edited. Shown once, at the top of the field
  * table, rather than as a tooltip on each of ~5,000 disabled pencils.
  */
@@ -225,12 +278,7 @@ export default function ReturnDataPage({
       })
       const body = await res.json().catch(() => null)
       if (!res.ok) {
-        const kind = body?.error?.kind
-        toast.error(
-          kind === "scope_missing"
-            ? "Export rejected by Intuit — the app is not yet allow-listed for the Phase 1 data endpoints."
-            : `Export failed: ${kind ?? body?.error ?? res.status}`,
-        )
+        toast.error(describeExportFailure(body, res.status))
       } else {
         toast.success("Snapshot refreshed from ProConnect")
         mutate()
