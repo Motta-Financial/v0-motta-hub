@@ -57,9 +57,25 @@ export async function GET() {
       teamMember = byEmail.data
     }
 
-    // Link auth_user_id if found by email but not linked yet
+    // Link auth_user_id if found by email but not linked yet.
+    //
+    // Uses the ADMIN client deliberately. team_members writes are
+    // is_staff()-only (scripts/400), and is_staff() is false for exactly the
+    // row we are trying to link — it tests `auth_user_id = auth.uid()`, which
+    // is what is missing. Through the session client this update would
+    // silently affect zero rows and the account would never link.
+    //
+    // Safe as a service-role write because the identity is already
+    // established: `user` comes from a locally-verified session JWT above,
+    // the target row is matched on that JWT's own email, and the only column
+    // written is the link itself. Not a general-purpose escalation.
     if (teamMember && !teamMember.auth_user_id && teamMember.email === user.email) {
-      await supabase.from("team_members").update({ auth_user_id: user.id }).eq("id", teamMember.id)
+      const { createAdminClient } = await import("@/lib/supabase/server")
+      await createAdminClient()
+        .from("team_members")
+        .update({ auth_user_id: user.id })
+        .eq("id", teamMember.id)
+        .is("auth_user_id", null)
     }
 
     return NextResponse.json({ user, teamMember })

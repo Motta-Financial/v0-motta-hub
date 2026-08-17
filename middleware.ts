@@ -22,6 +22,14 @@ export async function middleware(request: NextRequest) {
 
   const { supabaseResponse, supabase, user } = result
 
+  // Whether the current session belongs to a team_members row (staff),
+  // regardless of active/inactive status. Populated below when `user` is
+  // set, and consumed by the generic `/api/*` staff gate further down --
+  // that gate must reject portal clients (who ARE real, authenticated
+  // Supabase users, just not staff) from ever reaching internal APIs like
+  // /api/clients/[id] that only check "is there a session".
+  let hasStaffRow = false
+
   // Enforce platform-level deactivation. A team_member can be marked inactive
   // (Alumni / deactivated) independently of their Karbon profile -- when that
   // happens we sign them out immediately, even if their session cookie is
@@ -60,6 +68,7 @@ export async function middleware(request: NextRequest) {
         .maybeSingle()
       tm = byEmail.data
     }
+    hasStaffRow = tm !== null
 
     // If we found a row and it's explicitly inactive, terminate the session.
     // (No row = brand new auth user that hasn't been provisioned yet -- let
@@ -72,6 +81,24 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(url)
     }
   }
+
+  // The client portal has its own login screen. Let it through without a Hub
+  // session so clients can authenticate independently of the internal /login.
+  const isPortalLoginPage = pathname === "/client-portal/login"
+
+  // The portal route layout (app/client-portal/layout.tsx) is a Server
+  // Component that does its own portal_users auth check and redirects to
+  // /client-portal/login on failure. Middleware only needs to ensure the
+  // portal pages are NOT blocked by the Hub-only redirects below (e.g. the
+  // "no session → /welcome" rule would catch unauthenticated clients hitting
+  // any portal page if we didn't exempt them here). We let the request through;
+  // the layout's own redirect handles gate-keeping.
+  const isPortalPage =
+    pathname.startsWith("/client-portal") && !isPortalLoginPage
+
+  // Portal API routes are guarded by requirePortalAuth() inside each handler.
+  // Middleware must let them reach the handler (same reason as Alfred bearer calls).
+  const isPortalApi = pathname.startsWith("/api/client-portal/")
 
   const isLoginPage = pathname === "/login"
   // Anonymous landing page served at motta.cpa. We deliberately do not
@@ -249,8 +276,9 @@ export async function middleware(request: NextRequest) {
       .toLowerCase()
       .startsWith("bearer ")
 
-  // Allow auth callback, public API, webhooks, cron, OAuth callbacks, and
-  // internal calls without auth checks
+  // Allow auth callback, public API, webhooks, cron, OAuth callbacks,
+  // internal calls, and the client portal (which does its own auth) without
+  // the Hub-session auth checks that follow.
   if (
     isAuthCallback ||
     isPublicApi ||
@@ -272,14 +300,25 @@ export async function middleware(request: NextRequest) {
     isLegalPage ||
     isDocsPage ||
     isPublicEmbed ||
-    isWelcomePage
+    isWelcomePage ||
+    isPortalLoginPage ||
+    isPortalPage ||
+    isPortalApi
   ) {
     return supabaseResponse
   }
 
-  // API routes require authentication
+  // API routes require authentication AND a staff (team_members) identity.
+  // Every carve-out above already exempted the paths that intentionally
+  // serve non-staff callers (portal clients, public forms, webhooks, cron,
+  // ALFRED bearer/secret calls, OAuth callbacks). Anything that reaches this
+  // point is an internal staff API, so a portal client's session -- a real,
+  // authenticated Supabase user, just not a team_members row -- must be
+  // rejected here, not just an anonymous request. Without this, any signed-in
+  // portal client could call e.g. /api/clients/[id] directly, since that
+  // handler trusts middleware and does no additional role check itself.
   const isApiRoute = pathname.startsWith("/api")
-  if (isApiRoute && !user) {
+  if (isApiRoute && (!user || !hasStaffRow)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 

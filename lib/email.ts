@@ -2212,9 +2212,19 @@ export function buildAnnouncementHtml(opts: {
 }
 
 /**
- * Password-reset / invite email. Used by both the self-service "Forgot
- * password?" flow on the login screen and the admin "Send Password Reset"
- * action in User Auth Manager.
+ * Password-reset / invite email. Used by three flows that share the same
+ * template but NOT the same audience:
+ *   - Staff self-service "Forgot password?" on the internal /login screen
+ *   - Staff admin "Send Password Reset" action in User Auth Manager
+ *   - Client-portal invites (app/api/portal-users/invite/route.ts)
+ *
+ * The first two are internal team members and should see "Motta Hub"
+ * branding. The third is an external client being invited to the
+ * *client portal*, which is a different product surface with its own
+ * login -- calling it "Motta Hub" would be both wrong and confusing to a
+ * client who has no Hub access. `audience` controls which copy renders;
+ * it defaults to "staff" so the two existing internal call sites don't
+ * need to change.
  *
  * `actionUrl` should be a /auth/confirm?token_hash=...&type=recovery URL
  * generated server-side via supabase.auth.admin.generateLink().
@@ -2224,14 +2234,18 @@ export function buildPasswordResetEmailHtml(opts: {
   actionUrl: string
   mode: "reset" | "invite"
   expiresInHours?: number
+  audience?: "staff" | "portal"
 }) {
-  const { recipientName, actionUrl, mode, expiresInHours = 1 } = opts
+  const { recipientName, actionUrl, mode, expiresInHours = 1, audience = "staff" } = opts
   const isInvite = mode === "invite"
-  const headline = isInvite ? "Welcome to Motta Hub" : "Reset your password"
+  const isPortal = audience === "portal"
+  const productName = isPortal ? "the Motta Financial Client Portal" : "Motta Hub"
+  const accountLabel = isPortal ? "client portal account" : "Motta Hub account"
+  const headline = isInvite ? `Welcome to ${productName}` : "Reset your password"
   const ctaLabel = isInvite ? "Set Up Your Password" : "Reset My Password"
   const intro = isInvite
-    ? `You've been invited to join Motta Hub. Click the button below to set a password and access the portal.`
-    : `We received a request to reset the password on your Motta Hub account. Click the button below to choose a new one.`
+    ? `You've been invited to ${productName}. Click the button below to set a password and access the portal.`
+    : `We received a request to reset the password on your ${accountLabel}. Click the button below to choose a new one.`
   const greeting = recipientName ? `Hi ${recipientName},` : "Hi,"
 
   const body = `
@@ -2266,7 +2280,7 @@ export function buildPasswordResetEmailHtml(opts: {
     headline,
     body,
     isInvite
-      ? "You're receiving this because someone at Motta Financial invited you to Motta Hub."
-      : "This email was sent to confirm a password reset on your Motta Hub account.",
+      ? `You're receiving this because someone at Motta Financial invited you to ${productName}.`
+      : `This email was sent to confirm a password reset on your ${accountLabel}.`,
   )
 }
