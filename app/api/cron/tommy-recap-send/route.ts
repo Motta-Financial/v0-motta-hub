@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { buildTommyRecapHtml, sendCategoryEmail } from "@/lib/email"
-import { composeWeeklyRecap, type TopThreeEntry } from "@/lib/tommy-awards/weekly-recap"
+import {
+  composeWeeklyRecap,
+  tallyWeekBallots,
+  tallyDiffersFromRecap,
+  type TopThreeEntry,
+} from "@/lib/tommy-awards/weekly-recap"
+import { generatePodiumImage } from "@/lib/tommy-awards/generate-podium-image"
+import { generatePodiumPdf } from "@/lib/tommy-awards/generate-podium-pdf"
 import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 import { firmConfigSync } from "@/lib/firm-settings"
 
@@ -18,9 +25,18 @@ import { firmConfigSync } from "@/lib/firm-settings"
 //   - If PREPARE never ran at all, we compose the recap inline here so
 //     the firm is never left without a Friday email.
 //
-// Composing inline is fast (~10s); we only render the email + send, so a
-// tight ceiling is fine.
-export const maxDuration = 60
+// Re-tally-before-send: PREPARE tallies at 8:45 AM ET, but ballots can
+// still be cast right up to noon. Before building the email we re-tally
+// with a cheap, AI-free query (tallyWeekBallots) and compare it against
+// the row PREPARE persisted. If a late vote changed the podium (as
+// happened for the Aug 14 recap — 3 ballots landed after 8:45 AM and the
+// email still went out with the stale 8:45 AM podium), we recompose the
+// story, re-render the podium image, and rebuild the PDF synchronously
+// — right here, before the email ships — instead of only detecting drift
+// after the fact. That regen (a gpt-image-2 render) can take minutes, so
+// this stage now shares the image stage's Fluid Compute budget instead
+// of the old 60s ceiling that only fit "render + send".
+export const maxDuration = 800
 
 /**
  * Vercel Cron endpoint — Friday 12:00 PM Eastern. Scheduled at BOTH UTC

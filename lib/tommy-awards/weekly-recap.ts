@@ -57,43 +57,30 @@ export type ComposeResult =
   | { status: "ok"; data: PreparedRecap }
   | { status: "skipped"; reason: string }
 
-/**
- * Format a podium rank as "1st" / "2nd" / "3rd". Tied finishers share a
- * rank so the prompt reads "1st. Alex / 1st. Sam" rather than ordering
- * co-winners.
- */
-export function ordinal(n: number): string {
-  if (n === 1) return "1st"
-  if (n === 2) return "2nd"
-  if (n === 3) return "3rd"
-  return `${n}th`
+/** Cheap tally-only result — no AI summary, no prior-week context. */
+export interface WeekTally {
+  weekId: string
+  weekDate: string
+  weekLabel: string
+  topThree: TopThreeEntry[]
+  totalBallots: number
+  /** Raw notes pulled while tallying, handed to composeWeeklyRecap so it
+   * doesn't have to re-fetch + re-normalize the ballots a second time. */
+  allNotes: Array<{ voter: string; place: string; recipient: string; notes: string }>
 }
 
-/**
- * True when any two podium finishers share the same rank — nudges
- * ALFRED's prompt to treat them as co-winners instead of one "edging
- * out" the other.
- */
-export function hasPodiumTies(podium: ReadonlyArray<{ rank: number }>): boolean {
-  const seen = new Set<number>()
-  for (const p of podium) {
-    if (seen.has(p.rank)) return true
-    seen.add(p.rank)
-  }
-  return false
-}
+export type TallyResult =
+  | { status: "ok"; data: WeekTally }
+  | { status: "skipped"; reason: string }
 
 /**
- * Tally the most recent week's ballots into a podium and draft ALFRED's
- * storyline recap. Does NOT persist anything — the caller decides what to
- * write. Resolves to `{ status: "skipped" }` when there's nothing to
- * recap (no ballots yet).
+ * Tally the most recent week's ballots into a dense-ranked podium.
+ * NO AI call, NO persistence — just the vote count. This is cheap enough
+ * (~1 query, <1s) to run as a "did anything change since PREPARE ran?"
+ * check right before the noon SEND, without paying for another LLM
+ * summary draft on every single send.
  */
-export async function composeWeeklyRecap(
-  supabase: SupabaseClient,
-): Promise<ComposeResult> {
-  // Most recent week with ballots — under the Friday schedule this is
-  // normally TODAY's Friday.
+export async function tallyWeekBallots(supabase: SupabaseClient): Promise<TallyResult> {
   const { data: latestWeek, error: weekErr } = await supabase
     .from("tommy_award_ballots")
     .select("week_id, week_date")
@@ -104,7 +91,7 @@ export async function composeWeeklyRecap(
 
   if (weekErr) throw weekErr
   if (!latestWeek) {
-    return { status: "skipped", reason: "No ballots submitted yet — nothing to recap." }
+    return { status: "skipped", reason: "No ballots submitted yet — nothing to tally." }
   }
 
   const weekId = latestWeek.week_id as string
@@ -116,7 +103,6 @@ export async function composeWeeklyRecap(
     year: "numeric",
   })
 
-  // Fetch all ballots for this week including all the notes.
   const { data: ballots, error: ballotsErr } = await supabase
     .from("tommy_award_ballots")
     .select("*")
@@ -125,7 +111,7 @@ export async function composeWeeklyRecap(
 
   if (ballotsErr) throw ballotsErr
   if (!ballots || ballots.length === 0) {
-    return { status: "skipped", reason: `No ballots for week ${weekLabel} — nothing to recap.` }
+    return { status: "skipped", reason: `No ballots for week ${weekLabel} — nothing to tally.` }
   }
 
   // Normalize "Ganesh Vasan", "Thameem JA", and the legacy "G&T" → "P24"
@@ -203,6 +189,81 @@ export async function composeWeeklyRecap(
 
   const topThree = rankedLeaderboard.filter((entry) => entry.rank <= 3) as TopThreeEntry[]
 
+  return {
+    status: "ok",
+    data: {
+      weekId,
+      weekDate: latestWeek.week_date as string,
+      weekLabel,
+      topThree,
+      totalBallots: ballots.length,
+      allNotes,
+    },
+  }
+}
+
+/**
+ * True when two tallies disagree on either the ballot count or the
+ * podium itself (membership, order, or points). Used to detect "votes
+ * came in after PREPARE ran but before the noon SEND" so the stale
+ * podium can be regenerated before the email goes out.
+ */
+export function tallyDiffersFromRecap(
+  fresh: WeekTally,
+  stored: { totalBallots: number; topThree: TopThreeEntry[] },
+): boolean {
+  if (fresh.totalBallots !== stored.totalBallots) return true
+  const freshKey = fresh.topThree.map((t) => `${t.rank}:${t.name}:${t.totalPoints}`).join("|")
+  const storedKey = (stored.topThree ?? [])
+    .map((t) => `${t.rank}:${t.name}:${t.totalPoints}`)
+    .join("|")
+  return freshKey !== storedKey
+}
+
+/**
+ * Format a podium rank as "1st" / "2nd" / "3rd". Tied finishers share a
+ * rank so the prompt reads "1st. Alex / 1st. Sam" rather than ordering
+ * co-winners.
+ */
+export function ordinal(n: number): string {
+  if (n === 1) return "1st"
+  if (n === 2) return "2nd"
+  if (n === 3) return "3rd"
+  return `${n}th`
+}
+
+/**
+ * True when any two podium finishers share the same rank — nudges
+ * ALFRED's prompt to treat them as co-winners instead of one "edging
+ * out" the other.
+ */
+export function hasPodiumTies(podium: ReadonlyArray<{ rank: number }>): boolean {
+  const seen = new Set<number>()
+  for (const p of podium) {
+    if (seen.has(p.rank)) return true
+    seen.add(p.rank)
+  }
+  return false
+}
+
+/**
+ * Tally the most recent week's ballots into a podium and draft ALFRED's
+ * storyline recap. Does NOT persist anything — the caller decides what to
+ * write. Resolves to `{ status: "skipped" }` when there's nothing to
+ * recap (no ballots yet).
+ */
+export async function composeWeeklyRecap(
+  supabase: SupabaseClient,
+): Promise<ComposeResult> {
+  // Tally is shared with the SEND-stage staleness check (tallyWeekBallots)
+  // so the two can never compute the podium differently.
+  const tally = await tallyWeekBallots(supabase)
+  if (tally.status === "skipped") {
+    return tally
+  }
+  const { weekId, weekDate: weekDateStr, weekLabel, topThree, totalBallots, allNotes } = tally.data
+  const weekDate = new Date(weekDateStr)
+
   // ── Storyline context — previous recaps + YTD standings ──
   const { data: priorRecaps } = await supabase
     .from("tommy_weekly_recaps")
@@ -268,7 +329,7 @@ You are writing the Friday recap dispatch for ${weekLabel}. Stay fully inside th
 ────────────────────────────────────────
 CURRENT WEEK INTEL
 ────────────────────────────────────────
-Total Ballots Submitted: ${ballots.length}
+Total Ballots Submitted: ${totalBallots}
 
 This Week's Podium:
 ${podiumWithHero
@@ -342,10 +403,10 @@ Return ONLY the recap prose. No preamble, no closing, no markdown.`
     status: "ok",
     data: {
       weekId,
-      weekDate: latestWeek.week_date as string,
+      weekDate: weekDateStr,
       weekLabel,
       topThree,
-      totalBallots: ballots.length,
+      totalBallots,
       aiSummary,
       aiModel: aiModelUsed,
       ytdStandings: ytdStandings ?? null,
