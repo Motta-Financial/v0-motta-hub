@@ -23,6 +23,7 @@
  */
 export function nowInEastern(now: Date = new Date()): {
   hour: number
+  minute: number
   /** 0 = Sunday, 1 = Monday, ... 6 = Saturday (matches Date#getDay). */
   weekday: number
 } {
@@ -30,10 +31,12 @@ export function nowInEastern(now: Date = new Date()): {
     timeZone: "America/New_York",
     weekday: "short",
     hour: "numeric",
+    minute: "numeric",
     hour12: false,
   })
   const parts = fmt.formatToParts(now)
   const hourStr = parts.find((p) => p.type === "hour")?.value ?? "0"
+  const minuteStr = parts.find((p) => p.type === "minute")?.value ?? "0"
   const weekdayStr = parts.find((p) => p.type === "weekday")?.value ?? "Sun"
 
   // `hour: "numeric"` with `hour12: false` returns 0-23, but some
@@ -41,6 +44,9 @@ export function nowInEastern(now: Date = new Date()): {
   let hour = Number.parseInt(hourStr, 10)
   if (!Number.isFinite(hour)) hour = 0
   if (hour === 24) hour = 0
+
+  let minute = Number.parseInt(minuteStr, 10)
+  if (!Number.isFinite(minute)) minute = 0
 
   const weekdayMap: Record<string, number> = {
     Sun: 0,
@@ -53,7 +59,7 @@ export function nowInEastern(now: Date = new Date()): {
   }
   const weekday = weekdayMap[weekdayStr] ?? 0
 
-  return { hour, weekday }
+  return { hour, minute, weekday }
 }
 
 /**
@@ -71,4 +77,21 @@ export function isEasternHourAndWeekday(
 ): boolean {
   const { hour, weekday } = nowInEastern(now)
   return hour === targetHour && weekday === targetWeekday
+}
+
+/**
+ * Same DST-twin pattern as `isEasternHourAndWeekday`, but matches an
+ * exact wall-clock hour AND minute (e.g. 11:45 AM) instead of just the
+ * hour. Use this when a cron needs to land close to another cron (e.g.
+ * PREPARE running 15 minutes before the noon SEND) and an hour-only
+ * guard would be too coarse.
+ */
+export function isEasternTimeAndWeekday(
+  targetHour: number,
+  targetMinute: number,
+  targetWeekday: number,
+  now: Date = new Date(),
+): boolean {
+  const { hour, minute, weekday } = nowInEastern(now)
+  return hour === targetHour && minute === targetMinute && weekday === targetWeekday
 }

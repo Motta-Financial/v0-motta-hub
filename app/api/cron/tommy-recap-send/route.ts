@@ -18,19 +18,21 @@ import { firmConfigSync } from "@/lib/firm-settings"
 //
 // Crucially, this stage is triggered by its OWN noon-ET cron — NOT by the
 // prep chain. That makes it a safety net: the prep chain (PREPARE → IMAGE
-// → PDF) starts at 8:45 AM ET, so by noon the image + PDF are normally
+// → PDF) starts at 11:45 AM ET, so by noon the image + PDF are normally
 // ready and baked into the recap row. But even if a prep stage failed:
 //   - If the row has a story but no image/PDF, the email still ships
 //     (with whatever is present).
 //   - If PREPARE never ran at all, we compose the recap inline here so
 //     the firm is never left without a Friday email.
 //
-// Re-tally-before-send: PREPARE tallies at 8:45 AM ET, but ballots can
-// still be cast right up to noon. Before building the email we re-tally
-// with a cheap, AI-free query (tallyWeekBallots) and compare it against
-// the row PREPARE persisted. If a late vote changed the podium (as
-// happened for the Aug 14 recap — 3 ballots landed after 8:45 AM and the
-// email still went out with the stale 8:45 AM podium), we recompose the
+// Re-tally-before-send: PREPARE tallies close to send time (11:45 AM ET,
+// moved up from an earlier 8:45 AM ET run that left a 3h15m window for
+// votes to change the outcome), but ballots can still be cast in that
+// last 15 minutes. Before building the email we re-tally with a cheap,
+// AI-free query (tallyWeekBallots) and compare it against the row
+// PREPARE persisted. If a late vote changed the podium (this is what
+// happened for the Aug 14 recap — 7 ballots landed after the tally ran
+// and the email still went out with the stale podium), we recompose the
 // story, re-render the podium image, and rebuild the PDF synchronously
 // — right here, before the email ships — instead of only detecting drift
 // after the fact. That regen (a gpt-image-2 render) can take minutes, so

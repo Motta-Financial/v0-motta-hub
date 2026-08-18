@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { composeWeeklyRecap } from "@/lib/tommy-awards/weekly-recap"
 import { triggerStage } from "@/lib/tommy-awards/pipeline"
-import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
+import { isEasternTimeAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 
 // ── STAGE 1 of 4: PREPARE ─────────────────────────────────────────────
 // This route used to do EVERYTHING (tally → story → PDF → email → async
@@ -12,7 +12,7 @@ import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 // The pipeline is now split into four individually time-budgeted stages
 // so the email always ships LAST with the image + PDF already baked in:
 //
-//   1. PREPARE  (this route)            — Friday 8:45 AM ET. Tally the
+//   1. PREPARE  (this route)            — Friday 11:45 AM ET. Tally the
 //      ballots + draft ALFRED's story, persist the story columns, then
 //      chain to the image stage. NO email is sent here.
 //   2. IMAGE    (/api/cron/tommy-podium-image) — render the podium art,
@@ -24,20 +24,30 @@ import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 //      independently by its own cron (not by the chain) so the firm
 //      always gets an email at noon even if a prep stage failed.
 //
+// PREPARE used to run at 8:45 AM ET, 3h15m before the noon send. Voting
+// stays open the whole time, so a 3h15m-old tally regularly went stale
+// before the email shipped (e.g. the Aug 14 recap froze the podium after
+// only 2 of 9 ballots were in). PREPARE now runs at 11:45 AM ET — just
+// 15 minutes before SEND — so the FIRST podium generated is almost
+// always already final. SEND's re-tally-before-send check (see
+// tommy-recap-send/route.ts) remains as the backstop for any vote cast
+// in that last 15-minute window.
+//
 // PREPARE only does fast brain work (~10s), so we keep a tight ceiling.
 export const maxDuration = 60
 
 /**
- * Vercel Cron endpoint — Friday ~8:45 AM Eastern. Tallies the week's
- * ballots, drafts ALFRED's storyline recap, persists the story columns
- * on `tommy_weekly_recaps`, and kicks off the image → PDF prep chain so
- * everything is ready before the noon send.
+ * Vercel Cron endpoint — Friday ~11:45 AM Eastern (15 min before the
+ * noon send). Tallies the week's ballots, drafts ALFRED's storyline
+ * recap, persists the story columns on `tommy_weekly_recaps`, and kicks
+ * off the image → PDF prep chain so everything is ready before the noon
+ * send.
  *
  * Vercel Cron is UTC-only, so this is scheduled at BOTH UTC hours that
- * map to 8:45 AM Eastern:
- *   - `45 12 * * 5` — 12:45 UTC = 8:45 AM EDT (Mar–Nov)
- *   - `45 13 * * 5` — 13:45 UTC = 8:45 AM EST (Nov–Mar)
- * The `isEasternHourAndWeekday(8, 5)` guard lets exactly one twin run.
+ * map to 11:45 AM Eastern:
+ *   - `45 15 * * 5` — 15:45 UTC = 11:45 AM EDT (Mar–Nov)
+ *   - `45 16 * * 5` — 16:45 UTC = 11:45 AM EST (Nov–Mar)
+ * The `isEasternTimeAndWeekday(11, 45, 5)` guard lets exactly one twin run.
  *
  * Query flags:
  *   - ?dryRun=true   — compose + return the data WITHOUT persisting or chaining.
@@ -57,15 +67,16 @@ export async function GET(request: Request) {
   const force = url.searchParams.get("force") === "true"
   const skipChain = url.searchParams.get("skipChain") === "true"
 
-  // DST guard: only proceed at 8 AM ET on a Friday. The other UTC-twin
-  // invocation exits cleanly here. QA flags bypass the guard.
-  if (!dryRun && !force && !isEasternHourAndWeekday(8, 5)) {
-    const { hour, weekday } = nowInEastern()
+  // DST guard: only proceed at 11:45 AM ET on a Friday. The other
+  // UTC-twin invocation exits cleanly here. QA flags bypass the guard.
+  if (!dryRun && !force && !isEasternTimeAndWeekday(11, 45, 5)) {
+    const { hour, minute, weekday } = nowInEastern()
     return NextResponse.json({
       success: true,
       skipped: true,
-      reason: "Not 8:00 AM Eastern on a Friday — skipping (DST twin invocation).",
+      reason: "Not 11:45 AM Eastern on a Friday — skipping (DST twin invocation).",
       eastern_hour: hour,
+      eastern_minute: minute,
       eastern_weekday: weekday,
     })
   }
