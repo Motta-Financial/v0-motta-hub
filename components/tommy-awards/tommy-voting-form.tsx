@@ -11,7 +11,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Trophy, Medal, Award, Star, Sparkles, Send, Users, Info, Calendar, Edit3, History, Clock } from "lucide-react"
-import { createClient } from "@/lib/supabase/client"
 
 interface TeamMember {
   id: string
@@ -104,89 +103,52 @@ export function TommyVotingForm() {
   }, [currentVoter, selectedWeekId])
 
   const fetchData = async () => {
-    const supabase = createClient()
-
     try {
-      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski, Matthew Pereira, Mark Dwyer
-      // Ganesh Vasan and Thameem JA vote together as "P24" (formerly "G&T")
-      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski", "Matthew Pereira", "Mark Dwyer"]
-      const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
-      
-      const { data: members, error: membersError } = await supabase
-        .from("team_members")
-        .select("id, full_name, email, avatar_url, role")
-        .eq("is_active", true)
-        .not("role", "eq", "Company")
-        .not("role", "eq", "Alumni")
-        .order("full_name")
-
-      if (membersError) throw membersError
-      
-      // Filter out hidden members and the combined voters (they'll be replaced by P24)
-      const filteredMembers = (members || []).filter(
-        (m: { full_name: string }) => 
-          !HIDDEN_MEMBERS.includes(m.full_name) && 
-          !COMBINED_VOTERS.includes(m.full_name)
-      )
-      
-      // Add the combined "P24" voter entry (uses a special composite ID).
-      // Stored as "P24" going forward; legacy ballots saved as "G&T" are
-      // still picked up downstream via the normalize helpers + voter_name
-      // lookup below.
-      const gtVoter: TeamMember = {
-        id: "P24",
-        full_name: "P24",
-        email: "",
-        avatar_url: null,
-        role: "Combined Voter",
+      // Use the server-side API route — the browser Supabase anon key is
+      // blocked by RLS on team_members, tommy_award_weeks, and
+      // tommy_award_ballots.
+      const res = await fetch("/api/tommy-awards/ballot?type=init")
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || `Init request failed: ${res.status}`)
       }
-      
-      // Insert P24 in alphabetical position
-      const membersWithGT = [...filteredMembers, gtVoter].sort((a, b) => 
-        a.full_name.localeCompare(b.full_name)
-      )
-      
-      setTeamMembers(membersWithGT)
+      const { members, weeks } = await res.json() as {
+        members: TeamMember[]
+        weeks: WeekOption[]
+      }
+
+      setTeamMembers(members || [])
 
       const today = new Date()
       setCurrentYear(today.getFullYear())
       const friday = getFridayOfWeek(today)
-      // Format as YYYY-MM-DD in LOCAL time to avoid timezone shifts
-      // (toISOString() converts to UTC which can shift Friday → Saturday for negative offsets)
       const fridayStr = formatLocalDate(friday)
 
-      // Fetch ALL weeks for the dropdown - no time restrictions on submitting/editing ballots
-      const { data: weeks, error: weeksError } = await supabase
-        .from("tommy_award_weeks")
-        .select("id, week_date, week_name, is_active")
-        .order("week_date", { ascending: false })
-
-      if (weeksError) throw weeksError
-
-      // Deduplicate weeks by week_name (in case the database still has any duplicates)
-      // Prefer entries whose week_date falls on a Friday
+      // Deduplicate weeks by week_name (prefer entries whose week_date falls on a Friday)
       const dedupedWeeks = dedupeWeekList(weeks || [])
 
-      // Ensure current week exists
+      // Ensure current week row exists — server-side so no INSERT privilege needed
       let currentWeek: WeekOption | null = dedupedWeeks.find((w) => w.week_date === fridayStr) ?? null
-      
-      if (!currentWeek) {
-        const { data: newWeek, error: createError } = await supabase
-          .from("tommy_award_weeks")
-          .insert({
-            week_date: fridayStr,
-            week_name: `Week of ${friday.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`,
-            is_active: true,
-          })
-          .select()
-          .single()
 
-        if (createError) throw createError
-        currentWeek = newWeek as WeekOption
-        // Add to weeks list
-        if (currentWeek) {
-          setAvailableWeeks([currentWeek, ...dedupedWeeks])
+      if (!currentWeek) {
+        try {
+          const weekRes = await fetch("/api/tommy-awards/ensure-week", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              week_date: fridayStr,
+              week_name: `Week of ${friday.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`,
+            }),
+          })
+          if (weekRes.ok) {
+            const weekJson = await weekRes.json()
+            currentWeek = weekJson.week as WeekOption | null
+          }
+        } catch (weekErr) {
+          // Non-fatal — form still works with existing weeks in the dropdown
+          console.error("ensure-week request failed:", weekErr)
         }
+        setAvailableWeeks(currentWeek ? [currentWeek, ...dedupedWeeks] : dedupedWeeks)
       } else {
         setAvailableWeeks(dedupedWeeks)
       }
@@ -207,39 +169,42 @@ export function TommyVotingForm() {
   const checkExistingBallot = async () => {
     if (!currentVoter || !selectedWeekId) return
 
-    const supabase = createClient()
-    
     try {
-      // For the combined "P24" voter, look up ballots by voter_name instead of voter_id
-      // since P24 isn't a real team_member row. Match BOTH the new "P24" label and
-      // the legacy "G&T" label so prior weeks of ballots still load for editing.
-      let existingBallot = null
-      let error = null
-      
+      // Use the server-side API — the anon Supabase key is blocked by RLS.
+      const params = new URLSearchParams({ type: "check", week_id: selectedWeekId })
       if (currentVoter === "P24") {
-        const result = await supabase
-          .from("tommy_award_ballots")
-          .select("*")
-          .in("voter_name", ["P24", "G&T"])
-          .eq("week_id", selectedWeekId)
-          .single()
-        existingBallot = result.data
-        error = result.error
+        params.set("voter_id", "P24")
       } else {
-        const result = await supabase
-          .from("tommy_award_ballots")
-          .select("*")
-          .eq("voter_id", currentVoter)
-          .eq("week_id", selectedWeekId)
-          .single()
-        existingBallot = result.data
-        error = result.error
+        params.set("voter_id", currentVoter)
       }
 
-      if (error && error.code !== "PGRST116") {
-        // PGRST116 = no rows returned, which is fine
-        console.error("Error checking existing ballot:", error)
+      const res = await fetch(`/api/tommy-awards/ballot?${params}`)
+      if (!res.ok) {
+        console.error("Error checking existing ballot:", res.status)
         return
+      }
+
+      type BallotRow = {
+        id: string
+        first_place_id: string | null
+        first_place_name: string | null
+        first_place_notes: string | null
+        second_place_id: string | null
+        second_place_name: string | null
+        second_place_notes: string | null
+        third_place_id: string | null
+        third_place_name: string | null
+        third_place_notes: string | null
+        honorable_mention_id: string | null
+        honorable_mention_name: string | null
+        honorable_mention_notes: string | null
+        partner_vote_id: string | null
+        partner_vote_name: string | null
+        partner_vote_notes: string | null
+      }
+      const { ballot: existingBallot, history } = await res.json() as {
+        ballot: BallotRow | null
+        history: BallotHistoryEntry[]
       }
 
       if (existingBallot) {
@@ -296,8 +261,8 @@ export function TommyVotingForm() {
           })
         }
         
-        // Fetch ballot history
-        await fetchBallotHistory(existingBallot.id)
+        // History already returned by the check API response
+        setBallotHistory(history || [])
       } else {
         // Reset form for new ballot
         setIsAmendment(false)
@@ -312,27 +277,14 @@ export function TommyVotingForm() {
   }
 
   const fetchBallotHistory = async (ballotId: string) => {
-    const supabase = createClient()
-    
+    // Kept for direct calls after amendment submission. History is already
+    // fetched inline during checkExistingBallot via the check API response.
     try {
-      const { data, error } = await supabase
-        .from("tommy_award_ballot_history")
-        .select("id, change_type, changed_at, changed_by_name, change_summary")
-        .eq("ballot_id", ballotId)
-        .order("changed_at", { ascending: false })
-
-      if (error) {
-        // Table might not exist yet - gracefully handle
-        if (error.code !== "42P01" && !error.message.includes("does not exist")) {
-          console.error("Error fetching ballot history:", error)
-        }
-        setBallotHistory([])
-        return
-      }
-
-      setBallotHistory(data || [])
-    } catch (err) {
-      console.error("Error fetching ballot history:", err)
+      const res = await fetch(`/api/tommy-awards/ballot?type=history&ballot_id=${encodeURIComponent(ballotId)}`)
+      if (!res.ok) { setBallotHistory([]); return }
+      const { history } = await res.json() as { history: BallotHistoryEntry[] }
+      setBallotHistory(history || [])
+    } catch {
       setBallotHistory([])
     }
   }

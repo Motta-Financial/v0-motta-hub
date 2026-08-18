@@ -63,14 +63,58 @@ export interface PodiumImageResult {
 }
 
 /**
+ * Groups winners by rank so ties (two+ people sharing 1st/2nd/3rd) can
+ * be called out explicitly to the prompt-drafting model. Without this,
+ * the model has no signal that two winners belong on the SAME podium
+ * tier and tends to either drop one of them or spread them across
+ * separate tiers.
+ */
+function groupByRank<T extends { rank: number }>(winners: T[]): Map<number, T[]> {
+  const byRank = new Map<number, T[]>()
+  for (const w of winners) {
+    const list = byRank.get(w.rank) ?? []
+    list.push(w)
+    byRank.set(w.rank, list)
+  }
+  return byRank
+}
+
+/**
  * Generate + upload the weekly podium image. Returns `null` on failure
  * so the cron can fall back to an image-less email gracefully.
+ *
+ * `customPrompt`, when provided, is used VERBATIM for the image render
+ * step — the GPT-5.5-pro vision-grounded drafting step (step 1-2 below)
+ * is skipped entirely. This is how the admin "regenerate with a custom
+ * prompt" tool works: an operator can hand-edit or fully replace the
+ * prompt after a bad render (e.g. the podium showing extra people who
+ * aren't winners) without waiting on the drafting model again.
  */
 export async function generatePodiumImage(opts: {
   weekLabel: string
   winners: PodiumImageWinner[]
+  customPrompt?: string | null
 }): Promise<PodiumImageResult | null> {
   if (opts.winners.length === 0) return null
+
+  // ── Custom-prompt short-circuit ──────────────────────────────────
+  // Skip the drafting model entirely and render the operator-supplied
+  // prompt directly. Still goes through the same retrying render +
+  // upload pipeline below.
+  const trimmedCustomPrompt = opts.customPrompt?.trim()
+  if (trimmedCustomPrompt) {
+    console.log("[v0] tommy podium image: using custom prompt, skipping drafting step")
+    const image = await renderPodiumImageWithRetry(trimmedCustomPrompt)
+    if (!image) return null
+    const imageUrl = await uploadPodiumImage(image, opts.weekLabel)
+    if (!imageUrl) return null
+    return {
+      imageUrl,
+      promptUsed: trimmedCustomPrompt,
+      promptModel: "custom",
+      imageModel: PODIUM_IMAGE_MODEL,
+    }
+  }
 
   try {
     // ── Step 1 — resolve hero profiles for each winner ────────────
@@ -119,6 +163,36 @@ export async function generatePodiumImage(opts: {
       (h) => !h.imageUrl || !/^https?:\/\//i.test(h.imageUrl),
     )
 
+    // ── Cast count + tie grouping ─────────────────────────────────
+    // Two bugs this section exists to prevent:
+    //   1. The model treating the Motta Alliance as an ensemble cast
+    //      and drawing extra teammates who aren't winners this week
+    //      (e.g. rendering 7 heroes for a 3-winner week).
+    //   2. Ties (two+ winners sharing the same rank) getting spread
+    //      across separate podium tiers instead of standing together
+    //      on the ONE tier they actually share.
+    const totalWinnerCount = opts.winners.length
+    const rankGroups = groupByRank(opts.winners)
+    const tiedRankClauses = Array.from(rankGroups.entries())
+      .filter(([, group]) => group.length > 1)
+      .sort(([a], [b]) => a - b)
+      .map(([rank, group]) => {
+        const names = group
+          .map((w) => {
+            const hero = findHeroProfileBySlug(w.heroSlug ?? undefined) ?? findHeroProfile(w.name)
+            return hero?.alias ? `${hero.alias} (${w.name})` : w.name
+          })
+          .join(" AND ")
+        return `${ordinal(rank)} place is a TIE between ${group.length} co-winners: ${names}. They must stand TOGETHER on the SAME ${ordinal(rank)}-place podium tier, side by side, both/all holding or standing beside that tier's single rank numeral — do NOT give them separate tiers and do NOT split them apart.`
+      })
+
+    const castCountClause = `CAST COUNT — STRICT: there are EXACTLY ${totalWinnerCount} winner${totalWinnerCount === 1 ? "" : "s"} this week and the podium must show EXACTLY ${totalWinnerCount} ${totalWinnerCount === 1 ? "hero" : "heroes"} total, no more and no fewer. Do NOT add extra teammates, ensemble cast members, background heroes, robots, or filler characters to pad out the scene, even if the Motta Alliance is normally a larger team. Every single person visible in the image must be one of the named winners below.`
+
+    const tieClause =
+      tiedRankClauses.length > 0
+        ? `TIES — STRICT: ${tiedRankClauses.join(" ")}`
+        : `No ties this week — each of the ${totalWinnerCount} winners gets their own distinct podium tier per their rank.`
+
     // Build the multimodal user message: one text block setting the
     // task, followed by one image block PER hero (with a text label
     // immediately before it so GPT-5 can correlate image-to-winner).
@@ -134,8 +208,10 @@ export async function generatePodiumImage(opts: {
         text: `You are the art director for the Motta Financial Alliance comic book series. I will show you the CANONICAL hero profile artwork for each of this week's Tommy Awards winners. STUDY each image carefully — note apparent gender, body type, hair length/colour, skin tone, costume accents, mask/visor/hood design, signature props, and pose energy. Then compose a SINGLE image generation prompt (no preamble, no markdown, no quotation marks) describing a cinematic, comic-book-style illustration of an F1-style podium celebration for these winners, drawn in the same Motta Alliance art style as the source images.
 
 Mandatory visual direction (do not deviate):
+- ${castCountClause}
+- ${tieClause}
 - Comic-book rendering matching the Motta Alliance series: dark background, dramatic moody lighting, faint city skyline at night, olive-green and gold accents, white lotus emblem on each hero's chest, halftone shading, bold inked outlines.
-- An F1-style three-tier podium centre-frame: tallest centre (1st), shorter left (2nd), shortest right (3rd). Each tier has the rank number in large stencil typography.
+- An F1-style three-tier podium centre-frame: tallest centre (1st), shorter left (2nd), shortest right (3rd). Each tier has the rank number in large stencil typography. If a tier has co-winners (a tie), both/all of them stand on that ONE tier together — never invent additional tiers or side platforms to fit them.
 - Heroes are stylised, not real-likeness portraits — but every hero's apparent gender, hair, costume accents and signature props MUST match the source artwork you just studied. If a winner is a woman in the source art, she MUST be drawn as a woman in the podium scene.
 - Each hero holds a champagne bottle spraying olive-tinted "Motta Mist".
 - Banner across the top reads exactly: MOTTA ALLIANCE — TOMMY AWARDS, with the week label "${opts.weekLabel}" immediately below it. Both lines must fit fully inside the canvas with at least 8% margin on the left and right edges — do NOT crop the banner.
@@ -169,7 +245,7 @@ Winners this week (images follow below, in podium order):`,
 
     userContent.push({
       type: "text",
-      text: `\nReturn ONLY the final image prompt as a single paragraph of ≤ 280 words. No preamble. No markdown. The prompt must explicitly mention each winner by alias and place on the podium, and must lock in their apparent gender + a signature prop drawn directly from the source artwork you studied above.`,
+      text: `\nReturn ONLY the final image prompt as a single paragraph of ≤ 280 words. No preamble. No markdown. The prompt must explicitly mention each winner by alias and place on the podium, must lock in their apparent gender + a signature prop drawn directly from the source artwork you studied above, must restate the exact cast count (${totalWinnerCount} total, no extras) somewhere in the prompt, and — if any ranks are tied — must explicitly instruct that the tied winners share ONE tier together.`,
     })
 
     // gpt-5.5-pro is a deep-reasoning model — it spends a large share
@@ -205,66 +281,102 @@ Winners this week (images follow below, in podium order):`,
             `${ordinal(h.rank)} place — ${h.alias ? `${h.alias} (${h.name})` : h.name}${h.role ? `, role: ${h.role}` : ""}. ${h.appearance ?? "Stylised heroic figure in black tactical suit with white lotus chest emblem, olive trim."}`,
         )
         .join(" ")
-      cleanedPrompt = `Cinematic comic-book illustration of an F1-style three-tier podium celebrating this week's Motta Financial Alliance Tommy Awards winners. Tallest centre tier for 1st, left tier for 2nd, right tier for 3rd, each with a large stencil rank number. Each hero holds a champagne bottle spraying olive-tinted "Motta Mist". Apparent gender and signature props for each winner are MANDATORY: ${winnersBlock} A banner across the top reads exactly "MOTTA ALLIANCE — TOMMY AWARDS" with "${opts.weekLabel}" beneath it; both banner lines must sit fully within the canvas with at least 8% margin on the left and right edges — do not crop the banner. The ONLY text in the image is that banner plus the rank numerals 1, 2, 3 on the podium tiers — do NOT bake hero names, taglines or quotes into the artwork. Dark moody background with a faint nighttime city skyline, dramatic rim lighting, bold inked outlines, halftone shading. Strict palette: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), cream/off-white. No purple, no pastel pink. Style: Marvel hero profile card crossed with an F1 victory poster. Stylised heroic figures only — NOT real-likeness portraits — but female heroes must be drawn as women and male heroes as men, per the descriptions above.`
+      cleanedPrompt = `Cinematic comic-book illustration of an F1-style three-tier podium celebrating this week's Motta Financial Alliance Tommy Awards winners. ${castCountClause} ${tieClause} Tallest centre tier for 1st, left tier for 2nd, right tier for 3rd, each with a large stencil rank number; tied ranks share their one tier together, side by side. Each hero holds a champagne bottle spraying olive-tinted "Motta Mist". Apparent gender and signature props for each winner are MANDATORY: ${winnersBlock} A banner across the top reads exactly "MOTTA ALLIANCE — TOMMY AWARDS" with "${opts.weekLabel}" beneath it; both banner lines must sit fully within the canvas with at least 8% margin on the left and right edges — do not crop the banner. The ONLY text in the image is that banner plus the rank numerals 1, 2, 3 on the podium tiers — do NOT bake hero names, taglines or quotes into the artwork. Dark moody background with a faint nighttime city skyline, dramatic rim lighting, bold inked outlines, halftone shading. Strict palette: deep charcoal, jet black, olive green (#7a8a3a), gold (#d4af37), cream/off-white. No purple, no pastel pink. Style: Marvel hero profile card crossed with an F1 victory poster. Stylised heroic figures only — NOT real-likeness portraits — but female heroes must be drawn as women and male heroes as men, per the descriptions above.`
     }
 
     console.log("[v0] tommy podium image: prompt drafted, generating image…")
 
     // ── Step 3 — render the image at HIGH ("extended pro") quality ──
-    // gpt-image-2 intermittently returns transient 5xx ("Internal Server
-    // Error", isRetryable: true) under load. A single failure used to sink
-    // the entire weekly render, which is why the Tommy email kept shipping
-    // without art. Retry a few times with exponential backoff before giving
-    // up; only retry on transient/5xx errors so we fail fast on real
-    // problems (bad prompt, auth, content policy).
-    const MAX_IMAGE_ATTEMPTS = 4
-    let image: Awaited<ReturnType<typeof generateImage>>["image"] | null = null
-    for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
-      try {
-        const res = await generateImage({
-          model: PODIUM_IMAGE_MODEL,
-          prompt: cleanedPrompt,
-          size: "1536x1024", // wide format suits the F1 podium composition
-          providerOptions: {
-            openai: {
-              // gpt-image-1's top tier — the "extended pro" output the user
-              // asked for. "low" / "medium" / "high" are the supported
-              // values; "high" is the slowest + most detailed.
-              quality: "high",
-            },
-          },
-        })
-        image = res.image
-        if (attempt > 1) {
-          console.log(`[v0] tommy podium image: render succeeded on attempt ${attempt}`)
-        }
-        break
-      } catch (err) {
-        const status = (err as { statusCode?: number })?.statusCode
-        const retryable =
-          (err as { isRetryable?: boolean })?.isRetryable === true ||
-          (typeof status === "number" && status >= 500) ||
-          status === 429
-        if (!retryable || attempt === MAX_IMAGE_ATTEMPTS) {
-          throw err
-        }
-        const backoffMs = 2000 * 2 ** (attempt - 1) // 2s, 4s, 8s
-        console.warn(
-          `[v0] tommy podium image: render attempt ${attempt} failed (status ${status ?? "?"}), retrying in ${backoffMs}ms…`,
-        )
-        await new Promise((r) => setTimeout(r, backoffMs))
-      }
-    }
-
+    const image = await renderPodiumImageWithRetry(cleanedPrompt)
     if (!image) {
       throw new Error("image generation returned no image after retries")
     }
 
     // ── Step 4 — upload to Vercel Blob for email embedding ───────
+    const imageUrl = await uploadPodiumImage(image, opts.weekLabel)
+    if (!imageUrl) {
+      throw new Error("image upload to Vercel Blob failed")
+    }
+
+    return {
+      imageUrl,
+      promptUsed: cleanedPrompt,
+      promptModel: PODIUM_PROMPT_MODEL,
+      imageModel: PODIUM_IMAGE_MODEL,
+    }
+  } catch (err) {
+    console.error("[v0] tommy podium image: generation failed:", err)
+    return null
+  }
+}
+
+/**
+ * Renders `prompt` with gpt-image-2 at HIGH ("extended pro") quality.
+ * gpt-image-2 intermittently returns transient 5xx ("Internal Server
+ * Error", isRetryable: true) under load. A single failure used to sink
+ * the entire weekly render, which is why the Tommy email kept shipping
+ * without art. Retry a few times with exponential backoff before giving
+ * up; only retry on transient/5xx errors so we fail fast on real
+ * problems (bad prompt, auth, content policy). Shared by both the
+ * vision-drafted pipeline and the custom-prompt short-circuit.
+ */
+async function renderPodiumImageWithRetry(
+  prompt: string,
+): Promise<Awaited<ReturnType<typeof generateImage>>["image"] | null> {
+  const MAX_IMAGE_ATTEMPTS = 4
+  for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
+    try {
+      const res = await generateImage({
+        model: PODIUM_IMAGE_MODEL,
+        prompt,
+        size: "1536x1024", // wide format suits the F1 podium composition
+        providerOptions: {
+          openai: {
+            // gpt-image-1's top tier — the "extended pro" output the user
+            // asked for. "low" / "medium" / "high" are the supported
+            // values; "high" is the slowest + most detailed.
+            quality: "high",
+          },
+        },
+      })
+      if (attempt > 1) {
+        console.log(`[v0] tommy podium image: render succeeded on attempt ${attempt}`)
+      }
+      return res.image
+    } catch (err) {
+      const status = (err as { statusCode?: number })?.statusCode
+      const retryable =
+        (err as { isRetryable?: boolean })?.isRetryable === true ||
+        (typeof status === "number" && status >= 500) ||
+        status === 429
+      if (!retryable || attempt === MAX_IMAGE_ATTEMPTS) {
+        console.error("[v0] tommy podium image: render failed:", err)
+        return null
+      }
+      const backoffMs = 2000 * 2 ** (attempt - 1) // 2s, 4s, 8s
+      console.warn(
+        `[v0] tommy podium image: render attempt ${attempt} failed (status ${status ?? "?"}), retrying in ${backoffMs}ms…`,
+      )
+      await new Promise((r) => setTimeout(r, backoffMs))
+    }
+  }
+  return null
+}
+
+/**
+ * Uploads a rendered podium image to Vercel Blob and returns the
+ * public URL, or `null` on failure. Shared by both the vision-drafted
+ * pipeline and the custom-prompt short-circuit.
+ */
+async function uploadPodiumImage(
+  image: NonNullable<Awaited<ReturnType<typeof generateImage>>["image"]>,
+  weekLabel: string,
+): Promise<string | null> {
+  try {
     // image.uint8Array is the raw PNG; we wrap it in a Buffer so the
     // @vercel/blob SDK can stream it.
     const buffer = Buffer.from(image.uint8Array)
-    const slug = opts.weekLabel
+    const slug = weekLabel
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "")
@@ -275,15 +387,9 @@ Winners this week (images follow below, in podium order):`,
       contentType: "image/png",
       addRandomSuffix: false,
     })
-
-    return {
-      imageUrl: blob.url,
-      promptUsed: cleanedPrompt,
-      promptModel: PODIUM_PROMPT_MODEL,
-      imageModel: PODIUM_IMAGE_MODEL,
-    }
+    return blob.url
   } catch (err) {
-    console.error("[v0] tommy podium image: generation failed:", err)
+    console.error("[v0] tommy podium image: upload failed:", err)
     return null
   }
 }
