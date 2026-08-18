@@ -21,9 +21,12 @@
 import Image from "next/image"
 import useSWR from "swr"
 import { useState } from "react"
-import { Sparkles, Trophy, ExternalLink, Download, FileDown } from "lucide-react"
+import { Sparkles, Trophy, ExternalLink, Download, FileDown, Wand2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { useUser } from "@/contexts/user-context"
+import { isAdminRole } from "@/lib/auth/admin-roles"
+import { RegeneratePodiumDialog } from "@/components/motta-alliance/regenerate-podium-dialog"
 
 interface TopThreeEntry {
   name: string
@@ -41,6 +44,7 @@ interface WeeklyRecap {
   total_ballots: number
   ai_summary: string | null
   podium_image_url: string | null
+  podium_image_prompt: string | null
   podium_pdf_url: string | null
   top_three: TopThreeEntry[] | null
   email_sent_at: string | null
@@ -54,11 +58,13 @@ const fetcher = async (url: string) => {
 }
 
 export function WeeklyTommysTab() {
-  const { data, isLoading, error } = useSWR(
+  const { data, isLoading, error, mutate } = useSWR(
     "/api/tommy-awards?type=all_recaps",
     fetcher,
     { revalidateOnFocus: false },
   )
+  const { teamMember } = useUser()
+  const isAdmin = isAdminRole(teamMember?.role)
 
   // Only show recaps whose email has actually shipped — anything still
   // "in flight" stays sealed behind the ALFRED waiting screen on the
@@ -116,14 +122,23 @@ export function WeeklyTommysTab() {
   return (
     <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
       {recaps.map((recap) => (
-        <RecapCard key={recap.week_id} recap={recap} />
+        <RecapCard key={recap.week_id} recap={recap} isAdmin={isAdmin} onRegenerated={() => mutate()} />
       ))}
     </div>
   )
 }
 
-function RecapCard({ recap }: { recap: WeeklyRecap }) {
+function RecapCard({
+  recap,
+  isAdmin,
+  onRegenerated,
+}: {
+  recap: WeeklyRecap
+  isAdmin: boolean
+  onRegenerated: () => void
+}) {
   const [downloading, setDownloading] = useState(false)
+  const [regenerateOpen, setRegenerateOpen] = useState(false)
 
   const downloadName = `Tommy-Awards-Recap-${recap.week_label.replace(/[^a-zA-Z0-9]+/g, "-")}.pdf`
 
@@ -309,7 +324,38 @@ function RecapCard({ recap }: { recap: WeeklyRecap }) {
             PDF Not Available
           </div>
         )}
+
+        {/* Admin-only escape hatch for fixing a bad podium render (wrong
+            cast count, a split tie, etc.) without re-emailing the firm. */}
+        {isAdmin && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full font-bold uppercase tracking-wider"
+            style={{
+              borderColor: "rgba(230,168,92,0.35)",
+              color: "#E6A85C",
+              backgroundColor: "transparent",
+            }}
+            onClick={() => setRegenerateOpen(true)}
+            aria-label={`Regenerate podium image for ${recap.week_label}`}
+          >
+            <Wand2 className="mr-1.5 h-3.5 w-3.5" />
+            Regenerate Image
+          </Button>
+        )}
       </CardContent>
+
+      {isAdmin && (
+        <RegeneratePodiumDialog
+          open={regenerateOpen}
+          onOpenChange={setRegenerateOpen}
+          weekId={recap.week_id}
+          weekLabel={recap.week_label}
+          currentPrompt={recap.podium_image_prompt}
+          onRegenerated={onRegenerated}
+        />
+      )}
     </Card>
   )
 }

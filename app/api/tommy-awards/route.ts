@@ -149,7 +149,7 @@ export async function GET(request: NextRequest) {
       const { data, error } = await supabase
         .from("tommy_weekly_recaps")
         .select(
-          "week_id, week_date, week_label, total_ballots, ai_summary, podium_image_url, podium_pdf_url, top_three, email_sent_at, created_at",
+          "week_id, week_date, week_label, total_ballots, ai_summary, podium_image_url, podium_image_prompt, podium_pdf_url, top_three, email_sent_at, created_at",
         )
         .order("week_date", { ascending: false })
 
