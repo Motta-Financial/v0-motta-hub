@@ -163,6 +163,130 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── Re-tally before send ──────────────────────────────────────────
+    // PREPARE tallied at 8:45 AM ET; ballots can still be cast right up
+    // to noon. Re-tallying is cheap (no AI, ~1 query) so we always run
+    // it, and only pay for a full recompose + art regen when the fresh
+    // count actually disagrees with what PREPARE persisted.
+    let podiumWasStale = false
+    try {
+      const freshTally = await tallyWeekBallots(supabase)
+      if (freshTally.status === "ok" && freshTally.data.weekId === weekId) {
+        const stored = {
+          totalBallots: (recap.total_ballots as number) ?? 0,
+          topThree: (recap.top_three ?? []) as TopThreeEntry[],
+        }
+        if (tallyDiffersFromRecap(freshTally.data, stored)) {
+          podiumWasStale = true
+          console.warn(
+            "[v0] tommy-recap-send: podium stale — votes changed after PREPARE ran.",
+            {
+              weekId,
+              storedBallots: stored.totalBallots,
+              freshBallots: freshTally.data.totalBallots,
+            },
+          )
+
+          // Dry runs only report the drift — regenerating real art for a
+          // preview isn't worth the multi-minute image render.
+          if (!dryRun) {
+            const composed = await composeWeeklyRecap(supabase)
+            if (composed.status === "ok") {
+              const c = composed.data
+
+              // Resolve hero slugs the same way the image cron does, so
+              // the regenerated art stays grounded in each winner's
+              // canonical look instead of drifting.
+              const { data: heroSlugRows } = await supabase
+                .from("team_members")
+                .select("full_name, hero_profile_slug")
+                .in(
+                  "full_name",
+                  c.topThree.filter((t) => t.name !== "P24").map((t) => t.name),
+                )
+              const heroSlugByName = new Map(
+                (heroSlugRows ?? []).map((r) => [
+                  r.full_name,
+                  r.hero_profile_slug as string | null,
+                ]),
+              )
+
+              const imageResult = await generatePodiumImage({
+                weekLabel: c.weekLabel,
+                winners: c.topThree.map((t) => ({
+                  name: t.name,
+                  rank: t.rank,
+                  heroSlug:
+                    t.name === "P24"
+                      ? "p24-shadow-task-force"
+                      : heroSlugByName.get(t.name) ?? null,
+                })),
+              })
+
+              let pdfUrl: string | null = null
+              if (imageResult) {
+                const pdfResult = await generatePodiumPdf({
+                  weekId,
+                  weekLabel: c.weekLabel,
+                  aiSummary: c.aiSummary,
+                  topThree: c.topThree,
+                  totalBallots: c.totalBallots,
+                  podiumImageUrl: imageResult.imageUrl,
+                })
+                pdfUrl = pdfResult?.pdfUrl ?? null
+              }
+
+              const { error: updateErr } = await supabase
+                .from("tommy_weekly_recaps")
+                .update({
+                  total_ballots: c.totalBallots,
+                  top_three: c.topThree,
+                  ai_summary: c.aiSummary,
+                  ai_model: c.aiModel,
+                  ytd_standings: c.ytdStandings,
+                  podium_image_url: imageResult?.imageUrl ?? null,
+                  podium_image_prompt: imageResult?.promptUsed ?? null,
+                  podium_image_model: imageResult?.imageModel ?? null,
+                  podium_pdf_url: pdfUrl,
+                })
+                .eq("week_id", weekId)
+              if (updateErr) {
+                console.error(
+                  "[v0] tommy-recap-send: failed to persist re-tallied recap:",
+                  updateErr,
+                )
+              }
+
+              // Use the corrected values for the email about to be built.
+              recap = {
+                ...recap,
+                week_label: c.weekLabel,
+                ai_summary: c.aiSummary,
+                ai_model: c.aiModel,
+                top_three: c.topThree,
+                total_ballots: c.totalBallots,
+                podium_image_url: imageResult?.imageUrl ?? null,
+                podium_pdf_url: pdfUrl,
+                ytd_standings: c.ytdStandings,
+              }
+            } else {
+              console.error(
+                "[v0] tommy-recap-send: re-tally detected drift but recompose was skipped:",
+                composed.reason,
+              )
+            }
+          }
+        }
+      }
+    } catch (retallyError) {
+      // Never let this safety check block the Friday send — worst case
+      // we send with whatever PREPARE produced, same as before this fix.
+      console.error(
+        "[v0] tommy-recap-send: re-tally check failed, sending with existing recap:",
+        retallyError,
+      )
+    }
+
     const weekLabel = recap.week_label as string
     const topThree = (recap.top_three ?? []) as TopThreeEntry[]
     const podiumImageUrl = (recap.podium_image_url as string | null) ?? null
@@ -206,6 +330,7 @@ export async function GET(request: Request) {
         has_pdf: Boolean(podiumPdfUrl),
         podium_image_url: podiumImageUrl,
         podium_pdf_url: podiumPdfUrl,
+        podium_was_stale: podiumWasStale,
         html,
       })
     }
@@ -255,6 +380,7 @@ export async function GET(request: Request) {
       skipped,
       had_image: Boolean(podiumImageUrl),
       had_pdf: Boolean(podiumPdfUrl),
+      podium_was_stale: podiumWasStale,
     })
   } catch (error) {
     console.error("[cron/tommy-recap-send] Error:", error)
