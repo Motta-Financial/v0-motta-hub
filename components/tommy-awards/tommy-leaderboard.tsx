@@ -5,9 +5,13 @@ import Image from "next/image"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { Trophy, Medal, Award, Sparkles, Lock, FileDown } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Trophy, Medal, Award, Sparkles, Lock, FileDown, Wand2 } from "lucide-react"
 import { findHeroProfile } from "@/lib/motta-alliance/hero-profiles"
 import { TommyMemberBreakdownDialog } from "./tommy-member-breakdown-dialog"
+import { useUser } from "@/contexts/user-context"
+import { isAdminRole } from "@/lib/auth/admin-roles"
+import { RegeneratePodiumDialog } from "@/components/motta-alliance/regenerate-podium-dialog"
 
 interface LeaderboardEntry {
   name: string
@@ -30,6 +34,7 @@ interface WeeklyRecap {
   total_ballots: number
   ai_summary: string
   podium_image_url: string | null
+  podium_image_prompt: string | null
   podium_pdf_url: string | null
   email_sent_at: string | null
 }
@@ -61,6 +66,12 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
   // recap row but their standings should still be visible. See the
   // `isAwaitingRecap` comment below.
   const [selectedWeekDate, setSelectedWeekDate] = useState<string | null>(null)
+  // Admin-only escape hatch: lets Company/Partner/Admin roles fix a bad
+  // podium render (wrong cast count, a split tie, etc.) by regenerating
+  // with a custom prompt, without waiting for next Friday's cron.
+  const [regenerateOpen, setRegenerateOpen] = useState(false)
+  const { teamMember } = useUser()
+  const isAdmin = isAdminRole(teamMember?.role)
 
   const is2026OrLater = filters.year !== "all" && Number.parseInt(filters.year) >= 2026
   // Once a single week is in scope we treat its recap as the source
@@ -274,17 +285,35 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
                     </p>
                   </div>
                 </div>
-                <Badge
-                  variant="outline"
-                  className="text-xs"
-                  style={{
-                    backgroundColor: "rgba(168,197,102,0.10)",
-                    color: "#A8C566",
-                    borderColor: "rgba(168,197,102,0.35)",
-                  }}
-                >
-                  {recap.total_ballots} ballots
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant="outline"
+                    className="text-xs"
+                    style={{
+                      backgroundColor: "rgba(168,197,102,0.10)",
+                      color: "#A8C566",
+                      borderColor: "rgba(168,197,102,0.35)",
+                    }}
+                  >
+                    {recap.total_ballots} ballots
+                  </Badge>
+                  {isAdmin && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setRegenerateOpen(true)}
+                      className="h-7 gap-1.5 text-xs"
+                      style={{
+                        backgroundColor: "rgba(168,197,102,0.10)",
+                        borderColor: "rgba(168,197,102,0.40)",
+                        color: "#A8C566",
+                      }}
+                    >
+                      <Wand2 className="h-3.5 w-3.5" />
+                      Regenerate
+                    </Button>
+                  )}
+                </div>
               </div>
               {recap.ai_summary && (
                 <p
@@ -314,6 +343,17 @@ export function TommyLeaderboard({ filters }: TommyLeaderboardProps) {
               )}
             </div>
           </div>
+        )}
+
+        {isAdmin && recap && (
+          <RegeneratePodiumDialog
+            open={regenerateOpen}
+            onOpenChange={setRegenerateOpen}
+            weekId={recap.week_id}
+            weekLabel={recap.week_label}
+            currentPrompt={recap.podium_image_prompt}
+            onRegenerated={fetchLeaderboard}
+          />
         )}
 
         {isAwaitingRecap ? (
