@@ -399,13 +399,20 @@ export async function generatePodiumPdf(opts: {
 
     const bytes = await pdfDoc.save()
 
-    // Upload to Vercel Blob with a stable, human-readable filename.
-    // We allow overwrites so re-running the cron for a given week
-    // (e.g. after fixing the recap) replaces the previous PDF.
+    // Upload to Vercel Blob with a human-readable filename that still
+    // changes on every generation. Vercel Blob serves public objects
+    // with `cache-control: public, max-age=2592000` (30 days) — with a
+    // STABLE filename, `allowOverwrite` correctly replaces the bytes at
+    // the origin, but any browser/CDN that already fetched that exact
+    // URL keeps serving its old cached copy for up to 30 days, so a
+    // regenerated PDF can silently look unchanged to whoever downloads
+    // it. Appending Date.now() (matching the podium image's pattern)
+    // gives every regeneration its own URL so there's nothing stale to
+    // cache.
     const safeLabel = opts.weekLabel
       .replace(/[^a-zA-Z0-9]+/g, "-")
       .replace(/(^-+|-+$)/g, "")
-    const filename = `tommy-awards/recap-${safeLabel}-${opts.weekId}.pdf`
+    const filename = `tommy-awards/recap-${safeLabel}-${opts.weekId}-${Date.now()}.pdf`
     // pdf-lib's `save()` returns a Uint8Array; @vercel/blob's `put`
     // wants a Buffer (or Blob / Readable / ReadableStream / File). We
     // wrap into a Buffer with no copy so the upload accepts it.
