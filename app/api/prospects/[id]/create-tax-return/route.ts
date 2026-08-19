@@ -4,6 +4,14 @@
  * Closes the one confirmed gap from the ProConnect API coverage audit:
  * "Create Tax Return in PTO" (POST /v2/clients/oii-client/{id}/returns).
  *
+ * ⚠️ SPEC CAVEAT — the authoritative spec ("ProConnect Open API — Series
+ * Map Export & Import (Phase 1) v3") only documents Export and Import; it
+ * does not define this endpoint. The path/payload here come from a
+ * separate, unconfirmed doc. That doc also confirms only the IND (1040)
+ * module is live today — COR/PAR/SCO/FID/EXM/GFT are "will follow" and are
+ * rejected below. Treat any response from `createTaxReturn()` — success or
+ * failure — as unverified until confirmed against a live Intuit call.
+ *
  * Safety model (per product decision):
  *   - Leadership-gated, same as the Import write-back route.
  *   - NEVER creates a ProConnect client. Requires the prospect's linked
@@ -31,7 +39,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { requireLeadership } from "@/lib/auth/require-leadership"
-import { createTaxReturn, RETURN_TYPE_MAP } from "@/lib/proconnect/client"
+import { createTaxReturn, RETURN_TYPE_MAP, SUPPORTED_RETURN_TYPES } from "@/lib/proconnect/client"
 
 function isUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
@@ -76,6 +84,20 @@ export async function POST(
           error: `type must be one of: ${Object.keys(RETURN_TYPE_MAP).join(", ")}`,
         },
         { status: 400 },
+      )
+    }
+    // Per the authoritative Phase 1 v3 doc, only the IND (1040) module is
+    // confirmed live — COR/PAR/SCO/FID/EXM/GFT are documented as "will
+    // follow" and are not yet available. Reject them here rather than
+    // sending an unsupported request to ProConnect and logging a confusing
+    // failure.
+    if (!(SUPPORTED_RETURN_TYPES as readonly string[]).includes(type)) {
+      return NextResponse.json(
+        {
+          error: `type "${type}" is not yet supported by ProConnect's Open API (Phase 1 covers ${SUPPORTED_RETURN_TYPES.join(", ")} only; other modules are documented as "will follow").`,
+          code: "module_not_supported",
+        },
+        { status: 422 },
       )
     }
     if (!year || typeof year !== "number" || !Number.isInteger(year) || year < 2000 || year > 2100) {

@@ -27,6 +27,7 @@ export {
   extractClientId,
   extractClientName,
   RETURN_TYPE_MAP,
+  SUPPORTED_RETURN_TYPES,
   type CreateTaxReturnPayload,
 } from "./client"
 

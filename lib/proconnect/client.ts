@@ -20,25 +20,41 @@ const ENGAGEMENT_SERVICE_URL = "https://engagement.accountant.intuit.com"
 /**
  * Data Service host for Create Tax Return.
  *
- * The Phase-2 doc writes this endpoint as
- * `https://{DATA_SERVICE}/v2/clients/oii-client/{clientOiiId}/returns` —
- * same `{DATA_SERVICE}` placeholder AND the same `oii-client/` segment used
- * by the Export path in lib/proconnect/data.ts. We reuse Export's host
- * (protaxdata.api.intuit.com) rather than the Import host, on the theory
- * that "create a return" is a Data Service write, not an Import-pipeline
- * write — but this is inferred, not confirmed by a live 2xx response.
+ * ⚠️ NOT part of the authoritative spec. "ProConnect Open API — Series Map
+ * Export & Import (Phase 1) v3" — the doc confirmed current/latest — only
+ * documents two endpoints: Export and Import (see lib/proconnect/data.ts).
+ * It does not define a Create Tax Return endpoint at all. The path and
+ * payload below come from a separate, broader "external view" doc covering
+ * Client/Engagement/Data services, which is NOT confirmed current.
+ *
+ * The one thing the Phase 1 v3 doc does confirm is the Data Service host —
+ * §3: "Production (Data Service / Export API): https://protaxdata.api.intuit.com"
+ * — which matches the `{DATA_SERVICE}` placeholder and `oii-client/` segment
+ * the other doc uses for Create Tax Return. That's why this reuses Export's
+ * host rather than Import's separate host. The path/payload shape itself is
+ * still unverified by a live 2xx response.
  *
  * The doc's own Export path was wrong for months (missing `oii-client/`,
  * silently returning 403 that looked like a missing scope — see data.ts
- * header comment). Treat any 403/404 from this endpoint as "wrong host or
- * path," not "not provisioned," and check with Intuit before assuming the
- * feature is unavailable. Override via PROCONNECT_CREATE_RETURN_BASE_URL
- * if Intuit confirms a different host.
+ * header comment). Treat any 403/404 from this endpoint as "wrong host,
+ * path, or endpoint doesn't exist yet" — not "not provisioned" — and
+ * confirm with Intuit before relying on this in production. Override via
+ * PROCONNECT_CREATE_RETURN_BASE_URL if Intuit confirms a different host.
  */
 const CREATE_RETURN_BASE_URL =
   process.env.PROCONNECT_CREATE_RETURN_BASE_URL || "https://protaxdata.api.intuit.com"
 
-// Return type codes → form type mapping
+/**
+ * Return type codes → form type mapping.
+ *
+ * ⚠️ Per the authoritative Phase 1 v3 doc (§0, "Status"): "Phase 1 —
+ * Individual 1040 (ind) module only. Additional modules (cor, sco, par,
+ * fid, exm, gft) will follow." Only IND is confirmed live today — the rest
+ * are documented as future work, not currently available. This map is kept
+ * for reference/forward-compat, but callers should treat every non-IND
+ * type as unsupported until Intuit confirms otherwise (see
+ * SUPPORTED_RETURN_TYPES below, which create-tax-return/route.ts enforces).
+ */
 export const RETURN_TYPE_MAP: Record<string, string> = {
   IND: "1040",
   COR: "1120",
@@ -48,6 +64,10 @@ export const RETURN_TYPE_MAP: Record<string, string> = {
   EXM: "990",
   GFT: "709",
 }
+
+/** Module codes actually confirmed live in Phase 1. Keep this in sync with
+ * the Phase 1 v3 doc's "Status" line as new modules are announced. */
+export const SUPPORTED_RETURN_TYPES = ["IND"] as const
 
 interface ApiResponse<T> {
   ok: boolean
@@ -362,7 +382,12 @@ export type CreateTaxReturnPayload = {
  * Create a new tax return (engagement) for an existing ProConnect client.
  * POST /v2/clients/oii-client/{clientOiiId}/returns
  *
- * IMPORTANT — there is no corresponding delete endpoint in the doc. A
+ * ⚠️ NOT in the authoritative Phase 1 v3 spec — see the CREATE_RETURN_BASE_URL
+ * comment above. This is our best inference from a secondary doc, unverified
+ * by a live call. Do not treat a failure here as conclusive; it may mean the
+ * endpoint doesn't exist yet rather than that the request was wrong.
+ *
+ * Also — there is no corresponding delete endpoint documented anywhere. A
  * successful call here cannot be undone through the API; callers MUST
  * confirm with a human before invoking this (see
  * app/api/prospects/[id]/create-tax-return/route.ts) and MUST log the

@@ -13,8 +13,8 @@ explicitly rather than rounded up to "done."
 
 | Document | Covers | Status in our build |
 |---|---|---|
-| **Open API Doc** (original) | Client Service, Engagement Service, Custom Status, Create Tax Return; concrete service hostnames | Fully transcribed into our internal contract reference |
-| **Phase 1 Doc** (Export/Import) | Export API, Import API, series/prefix/code/suffix model, three-layer validation, error codes, rate limits, partial-success semantics | Fully transcribed; §A.6/A.7/B.6/B.8 cited directly in our code comments |
+| **Open API Doc** (original) | Client Service, Engagement Service, Custom Status, Create Tax Return; concrete service hostnames | Fully transcribed into our internal contract reference. **Not reconfirmed as current** — see below. |
+| **Phase 1 Doc v3** (Export/Import) — **authoritative / confirmed current** | Export API, Import API, series/prefix/code/suffix model, three-layer validation, error codes, rate limits, partial-success semantics. Explicitly scopes itself to **IND (1040) only** — "Additional modules (cor, sco, par, fid, exm, gft) will follow." | Fully transcribed; §A.6/A.7/B.6/B.8 cited directly in our code comments. This doc does **not** define Create Tax Return, Create Client, or Update Client at all — those only appear in the original (unconfirmed) doc. |
 | **Intuit platform OAuth docs** (shared with QuickBooks) | Authorization-code flow, token lifetimes, rotation, revocation, the 5-year refresh cap, Reconnect URL | Implemented |
 | **Intuit webhooks pattern** (shared with QuickBooks) | Payload envelope, `intuit-signature` HMAC verification, retry cadence | Implemented |
 
@@ -55,8 +55,8 @@ explicitly rather than rounded up to "done."
 
 | Operation | Documented | Built | Notes |
 |---|---|---|---|
-| `POST /v2/clients/oii-client/{clientOiiId}/returns` (create return) | ✅ | ❌ **Not built** | Blocked behind Export — we won't create returns we can't then read back. |
-| **Proforma** (roll prior year forward via `source`) | ✅ | ❌ **Not built** | Depends on create-return. |
+| `POST /v2/clients/oii-client/{clientOiiId}/returns` (create return) | ⚠️ **Not in the authoritative Phase 1 v3 doc** — only in the unconfirmed original doc | ⚠️ **Built, unverified** | `createTaxReturn()` + `/api/prospects/[id]/create-tax-return` route exist, leadership-gated and audit-logged, but no live call has succeeded (or even been attempted) — the host/path are inferred, not confirmed. Also now hard-gated to `type: "IND"` only, since Phase 1 v3 explicitly says other modules "will follow." The original blocking rationale — "we won't create returns we can't then read back" — still applies in spirit: Export is still 🔴 403 (see below), so even a successful create would be unreadable through our own Export path until that's fixed. |
+| **Proforma** (roll prior year forward via `source`) | ⚠️ Same doc caveat as above | ⚠️ **Payload field wired, unverified** | The route accepts an optional `source` (prior-year engagement id) and passes it through, but this is unverified by any live call, same as create-return itself. |
 | `GET /v2/clients/{clientId}/returns/{returnId}/data` (**Export**) | ✅ | 🔴 **Built — 403 on every call** | Never succeeded. 0 snapshots. Latest failure 2026-07-26 09:18 UTC. |
 | `POST …/import/series/{seriesId}` (**Import**) | ✅ | ✅ **Working as of 2026-08-07** | First successful call ever on 2026-08-07. Had been 403 on every attempt because the Hub posted to the Export host; Import has its own host, `protaxonlineimport.api.intuit.com` (doc v3 §3), and unlike Export takes **no** `oii-client/` segment. Dry run + commit both verified on the sentinel return. |
 | Return-type allowlist (IND/COR/SCO/PAR/FID/EXM/GFT; reject 706/5500) | ✅ | ✅ **Enforced** | All 7 types present in synced data |
