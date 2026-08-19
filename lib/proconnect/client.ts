@@ -17,6 +17,27 @@ import { acquireRateLimitSlot, newIntuitTid } from "./rate-limit"
 const CLIENT_SERVICE_URL = "https://client.accountant.intuit.com"
 const ENGAGEMENT_SERVICE_URL = "https://engagement.accountant.intuit.com"
 
+/**
+ * Data Service host for Create Tax Return.
+ *
+ * The Phase-2 doc writes this endpoint as
+ * `https://{DATA_SERVICE}/v2/clients/oii-client/{clientOiiId}/returns` —
+ * same `{DATA_SERVICE}` placeholder AND the same `oii-client/` segment used
+ * by the Export path in lib/proconnect/data.ts. We reuse Export's host
+ * (protaxdata.api.intuit.com) rather than the Import host, on the theory
+ * that "create a return" is a Data Service write, not an Import-pipeline
+ * write — but this is inferred, not confirmed by a live 2xx response.
+ *
+ * The doc's own Export path was wrong for months (missing `oii-client/`,
+ * silently returning 403 that looked like a missing scope — see data.ts
+ * header comment). Treat any 403/404 from this endpoint as "wrong host or
+ * path," not "not provisioned," and check with Intuit before assuming the
+ * feature is unavailable. Override via PROCONNECT_CREATE_RETURN_BASE_URL
+ * if Intuit confirms a different host.
+ */
+const CREATE_RETURN_BASE_URL =
+  process.env.PROCONNECT_CREATE_RETURN_BASE_URL || "https://protaxdata.api.intuit.com"
+
 // Return type codes → form type mapping
 export const RETURN_TYPE_MAP: Record<string, string> = {
   IND: "1040",
@@ -25,6 +46,7 @@ export const RETURN_TYPE_MAP: Record<string, string> = {
   SCO: "1120S",
   FID: "1041",
   EXM: "990",
+  GFT: "709",
 }
 
 interface ApiResponse<T> {
@@ -315,6 +337,53 @@ export async function fetchCustomStatuses(): Promise<ApiResponse<unknown[]>> {
     data: Array.isArray(statuses) ? statuses : [statuses],
     error: null,
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Data Service — Create Tax Return
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type CreateTaxReturnPayload = {
+  /** Display name for the return, e.g. "Doe, John" */
+  name: string
+  /** One of RETURN_TYPE_MAP's keys: IND/COR/PAR/SCO/FID/EXM/GFT */
+  type: keyof typeof RETURN_TYPE_MAP | string
+  /** Tax year (period), e.g. 2025 */
+  year: number
+  /**
+   * Optional. Per the doc: "For Proforma: Send the 'source' attribute as
+   * the engagement id of the prior year's engagement." Omit to create a
+   * blank return with no prior-year rollover.
+   */
+  source?: string
+}
+
+/**
+ * Create a new tax return (engagement) for an existing ProConnect client.
+ * POST /v2/clients/oii-client/{clientOiiId}/returns
+ *
+ * IMPORTANT — there is no corresponding delete endpoint in the doc. A
+ * successful call here cannot be undone through the API; callers MUST
+ * confirm with a human before invoking this (see
+ * app/api/prospects/[id]/create-tax-return/route.ts) and MUST log the
+ * full request/response for audit (see proconnect_tax_return_creation_jobs).
+ *
+ * This also means a client must already exist in ProConnect — this
+ * function does not create one. Resolve `clientOiiId` from
+ * `proconnect_clients` first and never guess at it.
+ */
+export async function createTaxReturn(
+  clientOiiId: string,
+  payload: CreateTaxReturnPayload
+): Promise<ApiResponse<unknown>> {
+  return apiRequest<unknown>(
+    CREATE_RETURN_BASE_URL,
+    `/v2/clients/oii-client/${encodeURIComponent(clientOiiId)}/returns`,
+    {
+      method: "POST",
+      body: payload,
+    }
+  )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

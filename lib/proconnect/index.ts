@@ -22,10 +22,12 @@ export {
   fetchEngagements,
   fetchAllEngagementsForYear,
   fetchCustomStatuses,
+  createTaxReturn,
   extractClientEmail,
   extractClientId,
   extractClientName,
   RETURN_TYPE_MAP,
+  type CreateTaxReturnPayload,
 } from "./client"
 
 // Sync
