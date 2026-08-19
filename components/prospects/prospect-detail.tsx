@@ -10,12 +10,21 @@
  *   2. Triage controls — status, owner, internal notes.
  *   3. Karbon work-item action — same fiscal-year preview +
  *      "Create Karbon Work Item" button as the intake flow.
- *   4. Captured detail — service focus, services, business,
+ *   4. ProConnect tax return action — shows the read-only match preview
+ *      (GET /proconnect-match) and, only once a single ProConnect client
+ *      is matched, lets a lead re-confirm module/year/name and POST
+ *      /create-tax-return. Module is hard-limited to IND (1040) in the
+ *      UI to match the server-side SUPPORTED_RETURN_TYPES gate — other
+ *      modules are documented as "will follow" and are shown disabled
+ *      rather than hidden, so it's clear they exist but aren't live yet.
+ *   5. Captured detail — service focus, services, business,
  *      attachments, meeting context.
  *
  * Data flows through SWR on /api/prospects/[id]; mutations PATCH the
  * same route. The Karbon work-item button POSTs
- * /api/prospects/[id]/karbon-work-item.
+ * /api/prospects/[id]/karbon-work-item. The ProConnect card reads
+ * /api/prospects/[id]/proconnect-match and POSTs
+ * /api/prospects/[id]/create-tax-return.
  */
 
 import { useEffect, useState } from "react"
@@ -26,6 +35,7 @@ import {
   Building2,
   CheckCircle2,
   ExternalLink,
+  FileSpreadsheet,
   FileText,
   Link2,
   Loader2,
@@ -109,8 +119,47 @@ interface Prospect {
   karbon_work_item_title: string | null
   karbon_work_item_url: string | null
   karbon_work_item_created_at: string | null
+  proconnect_push_status: string | null
+  proconnect_pushed_at: string | null
+  proconnect_push_error: string | null
   created_at: string
 }
+
+type ProConnectMatchState = "no_hub_link" | "no_match" | "ambiguous" | "matched"
+
+interface ProConnectClientCandidate {
+  proconnect_client_id: string
+  client_type: string | null
+  display_name: string | null
+  first_name: string | null
+  last_name: string | null
+  business_name: string | null
+  email: string | null
+}
+
+interface ProConnectMatchResponse {
+  ok: boolean
+  matchState: ProConnectMatchState
+  message?: string
+  client: ProConnectClientCandidate | null
+  candidates?: ProConnectClientCandidate[]
+  suggestedName?: string
+}
+
+const RETURN_TYPE_LABELS: Record<string, string> = {
+  IND: "Individual (1040)",
+  COR: "Corporate (1120)",
+  PAR: "Partnership (1065)",
+  SCO: "S-Corp (1120S)",
+  FID: "Fiduciary (1041)",
+  EXM: "Exempt Org (990)",
+  GFT: "Gift (709)",
+}
+
+// Only IND is confirmed live in ProConnect's Phase 1 Open API — see
+// lib/proconnect/client.ts SUPPORTED_RETURN_TYPES. Keep this list in sync;
+// the server enforces the same restriction and will reject anything else.
+const SUPPORTED_RETURN_TYPES_UI = ["IND"] as const
 
 interface TeamMember {
   id: string
@@ -155,6 +204,18 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
   const [creatingWorkItem, setCreatingWorkItem] = useState(false)
   const [workItemError, setWorkItemError] = useState<string | null>(null)
 
+  const [returnTypeDraft, setReturnTypeDraft] = useState<string>("IND")
+  const [returnYearDraft, setReturnYearDraft] = useState(
+    () => String(new Date().getUTCFullYear()),
+  )
+  const [returnNameDraft, setReturnNameDraft] = useState("")
+  const [creatingTaxReturn, setCreatingTaxReturn] = useState(false)
+  const [taxReturnError, setTaxReturnError] = useState<string | null>(null)
+  const [taxReturnResult, setTaxReturnResult] = useState<{
+    jobId: string
+    createdEngagementId: string | null
+  } | null>(null)
+
   useEffect(() => {
     if (prospect) {
       setNotesDraft(prospect.triage_notes ?? "")
@@ -162,8 +223,27 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
       setWorkItemError(null)
       setCreatingWorkItem(false)
       setFiscalYearDraft(String(new Date().getUTCFullYear()))
+      setReturnYearDraft(String(new Date().getUTCFullYear()))
+      setTaxReturnError(null)
+      setTaxReturnResult(null)
     }
   }, [prospect?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Read-only preview of whether this prospect already has a matching
+  // ProConnect client. Only fetched once we know the prospect id, and
+  // only meaningful once triage has linked a Hub contact/org — but we
+  // still fetch regardless so the card can explain *why* it's blocked.
+  const { data: matchData, isLoading: matchLoading } = useSWR<ProConnectMatchResponse>(
+    prospect ? `/api/prospects/${prospectId}/proconnect-match` : null,
+    fetcher,
+    { revalidateOnFocus: false },
+  )
+
+  useEffect(() => {
+    if (matchData?.suggestedName) {
+      setReturnNameDraft(matchData.suggestedName)
+    }
+  }, [matchData?.suggestedName])
 
   async function patch(body: Record<string, unknown>, field: typeof savingField) {
     setSavingField(field)
@@ -201,6 +281,35 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
       setWorkItemError(err?.message ?? "Failed to create Karbon work item")
     } finally {
       setCreatingWorkItem(false)
+    }
+  }
+
+  async function createTaxReturnHandler() {
+    if (!matchData?.client) return
+    setTaxReturnError(null)
+    setCreatingTaxReturn(true)
+    try {
+      const res = await fetch(`/api/prospects/${prospectId}/create-tax-return`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          proconnectClientId: matchData.client.proconnect_client_id,
+          name: returnNameDraft.trim(),
+          type: returnTypeDraft,
+          year: Number(returnYearDraft),
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(json?.error || `Create Tax Return failed (${res.status})`)
+      }
+      setTaxReturnResult({ jobId: json.jobId, createdEngagementId: json.createdEngagementId ?? null })
+      await mutate()
+    } catch (err: any) {
+      console.error("[v0] create tax return error:", err)
+      setTaxReturnError(err?.message ?? "Failed to create tax return")
+    } finally {
+      setCreatingTaxReturn(false)
     }
   }
 
@@ -496,6 +605,159 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
                   <>
                     <Briefcase className="mr-2 h-3.5 w-3.5" />
                     Create Karbon Work Item
+                  </>
+                )}
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ProConnect tax return action */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">ProConnect</CardTitle>
+          </div>
+          <CardDescription>
+            Create a tax return in Intuit ProConnect for this prospect&apos;s matched client.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {taxReturnResult ? (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                <div className="flex-1 space-y-1">
+                  <div className="font-medium text-emerald-900">Tax return created in ProConnect</div>
+                  {taxReturnResult.createdEngagementId && (
+                    <div className="break-all font-mono text-xs text-emerald-900/80">
+                      Engagement ID: {taxReturnResult.createdEngagementId}
+                    </div>
+                  )}
+                  <div className="text-xs text-emerald-900/70">
+                    Job {taxReturnResult.jobId} — there is no delete endpoint for a created
+                    return; double-check in ProConnect before creating another.
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : matchLoading ? (
+            <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
+              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> Checking ProConnect match…
+            </div>
+          ) : !matchData || matchData.matchState !== "matched" ? (
+            <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                {matchData?.message ??
+                  "Unable to determine a ProConnect client match for this prospect."}
+              </span>
+            </div>
+          ) : (
+            <>
+              <div className="rounded-md border bg-muted/40 p-2.5 text-xs">
+                <div className="font-medium uppercase tracking-wide text-muted-foreground">
+                  Matched ProConnect client
+                </div>
+                <div className="mt-1 text-sm text-foreground">
+                  {matchData.client!.display_name ||
+                    matchData.client!.business_name ||
+                    [matchData.client!.first_name, matchData.client!.last_name]
+                      .filter(Boolean)
+                      .join(" ")}
+                </div>
+                <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                  {matchData.client!.proconnect_client_id}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Module</Label>
+                  <Select value={returnTypeDraft} onValueChange={setReturnTypeDraft}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(RETURN_TYPE_LABELS).map(([code, label]) => (
+                        <SelectItem
+                          key={code}
+                          value={code}
+                          disabled={!(SUPPORTED_RETURN_TYPES_UI as readonly string[]).includes(code)}
+                        >
+                          {label}
+                          {!(SUPPORTED_RETURN_TYPES_UI as readonly string[]).includes(code) &&
+                            " (not yet available)"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="return-year" className="text-xs text-muted-foreground">
+                    Tax year
+                  </Label>
+                  <Input
+                    id="return-year"
+                    type="text"
+                    inputMode="numeric"
+                    value={returnYearDraft}
+                    onChange={(e) => setReturnYearDraft(e.target.value)}
+                    placeholder="2025"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="return-name" className="text-xs text-muted-foreground">
+                  Return display name
+                </Label>
+                <Input
+                  id="return-name"
+                  type="text"
+                  value={returnNameDraft}
+                  onChange={(e) => setReturnNameDraft(e.target.value)}
+                  placeholder="Doe, John"
+                />
+              </div>
+
+              <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  This creates a real return in ProConnect with no way to delete it via the API.
+                  Confirm the client, module, and year above before continuing.
+                </span>
+              </div>
+
+              {taxReturnError && (
+                <div className="rounded-md border border-red-200 bg-red-50 p-2.5 text-xs text-red-800">
+                  {taxReturnError}
+                </div>
+              )}
+
+              <Button
+                type="button"
+                size="sm"
+                className="w-full"
+                disabled={
+                  creatingTaxReturn ||
+                  !returnNameDraft.trim() ||
+                  !returnYearDraft.trim() ||
+                  !(SUPPORTED_RETURN_TYPES_UI as readonly string[]).includes(returnTypeDraft)
+                }
+                onClick={createTaxReturnHandler}
+              >
+                {creatingTaxReturn ? (
+                  <>
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    Creating in ProConnect…
+                  </>
+                ) : (
+                  <>
+                    <FileSpreadsheet className="mr-2 h-3.5 w-3.5" />
+                    Create Tax Return
                   </>
                 )}
               </Button>
