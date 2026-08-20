@@ -59,7 +59,12 @@ export async function createClient() {
       // Why this fix works:
       //   The Next.js `middleware.ts` is the SINGLE source of
       //   refresh truth on the server. It runs once per top-level
-      //   request, calls `getSession()` exactly once, and on
+      //   NAVIGATION -- note that the matcher also matches `/api/*`,
+      //   so it fires on every sub-resource fetch too; those
+      //   invocations deliberately do NOT refresh. See the
+      //   `allowRefresh` gate in lib/supabase/middleware.ts, added
+      //   after this same storm reappeared inside middleware itself
+      //   in August 2026. It calls `getSession()` exactly once, and on
       //   success writes the rotated cookies to the response. By
       //   the time any API route handler / server component runs,
       //   the request already carries the freshest cookies. All
