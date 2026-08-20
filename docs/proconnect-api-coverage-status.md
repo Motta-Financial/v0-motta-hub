@@ -13,8 +13,8 @@ explicitly rather than rounded up to "done."
 
 | Document | Covers | Status in our build |
 |---|---|---|
-| **Open API Doc** (original) | Client Service, Engagement Service, Custom Status, Create Tax Return; concrete service hostnames | Fully transcribed into our internal contract reference |
-| **Phase 1 Doc** (Export/Import) | Export API, Import API, series/prefix/code/suffix model, three-layer validation, error codes, rate limits, partial-success semantics | Fully transcribed; §A.6/A.7/B.6/B.8 cited directly in our code comments |
+| **Open API Doc** (original) | Client Service, Engagement Service, Custom Status, Create Tax Return; concrete service hostnames | Fully transcribed into our internal contract reference. **Not reconfirmed as current** — see below. |
+| **Phase 1 Doc v3** (Export/Import) — **authoritative / confirmed current** | Export API, Import API, series/prefix/code/suffix model, three-layer validation, error codes, rate limits, partial-success semantics. Explicitly scopes itself to **IND (1040) only** — "Additional modules (cor, sco, par, fid, exm, gft) will follow." | Fully transcribed; §A.6/A.7/B.6/B.8 cited directly in our code comments. This doc does **not** define Create Tax Return, Create Client, or Update Client at all — those only appear in the original (unconfirmed) doc. |
 | **Intuit platform OAuth docs** (shared with QuickBooks) | Authorization-code flow, token lifetimes, rotation, revocation, the 5-year refresh cap, Reconnect URL | Implemented |
 | **Intuit webhooks pattern** (shared with QuickBooks) | Payload envelope, `intuit-signature` HMAC verification, retry cadence | Implemented |
 
@@ -55,9 +55,9 @@ explicitly rather than rounded up to "done."
 
 | Operation | Documented | Built | Notes |
 |---|---|---|---|
-| `POST /v2/clients/oii-client/{clientOiiId}/returns` (create return) | ✅ | ❌ **Not built** | Blocked behind Export — we won't create returns we can't then read back. |
-| **Proforma** (roll prior year forward via `source`) | ✅ | ❌ **Not built** | Depends on create-return. |
-| `GET /v2/clients/{clientId}/returns/{returnId}/data` (**Export**) | ✅ | 🔴 **Built — 403 on every call** | Never succeeded. 0 snapshots. Latest failure 2026-07-26 09:18 UTC. |
+| `POST /v2/clients/oii-client/{clientOiiId}/returns` (create return) | ⚠️ **Not in the authoritative Phase 1 v3 doc** — only in the unconfirmed original doc | ⚠️ **Built, unverified** | `createTaxReturn()` + `/api/prospects/[id]/create-tax-return` route exist, leadership-gated and audit-logged, but no live call has succeeded (or even been attempted) — the host/path are inferred, not confirmed. Also now hard-gated to `type: "IND"` only, since Phase 1 v3 explicitly says other modules "will follow." The original blocking rationale — "we won't create returns we can't then read back" — no longer applies: Export is confirmed working (see below), so a successful create-return would now be readable back. The remaining blocker is purely that the endpoint itself is unverified/undocumented in the authoritative spec. |
+| **Proforma** (roll prior year forward via `source`) | ⚠️ Same doc caveat as above | ⚠️ **Payload field wired, unverified** | The route accepts an optional `source` (prior-year engagement id) and passes it through, but this is unverified by any live call, same as create-return itself. |
+| `GET /v2/clients/{clientId}/returns/{returnId}/data` (**Export**) | ✅ | ✅ **Working as of 2026-07-27** | Stale note corrected 2026-08-19: 69 snapshots exist, first success 2026-07-27 15:51 UTC, most recent 2026-08-18 19:54 UTC — one day after the previously-recorded "latest failure." The earlier 403-only status was true historically but had not been updated once the fix landed. |
 | `POST …/import/series/{seriesId}` (**Import**) | ✅ | ✅ **Working as of 2026-08-07** | First successful call ever on 2026-08-07. Had been 403 on every attempt because the Hub posted to the Export host; Import has its own host, `protaxonlineimport.api.intuit.com` (doc v3 §3), and unlike Export takes **no** `oii-client/` segment. Dry run + commit both verified on the sentinel return. |
 | Return-type allowlist (IND/COR/SCO/PAR/FID/EXM/GFT; reject 706/5500) | ✅ | ✅ **Enforced** | All 7 types present in synced data |
 | Both client identifiers (`oiiClientId` **and** numeric `id_client`) | ✅ | ✅ **Held per client** | We use `id_client` on Export/Import paths, correctly |
@@ -299,7 +299,7 @@ The ten non-negotiables for this integration, verified against code:
 | 1 | dryRun-first before any commit | ✅ **Enforced in the route** — a commit is refused unless a matching `dry_run = true` row exists for the same target |
 | 2 | De-dup before retry (Import is not idempotent) | ✅ Keyed on `intuit_tid` |
 | 3 | PII discipline — never log field values | ✅ **Verified compliant.** `entries_payload` stores addresses plus `has_val`/`has_desc`/`has_src` booleans and `redacted: true` — never `val`. `proconnect_import_entry_results` has no value column. |
-| 4 | **Tokens encrypted at rest (AES-256-GCM)** | 🔴 **VIOLATED** — see below |
+| 4 | **Tokens encrypted at rest (AES-256-GCM)** | 🟡 **Code built, key not set** — see below |
 | 5 | Respect `RETURN_LOCKED` / 423 | ✅ Classified and surfaced; `lockInfo` pre-checked |
 | 6 | 5 TPS limit + backoff + honor `Retry-After` | ⚠️ **Partial** — see drift below |
 | 7 | Primary-Admin-only connect; Import via Primary Admin token | ✅ Import route additionally gated to leadership roles |
@@ -307,25 +307,28 @@ The ten non-negotiables for this integration, verified against code:
 | 9 | Reject 706 / 5500 | ✅ Allowlist enforced |
 | 10 | Treat API as partner-confidential | ✅ No hostnames/scope in public artifacts |
 
-### 🔴 Finding: OAuth tokens are stored in plaintext
+### 🟡 Corrected finding (2026-08-19): encryption is built — the key just isn't set
 
-`proconnect_oauth_tokens.access_token` and `.refresh_token` hold raw
-values — the access token is a readable JWT (`eyJhbGciOiJk…`), the refresh
-token is Intuit's raw `RT1-150-…`. `PROCONNECT_TOKEN_KEY` is referenced in
-our own implementation plan but **appears nowhere in the codebase**.
+This section previously said `PROCONNECT_TOKEN_KEY` "appears nowhere in the
+codebase." That is no longer accurate. `lib/proconnect/token-cipher.ts`
+implements AES-256-GCM `encryptToken()`/`decryptToken()` and it is fully
+wired into `lib/proconnect/oauth.ts` (every token read/write funnels
+through it). The design is opportunistic and self-healing by construction:
+with no key set it stores plaintext (today's state) and logs a once-per-process
+warning; the moment `PROCONNECT_TOKEN_KEY` is added to the project's env vars,
+the very next token refresh (at least hourly) rewrites the row as ciphertext —
+no migration script, no downtime, no backfill needed.
 
-Why this matters more than a typical secret-at-rest issue: this token
-grants **write access to every tax return in the firm**, and the refresh
-token is long-lived and rolling. RLS restricts the table to the service
-role, so this is not remotely exploitable today — but it is one
-misconfigured policy or one service-role leak away from full return-write
-access, and it's a control we documented for ourselves and then didn't
-build.
+**What's actually left:** generate a key (`openssl rand -hex 32`) and add it
+to the project as `PROCONNECT_TOKEN_KEY`. Confirmed not currently set — it
+does not appear in the project's environment variable inventory. This is a
+config action, not a code change.
 
-**Recommended fix:** add AES-256-GCM encrypt/decrypt in
-`lib/proconnect/oauth.ts` behind `PROCONNECT_TOKEN_KEY`, with a migration
-that re-encrypts the existing row in place. Contained change — token
-read/write already funnels through `getAccessToken()` / the store helper.
+Why this still matters until the key is set: this token grants **write
+access to every tax return in the firm**, and the refresh token is
+long-lived and rolling. RLS restricts the table to the service role, so
+this is not remotely exploitable today — but it is one misconfigured
+policy or one service-role leak away from full return-write access.
 
 ### ⚠️ Drift: two independent HTTP paths, neither fully equipped
 

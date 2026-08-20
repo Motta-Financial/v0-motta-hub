@@ -17,7 +17,44 @@ import { acquireRateLimitSlot, newIntuitTid } from "./rate-limit"
 const CLIENT_SERVICE_URL = "https://client.accountant.intuit.com"
 const ENGAGEMENT_SERVICE_URL = "https://engagement.accountant.intuit.com"
 
-// Return type codes → form type mapping
+/**
+ * Data Service host for Create Tax Return.
+ *
+ * ⚠️ NOT part of the authoritative spec. "ProConnect Open API — Series Map
+ * Export & Import (Phase 1) v3" — the doc confirmed current/latest — only
+ * documents two endpoints: Export and Import (see lib/proconnect/data.ts).
+ * It does not define a Create Tax Return endpoint at all. The path and
+ * payload below come from a separate, broader "external view" doc covering
+ * Client/Engagement/Data services, which is NOT confirmed current.
+ *
+ * The one thing the Phase 1 v3 doc does confirm is the Data Service host —
+ * §3: "Production (Data Service / Export API): https://protaxdata.api.intuit.com"
+ * — which matches the `{DATA_SERVICE}` placeholder and `oii-client/` segment
+ * the other doc uses for Create Tax Return. That's why this reuses Export's
+ * host rather than Import's separate host. The path/payload shape itself is
+ * still unverified by a live 2xx response.
+ *
+ * The doc's own Export path was wrong for months (missing `oii-client/`,
+ * silently returning 403 that looked like a missing scope — see data.ts
+ * header comment). Treat any 403/404 from this endpoint as "wrong host,
+ * path, or endpoint doesn't exist yet" — not "not provisioned" — and
+ * confirm with Intuit before relying on this in production. Override via
+ * PROCONNECT_CREATE_RETURN_BASE_URL if Intuit confirms a different host.
+ */
+const CREATE_RETURN_BASE_URL =
+  process.env.PROCONNECT_CREATE_RETURN_BASE_URL || "https://protaxdata.api.intuit.com"
+
+/**
+ * Return type codes → form type mapping.
+ *
+ * ⚠️ Per the authoritative Phase 1 v3 doc (§0, "Status"): "Phase 1 —
+ * Individual 1040 (ind) module only. Additional modules (cor, sco, par,
+ * fid, exm, gft) will follow." Only IND is confirmed live today — the rest
+ * are documented as future work, not currently available. This map is kept
+ * for reference/forward-compat, but callers should treat every non-IND
+ * type as unsupported until Intuit confirms otherwise (see
+ * SUPPORTED_RETURN_TYPES below, which create-tax-return/route.ts enforces).
+ */
 export const RETURN_TYPE_MAP: Record<string, string> = {
   IND: "1040",
   COR: "1120",
@@ -25,7 +62,12 @@ export const RETURN_TYPE_MAP: Record<string, string> = {
   SCO: "1120S",
   FID: "1041",
   EXM: "990",
+  GFT: "709",
 }
+
+/** Module codes actually confirmed live in Phase 1. Keep this in sync with
+ * the Phase 1 v3 doc's "Status" line as new modules are announced. */
+export const SUPPORTED_RETURN_TYPES = ["IND"] as const
 
 interface ApiResponse<T> {
   ok: boolean
@@ -315,6 +357,58 @@ export async function fetchCustomStatuses(): Promise<ApiResponse<unknown[]>> {
     data: Array.isArray(statuses) ? statuses : [statuses],
     error: null,
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Data Service — Create Tax Return
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type CreateTaxReturnPayload = {
+  /** Display name for the return, e.g. "Doe, John" */
+  name: string
+  /** One of RETURN_TYPE_MAP's keys: IND/COR/PAR/SCO/FID/EXM/GFT */
+  type: keyof typeof RETURN_TYPE_MAP | string
+  /** Tax year (period), e.g. 2025 */
+  year: number
+  /**
+   * Optional. Per the doc: "For Proforma: Send the 'source' attribute as
+   * the engagement id of the prior year's engagement." Omit to create a
+   * blank return with no prior-year rollover.
+   */
+  source?: string
+}
+
+/**
+ * Create a new tax return (engagement) for an existing ProConnect client.
+ * POST /v2/clients/oii-client/{clientOiiId}/returns
+ *
+ * ⚠️ NOT in the authoritative Phase 1 v3 spec — see the CREATE_RETURN_BASE_URL
+ * comment above. This is our best inference from a secondary doc, unverified
+ * by a live call. Do not treat a failure here as conclusive; it may mean the
+ * endpoint doesn't exist yet rather than that the request was wrong.
+ *
+ * Also — there is no corresponding delete endpoint documented anywhere. A
+ * successful call here cannot be undone through the API; callers MUST
+ * confirm with a human before invoking this (see
+ * app/api/prospects/[id]/create-tax-return/route.ts) and MUST log the
+ * full request/response for audit (see proconnect_tax_return_creation_jobs).
+ *
+ * This also means a client must already exist in ProConnect — this
+ * function does not create one. Resolve `clientOiiId` from
+ * `proconnect_clients` first and never guess at it.
+ */
+export async function createTaxReturn(
+  clientOiiId: string,
+  payload: CreateTaxReturnPayload
+): Promise<ApiResponse<unknown>> {
+  return apiRequest<unknown>(
+    CREATE_RETURN_BASE_URL,
+    `/v2/clients/oii-client/${encodeURIComponent(clientOiiId)}/returns`,
+    {
+      method: "POST",
+      body: payload,
+    }
+  )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

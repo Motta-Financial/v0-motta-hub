@@ -76,7 +76,7 @@ sentinel-diff field labeling, or that cell reads as a real mapping.
 |---|---|---|---|
 | 1 | 20-instance disposition cap | ✅ Fixed | 25 instances (`s52` p1–p25) dry-ran clean; commit at p25 returned `importedCount: 1` |
 | 2 | M-screens not importable | ✅ Fixed | Echoing a real populated M cell (`s200M/p0/c11/x1000`) back as a dry run returned `totalImported 1 / totalErrors 0`. The remaining M problem is a **catalog-delivery gap**, not an API bug — see §1 |
-| 3 | No delete/clear | ❌ Still open | Five clear shapes tried, all left the value untouched |
+| 3 | No delete/clear | 🟡 Acknowledged by Intuit, in progress (2026-08-19) | Five clear shapes tried, all left the value untouched. Intuit confirmed they're actively working on delete/clear support but have not committed to a scope or date — still treat as unavailable until they ship something and we retest |
 | 4 | `isDetailImport` not set on API writes | ❌ Still open | API-written cell came back with no `importSource` key. Other channels *do* populate it on this same return (`isDocImport` 49, `isCalculated` 29, default 22), so the flag is absent specifically for API writes |
 
 **Defect 3 fails silently as success** — the single most important operational
@@ -98,9 +98,14 @@ write applied.** Only a value-level diff of a fresh Export is.
 
 # 1. Back to Intuit — next call
 
-1. **Defect 3 (no delete/clear)** — still open, and worse than "unsupported": it
-   reports success and bumps the version. Ask for either a real clear or an
-   honest error.
+1. **Defect 3 (no delete/clear)** — Intuit has acknowledged this (2026-08-19)
+   and said they're actively working on it, but haven't committed to a scope
+   or timeline ("still figuring out how far we are going to take it"). Until
+   they ship something, it's still worse than "unsupported": it reports
+   success and bumps the version. Follow up periodically for scope/ETA, and
+   when they do ship something, retest with `376-retest-intuit-import-defects.ts`
+   before trusting it — don't assume it covers every field type or write path
+   just because they say it's done.
 2. **Defect 4 (`isDetailImport`)** — still open. Bring the baseline: other
    channels populate `importSource` on the same return, so this is specific to
    API writes.

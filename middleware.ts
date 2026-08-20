@@ -187,6 +187,14 @@ export async function middleware(request: NextRequest) {
   // ProConnect sync endpoint - uses CRON_SECRET Bearer auth in the handler
   const isProConnectSync = pathname === "/api/proconnect/sync"
 
+  // ProConnect force-refresh endpoint - uses CRON_SECRET Bearer auth OR a
+  // leadership session, checked in the handler (see route.ts docblock: this
+  // exists so a cron job / local script can refresh the token without
+  // running a full sync). Without this exemption, middleware's session gate
+  // 401s the request before the handler's own CRON_SECRET check ever runs,
+  // silently breaking any non-browser caller.
+  const isProConnectOAuthRefresh = pathname === "/api/proconnect/oauth/refresh"
+
   // Zoom recordings backfill - uses CRON_SECRET Bearer auth in the handler
   // (or a logged-in admin). Middleware must let the request through so the
   // route's own auth logic can run.
@@ -285,6 +293,7 @@ export async function middleware(request: NextRequest) {
     isWebhook ||
     isProConnectWebhook ||
     isProConnectSync ||
+    isProConnectOAuthRefresh ||
     isZoomRecordingsBackfill ||
     isZoomAccountSync ||
     isHubMeetingsSync ||

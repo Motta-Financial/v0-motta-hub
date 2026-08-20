@@ -363,10 +363,14 @@ carries text, never a number), but neither has been confirmed against a labeled 
 
 ## Labeling procedure — how to fill the dictionary
 
-Intuit will not release the IVCS/FRF field catalog yet. Steve (Intuit) explicitly
-sanctioned self-serve labeling: enter data in ProConnect, then read it back through
-Return actions → Customer Support Tools → **Batch Edit Data**. Browsing that tool is
-fine; **do not use its Edit button** — it carries a support-only warning.
+Corrected 2026-08-19 — this line was stale and contradicted §"M-screens import fine
+but are undocumented" above: Steve (Intuit) already delivered the IND 2025 catalog
+(67,810 codes, 748 federal series), loaded in prod. The only remaining catalog gap is
+that delivery has **zero M-series rows**, raised with Intuit 2026-08-11. Steve also
+explicitly sanctioned self-serve labeling for anything the catalog doesn't cover: enter
+data in ProConnect, then read it back through Return actions → Customer Support Tools →
+**Batch Edit Data**. Browsing that tool is fine; **do not use its Edit button** — it
+carries a support-only warning.
 
 ### Sentinel-diff (the reliable method)
 
