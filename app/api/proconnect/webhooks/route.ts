@@ -21,7 +21,10 @@
  *   }]
  * }
  *
- * Webhook verification uses the PROCONNECT_WEBHOOK_VERIFIER_TOKEN env var.
+ * Webhook verification uses the PROCONNECT_WEBHOOK_VERIFIER_TOKEN env var
+ * and is mandatory: if the token is absent on the serving deployment, the
+ * route rejects every request with 503 rather than processing unverified
+ * webhooks. See maybeSendVerifierMissingAlert below.
  */
 
 import { NextRequest, NextResponse } from "next/server"
@@ -376,6 +379,71 @@ async function maybeSendPhase1ExportAlert(
 }
 
 /**
+ * Email a throttled alert when incoming ProConnect webhooks are being
+ * rejected because PROCONNECT_WEBHOOK_VERIFIER_TOKEN is unset on the
+ * serving deployment. Deduped to ~once per day via the integration_alerts
+ * table — same pattern as maybeSendPhase1ExportAlert above.
+ */
+const VERIFIER_ALERT_KEY = "proconnect_webhook_verifier"
+const VERIFIER_ALERT_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000
+
+async function maybeSendVerifierMissingAlert(
+  sb: ReturnType<typeof getSupabaseAdmin>
+): Promise<void> {
+  const { data: prior } = await sb
+    .from("integration_alerts")
+    .select("last_alert_at")
+    .eq("integration", VERIFIER_ALERT_KEY)
+    .maybeSingle()
+
+  if (
+    prior?.last_alert_at &&
+    Date.now() - new Date(prior.last_alert_at).getTime() < VERIFIER_ALERT_MIN_INTERVAL_MS
+  ) {
+    return
+  }
+
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) {
+    console.error(
+      "[ProConnect Webhook] Webhooks are being rejected but RESEND_API_KEY is unset — cannot alert"
+    )
+    return
+  }
+
+  const { Resend } = await import("resend")
+  const resend = new Resend(apiKey)
+  await resend.emails.send({
+    from: process.env.RESEND_FROM_EMAIL || "noreply@motta.co",
+    to: PHASE1_ALERT_RECIPIENTS,
+    subject: "[Motta Hub] ProConnect webhooks are being rejected — verifier token missing",
+    html: `
+      <h2>ProConnect webhook verification is not configured</h2>
+      <p><code>PROCONNECT_WEBHOOK_VERIFIER_TOKEN</code> is unset on the
+      serving deployment. Every incoming ProConnect webhook is now being
+      rejected with HTTP 503, so <code>Client</code> and <code>TaxReturn</code>
+      data will go stale until it is set.</p>
+      <p>Set <code>PROCONNECT_WEBHOOK_VERIFIER_TOKEN</code> on the
+      <strong>mottahub</strong> Vercel project. In the meantime, the nightly
+      sync (<code>/api/cron/proconnect-sync</code>) is the fallback and will
+      keep data from drifting too far.</p>
+      <p>This alert repeats at most once per day while the token remains unset.</p>
+    `,
+  })
+
+  await sb.from("integration_alerts").upsert(
+    {
+      integration: VERIFIER_ALERT_KEY,
+      last_alert_at: new Date().toISOString(),
+      last_alert_reason: "PROCONNECT_WEBHOOK_VERIFIER_TOKEN unset — webhooks rejected with 503",
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "integration" }
+  )
+  console.log("[ProConnect Webhook] Verifier-missing alert sent to", PHASE1_ALERT_RECIPIENTS.join(", "))
+}
+
+/**
  * Process a TaxReturnWorkStatus event.
  *
  * The entity id maps to the return/engagement UUID (same id space as
@@ -506,7 +574,21 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
       }
     } else {
-      console.warn("[ProConnect Webhook] PROCONNECT_WEBHOOK_VERIFIER_TOKEN not set — webhook is UNVERIFIED")
+      console.error(
+        "[ProConnect Webhook] PROCONNECT_WEBHOOK_VERIFIER_TOKEN is not set — rejecting webhook. Set it on the mottahub Vercel project."
+      )
+      try {
+        await maybeSendVerifierMissingAlert(getSupabaseAdmin())
+      } catch (alertErr) {
+        console.error(
+          "[ProConnect Webhook] verifier-missing alert failed:",
+          alertErr instanceof Error ? alertErr.message : alertErr
+        )
+      }
+      return NextResponse.json(
+        { error: "Webhook verification not configured" },
+        { status: 503 }
+      )
     }
 
     let payload: WebhookPayload
