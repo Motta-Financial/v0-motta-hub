@@ -110,7 +110,15 @@ export async function middleware(request: NextRequest) {
   const isAuthCallback = pathname.startsWith("/auth")
   // Public auth API: /api/auth/forgot-password is the entrypoint for the
   // self-service password reset flow and must be reachable without a session.
-  const isPublicAuthApi = pathname.startsWith("/api/auth/forgot-password")
+  // /api/auth/user is UserProvider's own "am I signed in?" check -- its
+  // handler already returns 200 with { user: null, teamMember: null } for
+  // every failure case (no session, no staff row, etc.) by design, so the
+  // client can gracefully render the signed-out UI. Without this exemption,
+  // the blanket API 401 gate below fired first for EVERY signed-out or
+  // non-staff visitor, so the route's own graceful fallback never ran --
+  // the client saw a raw 401 instead of the intended { user: null } shape.
+  const isPublicAuthApi =
+    pathname.startsWith("/api/auth/forgot-password") || pathname === "/api/auth/user"
   // /api/alfred/health is a deliberately unauthenticated status probe so
   // alfred.motta.cpa (and any external monitor) can verify the Hub is
   // reachable, the Supabase env is configured, and the ALFRED service
