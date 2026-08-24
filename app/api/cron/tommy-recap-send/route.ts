@@ -9,43 +9,48 @@ import {
 } from "@/lib/tommy-awards/weekly-recap"
 import { generatePodiumImage } from "@/lib/tommy-awards/generate-podium-image"
 import { generatePodiumPdf } from "@/lib/tommy-awards/generate-podium-pdf"
-import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
+import { isEasternTimeAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 import { firmConfigSync } from "@/lib/firm-settings"
+import { SEND_HOUR, SEND_MINUTE } from "@/lib/tommy-awards/schedule"
 
 // ── STAGE 4 of 4: SEND ────────────────────────────────────────────────
-// Emails the firm the Friday Tommy recap at 12:00 PM Eastern, with the
+// Emails the firm the Friday Tommy recap at 12:30 PM Eastern, with the
 // podium image embedded and the matching PDF attached.
 //
-// Crucially, this stage is triggered by its OWN noon-ET cron — NOT by the
-// prep chain. That makes it a safety net: the prep chain (PREPARE → IMAGE
-// → PDF) starts at 11:45 AM ET, so by noon the image + PDF are normally
-// ready and baked into the recap row. But even if a prep stage failed:
+// Crucially, this stage is triggered by its OWN 12:30-ET cron — NOT by
+// the prep chain. That makes it a safety net: the prep chain (PREPARE →
+// IMAGE → PDF) starts at 12:15 PM ET, so by 12:30 the image + PDF are
+// normally ready and baked into the recap row. But even if a prep stage
+// failed:
 //   - If the row has a story but no image/PDF, the email still ships
 //     (with whatever is present).
 //   - If PREPARE never ran at all, we compose the recap inline here so
 //     the firm is never left without a Friday email.
 //
-// Re-tally-before-send: PREPARE tallies close to send time (11:45 AM ET,
-// moved up from an earlier 8:45 AM ET run that left a 3h15m window for
-// votes to change the outcome), but ballots can still be cast in that
-// last 15 minutes. Before building the email we re-tally with a cheap,
-// AI-free query (tallyWeekBallots) and compare it against the row
-// PREPARE persisted. If a late vote changed the podium (this is what
-// happened for the Aug 14 recap — 7 ballots landed after the tally ran
-// and the email still went out with the stale podium), we recompose the
-// story, re-render the podium image, and rebuild the PDF synchronously
-// — right here, before the email ships — instead of only detecting drift
-// after the fact. That regen (a gpt-image-2 render) can take minutes, so
-// this stage now shares the image stage's Fluid Compute budget instead
-// of the old 60s ceiling that only fit "render + send".
+// Re-tally-before-send: voting now hard-closes (see
+// /api/tommy-awards/ballot) at the SAME instant PREPARE tallies — 12:15
+// PM ET — so in the normal case there is no window left for a vote to
+// land after the tally. This moved down from an earlier 8:45 AM ET
+// PREPARE run that left a 3h15m window for votes to change the outcome
+// (the Aug 14 recap: 7 ballots landed after that tally ran). We still
+// re-tally here with a cheap, AI-free query (tallyWeekBallots) and
+// compare it against the row PREPARE persisted, purely as a backstop
+// for the edge case of a request landing in the same instant as the
+// cutoff. If drift is ever detected, we recompose the story, re-render
+// the podium image, and rebuild the PDF synchronously — right here,
+// before the email ships. That regen (a gpt-image-2 render) can take
+// minutes, so this stage shares the image stage's Fluid Compute budget
+// instead of a tight ceiling that only fits "render + send". Schedule
+// times are centralized in lib/tommy-awards/schedule.ts.
 export const maxDuration = 800
 
 /**
- * Vercel Cron endpoint — Friday 12:00 PM Eastern. Scheduled at BOTH UTC
- * hours that map to noon Eastern:
- *   - `0 16 * * 5` — 16:00 UTC = 12:00 PM EDT (Mar–Nov)
- *   - `0 17 * * 5` — 17:00 UTC = 12:00 PM EST (Nov–Mar)
- * The `isEasternHourAndWeekday(12, 5)` guard lets exactly one twin send.
+ * Vercel Cron endpoint — Friday 12:30 PM Eastern (15 min after
+ * PREPARE/voting-cutoff, to give the image → PDF prep chain room to
+ * finish). Scheduled at BOTH UTC hours that map to 12:30 PM Eastern:
+ *   - `30 16 * * 5` — 16:30 UTC = 12:30 PM EDT (Mar–Nov)
+ *   - `30 17 * * 5` — 17:30 UTC = 12:30 PM EST (Nov–Mar)
+ * The `isEasternTimeAndWeekday(12, 30, 5)` guard lets exactly one twin send.
  *
  * Query flags:
  *   - ?dryRun=true     — render + return the email WITHOUT sending/persisting.
@@ -67,15 +72,16 @@ export async function GET(request: Request) {
   const force = url.searchParams.get("force") === "true"
   const resend = url.searchParams.get("resend") === "true"
 
-  // DST guard: only send at noon ET on a Friday. The other UTC-twin
+  // DST guard: only send at 12:30 PM ET on a Friday. The other UTC-twin
   // invocation exits cleanly here. QA flags bypass the guard.
-  if (!dryRun && !previewTo && !force && !isEasternHourAndWeekday(12, 5)) {
-    const { hour, weekday } = nowInEastern()
+  if (!dryRun && !previewTo && !force && !isEasternTimeAndWeekday(SEND_HOUR, SEND_MINUTE, 5)) {
+    const { hour, minute, weekday } = nowInEastern()
     return NextResponse.json({
       success: true,
       skipped: true,
-      reason: "Not 12:00 PM Eastern on a Friday — skipping (DST twin invocation).",
+      reason: "Not 12:30 PM Eastern on a Friday — skipping (DST twin invocation).",
       eastern_hour: hour,
+      eastern_minute: minute,
       eastern_weekday: weekday,
     })
   }

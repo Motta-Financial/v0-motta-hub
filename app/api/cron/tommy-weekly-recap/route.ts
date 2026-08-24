@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/server"
 import { composeWeeklyRecap } from "@/lib/tommy-awards/weekly-recap"
 import { triggerStage } from "@/lib/tommy-awards/pipeline"
 import { isEasternTimeAndWeekday, nowInEastern } from "@/lib/cron-eastern"
+import { PREPARE_HOUR, PREPARE_MINUTE } from "@/lib/tommy-awards/schedule"
 
 // ── STAGE 1 of 4: PREPARE ─────────────────────────────────────────────
 // This route used to do EVERYTHING (tally → story → PDF → email → async
@@ -12,42 +13,44 @@ import { isEasternTimeAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 // The pipeline is now split into four individually time-budgeted stages
 // so the email always ships LAST with the image + PDF already baked in:
 //
-//   1. PREPARE  (this route)            — Friday 11:45 AM ET. Tally the
+//   1. PREPARE  (this route)            — Friday 12:15 PM ET. Tally the
 //      ballots + draft ALFRED's story, persist the story columns, then
 //      chain to the image stage. NO email is sent here.
 //   2. IMAGE    (/api/cron/tommy-podium-image) — render the podium art,
 //      persist it, chain to the PDF stage.
 //   3. PDF      (/api/cron/tommy-recap-pdf)     — build the PDF with the
 //      image embedded, persist it. End of the prep chain.
-//   4. SEND     (/api/cron/tommy-recap-send)    — Friday 12:00 PM ET.
+//   4. SEND     (/api/cron/tommy-recap-send)    — Friday 12:30 PM ET.
 //      Email the firm with the image embedded + PDF attached. Triggered
 //      independently by its own cron (not by the chain) so the firm
-//      always gets an email at noon even if a prep stage failed.
+//      always gets an email even if a prep stage failed.
 //
-// PREPARE used to run at 8:45 AM ET, 3h15m before the noon send. Voting
-// stays open the whole time, so a 3h15m-old tally regularly went stale
+// PREPARE used to run at 8:45 AM ET, 3h15m before the send. Voting
+// stayed open the whole time, so a 3h15m-old tally regularly went stale
 // before the email shipped (e.g. the Aug 14 recap froze the podium after
-// only 2 of 9 ballots were in). PREPARE now runs at 11:45 AM ET — just
-// 15 minutes before SEND — so the FIRST podium generated is almost
-// always already final. SEND's re-tally-before-send check (see
-// tommy-recap-send/route.ts) remains as the backstop for any vote cast
-// in that last 15-minute window.
+// only 2 of 9 ballots were in). Voting now hard-closes (see
+// /api/tommy-awards/ballot) at the SAME instant PREPARE runs — 12:15 PM
+// ET — so the tally PREPARE reads can no longer change under it. SEND's
+// re-tally-before-send check (see tommy-recap-send/route.ts) remains as
+// a second backstop for the edge case of a request landing in the same
+// instant as the cutoff. Times are centralized in
+// lib/tommy-awards/schedule.ts.
 //
 // PREPARE only does fast brain work (~10s), so we keep a tight ceiling.
 export const maxDuration = 60
 
 /**
- * Vercel Cron endpoint — Friday ~11:45 AM Eastern (15 min before the
- * noon send). Tallies the week's ballots, drafts ALFRED's storyline
+ * Vercel Cron endpoint — Friday 12:15 PM Eastern, the same instant
+ * voting closes. Tallies the week's ballots, drafts ALFRED's storyline
  * recap, persists the story columns on `tommy_weekly_recaps`, and kicks
- * off the image → PDF prep chain so everything is ready before the noon
- * send.
+ * off the image → PDF prep chain so everything is ready before the
+ * 12:30 PM send.
  *
  * Vercel Cron is UTC-only, so this is scheduled at BOTH UTC hours that
- * map to 11:45 AM Eastern:
- *   - `45 15 * * 5` — 15:45 UTC = 11:45 AM EDT (Mar–Nov)
- *   - `45 16 * * 5` — 16:45 UTC = 11:45 AM EST (Nov–Mar)
- * The `isEasternTimeAndWeekday(11, 45, 5)` guard lets exactly one twin run.
+ * map to 12:15 PM Eastern:
+ *   - `15 16 * * 5` — 16:15 UTC = 12:15 PM EDT (Mar–Nov)
+ *   - `15 17 * * 5` — 17:15 UTC = 12:15 PM EST (Nov–Mar)
+ * The `isEasternTimeAndWeekday(12, 15, 5)` guard lets exactly one twin run.
  *
  * Query flags:
  *   - ?dryRun=true   — compose + return the data WITHOUT persisting or chaining.
@@ -67,14 +70,14 @@ export async function GET(request: Request) {
   const force = url.searchParams.get("force") === "true"
   const skipChain = url.searchParams.get("skipChain") === "true"
 
-  // DST guard: only proceed at 11:45 AM ET on a Friday. The other
+  // DST guard: only proceed at 12:15 PM ET on a Friday. The other
   // UTC-twin invocation exits cleanly here. QA flags bypass the guard.
-  if (!dryRun && !force && !isEasternTimeAndWeekday(11, 45, 5)) {
+  if (!dryRun && !force && !isEasternTimeAndWeekday(PREPARE_HOUR, PREPARE_MINUTE, 5)) {
     const { hour, minute, weekday } = nowInEastern()
     return NextResponse.json({
       success: true,
       skipped: true,
-      reason: "Not 11:45 AM Eastern on a Friday — skipping (DST twin invocation).",
+      reason: "Not 12:15 PM Eastern on a Friday — skipping (DST twin invocation).",
       eastern_hour: hour,
       eastern_minute: minute,
       eastern_weekday: weekday,

@@ -1,5 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
+import { isVotingClosedForWeek } from "@/lib/cron-eastern"
+import { VOTING_CUTOFF_HOUR, VOTING_CUTOFF_MINUTE } from "@/lib/tommy-awards/schedule"
 
 /**
  * GET /api/tommy-awards/ballot
@@ -199,6 +201,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "Please select 1st, 2nd, and 3rd place." },
       { status: 400 },
+    )
+  }
+
+  // Voting cutoff: closes at 12:15 PM ET on the week's own Friday date —
+  // the same instant the PREPARE cron tallies the podium (see
+  // lib/tommy-awards/schedule.ts) — and stays closed for that week
+  // forever after. Applies to new ballots AND amendments: an amendment
+  // changes the tally exactly like a new vote would.
+  if (isVotingClosedForWeek(body.weekDate, VOTING_CUTOFF_HOUR, VOTING_CUTOFF_MINUTE)) {
+    return NextResponse.json(
+      {
+        error:
+          "Voting for this week's Tommy Awards has closed (ballots lock at 12:15 PM ET on Friday). Look out for next week's ballot!",
+        code: "VOTING_CLOSED",
+      },
+      { status: 403 },
     )
   }
 

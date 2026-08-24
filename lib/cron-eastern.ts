@@ -95,3 +95,52 @@ export function isEasternTimeAndWeekday(
   const { hour, minute, weekday } = nowInEastern(now)
   return hour === targetHour && minute === targetMinute && weekday === targetWeekday
 }
+
+/**
+ * Current date in America/New_York as "YYYY-MM-DD" — matches the format
+ * `week_date` is stored in (a Postgres `date` column, e.g. "2026-08-14").
+ * Comparing this against a ballot's `week_date` string tells you whether
+ * that week's Friday is today, already past, or still upcoming, without
+ * any UTC/local-timezone drift.
+ */
+export function todayInEasternDateString(now: Date = new Date()): string {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+  const parts = fmt.formatToParts(now)
+  const year = parts.find((p) => p.type === "year")?.value ?? "1970"
+  const month = parts.find((p) => p.type === "month")?.value ?? "01"
+  const day = parts.find((p) => p.type === "day")?.value ?? "01"
+  return `${year}-${month}-${day}`
+}
+
+/**
+ * True once voting is closed for the given week (a "YYYY-MM-DD" Friday
+ * date). A week closes the moment Eastern wall-clock time reaches
+ * `cutoffHour:cutoffMinute` ON that week's date, and stays closed for
+ * every date after it. Dates before the week's Friday are always still
+ * open (voting happens throughout the week leading up to it).
+ *
+ * Used server-side by the ballot submit/amend route so a vote can never
+ * land after the PREPARE cron has already tallied the podium.
+ */
+export function isVotingClosedForWeek(
+  weekDateStr: string,
+  cutoffHour: number,
+  cutoffMinute: number,
+  now: Date = new Date(),
+): boolean {
+  const todayStr = todayInEasternDateString(now)
+  if (weekDateStr > todayStr) return false // Friday hasn't arrived yet — still open
+  if (weekDateStr < todayStr) return true // that Friday has fully passed — closed
+
+  // weekDateStr === todayStr: today IS this week's Friday, so it's only
+  // closed once we're at/after the cutoff wall-clock time.
+  const { hour, minute } = nowInEastern(now)
+  if (hour > cutoffHour) return true
+  if (hour === cutoffHour && minute >= cutoffMinute) return true
+  return false
+}

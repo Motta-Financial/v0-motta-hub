@@ -42,19 +42,19 @@
     },
     {
       "path": "/api/cron/tommy-weekly-recap",
-      "schedule": "45 15 * * 5"
+      "schedule": "15 16 * * 5"
     },
     {
       "path": "/api/cron/tommy-weekly-recap",
-      "schedule": "45 16 * * 5"
+      "schedule": "15 17 * * 5"
     },
     {
       "path": "/api/cron/tommy-recap-send",
-      "schedule": "0 16 * * 5"
+      "schedule": "30 16 * * 5"
     },
     {
       "path": "/api/cron/tommy-recap-send",
-      "schedule": "0 17 * * 5"
+      "schedule": "30 17 * * 5"
     },
     {
       "path": "/api/cron/zoom-todo-sweep",

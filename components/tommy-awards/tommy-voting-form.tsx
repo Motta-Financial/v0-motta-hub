@@ -527,6 +527,8 @@ export function TommyVotingForm() {
           setError(
             "You have already submitted a ballot for this week. Select your name again to load it for amendment.",
           )
+        } else if (result.code === "VOTING_CLOSED") {
+          setError(result.error || "Voting for this week has closed.")
         } else {
           setError(`Failed to submit ballot: ${result.error || "Unknown error"}`)
         }
