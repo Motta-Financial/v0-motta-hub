@@ -308,7 +308,7 @@ The ten non-negotiables for this integration, verified against code:
 | 1 | dryRun-first before any commit | ✅ **Enforced in the route** — a commit is refused unless a matching `dry_run = true` row exists for the same target |
 | 2 | De-dup before retry (Import is not idempotent) | ✅ Keyed on `intuit_tid` |
 | 3 | PII discipline — never log field values | ✅ **Verified compliant.** `entries_payload` stores addresses plus `has_val`/`has_desc`/`has_src` booleans and `redacted: true` — never `val`. `proconnect_import_entry_results` has no value column. |
-| 4 | **Tokens encrypted at rest (AES-256-GCM)** | 🟡 **Code built, key not set** — see below |
+| 4 | **Tokens encrypted at rest (AES-256-GCM)** | ✅ **Satisfied 2026-08-24** — see below |
 | 5 | Respect `RETURN_LOCKED` / 423 | ✅ Classified and surfaced. Note the pre-check is `efile-lock.ts`, **not** `lockInfo` — see §2. |
 | 6 | 5 TPS limit + backoff + honor `Retry-After` | ✅ **Resolved 2026-08-20** — the limiter was extracted to `lib/proconnect/rate-limit.ts`; `client.ts` and `data.ts` both `acquireRateLimitSlot()` off one counter. |
 | 7 | Primary-Admin-only connect; Import via Primary Admin token | ✅ Import route additionally gated to leadership roles |
@@ -316,7 +316,7 @@ The ten non-negotiables for this integration, verified against code:
 | 9 | Reject 706 / 5500 | ✅ Allowlist enforced |
 | 10 | Treat API as partner-confidential | ✅ No hostnames/scope in public artifacts |
 
-### 🟡 Corrected finding (2026-08-19): encryption is built — the key just isn't set
+### ✅ Resolved (2026-08-24): tokens are encrypted at rest
 
 This section previously said `PROCONNECT_TOKEN_KEY` "appears nowhere in the
 codebase." That is no longer accurate. `lib/proconnect/token-cipher.ts`
@@ -328,12 +328,22 @@ warning; the moment `PROCONNECT_TOKEN_KEY` is added to the project's env vars,
 the very next token refresh (at least hourly) rewrites the row as ciphertext —
 no migration script, no downtime, no backfill needed.
 
-**What's actually left:** generate a key (`openssl rand -hex 32`) and add it
-to the project as `PROCONNECT_TOKEN_KEY`. Confirmed not currently set — it
-does not appear in the project's environment variable inventory. This is a
-config action, not a code change.
+**Closed 2026-08-24.** `PROCONNECT_TOKEN_KEY` was added to the project on
+2026-08-19 (All Environments). The first production deployment built *after*
+that landed on 2026-08-20 — env vars bake in at build time, so the deployments
+serving production until then had no key and kept writing plaintext, which is
+why the row stayed `eyJ…` for a day after the key existed. The 06:00 UTC
+nightly refresh on 2026-08-24 rewrote it as ciphertext. Verified directly:
 
-Why this still matters until the key is set: this token grants **write
+```sql
+select left(access_token, 3) as prefix, updated_at from proconnect_oauth_tokens;
+-- v1: | 2026-08-24 06:00:03+00
+```
+
+No migration or backfill was needed — `encryptToken()` is opportunistic and
+every refresh rewrites the row, exactly as designed.
+
+Why this mattered: this token grants **write
 access to every tax return in the firm**, and the refresh token is
 long-lived and rolling. RLS restricts the table to the service role, so
 this is not remotely exploitable today — but it is one misconfigured
