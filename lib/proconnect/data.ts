@@ -371,16 +371,33 @@ async function authedRequest<T>(
 // ---------------------------------------------------------------------------
 
 /**
+ * Build the Export path for a return.
+ *
+ * Extracted so a health check can assert the shape of the path this module
+ * ACTUALLY sends, rather than restating it. On 2026-08-15 a promoted preview
+ * reverted production to the `oii-client`-less form and 403'd on every call;
+ * a check that hardcoded its own copy of the path would have reported green
+ * throughout. See the `oii-client` note at the top of this file.
+ */
+export function buildExportPath(clientId: string, returnId: string): string {
+  return `/v2/clients/oii-client/${encodeURIComponent(clientId)}/returns/${encodeURIComponent(returnId)}/data`
+}
+
+/** The two Phase 1 hosts, exposed for diagnostics. Never call these directly. */
+export function getPhase1Hosts(): { exportBase: string; importBase: string } {
+  return { exportBase: TAX_RETURNS_BASE_URL, importBase: IMPORT_BASE_URL }
+}
+
+/**
  * Export the full series map and metadata for a single return.
  */
 export async function exportReturnData(
   clientId: string,
   returnId: string
 ): Promise<Result<ReturnExport>> {
-  return authedRequest<ReturnExport>(
-    `/v2/clients/oii-client/${encodeURIComponent(clientId)}/returns/${encodeURIComponent(returnId)}/data`,
-    { method: "GET" }
-  )
+  return authedRequest<ReturnExport>(buildExportPath(clientId, returnId), {
+    method: "GET",
+  })
 }
 
 /**
