@@ -2,23 +2,10 @@ import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { buildExportPath, getPhase1Hosts } from "@/lib/proconnect/data"
 import { getTokenStatus } from "@/lib/proconnect/oauth"
+import { EXPECTED_WEBHOOK_TYPES } from "@/lib/proconnect/webhook-types"
 
 export const dynamic = "force-dynamic"
 
-/**
- * ProConnect is registered for exactly three webhook entity types. This is
- * the single place that list lives — everything else derives from it.
- *
- * Client and TaxReturn deliver normally. TaxReturnWorkStatus has delivered
- * ZERO events, ever, across 5,659 events received on the other two types —
- * and the receiver (app/api/proconnect/webhooks/route.ts) handles that type
- * correctly, so this is an Intuit-side gap, not a dropped event on our end.
- * It went unnoticed for months because nothing distinguished "no events of
- * this type yet" from "this type has never arrived at all." See
- * webhookCoverage below, and the "Recent webhook events" section of
- * proconnect-connection-card.tsx.
- */
-export const EXPECTED_WEBHOOK_TYPES = ["Client", "TaxReturn", "TaxReturnWorkStatus"] as const
 
 /**
  * GET /api/tax/proconnect-status
