@@ -1,9 +1,18 @@
 # ProConnect Open API — Documentation Set & Full Integration Coverage
 
-**Audit date:** 2026-07-26 · **Scope:** `com.intuit.proconnect.taxreturns` · **Source/product:** `ITO`
+**Audit date:** 2026-07-26 · **Revised:** 2026-08-19 (Export/Import/encryption)
+and 2026-08-20 (`lockInfo`, table inventory, rate limiter) · **Scope:** `com.intuit.proconnect.taxreturns` · **Source/product:** `ITO`
 
 Every row below was verified by reading the code and querying production —
-not inferred from file names or planning documents. Where our
+not inferred from file names or planning documents.
+
+> **On row counts.** The 2026-08-20 pass had code access but not database
+> access. Counts it could not re-query are marked "not re-queried in this
+> pass" rather than restated. A number carried forward unverified is exactly
+> how this document drifted the first time: `lockInfo` was recorded as
+> "Built; 622 of 908 currently locked" for a check that has never existed in
+> the codebase, and `proconnect_export_raw` was tracked as "awaiting Export"
+> for a table migration 377 had already dropped. Where our
 implementation drifts from what Intuit documented, that's called out
 explicitly rather than rounded up to "done."
 
@@ -47,7 +56,7 @@ explicitly rather than rounded up to "done."
 | `GET /v2/engagements?source=ITO&period=…` | ✅ | ✅ **Live** | 908 returns; `period` correctly treated as **tax** year |
 | `GET /v2/engagements/{engagementId}` (single) | ✅ | ✅ **Live** | Built 2026-07-28 for e-file status, which the list form does not carry. One call per engagement, so scoped: webhooks hydrate the engagement that changed, the nightly sync drains a capped queue of stale ones. |
 | `GET /v1/custom-status?source=ITO` | ✅ | ✅ **Live** | 40-status catalog; 15 in active use |
-| `lockInfo.locked` pre-check before Import | ✅ | ✅ **Built** | Read from the engagement payload; 622 of 908 currently locked |
+| `lockInfo.locked` pre-check before Import | ✅ | ❌ **Not built** | Corrected 2026-08-20: `lockInfo` is **never read** — `grep -rn lockInfo` over the codebase returns zero hits in `.ts`/`.tsx`. The previous row ("Built; 622 of 908 currently locked") described a check that does not exist. The Hub's actual pre-write gate is `lib/proconnect/efile-lock.ts`, a *different* predicate: it locks on an accepted RETURN filing rather than on Intuit's headline status, deliberately, because the headline produced 66 false locks. Whether to also fetch and trust `lockInfo` verbatim is an open question for Intuit, not a rendering gap. |
 | `taxFiling.filings[]` → e-file status | ✅ | ✅ **Live** | **Was never an Intuit gap.** Empty on the LIST endpoint (908 of 908, `include-efiles=true` is a no-op there); populated on the single-engagement GET. Corrected 2026-07-28 — see below. |
 | `esignature.envelopes[]` | ✅ | ⚠️ **Built, no data** | Present on all 908 list rows, populated on none. Worth re-testing against the single-engagement GET before calling this an Intuit gap — that assumption was wrong for `taxFiling`. |
 
@@ -107,7 +116,7 @@ explicitly rather than rounded up to "done."
 | Layer | Scope | Status |
 |---|---|---|
 | **A — Plumbing** | Connect, sync clients/engagements/statuses, webhooks, Export/Import wiring, rate limiting, audit logging | ✅ **Complete** (Export blocked externally) |
-| **B — Catalog** | code ↔ tax-concept dictionary + per-code rules | 🟡 **Unblocked and modelled; load pending.** Steve Wheelis sent the IND 2025 IVCS/FRF extract — 67,810 codes. Schema, RFC-4180 loader and constraint parser are built and dry-run verified (100% of constraint strings parsed, 612 distinct forms, 13 tokens, zero unrecognised clauses). The table is still at 0 rows because the load runs out-of-band with the service-role key. |
+| **B — Catalog** | code ↔ tax-concept dictionary + per-code rules | 🟡 **Unblocked and modelled; load pending.** Steve Wheelis sent the IND 2025 IVCS/FRF extract — 67,810 codes. Schema, RFC-4180 loader and constraint parser are built and dry-run verified (100% of constraint strings parsed, 612 distinct forms, 13 tokens, zero unrecognised clauses). **Loaded as of 2026-08-20** (the 0-rows note was stale — see §6). Remaining content gap: zero M-series rows in Intuit's extract. |
 | **C — Intelligence** | Gather W-2/1099/Schedule A in the Hub → map to codes → dryRun → import | 🟡 **Five document types live.** See §5b. |
 
 ### The four-level address is fully modelled
@@ -278,13 +287,13 @@ still reproduces the seed exactly.
 | — | `proconnect_custom_statuses` | ✅ 40 rows |
 | — | `proconnect_webhook_events` | ✅ 5,659 rows |
 | — | `proconnect_sync_logs` | ✅ 23 runs |
-| — | `proconnect_return_snapshots` | ⏳ 0 — awaiting Export |
-| — | `proconnect_return_field_cells` | ⏳ 0 — awaiting Export |
-| — | `proconnect_export_raw` | ⏳ 0 — awaiting Export |
-| `proconnect_import_log` | `proconnect_import_jobs` + `proconnect_import_entry_results` | ⏳ 0 — split into two tables; shape is correct |
-| **`proconnect_field_catalog`** | same | 🟡 **Exists** (migration 358). 0 rows — the 67,810-code load runs out-of-band. |
+| — | `proconnect_return_snapshots` | ✅ **Populated** — 51 on 2026-08-11 (SKILL.md census), 69 on 2026-08-19. Exact current count not re-queried in this pass. |
+| — | `proconnect_return_field_cells` | ✅ **Populated** — fills from each snapshot; count not re-queried. |
+| — | ~~`proconnect_export_raw`~~ | 🗑️ **Dropped** — migration 377 removed the abandoned Export landing table. Row deleted rather than corrected. |
+| `proconnect_import_log` | `proconnect_import_jobs` + `proconnect_import_entry_results` | ✅ **Populated** — Import has run since 2026-08-07 (first success, plus the defect retests of 08-07/08-11); count not re-queried. |
+| **`proconnect_field_catalog`** | same | ✅ **Loaded** — the IND 2025 extract is in the table; SKILL.md's census reads 748 Federal series off it, which is only possible against loaded rows. Known content gap: **zero M-series rows**, raised with Intuit 2026-08-11. |
 | — | `form_1040_line_inputs` | ✅ 74 rows / 42 lines — which ProConnect fields *feed* each 1040 line (migration 360) |
-| — | `form_1040_proconnect_map` | ✅ 72 rows; 5 addressed, 67 unmapped-with-a-reason (migration 363) |
+| — | `form_1040_proconnect_map` | ✅ 72 rows. **More than 5 are addressed** — migration 363 was the seed; 365/370/373/374/375/379/386/387/389 added mappings, decodes and conditional (`condition` jsonb) entries since. Exact addressed count not re-queried in this pass. |
 | — | `tax_input_sets` / `_documents` / `_values` | ✅ Schema live (migration 361). Service-role-only by RLS — these hold real taxpayer figures. |
 | — | `tax_input_field_defs` | ✅ 79 defs across 5 document types. Rows load out-of-band: they embed Intuit catalog addresses. |
 
@@ -300,8 +309,8 @@ The ten non-negotiables for this integration, verified against code:
 | 2 | De-dup before retry (Import is not idempotent) | ✅ Keyed on `intuit_tid` |
 | 3 | PII discipline — never log field values | ✅ **Verified compliant.** `entries_payload` stores addresses plus `has_val`/`has_desc`/`has_src` booleans and `redacted: true` — never `val`. `proconnect_import_entry_results` has no value column. |
 | 4 | **Tokens encrypted at rest (AES-256-GCM)** | 🟡 **Code built, key not set** — see below |
-| 5 | Respect `RETURN_LOCKED` / 423 | ✅ Classified and surfaced; `lockInfo` pre-checked |
-| 6 | 5 TPS limit + backoff + honor `Retry-After` | ⚠️ **Partial** — see drift below |
+| 5 | Respect `RETURN_LOCKED` / 423 | ✅ Classified and surfaced. Note the pre-check is `efile-lock.ts`, **not** `lockInfo` — see §2. |
+| 6 | 5 TPS limit + backoff + honor `Retry-After` | ✅ **Resolved 2026-08-20** — the limiter was extracted to `lib/proconnect/rate-limit.ts`; `client.ts` and `data.ts` both `acquireRateLimitSlot()` off one counter. |
 | 7 | Primary-Admin-only connect; Import via Primary Admin token | ✅ Import route additionally gated to leadership roles |
 | 8 | Never create duplicate clients | ✅ Trivially satisfied — client creation isn't built |
 | 9 | Reject 706 / 5500 | ✅ Allowlist enforced |
@@ -338,7 +347,7 @@ carrying the limiter, backoff, `intuit-tid`, and the single
 
 | | `lib/proconnect/client.ts` (Client + Engagement) | `lib/proconnect/data.ts` (Export/Import) |
 |---|---|---|
-| 5 TPS rate limiter | ✅ 250 ms slot reservation (~4 req/s) | ❌ **Not applied** |
+| 5 TPS rate limiter | ✅ shared `acquireRateLimitSlot()` | ✅ **Shared** — `data.ts:258`, same counter as `client.ts:86` |
 | Exponential backoff + `Retry-After` | ❌ Not implemented | ✅ `fetchWithRetry`, 1s→30s |
 | `intuit-tid` capture | ❌ Not captured | ✅ Captured and persisted |
 | Error-code classification | ❌ Generic | ✅ Full per-spec classification |
