@@ -15,6 +15,8 @@ import {
   Users,
   FileText,
   UserCircle,
+  ShieldCheck,
+  GitBranch,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -43,7 +45,21 @@ type Phase1Status = {
   lastExportErrorAt: string | null
 }
 
+type DeploymentStatus = {
+  gitRef: string | null
+  gitSha: string | null
+  vercelEnv: string | null
+  servingNonMain: boolean
+  exportPathHasOiiClient: boolean
+  importHostIsSeparate: boolean
+  tokenEncryption: { configured: boolean | null; atRestEncrypted: boolean | null }
+  webhookVerifierConfigured: boolean
+  writeAllowlistCount: number
+  missingTables: { table: string; migration: string }[]
+}
+
 type ProconnectStatus = {
+  deployment?: DeploymentStatus
   phase1?: Phase1Status
   connected: boolean
   realmId: string | null
@@ -352,6 +368,80 @@ export function ProconnectConnectionCard() {
                       : " · no exports yet — snapshots populate as TaxReturn webhooks arrive"}
                   </p>
                 )}
+              </div>
+            )}
+
+            <Separator />
+
+            {/* ─── Deployment & configuration ───
+                Drift between `main` and the RUNNING build. Healthy state is
+                deliberately quiet — one all-clear line — so that a warning
+                here means something. */}
+            {data.deployment && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <ShieldCheck className="size-4 text-muted-foreground" />
+                  Deployment &amp; configuration
+                </div>
+                {(() => {
+                  const d = data.deployment
+                  const warnings: string[] = []
+                  if (d.servingNonMain)
+                    warnings.push(
+                      `Production is serving branch "${d.gitRef}", not main. A promoted preview shadows merged code until someone notices — this reverted the Export path on 2026-08-15 and surfaced on a live client call.`
+                    )
+                  if (!d.exportPathHasOiiClient)
+                    warnings.push(
+                      "The Export path is missing its oii-client/ segment. Every Export will 403, and the error is indistinguishable from an Intuit provisioning problem."
+                    )
+                  if (!d.importHostIsSeparate)
+                    warnings.push(
+                      "Import and Export are pointed at the same host. Import has its own host; posting Import to the Export host 403s on every call."
+                    )
+                  if (d.tokenEncryption.atRestEncrypted === false)
+                    warnings.push(
+                      d.tokenEncryption.configured
+                        ? "PROCONNECT_TOKEN_KEY is set but the stored token is still plaintext — this build may predate the key. It will encrypt on the next refresh."
+                        : "PROCONNECT_TOKEN_KEY is not set on this build. Tokens are stored in plaintext, and they grant write access to every return in the firm."
+                    )
+                  if (!d.webhookVerifierConfigured)
+                    warnings.push(
+                      "PROCONNECT_WEBHOOK_VERIFIER_TOKEN is not set on this build. Incoming webhooks are rejected with 503 until it is."
+                    )
+                  for (const t of d.missingTables)
+                    warnings.push(
+                      `Table ${t.table} does not exist — ${t.migration} has not been applied. The feature that writes to it fails closed until it is run in Supabase.`
+                    )
+
+                  return warnings.length === 0 ? (
+                    <p className="text-sm text-muted-foreground flex items-center gap-1.5">
+                      <CheckCircle2 className="size-3.5 text-emerald-600" />
+                      Export path, Import host, token encryption, webhook
+                      verifier and migrations all check out
+                      {d.writeAllowlistCount > 0
+                        ? ` · ${d.writeAllowlistCount} return${d.writeAllowlistCount === 1 ? "" : "s"} on the import write allowlist`
+                        : " · import write allowlist empty (commits disabled)"}
+                    </p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {warnings.map((w, i) => (
+                        <p
+                          key={i}
+                          className="text-sm text-amber-700 dark:text-amber-500 flex items-start gap-1.5"
+                        >
+                          <AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
+                          <span>{w}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )
+                })()}
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  <GitBranch className="size-3" />
+                  {data.deployment.vercelEnv ?? "local"}
+                  {data.deployment.gitRef ? ` · ${data.deployment.gitRef}` : ""}
+                  {data.deployment.gitSha ? ` @ ${data.deployment.gitSha}` : ""}
+                </p>
               </div>
             )}
 
