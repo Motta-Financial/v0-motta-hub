@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { fetchAllPaged } from "@/lib/supabase/fetch-all"
 import { lockFromCachedEfile } from "@/lib/proconnect/efile-lock"
+import { isWriteAllowed } from "@/lib/proconnect/write-allowlist"
 
 export const dynamic = "force-dynamic"
 
@@ -206,7 +207,17 @@ export async function GET(
       return NextResponse.json({ error: detailErr.message }, { status: 500 })
     }
 
-    // Post-e-file edit lock, for the viewer's badge and disabled state.
+    // Import write allowlist, for the editor's disabled state ahead of a
+  // commit. Advisory only, exactly like `lock` below — the import route
+  // re-derives its own verdict from the same isWriteAllowed function, and
+  // that re-derivation is the actual enforcement point. This flag exists so
+  // the sheet can disable Apply before a preparer spends a round-trip
+  // learning the return isn't on the list; it can go stale between page
+  // load and Apply if the env var changes, so the 403 the import route
+  // returns in that case remains the backstop, not a bug to fix here.
+  const writeAllowed = isWriteAllowed(returnId)
+
+  // Post-e-file edit lock, for the viewer's badge and disabled state.
     //
     // ADVISORY ONLY. This is derived from the cached filings so a page view
     // costs no ProConnect call; the authoritative check runs live inside the
@@ -301,10 +312,11 @@ export async function GET(
     }
 
     return NextResponse.json({
-      returnId,
-      engagement: detail ?? null,
-      lock,
-      snapshot: snapshot ?? null,
+  returnId,
+  engagement: detail ?? null,
+  lock,
+  writeAllowed,
+  snapshot: snapshot ?? null,
       cellCount: cells.length,
       seriesCount: Object.keys(bySeries).length,
       cellsBySeries: bySeries,

@@ -118,11 +118,24 @@ function unlanded_reason_label(reason: UnlandedEntry["reason"]): string {
 
 export function FieldEditSheet({
   target,
+  writeAllowed = true,
   open,
   onClose,
   onCommitSuccess,
 }: {
   target: EditTarget | null
+  /**
+   * Advisory write-allowlist verdict from the return-data route
+   * (lib/proconnect/write-allowlist.isWriteAllowed) — same function the
+   * import route enforces with. Disables Apply up front so a preparer
+   * doesn't spend a Validate + confirm round-trip only to collect the
+   * route's 403. It can go stale between page load and Apply if the env
+   * var changes, so this is a courtesy, not the enforcement point: the
+   * route's own 403 (see `is403` below) remains the backstop regardless of
+   * this prop's value. Defaults to true so older callers that don't pass
+   * it keep today's behavior.
+   */
+  writeAllowed?: boolean
   open: boolean
   onClose: () => void
   onCommitSuccess: () => void
@@ -274,10 +287,16 @@ export function FieldEditSheet({
   const applyEnabled =
     dryRun.status === "clean" &&
     !lockWarning &&
+    writeAllowed &&
     commit.status !== "running" &&
     commit.status !== "success"
 
   const is403 = commit.status === "error" && commit.statusCode === 403
+  // Same explanation as the reactive 403 path below, shown before anyone
+  // has to hit Apply to learn it. Validate stays enabled either way — dry
+  // runs are exempt from the allowlist by design (they persist nothing, and
+  // their field-rule errors are a deliberate source of catalog facts).
+  const notAllowlistedUpfront = !writeAllowed && !is403
 
   return (
     <>
@@ -465,6 +484,22 @@ export function FieldEditSheet({
               <p className="text-xs text-muted-foreground">
                 Writes are restricted to designated test returns. Validate still works on this return, but no values will be committed.
               </p>
+            ) : notAllowlistedUpfront ? (
+              <>
+                <Button
+                  size="sm"
+                  onClick={() => void runDryRun()}
+                  disabled={dryRun.status === "running" || commit.status === "running" || commit.status === "success"}
+                >
+                  {dryRun.status === "running" ? "Validating…" : "Validate"}
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Writes are restricted to designated test returns. Validate still works on this return, but no values will be committed.
+                </p>
+                <Button size="sm" variant="ghost" onClick={onClose}>
+                  Cancel
+                </Button>
+              </>
             ) : (
               <>
                 <Button

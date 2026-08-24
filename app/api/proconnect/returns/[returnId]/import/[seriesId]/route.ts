@@ -62,6 +62,7 @@ import {
 } from "@/lib/proconnect/data"
 import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
 import { resolveReturnLock } from "@/lib/proconnect/efile-lock"
+import { isWriteAllowed } from "@/lib/proconnect/write-allowlist"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -70,14 +71,6 @@ function admin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false },
   })
-}
-
-function isWriteAllowed(returnId: string) {
-  const allowed = (process.env.PROCONNECT_WRITE_ALLOWED_RETURN_IDS ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
-  return allowed.includes(returnId.trim().toLowerCase())
 }
 
 type Body = {

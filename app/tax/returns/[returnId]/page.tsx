@@ -97,6 +97,15 @@ type ReturnDetail = {
   returnId: string
   engagement: Record<string, unknown> | null
   lock: LockDecision | null
+  /**
+   * Import write allowlist verdict — lib/proconnect/write-allowlist.isWriteAllowed,
+   * same function the import route enforces with. Advisory only, like `lock`
+   * above: it can go stale between page load and Apply if the env var
+   * changes, so the import route's own 403 remains the backstop. Exists so
+   * FieldEditSheet can disable Apply before a preparer spends a round-trip
+   * discovering the return isn't on the list.
+   */
+  writeAllowed: boolean
   snapshot: {
     exported_at: string | null
     deleted_at: string | null
@@ -529,6 +538,7 @@ export default function ReturnDataPage({
 
             <FieldEditSheet
               target={editTarget}
+              writeAllowed={data?.writeAllowed ?? true}
               open={editTarget !== null}
               onClose={() => setEditTarget(null)}
               onCommitSuccess={() => {
