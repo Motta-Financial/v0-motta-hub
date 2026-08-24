@@ -36,6 +36,12 @@ type WebhookEvent = {
   processing_error: string | null
 }
 
+type WebhookCoverage = {
+  type: string
+  totalReceived: number
+  lastReceivedAt: string | null
+}
+
 type Phase1Status = {
   status: "ok" | "blocked" | "inactive"
   snapshotCount: number
@@ -77,6 +83,7 @@ type ProconnectStatus = {
   clientCount: number
   engagementCount: number
   recentWebhooks: WebhookEvent[]
+  webhookCoverage?: WebhookCoverage[]
 }
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
@@ -453,6 +460,52 @@ export function ProconnectConnectionCard() {
                 <Webhook className="size-4 text-muted-foreground" />
                 Recent webhook events
               </div>
+
+              {data.webhookCoverage && data.webhookCoverage.length > 0 && (
+                <>
+                  {data.webhookCoverage.every((c) => c.totalReceived > 0) ? (
+                    <p className="text-xs text-muted-foreground">
+                      {data.webhookCoverage
+                        .map((c) => `${c.type}: ${c.totalReceived.toLocaleString()}`)
+                        .join(" · ")}
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {data.webhookCoverage.some((c) => c.totalReceived > 0) && (
+                        <p className="text-xs text-muted-foreground">
+                          {data.webhookCoverage
+                            .filter((c) => c.totalReceived > 0)
+                            .map((c) => `${c.type}: ${c.totalReceived.toLocaleString()}`)
+                            .join(" · ")}
+                        </p>
+                      )}
+                      {data.webhookCoverage
+                        .filter((c) => c.totalReceived === 0)
+                        .map((c) => (
+                          <div
+                            key={c.type}
+                            className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-500"
+                          >
+                            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                            <div className="space-y-1">
+                              <p className="font-medium">
+                                &quot;{c.type}&quot; webhooks have never been received.
+                              </p>
+                              <p className="text-xs opacity-90">
+                                The Hub&apos;s webhook receiver does handle this event
+                                type — this is an open question with Intuit, not a bug
+                                on our side.
+                                {c.type === "TaxReturnWorkStatus" &&
+                                  " Work-status changes are still picked up by the nightly sync, so status data is current, just not real-time."}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </>
+              )}
+
               {data.recentWebhooks.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   No webhooks received yet. Make a change in ProConnect (e.g.

@@ -2,8 +2,10 @@ import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { buildExportPath, getPhase1Hosts } from "@/lib/proconnect/data"
 import { getTokenStatus } from "@/lib/proconnect/oauth"
+import { EXPECTED_WEBHOOK_TYPES } from "@/lib/proconnect/webhook-types"
 
 export const dynamic = "force-dynamic"
+
 
 /**
  * GET /api/tax/proconnect-status
@@ -125,6 +127,35 @@ export async function GET() {
     supabase.from("proconnect_engagements").select("id", { count: "exact", head: true }),
   ])
 
+  // 4b. Per-type webhook coverage — one count + one ordered limit-1 per
+  // expected type, same head:true / count:"exact" pattern as clientCount /
+  // engagementCount above. Deliberately plain queries, no RPC or view: this
+  // only ever runs against three known strings.
+  const webhookCoverageResults = await Promise.all(
+    EXPECTED_WEBHOOK_TYPES.map((type) =>
+      Promise.all([
+        supabase
+          .from("proconnect_webhook_events")
+          .select("id", { count: "exact", head: true })
+          .eq("event_type", type),
+        supabase
+          .from("proconnect_webhook_events")
+          .select("received_at")
+          .eq("event_type", type)
+          .order("received_at", { ascending: false })
+          .limit(1),
+      ])
+    )
+  )
+  const webhookCoverage = EXPECTED_WEBHOOK_TYPES.map((type, i) => {
+    const [{ count }, { data: latest }] = webhookCoverageResults[i]
+    return {
+      type,
+      totalReceived: count ?? 0,
+      lastReceivedAt: latest?.[0]?.received_at ?? null,
+    }
+  })
+
   // 5. Phase 1 return-data export health. Exports run on every TaxReturn
   // webhook; failures are recorded on the event row (processing_error
   // starts with "export failed:"). This surfaced the fact that exports
@@ -231,5 +262,6 @@ export async function GET() {
     clientCount: clientCount ?? 0,
     engagementCount: engagementCount ?? 0,
     recentWebhooks: recentWebhooks ?? [],
+    webhookCoverage,
   })
 }
