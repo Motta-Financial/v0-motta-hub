@@ -6,6 +6,21 @@ import { getTokenStatus } from "@/lib/proconnect/oauth"
 export const dynamic = "force-dynamic"
 
 /**
+ * ProConnect is registered for exactly three webhook entity types. This is
+ * the single place that list lives — everything else derives from it.
+ *
+ * Client and TaxReturn deliver normally. TaxReturnWorkStatus has delivered
+ * ZERO events, ever, across 5,659 events received on the other two types —
+ * and the receiver (app/api/proconnect/webhooks/route.ts) handles that type
+ * correctly, so this is an Intuit-side gap, not a dropped event on our end.
+ * It went unnoticed for months because nothing distinguished "no events of
+ * this type yet" from "this type has never arrived at all." See
+ * webhookCoverage below, and the "Recent webhook events" section of
+ * proconnect-connection-card.tsx.
+ */
+export const EXPECTED_WEBHOOK_TYPES = ["Client", "TaxReturn", "TaxReturnWorkStatus"] as const
+
+/**
  * GET /api/tax/proconnect-status
  *
  * Returns the current ProConnect connection state used by the
@@ -125,6 +140,35 @@ export async function GET() {
     supabase.from("proconnect_engagements").select("id", { count: "exact", head: true }),
   ])
 
+  // 4b. Per-type webhook coverage — one count + one ordered limit-1 per
+  // expected type, same head:true / count:"exact" pattern as clientCount /
+  // engagementCount above. Deliberately plain queries, no RPC or view: this
+  // only ever runs against three known strings.
+  const webhookCoverageResults = await Promise.all(
+    EXPECTED_WEBHOOK_TYPES.map((type) =>
+      Promise.all([
+        supabase
+          .from("proconnect_webhook_events")
+          .select("id", { count: "exact", head: true })
+          .eq("event_type", type),
+        supabase
+          .from("proconnect_webhook_events")
+          .select("received_at")
+          .eq("event_type", type)
+          .order("received_at", { ascending: false })
+          .limit(1),
+      ])
+    )
+  )
+  const webhookCoverage = EXPECTED_WEBHOOK_TYPES.map((type, i) => {
+    const [{ count }, { data: latest }] = webhookCoverageResults[i]
+    return {
+      type,
+      totalReceived: count ?? 0,
+      lastReceivedAt: latest?.[0]?.received_at ?? null,
+    }
+  })
+
   // 5. Phase 1 return-data export health. Exports run on every TaxReturn
   // webhook; failures are recorded on the event row (processing_error
   // starts with "export failed:"). This surfaced the fact that exports
@@ -231,5 +275,6 @@ export async function GET() {
     clientCount: clientCount ?? 0,
     engagementCount: engagementCount ?? 0,
     recentWebhooks: recentWebhooks ?? [],
+    webhookCoverage,
   })
 }
