@@ -7,8 +7,12 @@ Every row below was verified by reading the code and querying production —
 not inferred from file names or planning documents.
 
 > **On row counts.** The 2026-08-20 pass had code access but not database
-> access. Counts it could not re-query are marked "not re-queried in this
-> pass" rather than restated. A number carried forward unverified is exactly
+> access, so counts it could not re-query were marked "not re-queried"
+> rather than restated. Those were filled in from a live query on
+> 2026-08-24 and are dated inline. Two of them had been wrong in opposite
+> directions in the meantime: the field catalog was described elsewhere as
+> unloaded when it holds all 67,810 rows, and `form_1040_proconnect_map`
+> as "5 addressed" when it holds 102. A number carried forward unverified is exactly
 > how this document drifted the first time: `lockInfo` was recorded as
 > "Built; 622 of 908 currently locked" for a check that has never existed in
 > the codebase, and `proconnect_export_raw` was tracked as "awaiting Export"
@@ -287,13 +291,13 @@ still reproduces the seed exactly.
 | — | `proconnect_custom_statuses` | ✅ 40 rows |
 | — | `proconnect_webhook_events` | ✅ 5,659 rows |
 | — | `proconnect_sync_logs` | ✅ 23 runs |
-| — | `proconnect_return_snapshots` | ✅ **Populated** — 51 on 2026-08-11 (SKILL.md census), 69 on 2026-08-19. Exact current count not re-queried in this pass. |
-| — | `proconnect_return_field_cells` | ✅ **Populated** — fills from each snapshot; count not re-queried. |
+| — | `proconnect_return_snapshots` | ✅ **74** (queried 2026-08-24) |
+| — | `proconnect_return_field_cells` | ✅ **Populated** — fills from each of the 74 snapshots |
 | — | ~~`proconnect_export_raw`~~ | 🗑️ **Dropped** — migration 377 removed the abandoned Export landing table. Row deleted rather than corrected. |
 | `proconnect_import_log` | `proconnect_import_jobs` + `proconnect_import_entry_results` | ✅ **Populated** — Import has run since 2026-08-07 (first success, plus the defect retests of 08-07/08-11); count not re-queried. |
-| **`proconnect_field_catalog`** | same | ✅ **Loaded** — the IND 2025 extract is in the table; SKILL.md's census reads 748 Federal series off it, which is only possible against loaded rows. Known content gap: **zero M-series rows**, raised with Intuit 2026-08-11. |
+| **`proconnect_field_catalog`** | same | ✅ **67,810 rows** (queried 2026-08-24) — the full IND 2025 extract. `catalogAvailable` is therefore **true** at runtime and Import pre-flight validation is live, not degraded. Known content gap: **zero M-series rows**, raised with Intuit 2026-08-11. |
 | — | `form_1040_line_inputs` | ✅ 74 rows / 42 lines — which ProConnect fields *feed* each 1040 line (migration 360) |
-| — | `form_1040_proconnect_map` | ✅ 72 rows. **More than 5 are addressed** — migration 363 was the seed; 365/370/373/374/375/379/386/387/389 added mappings, decodes and conditional (`condition` jsonb) entries since. Exact addressed count not re-queried in this pass. |
+| — | `form_1040_proconnect_map` | ✅ **102 addressed cells** (queried 2026-08-24), not 5. Migration 363 was the seed; 373/374/375/379/386/387/389 added mappings, decodes and conditional (`condition` jsonb) entries. Since 387 the table is keyed on (year, form, line, **cell**), so the count is cells, not lines — several 1040 lines carry more than one addressed cell. |
 | — | `tax_input_sets` / `_documents` / `_values` | ✅ Schema live (migration 361). Service-role-only by RLS — these hold real taxpayer figures. |
 | — | `tax_input_field_defs` | ✅ 79 defs across 5 document types. Rows load out-of-band: they embed Intuit catalog addresses. |
 
