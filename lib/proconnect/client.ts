@@ -397,18 +397,31 @@ export type CreateTaxReturnPayload = {
  * function does not create one. Resolve `clientOiiId` from
  * `proconnect_clients` first and never guess at it.
  */
+/**
+ * The host and path Create Tax Return actually targets.
+ *
+ * Exported so scripts/403 verifies THIS host and THIS path rather than a
+ * second copy of them. Both are unverified against a live call, so a
+ * verification script that restates them could report green while the real
+ * request is malformed — which is how the Export path's missing
+ * `oii-client/` segment went undetected for months.
+ */
+export function getCreateReturnBaseUrl(): string {
+  return CREATE_RETURN_BASE_URL
+}
+
+export function buildCreateReturnPath(clientOiiId: string): string {
+  return `/v2/clients/oii-client/${encodeURIComponent(clientOiiId)}/returns`
+}
+
 export async function createTaxReturn(
   clientOiiId: string,
   payload: CreateTaxReturnPayload
 ): Promise<ApiResponse<unknown>> {
-  return apiRequest<unknown>(
-    CREATE_RETURN_BASE_URL,
-    `/v2/clients/oii-client/${encodeURIComponent(clientOiiId)}/returns`,
-    {
-      method: "POST",
-      body: payload,
-    }
-  )
+  return apiRequest<unknown>(CREATE_RETURN_BASE_URL, buildCreateReturnPath(clientOiiId), {
+    method: "POST",
+    body: payload,
+  })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

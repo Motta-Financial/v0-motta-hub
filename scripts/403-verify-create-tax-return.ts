@@ -85,8 +85,10 @@ const SENTINEL_CLIENT_ID = "" // e.g. "0123456789-abc..." — fill in deliberate
 // response headers (intuit-tid) that the shared apiRequest() helper does
 // not surface. Override with the same env var Intuit confirmation would
 // use in production.
-const CREATE_RETURN_BASE_URL =
-  process.env.PROCONNECT_CREATE_RETURN_BASE_URL || "https://protaxdata.api.intuit.com"
+// Deliberately NOT redeclared here. The whole point of this script is to
+// verify the host and path lib/proconnect/client.ts actually sends; a local
+// copy would verify itself. Resolved at call time via getCreateReturnBaseUrl()
+// / buildCreateReturnPath().
 
 function parseArgs() {
   const [, , cmd, ...rest] = process.argv
@@ -238,11 +240,15 @@ async function preflight(sb: any, clientOiiId: string, payload: Payload) {
     )
   }
 
-  const path = `/v2/clients/oii-client/${encodeURIComponent(clientOiiId)}/returns`
-  console.log(`\nhost:   ${CREATE_RETURN_BASE_URL}`)
+  // Read the host and path from client.ts so preflight prints what the code
+  // WOULD send, not a restatement of it.
+  const { getCreateReturnBaseUrl, buildCreateReturnPath } = await import("../lib/proconnect/client")
+  const base = getCreateReturnBaseUrl()
+  const path = buildCreateReturnPath(clientOiiId)
+  console.log(`\nhost:   ${base}`)
   console.log(`path:   ${path}`)
   console.log(`method: POST`)
-  console.log(`url:    ${CREATE_RETURN_BASE_URL}${path}`)
+  console.log(`url:    ${base}${path}`)
   console.log(`\npayload:\n${JSON.stringify(payload, null, 2)}`)
 
   console.log(
@@ -279,7 +285,8 @@ async function rawCreateTaxReturn(clientOiiId: string, payload: Payload) {
   const { newIntuitTid, acquireRateLimitSlot } = await import("../lib/proconnect/rate-limit")
   await acquireRateLimitSlot()
 
-  const url = `${CREATE_RETURN_BASE_URL}/v2/clients/oii-client/${encodeURIComponent(clientOiiId)}/returns`
+  const { getCreateReturnBaseUrl, buildCreateReturnPath } = await import("../lib/proconnect/client")
+  const url = `${getCreateReturnBaseUrl()}${buildCreateReturnPath(clientOiiId)}`
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -403,7 +410,10 @@ async function create(sb: any, clientOiiId: string, payload: Payload) {
 
   await refreshTokenServerSide()
   console.log(`\n── COMMIT ─────────────────────────────────────────────────`)
-  console.log(`POST ${CREATE_RETURN_BASE_URL}/v2/clients/oii-client/${clientOiiId}/returns`)
+  {
+    const { getCreateReturnBaseUrl, buildCreateReturnPath } = await import("../lib/proconnect/client")
+    console.log(`POST ${getCreateReturnBaseUrl()}${buildCreateReturnPath(clientOiiId)}`)
+  }
   console.log(`payload: ${JSON.stringify(payload)}`)
 
   const res = await rawCreateTaxReturn(clientOiiId, payload)
