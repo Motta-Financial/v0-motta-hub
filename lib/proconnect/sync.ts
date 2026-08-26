@@ -641,6 +641,8 @@ interface RawEngagement {
   createdDate?: string
   modifiedDate?: string
   taxFiling?: RawTaxFiling
+  /** Populated on the single GET only — see pickLatestEsignature. */
+  esignature?: { envelopes?: RawEnvelope[] }
 }
 
 export interface RawFilingStatus {
@@ -764,6 +766,47 @@ export function latestStatusOf(f: RawFiling): RawFilingStatus | null {
  * news. When the winner isn't the return's own federal filing, `filingType`
  * / `jurisdiction` on the result say so.
  */
+/** esignature.envelopes[] as returned by GET /v2/engagements/{id}. */
+interface RawEnvelopeStatus {
+  status?: string
+  statusUpdateTimestamp?: string
+}
+interface RawEnvelope {
+  envelopeId?: string
+  statuses?: RawEnvelopeStatus[]
+}
+
+/**
+ * Latest e-signature status across every envelope on a return.
+ *
+ * Empty on the LIST endpoint and populated on the single GET — the same
+ * trap taxFiling.filings[] set, and confirmed the same way on 2026-08-24:
+ * 12 of 15 sampled engagements carry envelopes (scripts/402).
+ *
+ * Like filingStatuses, the status history is append-only and arrives
+ * UNORDERED, so the latest is chosen by timestamp and never by array
+ * position. Envelopes with no statuses at all are counted but contribute
+ * no status, mirroring how filings with zero statuses are handled.
+ */
+function pickLatestEsignature(
+  esignature: { envelopes?: RawEnvelope[] } | null | undefined
+): { status: string | null; count: number } {
+  const envelopes = esignature?.envelopes ?? []
+  let bestAt = ""
+  let bestStatus: string | null = null
+  for (const env of envelopes) {
+    for (const st of env.statuses ?? []) {
+      if (!st.status) continue
+      const at = st.statusUpdateTimestamp ?? ""
+      if (bestStatus === null || at > bestAt) {
+        bestAt = at
+        bestStatus = st.status
+      }
+    }
+  }
+  return { status: bestStatus, count: envelopes.length }
+}
+
 function pickLatestEfile(taxFiling: RawTaxFiling | null | undefined): EfileLatest | null {
   const candidates = flattenFilings(taxFiling?.filings).filter(
     (f) => (f.filingStatuses?.length ?? 0) > 0
@@ -953,6 +996,7 @@ export async function hydrateEngagementEfile(
   const taxFiling = eng.taxFiling ?? null
   const hasFilings = (taxFiling?.filings?.length ?? 0) > 0
   const latest = pickLatestEfile(taxFiling)
+  const esign = pickLatestEsignature(eng.esignature)
   const now = new Date().toISOString()
 
   const { data, error } = await sb
@@ -962,6 +1006,12 @@ export async function hydrateEngagementEfile(
       efile_latest: latest,
       efile_filings: taxFiling,
       efile_synced_at: now,
+      // Free: the envelopes ride in on the SAME fetchEngagement() response
+      // the e-file status came from. No extra call, no extra rate-limit
+      // pressure. See scripts/405.
+      esignature_envelopes: eng.esignature?.envelopes ?? null,
+      esignature_status: esign.status,
+      esignature_count: esign.count,
       updated_at: now,
     })
     .eq("engagement_id", engagementId)
