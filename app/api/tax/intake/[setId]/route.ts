@@ -81,7 +81,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ setId: string 
 
     // The taxpayer's identity comes from the client profile, not from
     // re-keying it here. Values are masked before they leave the server.
-    const profile = set.contactId ? await loadClientProfile(admin, set.contactId) : null
+    const profile = set.contactId ? await loadClientProfile(admin, set.contactId, set.taxYear) : null
 
     // Decorate documents with their field defs so the UI can render forms
     // without a second round trip.

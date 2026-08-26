@@ -134,8 +134,10 @@ export const PROFILE_FIELD_MAP: ProfileFieldMapping[] = [
     sensitive: true,
     necessity: "required",
     note:
-      "The Hub has no household model. tax_client_relationships links people to ORGANISATIONS " +
-      "(ownership), not to each other. A joint return cannot be assembled from the profile.",
+      "Lives in tax_person_relationships (scripts/404), read through " +
+      "tax_person_relationships_both so it resolves from either side of the link. " +
+      "loadClientProfile resolves this live rather than from a contacts column — see " +
+      "resolveHouseholdFields below.",
   },
   {
     key: "dependents",
@@ -144,8 +146,9 @@ export const PROFILE_FIELD_MAP: ProfileFieldMapping[] = [
     sensitive: true,
     necessity: "expected",
     note:
-      "No dependents table. One contact is typed \"Client's Dependent\", which is a label, not a link. " +
-      "Blocks the OBBBA $2,200 child tax credit and the $500 other-dependent credit.",
+      "Lives in tax_dependent_years (scripts/404), one row per dependent per tax year. " +
+      "loadClientProfile resolves this live rather than from a contacts column — see " +
+      "resolveHouseholdFields below.",
   },
   {
     key: "bank_account",
@@ -236,6 +239,59 @@ const SELECT_COLUMNS = [
 ].join(", ")
 
 /**
+ * Live spouse/dependent lookup backing the "spouse" and "dependents" rows
+ * in PROFILE_FIELD_MAP. Pulled out of loadClientProfile so
+ * profileCoverageReport (population-level) can eventually reuse the same
+ * logic without duplicating the query shape.
+ *
+ * "Current spouse" means an unmirrored or mirrored row on
+ * tax_person_relationships_both with relationship_type = 'spouse' and no
+ * effective_to — a former_spouse row, or one ended via effective_to, does
+ * not count. Dependents are scoped to `taxYear` since a household's
+ * dependents change year to year.
+ */
+async function resolveHouseholdFields(
+  sb: SupabaseClient,
+  contactId: string,
+  taxYear: number,
+): Promise<{
+  hasCurrentSpouse: boolean
+  spouseDisplayName: string | null
+  dependentCount: number
+}> {
+  const [spouseRes, depRes] = await Promise.all([
+    sb
+      .from("tax_person_relationships_both")
+      .select("object_contact_id, contacts:object_contact_id(full_name, first_name, last_name)")
+      .eq("subject_contact_id", contactId)
+      .eq("relationship_type", "spouse")
+      .is("effective_to", null)
+      .limit(1)
+      .maybeSingle(),
+    sb
+      .from("tax_dependent_years")
+      .select("id", { count: "exact", head: true })
+      .eq("claimed_by_contact_id", contactId)
+      .eq("tax_year", taxYear),
+  ])
+
+  const spouseRow = spouseRes.data as unknown as {
+    contacts?: { full_name?: string | null; first_name?: string | null; last_name?: string | null } | null
+  } | null
+  const spouseContact = spouseRow?.contacts ?? null
+  const spouseDisplayName =
+    spouseContact?.full_name ??
+    [spouseContact?.first_name, spouseContact?.last_name].filter(Boolean).join(" ") ??
+    null
+
+  return {
+    hasCurrentSpouse: spouseRow !== null,
+    spouseDisplayName: spouseRow !== null ? spouseDisplayName || null : null,
+    dependentCount: depRes.count ?? 0,
+  }
+}
+
+/**
  * Read a client profile and report how well it covers the 1040 header.
  *
  * Requires an admin client: `ssn_encrypted`, `drivers_license` and
@@ -249,6 +305,14 @@ const SELECT_COLUMNS = [
 export async function loadClientProfile(
   sb: SupabaseClient,
   contactId: string,
+  /**
+   * Which tax year to check tax_dependent_years against. Dependents are
+   * claimed per year, so "present" without a year is meaningless — callers
+   * doing filing-season readiness should always pass the year in question.
+   * Defaults to the current calendar year for callers (like
+   * profileCoverageReport) that just want a population-level snapshot.
+   */
+  taxYear: number = new Date().getFullYear(),
 ): Promise<ClientProfileAlignment | null> {
   const { data, error } = await sb
     .from("contacts")
@@ -261,7 +325,33 @@ export async function loadClientProfile(
   // The generated types can't narrow a runtime-joined column list, so the
   // row comes back as a generic bag.
   const row = data as unknown as Record<string, unknown>
+  const household = await resolveHouseholdFields(sb, contactId, taxYear)
+
   const fields: ProfileFieldState[] = PROFILE_FIELD_MAP.map((m) => {
+    // spouse/dependents have no contacts column — they live in
+    // tax_person_relationships / tax_dependent_years (scripts/404) and are
+    // resolved live above instead of read off `row`.
+    if (m.key === "spouse" || m.key === "dependents") {
+      const present = m.key === "spouse" ? household.hasCurrentSpouse : household.dependentCount > 0
+      return {
+        key: m.key,
+        label: m.label,
+        contactColumn: m.contactColumn,
+        necessity: m.necessity,
+        sensitive: m.sensitive,
+        note: m.note,
+        display: present
+          ? m.key === "spouse"
+            ? household.spouseDisplayName
+            : `${household.dependentCount} for ${taxYear}`
+          : null,
+        present,
+        // Now modelled — counts toward coverage like any other field
+        // instead of being excluded as "not this client's fault."
+        unmodelled: false,
+      }
+    }
+
     const raw = m.contactColumn ? row[m.contactColumn] : null
     const present = raw !== null && raw !== undefined && String(raw).trim() !== ""
 
