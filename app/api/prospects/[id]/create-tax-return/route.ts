@@ -39,6 +39,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { requireLeadership } from "@/lib/auth/require-leadership"
+import { refreshClientYearEngagements } from "@/lib/proconnect/sync"
 import { createTaxReturn, RETURN_TYPE_MAP, SUPPORTED_RETURN_TYPES } from "@/lib/proconnect/client"
 
 function isUuid(s: string): boolean {
@@ -227,12 +228,46 @@ export async function POST(
       )
     }
 
+    // Intuit answers 201 with an EMPTY BODY — confirmed live 2026-08-24,
+    // intuit-tid 1-6a8ef82e-2563e6160fdfe1ea6745440c. So the id of the
+    // return we just created is NOT in the response, and reading it off
+    // `result.data` always yields null.
+    //
+    // That matters more here than it would elsewhere: there is no delete
+    // endpoint, so this audit row is the only record that the return
+    // exists, and scripts/401 exists specifically so "why does this client
+    // have an extra return" stays answerable. A row that says a return was
+    // created but not WHICH return does not answer it.
+    //
+    // Resolve it instead: re-sync that client's engagements for the year
+    // (one API call, the same one the TaxReturn webhook makes) and match on
+    // the name we asked for. Best-effort — a failure here must not fail the
+    // request, because the return already exists at Intuit either way.
     const created = (result.data ?? {}) as Record<string, unknown>
-    const createdEngagementId =
+    let createdEngagementId =
       (created.engagementId as string) ||
       (created.id as string) ||
       (created.returnId as string) ||
       null
+
+    if (!createdEngagementId) {
+      try {
+        await refreshClientYearEngagements(resolvedClientId, payload.year)
+        const { data: match } = await supabase
+          .from("proconnect_engagements")
+          .select("engagement_id")
+          .eq("proconnect_client_id", resolvedClientId)
+          .eq("tax_year", payload.year)
+          .eq("raw_json->>name", payload.name)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        createdEngagementId = match?.engagement_id ?? null
+      } catch {
+        // Leave it null. The next nightly sync will pick the return up;
+        // the audit row still records the request and the HTTP result.
+      }
+    }
 
     await supabase
       .from("proconnect_tax_return_creation_jobs")

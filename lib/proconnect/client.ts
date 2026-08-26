@@ -382,10 +382,17 @@ export type CreateTaxReturnPayload = {
  * Create a new tax return (engagement) for an existing ProConnect client.
  * POST /v2/clients/oii-client/{clientOiiId}/returns
  *
- * ⚠️ NOT in the authoritative Phase 1 v3 spec — see the CREATE_RETURN_BASE_URL
- * comment above. This is our best inference from a secondary doc, unverified
- * by a live call. Do not treat a failure here as conclusive; it may mean the
- * endpoint doesn't exist yet rather than that the request was wrong.
+ * ✅ CONFIRMED LIVE 2026-08-24. HTTP 201 against client 9341454959629628
+ * (TY2025 IND), intuit-tid 1-6a8ef82e-2563e6160fdfe1ea6745440c. The host
+ * and path below are correct as written, despite not appearing in the
+ * authoritative Phase 1 v3 spec — that document covers only Export and
+ * Import. Verified with scripts/403-verify-create-tax-return.ts.
+ *
+ * ⚠️ 201 comes back with an EMPTY BODY. There is no engagement id in the
+ * response, so the id of the return you just created has to be resolved
+ * afterwards by re-syncing that client's engagements for the year and
+ * matching on the requested name. Callers that need the id must do that;
+ * reading it off the response will always yield null.
  *
  * Also — there is no corresponding delete endpoint documented anywhere. A
  * successful call here cannot be undone through the API; callers MUST
