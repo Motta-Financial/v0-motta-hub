@@ -134,8 +134,10 @@ export const PROFILE_FIELD_MAP: ProfileFieldMapping[] = [
     sensitive: true,
     necessity: "required",
     note:
-      "The Hub has no household model. tax_client_relationships links people to ORGANISATIONS " +
-      "(ownership), not to each other. A joint return cannot be assembled from the profile.",
+      "Lives in tax_person_relationships (scripts/404), read through " +
+      "tax_person_relationships_both so it resolves from either side of the link. " +
+      "loadClientProfile resolves this live rather than from a contacts column — see " +
+      "resolveHouseholdFields below.",
   },
   {
     key: "dependents",
@@ -144,8 +146,9 @@ export const PROFILE_FIELD_MAP: ProfileFieldMapping[] = [
     sensitive: true,
     necessity: "expected",
     note:
-      "No dependents table. One contact is typed \"Client's Dependent\", which is a label, not a link. " +
-      "Blocks the OBBBA $2,200 child tax credit and the $500 other-dependent credit.",
+      "Lives in tax_dependent_years (scripts/404), one row per dependent per tax year. " +
+      "loadClientProfile resolves this live rather than from a contacts column — see " +
+      "resolveHouseholdFields below.",
   },
   {
     key: "bank_account",

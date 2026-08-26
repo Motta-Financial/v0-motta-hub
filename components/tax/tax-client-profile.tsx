@@ -68,6 +68,8 @@ import { SensitiveValue } from "@/components/security/sensitive-value"
 import { ClientRelationshipsCard } from "@/components/tax/client-relationships-card"
 import { TaxFinancialTrendChart } from "@/components/tax/tax-financial-trend-chart"
 import { TaxProfilePanel } from "@/components/tax/tax-profile-panel"
+import { HouseholdSpouseCard } from "@/components/tax/household-spouse-card"
+import { HouseholdDependentsCard } from "@/components/tax/household-dependents-card"
 
 type TaxProfileResponse = {
   client: {
@@ -504,7 +506,12 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
 
       {/* ─── Tabbed Detail ─── */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-2 md:grid-cols-4">
+        <TabsList
+          className={cn(
+            "grid w-full grid-cols-2",
+            client.clientType === "PERSON" ? "md:grid-cols-5" : "md:grid-cols-4",
+          )}
+        >
           <TabsTrigger value="returns">
             Returns
             {summary.totalReturns > 0 && (
@@ -521,6 +528,9 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
               </Badge>
             )}
           </TabsTrigger>
+          {client.clientType === "PERSON" && (
+            <TabsTrigger value="household">Household</TabsTrigger>
+          )}
           <TabsTrigger value="relationships">Relationships</TabsTrigger>
           <TabsTrigger value="identifiers">IDs</TabsTrigger>
         </TabsList>
@@ -543,6 +553,25 @@ export function TaxClientProfile({ clientId }: { clientId: string }) {
         <TabsContent value="documents" className="mt-4">
           <DocumentsTable documents={documents} />
         </TabsContent>
+
+        {client.clientType === "PERSON" && (
+          <TabsContent value="household" className="mt-4 space-y-4">
+            {hubLinkage?.internalClientId ? (
+              <>
+                <HouseholdSpouseCard contactId={hubLinkage.internalClientId} />
+                <HouseholdDependentsCard contactId={hubLinkage.internalClientId} />
+              </>
+            ) : (
+              <Card>
+                <CardContent className="p-8 text-center text-sm text-muted-foreground">
+                  This client isn&apos;t linked to a Hub contact yet, so spouse and
+                  dependent records have nowhere to attach. Link it from the Identifiers
+                  tab first.
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+        )}
 
         <TabsContent value="relationships" className="mt-4">
           <ClientRelationshipsCard clientId={clientId} />
