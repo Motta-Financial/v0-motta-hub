@@ -62,7 +62,7 @@ explicitly rather than rounded up to "done."
 | `GET /v1/custom-status?source=ITO` | ✅ | ✅ **Live** | 40-status catalog; 15 in active use |
 | `lockInfo.locked` pre-check before Import | ✅ | ❌ **Not built** | Corrected 2026-08-20: `lockInfo` is **never read** — `grep -rn lockInfo` over the codebase returns zero hits in `.ts`/`.tsx`. The previous row ("Built; 622 of 908 currently locked") described a check that does not exist. The Hub's actual pre-write gate is `lib/proconnect/efile-lock.ts`, a *different* predicate: it locks on an accepted RETURN filing rather than on Intuit's headline status, deliberately, because the headline produced 66 false locks. Whether to also fetch and trust `lockInfo` verbatim is an open question for Intuit, not a rendering gap. |
 | `taxFiling.filings[]` → e-file status | ✅ | ✅ **Live** | **Was never an Intuit gap.** Empty on the LIST endpoint (908 of 908, `include-efiles=true` is a no-op there); populated on the single-engagement GET. Corrected 2026-07-28 — see below. |
-| `esignature.envelopes[]` | ✅ | ⚠️ **Built, no data** | Present on all 908 list rows, populated on none. Worth re-testing against the single-engagement GET before calling this an Intuit gap — that assumption was wrong for `taxFiling`. |
+| `esignature.envelopes[]` | ✅ | ✅ **Live 2026-08-24** | **Was never an Intuit gap** — the second item to rest on the present-but-empty inference, and wrong for the same reason as `taxFiling.filings[]`. Measured with `scripts/402`: esignature key present 15/15, non-empty envelopes **12/15**. Empty on the LIST endpoint, populated on `GET /v2/engagements/{id}`. Persisted by `hydrateEngagementEfile()` from the response it already fetches — **zero additional API calls** (migration 405). |
 
 ### Data Service — Create / Export / Import
 
@@ -384,9 +384,16 @@ correct signature verification (5,659 events) · nightly full sync in 13
 seconds, 6/6 nights clean · client-identity bridge with DB-level
 uniqueness · tax dashboard · dryRun-gated, PII-redacted Import pipeline.
 
-**Blocked by Intuit:** Export 403 on every call (provisioning) · the IVCS/FRF
-catalog (Layer B, and therefore Layer C) · `TaxReturnWorkStatus` webhooks
-never delivered · Data Service base URL unconfirmed.
+**Blocked by Intuit:** `TaxReturnWorkStatus` webhooks never delivered · no
+delete/clear on Import (defect 3, acknowledged, no date) · zero M-series rows
+in the delivered catalog.
+
+Everything else once on this list came off it. Export, Import, Create Tax
+Return and `esignature.envelopes[]` were each attributed to Intuit and each
+turned out to be ours: two wrong base URLs, one endpoint nobody had tried, and
+two fields read off the wrong endpoint. **Nothing has yet been correctly
+diagnosed as an Intuit blocker on first inference.** That is worth remembering
+the next time a payload looks empty or a call returns 403.
 
 **No longer blocked:** `taxFiling.filings[]` was on that list on the strength
 of "the key is present on all 908 engagements and empty on every one." It is
