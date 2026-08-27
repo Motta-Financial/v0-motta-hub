@@ -374,7 +374,8 @@ async function syncClientYear(
           form_type: formType,
           status: (eng.status as string) || null,
           // efile_status is deliberately absent — see mapEngagementRow.
-          work_status: (eng.workStatus as string) || null,
+          work_status:
+            ((eng.customStatus ?? eng.workStatus) as string) || null,
           raw_json: engagement,
           synced_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -633,6 +634,14 @@ interface RawEngagement {
   name?: string
   state?: string
   status?: string
+  /**
+   * Intuit's field is `customStatus`, NOT `workStatus`. We read the wrong key
+   * from the start, so work_status was silently null on every engagement —
+   * 923 of 923 as of 2026-08-24, while 702 of them carried a real
+   * customStatus. `workStatus` is kept only to tolerate a payload that ever
+   * carries it; `customStatus` is the one that exists.
+   */
+  customStatus?: string
   workStatus?: string
   userDefinedStatus?: string
   assignee?: { profileId?: string; authId?: string }
@@ -881,7 +890,7 @@ function mapEngagementRow(raw: unknown, fallbackYear: number) {
     engagement_name: eng.name ?? null,
     engagement_state: eng.state ?? null,
     status: eng.status ?? null,
-    work_status: eng.workStatus ?? null,
+    work_status: eng.customStatus ?? eng.workStatus ?? null,
     user_defined_status_id: eng.userDefinedStatus ?? null,
     assignee_profile_id: eng.assignee?.profileId ?? null,
     assignee_auth_id: eng.assignee?.authId ?? null,
