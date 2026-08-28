@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
+import { isHiddenFromTommyBallot } from "@/lib/tommy-awards/hidden-members"
 
 /**
  * GET /api/tommy-awards/ballot
@@ -18,16 +19,18 @@ export async function GET(request: NextRequest) {
   const supabase = await createClient()
 
   if (type === "init") {
-    const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski", "Matthew Pereira", "Mark Dwyer"]
     const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
+    const EXCLUDED_ROLES = ["Company", "Alumni"]
 
     const [membersResult, weeksResult] = await Promise.all([
+      // Role is filtered in JS rather than with `.not("role", "eq", ...)`:
+      // that PostgREST filter evaluates to NULL for members whose role
+      // isn't set yet, which silently dropped brand-new hires from the
+      // ballot.
       supabase
         .from("team_members")
         .select("id, full_name, email, avatar_url, role")
         .eq("is_active", true)
-        .not("role", "eq", "Company")
-        .not("role", "eq", "Alumni")
         .order("full_name"),
       supabase
         .from("tommy_award_weeks")
@@ -43,7 +46,10 @@ export async function GET(request: NextRequest) {
     }
 
     const filtered = (membersResult.data || []).filter(
-      (m) => !HIDDEN_MEMBERS.includes(m.full_name) && !COMBINED_VOTERS.includes(m.full_name),
+      (m) =>
+        !EXCLUDED_ROLES.includes(m.role ?? "") &&
+        !isHiddenFromTommyBallot(m.full_name) &&
+        !COMBINED_VOTERS.includes(m.full_name),
     )
     const gtVoter = { id: "P24", full_name: "P24", email: "", avatar_url: null, role: "Combined Voter" }
     const members = [...filtered, gtVoter].sort((a, b) => a.full_name.localeCompare(b.full_name))

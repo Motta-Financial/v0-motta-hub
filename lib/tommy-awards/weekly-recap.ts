@@ -25,6 +25,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { assignDenseRanks } from "@/lib/tommy-awards-ranking"
+import { isHiddenFromTommyAwards } from "@/lib/tommy-awards/hidden-members"
 import { generateText } from "ai"
 import { EMAIL_PROSE_MODEL } from "@/lib/ai/models"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
@@ -190,9 +191,8 @@ export async function composeWeeklyRecap(
 
   // Hidden members are excluded from the leaderboard, then dense ranks
   // (1, 1, 2, 3) handle ties so a 4-way tie at 3rd keeps all four.
-  const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
   const sortedLeaderboard = Object.entries(voteMap)
-    .filter(([name]) => !HIDDEN_MEMBERS.includes(name))
+    .filter(([name]) => !isHiddenFromTommyAwards(name))
     .map(([name, stats]) => ({ name, ...stats }))
     .sort((a, b) => b.totalPoints - a.totalPoints)
 

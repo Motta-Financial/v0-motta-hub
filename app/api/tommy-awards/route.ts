@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
 import { assignDenseRanks, awardWeeklyPodiumCredit } from "@/lib/tommy-awards-ranking"
 import { fetchAllPaged } from "@/lib/supabase/fetch-all"
+import { isHiddenFromTommyAwards } from "@/lib/tommy-awards/hidden-members"
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
@@ -61,9 +62,7 @@ export async function GET(request: NextRequest) {
 
     // Get team members for filter dropdown
     if (type === "team_members") {
-      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
       // Ganesh Vasan and Thameem JA are combined as "P24" (formerly "G&T")
-      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
       const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
       
       const { data, error } = await supabase
@@ -75,7 +74,7 @@ export async function GET(request: NextRequest) {
       
       // Filter out hidden members and combined voters
       const filteredMembers = (data || []).filter(
-        (m) => !HIDDEN_MEMBERS.includes(m.full_name) && !COMBINED_VOTERS.includes(m.full_name)
+        (m) => !isHiddenFromTommyAwards(m.full_name) && !COMBINED_VOTERS.includes(m.full_name)
       )
       
       // Add the combined "P24" entry
@@ -260,14 +259,11 @@ export async function GET(request: NextRequest) {
         }
       })
 
-      // Hidden from Tommy Awards: Grace Cha, Beth Nietupski
-      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
-
       // Dense rank so genuinely-tied entries share the same `rank`. The
       // tie predicate matches the sort: two entries share rank only when
       // their total_points are identical.
       const sortedEntries = Object.values(pointsMap)
-        .filter((entry) => !HIDDEN_MEMBERS.includes(entry.name))
+        .filter((entry) => !isHiddenFromTommyAwards(entry.name))
         .sort((a, b) => b.total_points - a.total_points)
       const leaderboard = assignDenseRanks(
         sortedEntries,
@@ -279,7 +275,6 @@ export async function GET(request: NextRequest) {
 
     // Year-to-date stats: tracks weeks finished 1st/2nd/3rd based on weekly point totals
     if (type === "ytd_stats") {
-      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
       // Ganesh Vasan and Thameem JA are combined as "P24" (legacy "G&T" rolls up too)
       const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA", "G&T"]
       const normalizeName = (name: string) => COMBINED_VOTERS.includes(name) ? "P24" : name
@@ -443,7 +438,7 @@ export async function GET(request: NextRequest) {
       // — that's almost always rare enough that ties surface naturally,
       // but when they do happen the shared `rank` correctly signals it.
       const sortedYtd = Object.values(memberStats)
-        .filter((entry) => !HIDDEN_MEMBERS.includes(entry.name))
+        .filter((entry) => !isHiddenFromTommyAwards(entry.name))
         .sort((a, b) => {
           if (b.total_points !== a.total_points) return b.total_points - a.total_points
           if (b.weeks_in_first !== a.weeks_in_first) return b.weeks_in_first - a.weeks_in_first
@@ -473,7 +468,6 @@ export async function GET(request: NextRequest) {
     // Combined voters Ganesh + Thameem are normalized to "P24"; the pair's
     // start_date is the EARLIER of the two.
     if (type === "tommy_stats") {
-      const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
       const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA", "G&T"]
       const normalizeName = (name: string) =>
         COMBINED_VOTERS.includes(name) ? "P24" : name
@@ -531,7 +525,7 @@ export async function GET(request: NextRequest) {
       // Ganesh/Thameem's start dates.
       const startDateByName: Record<string, string | null> = {}
       ;(memberRows || []).forEach((m: any) => {
-        if (HIDDEN_MEMBERS.includes(m.full_name)) return
+        if (isHiddenFromTommyAwards(m.full_name)) return
         const normalized = normalizeName(m.full_name)
         const sd = m.start_date ? String(m.start_date).slice(0, 10) : null
         if (
@@ -681,7 +675,7 @@ export async function GET(request: NextRequest) {
       // since those still earned points). Hidden members are excluded so
       // shares add up to 100% across the visible roster.
       const firmTotalVotes = Object.values(memberStats)
-        .filter((m) => !HIDDEN_MEMBERS.includes(m.name))
+        .filter((m) => !isHiddenFromTommyAwards(m.name))
         .reduce(
           (acc, m) =>
             acc +
@@ -718,7 +712,7 @@ export async function GET(request: NextRequest) {
       })
 
       const stats = Object.values(memberStats)
-        .filter((m) => !HIDDEN_MEMBERS.includes(m.name))
+        .filter((m) => !isHiddenFromTommyAwards(m.name))
         .map((m) => {
           const startDate = startDateByName[m.name] || null
           const effectiveStart =

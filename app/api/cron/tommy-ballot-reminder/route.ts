@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/server"
 import { buildTommyReminderHtml, sendCategoryEmail } from "@/lib/email"
 import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 import { firmConfigSync } from "@/lib/firm-settings"
+import { isHiddenFromTommyAwards } from "@/lib/tommy-awards/hidden-members"
 
 /**
  * Vercel Cron endpoint that emails every active team member a Tommy Awards
@@ -68,7 +69,6 @@ export async function GET(request: Request) {
     // Fetch all active team members; we exclude members who are hidden from
     // the Tommy Awards experience to keep the email list clean.
     // Ganesh Vasan and Thameem JA vote together as "P24" — they get a combined email.
-    const HIDDEN_MEMBERS = ["Grace Cha", "Beth Nietupski"]
     const COMBINED_VOTERS = ["Ganesh Vasan", "Thameem JA"]
     
     const { data: members, error } = await supabase
@@ -83,7 +83,7 @@ export async function GET(request: Request) {
       (m) => m.email && COMBINED_VOTERS.includes(m.full_name),
     )
     const regularMembers = (members || []).filter(
-      (m) => m.email && !HIDDEN_MEMBERS.includes(m.full_name) && !COMBINED_VOTERS.includes(m.full_name),
+      (m) => m.email && !isHiddenFromTommyAwards(m.full_name) && !COMBINED_VOTERS.includes(m.full_name),
     )
 
     // Send one personalized email per recipient so the greeting is correct.
