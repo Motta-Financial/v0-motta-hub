@@ -113,6 +113,7 @@ import { clientTypeBadgeClass, type ClientType } from "@/lib/client-type"
 import { ContactEditSheet } from "@/components/clients/contact-edit-sheet"
 import { OrganizationEditSheet } from "@/components/clients/organization-edit-sheet"
 import { ChangeHistoryDialog } from "@/components/shared/change-history-dialog"
+import { ClientTimelineTab } from "@/components/clients/client-timeline-tab"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types matching /api/clients/[id] response
@@ -763,8 +764,9 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         bar can dock cleanly to the top of the viewport. */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <div className="sticky top-0 z-20 -mx-6 px-6 py-2 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b border-stone-200">
-          <TabsList className="grid w-full grid-cols-3 sm:grid-cols-7">
+          <TabsList className="grid w-full grid-cols-3 sm:grid-cols-8">
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="timeline">Timeline</TabsTrigger>
           <TabsTrigger value="communications">
             Comms
             {stats.totalEmails + stats.totalNotes > 0 && (
@@ -797,6 +799,10 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
 
         <TabsContent value="overview" className="mt-4">
           <OverviewTab data={data} onJump={setActiveTab} />
+        </TabsContent>
+
+        <TabsContent value="timeline" className="mt-4">
+          <ClientTimelineTab data={data} />
         </TabsContent>
 
         <TabsContent value="communications" className="mt-4">
@@ -2789,7 +2795,7 @@ function IntakesAndDebriefsCard({
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ──────────────────��──────────────────────────────────────────────────────────
 // Projects tab
 // ───────────────────────���─────────────────────────────────────────────────────
 
