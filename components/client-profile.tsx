@@ -33,7 +33,7 @@
  * old file so other code that imports from here keeps compiling.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { format, formatDistanceToNow, parseISO } from "date-fns"
 import { toast } from "sonner"
 import {
@@ -42,7 +42,11 @@ import {
   Briefcase,
   Building2,
   Calendar,
+  Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   DollarSign,
   ExternalLink,
@@ -60,11 +64,14 @@ import {
   Plus,
   Receipt,
   RefreshCw,
+  Search,
+  Send,
   StickyNote,
   Tag,
   User,
   Users,
   Video,
+  X,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -77,10 +84,19 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 import { summarizePayments, isPaid } from "@/lib/ignition/payments"
@@ -1398,11 +1414,12 @@ function CommunicationsTab({
 
   return (
     <Tabs value={tab} onValueChange={onTabChange} className="w-full">
-      <TabsList className="grid grid-cols-4 w-full max-w-2xl">
+      <TabsList className="grid grid-cols-5 w-full max-w-3xl">
         <TabsTrigger value="emails">
           Emails
           {data.emails.length > 0 && <CountChip n={data.emails.length} />}
         </TabsTrigger>
+        <TabsTrigger value="messages">Messages</TabsTrigger>
         <TabsTrigger value="notes">
           Notes
           {noteCount > 0 && <CountChip n={noteCount} />}
@@ -1418,7 +1435,19 @@ function CommunicationsTab({
       </TabsList>
 
       <TabsContent value="emails" className="mt-4">
-        <EmailsCard emails={data.emails} />
+        <EmailThreadsCard
+          clientId={data.client.id}
+          clientName={data.client.clientName}
+          workItems={data.workItems}
+          teamMembers={data.teamMembers}
+        />
+      </TabsContent>
+      <TabsContent value="messages" className="mt-4">
+        <PortalMessagesCard
+          clientId={data.client.id}
+          clientName={data.client.clientName}
+          teamMembers={data.teamMembers}
+        />
       </TabsContent>
       <TabsContent value="notes" className="mt-4">
         <NotesCard
@@ -1439,52 +1468,817 @@ function CommunicationsTab({
   )
 }
 
-function EmailsCard({ emails }: { emails: ClientBundle["emails"] }) {
-  if (emails.length === 0) return <EmptyCard message="No emails on file for this client." />
+// ─────────────────────────────────────────────────────────────────────────────
+// Communications — mock data helpers
+//
+// Neither an email-thread/project-assignment schema nor a Hub-side portal
+// message API exist yet, so both panels below are seeded with deterministic
+// mock data (seeded by client id, so a given client always sees the same
+// "history" across reloads) per the design spec. Swap the generators for
+// real fetches once those backends exist — the panel components themselves
+// don't care where the data came from.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function hashString(input: string): number {
+  let h = 0
+  for (let i = 0; i < input.length; i++) {
+    h = (h * 31 + input.charCodeAt(i)) | 0
+  }
+  return Math.abs(h)
+}
+
+function mulberry32(seed: number) {
+  let a = seed
+  return () => {
+    a |= 0
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function isActiveProjectStatus(status: string | null): boolean {
+  const s = (status || "").toLowerCase()
+  return s !== "completed" && s !== "cancelled" && s !== "canceled"
+}
+
+interface EmailMessageMock {
+  id: string
+  fromName: string
+  fromEmail: string
+  direction: "inbound" | "outbound"
+  sentAt: string
+  bodyText: string
+  quotedText: string | null
+}
+
+interface EmailThreadMock {
+  id: string
+  subject: string
+  otherPartyName: string
+  otherPartyEmail: string
+  unread: boolean
+  seedProjectId: string | null
+  messages: EmailMessageMock[]
+  lastActivityAt: string
+}
+
+const EMAIL_THREAD_TEMPLATES: Array<{
+  subject: string
+  exchange: Array<{ from: "client" | "firm"; body: string }>
+}> = [
+  {
+    subject: "2024 W-2s and 1099s",
+    exchange: [
+      {
+        from: "client",
+        body: "Attached are the W-2s from both employers along with the 1099-NEC for the consulting work I did in the spring.",
+      },
+      {
+        from: "firm",
+        body: "Got everything, thank you! We'll get these entered and let you know if anything else is missing.",
+      },
+    ],
+  },
+  {
+    subject: "Question about estimated tax payments",
+    exchange: [
+      {
+        from: "client",
+        body: "Do I need to make an estimated payment for Q4, or are we on track after the Q3 payment?",
+      },
+      {
+        from: "firm",
+        body: "Based on your projected income, one more payment of $1,850 by January 15th will keep you square. I'll send the voucher over today.",
+      },
+      {
+        from: "client",
+        body: "Perfect, thank you for checking on that.",
+      },
+    ],
+  },
+  {
+    subject: "Signed engagement letter",
+    exchange: [
+      {
+        from: "firm",
+        body: "Here's the engagement letter for this year — just needs a signature whenever you get a chance.",
+      },
+      {
+        from: "client",
+        body: "Signed and attached. Let me know if you need anything else to get started.",
+      },
+    ],
+  },
+  {
+    subject: "Missing brokerage statement",
+    exchange: [
+      {
+        from: "firm",
+        body: "We're missing the year-end 1099-B from Fidelity — would you be able to pull that from your account, or should we request it directly?",
+      },
+      {
+        from: "client",
+        body: "I'll log in and grab it tonight, should have it to you by tomorrow.",
+      },
+    ],
+  },
+  {
+    subject: "Re: Bookkeeping reconciliation",
+    exchange: [
+      {
+        from: "firm",
+        body: "A handful of September transactions are still uncategorized on our end — mostly a few Amex charges. Mind taking a look when you have a minute?",
+      },
+      {
+        from: "client",
+        body: "Sure, most of those should be office supplies. I'll go through and tag them today.",
+      },
+      {
+        from: "firm",
+        body: "Perfect, that'll close out the quarter cleanly. Thank you!",
+      },
+    ],
+  },
+  {
+    subject: "Home office deduction question",
+    exchange: [
+      {
+        from: "client",
+        body: "I moved my office in June — does that change how we calculate the square footage for the home office deduction?",
+      },
+      {
+        from: "firm",
+        body: "It does, we'll prorate it across both spaces. Can you send the square footage and dates for the new office?",
+      },
+    ],
+  },
+  {
+    subject: "K-1 from the partnership",
+    exchange: [
+      {
+        from: "client",
+        body: "Just received the K-1 from Meridian Partners, forwarding it along for the return.",
+      },
+      {
+        from: "firm",
+        body: "Thanks for sending that over — this was the last piece we needed. We'll have a draft ready by end of week.",
+      },
+    ],
+  },
+  {
+    subject: "Payroll setup for new hire",
+    exchange: [
+      {
+        from: "client",
+        body: "We brought on a part-time bookkeeper starting next month, need to get her added to payroll.",
+      },
+      {
+        from: "firm",
+        body: "Congrats on the hire! Send over her W-4 and direct deposit form and we'll have her set up before her first pay period.",
+      },
+    ],
+  },
+]
+
+function generateMockEmailThreads(
+  clientId: string,
+  clientName: string,
+  activeProjects: Array<{ id: string; title: string }>,
+  teamMembers: Array<{ name: string; email: string | null }>,
+): EmailThreadMock[] {
+  const rng = mulberry32(hashString(clientId || clientName || "client"))
+  const threadCount = 3 + Math.floor(rng() * 4) // 3–6 threads
+  const shuffled = [...EMAIL_THREAD_TEMPLATES].sort(() => rng() - 0.5)
+  const staffName = teamMembers[0]?.name || "Motta Financial Team"
+  const clientSlug = (clientName || "client")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/^\.+|\.+$/g, "")
+  const clientEmail = `${clientSlug || "client"}@example.com`
+
+  const now = Date.now()
+  const threads: EmailThreadMock[] = shuffled.slice(0, threadCount).map((tpl, idx) => {
+    const daysAgo = idx * 4 + Math.floor(rng() * 3)
+    let cursor = now - daysAgo * 24 * 60 * 60 * 1000
+    let prevBody: string | null = null
+
+    const messages: EmailMessageMock[] = tpl.exchange.map((step, stepIdx) => {
+      cursor += stepIdx === 0 ? 0 : (1 + Math.floor(rng() * 20)) * 60 * 60 * 1000
+      const isClient = step.from === "client"
+      const msg: EmailMessageMock = {
+        id: `${clientId}-thread-${idx}-msg-${stepIdx}`,
+        fromName: isClient ? clientName : staffName,
+        fromEmail: isClient ? clientEmail : "team@motta.cpa",
+        direction: isClient ? "inbound" : "outbound",
+        sentAt: new Date(cursor).toISOString(),
+        bodyText: step.body,
+        quotedText: prevBody,
+      }
+      prevBody = step.body
+      return msg
+    })
+
+    const seedProjectId =
+      activeProjects.length > 0 && rng() > 0.45
+        ? activeProjects[Math.floor(rng() * activeProjects.length)].id
+        : null
+
+    return {
+      id: `${clientId}-thread-${idx}`,
+      subject: tpl.subject,
+      otherPartyName: clientName,
+      otherPartyEmail: clientEmail,
+      unread: idx < 2 && rng() > 0.5,
+      seedProjectId,
+      messages,
+      lastActivityAt: messages[messages.length - 1].sentAt,
+    }
+  })
+
+  return threads.sort(
+    (a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
+  )
+}
+
+function EmailThreadsCard({
+  clientId,
+  clientName,
+  workItems,
+  teamMembers,
+}: {
+  clientId: string
+  clientName: string
+  workItems: ClientBundle["workItems"]
+  teamMembers: ClientBundle["teamMembers"]
+}) {
+  const activeProjects = useMemo(
+    () =>
+      workItems
+        .filter((w) => isActiveProjectStatus(w.status))
+        .map((w) => ({ id: w.id, title: w.title || "(untitled project)" })),
+    [workItems],
+  )
+
+  const [loading, setLoading] = useState(true)
+  const [threads, setThreads] = useState<EmailThreadMock[]>([])
+  const [assignments, setAssignments] = useState<Record<string, string | null>>({})
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
+  const [filter, setFilter] = useState<string>("all")
+  const [search, setSearch] = useState("")
+
+  useEffect(() => {
+    setLoading(true)
+    setSelectedThreadId(null)
+    const timer = setTimeout(() => {
+      const generated = generateMockEmailThreads(clientId, clientName, activeProjects, teamMembers)
+      setThreads(generated)
+      const seeded: Record<string, string | null> = {}
+      for (const t of generated) seeded[t.id] = t.seedProjectId
+      setAssignments(seeded)
+      setLoading(false)
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, 550)
+    return () => clearTimeout(timer)
+  }, [clientId])
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return threads.filter((t) => {
+      const projectId = assignments[t.id] ?? null
+      if (filter === "unassigned" && projectId) return false
+      if (filter !== "all" && filter !== "unassigned" && projectId !== filter) return false
+      if (q) {
+        const haystack = `${t.subject} ${t.messages.map((m) => m.bodyText).join(" ")}`.toLowerCase()
+        if (!haystack.includes(q)) return false
+      }
+      return true
+    })
+  }, [threads, assignments, filter, search])
+
+  if (loading) return <EmailThreadsSkeleton />
+
+  const selectedThread = threads.find((t) => t.id === selectedThreadId) || null
+
+  if (selectedThread) {
+    return (
+      <EmailThreadDetail
+        thread={selectedThread}
+        projectId={assignments[selectedThread.id] ?? null}
+        activeProjects={activeProjects}
+        onAssign={(pid) =>
+          setAssignments((prev) => ({ ...prev, [selectedThread.id]: pid }))
+        }
+        onBack={() => setSelectedThreadId(null)}
+      />
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <FilterPill active={filter === "all"} onClick={() => setFilter("all")}>
+            All
+          </FilterPill>
+          <FilterPill active={filter === "unassigned"} onClick={() => setFilter("unassigned")}>
+            Unassigned
+          </FilterPill>
+          {activeProjects.map((p) => (
+            <FilterPill key={p.id} active={filter === p.id} onClick={() => setFilter(p.id)}>
+              {p.title}
+            </FilterPill>
+          ))}
+        </div>
+        <div className="relative w-full sm:w-64">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search subject or body"
+            className="h-8 pl-8 text-sm"
+          />
+        </div>
+      </div>
+
+      {threads.length === 0 ? (
+        <EmptyCard message="No email threads on file for this client." />
+      ) : filtered.length === 0 ? (
+        <EmptyCard message="No emails match your filters." />
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            <ScrollArea className="max-h-[700px]">
+              <div className="divide-y">
+                {filtered.map((t) => (
+                  <EmailThreadRow
+                    key={t.id}
+                    thread={t}
+                    projectName={
+                      activeProjects.find((p) => p.id === assignments[t.id])?.title || null
+                    }
+                    onClick={() => setSelectedThreadId(t.id)}
+                  />
+                ))}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+function FilterPill({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "h-7 rounded-full border px-3 text-xs font-medium transition-colors",
+        active
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-border bg-background text-muted-foreground hover:bg-muted",
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+function EmailThreadRow({
+  thread,
+  projectName,
+  onClick,
+}: {
+  thread: EmailThreadMock
+  projectName: string | null
+  onClick: () => void
+}) {
+  const last = thread.messages[thread.messages.length - 1]
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-start gap-3 p-4 text-left transition-colors hover:bg-muted/50"
+    >
+      <span
+        className={cn(
+          "mt-2 block h-2 w-2 shrink-0 rounded-full",
+          thread.unread ? "bg-primary" : "bg-transparent",
+        )}
+        aria-hidden="true"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={cn("truncate text-sm", thread.unread ? "font-semibold" : "font-medium")}>
+            {thread.subject}
+          </span>
+          <Badge variant="outline" className="text-xs capitalize">
+            {last.direction}
+          </Badge>
+          {projectName && (
+            <Badge variant="secondary" className="text-xs">
+              {projectName}
+            </Badge>
+          )}
+        </div>
+        <p className="truncate text-xs text-muted-foreground">{thread.otherPartyName}</p>
+        <p className="truncate text-xs text-muted-foreground">{last.bodyText}</p>
+      </div>
+      <span className="shrink-0 text-xs text-muted-foreground">
+        {formatDate(thread.lastActivityAt, "MMM d") || "—"}
+      </span>
+    </button>
+  )
+}
+
+function EmailThreadDetail({
+  thread,
+  projectId,
+  activeProjects,
+  onAssign,
+  onBack,
+}: {
+  thread: EmailThreadMock
+  projectId: string | null
+  activeProjects: Array<{ id: string; title: string }>
+  onAssign: (projectId: string | null) => void
+  onBack: () => void
+}) {
+  const assignedProject = activeProjects.find((p) => p.id === projectId) || null
+
   return (
     <Card>
       <CardContent className="p-0">
-        <ScrollArea className="max-h-[700px]">
-          <div className="divide-y">
-            {emails.map((e) => (
-              <div key={e.id} className="p-4 flex flex-col gap-1.5">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-sm truncate">
-                        {e.subject || "(no subject)"}
-                      </span>
-                      {e.direction && (
-                        <Badge variant="outline" className="text-xs capitalize">
-                          {e.direction}
-                        </Badge>
-                      )}
-                      {e.is_read === false && (
-                        <Badge variant="default" className="text-xs">
-                          Unread
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground truncate">
-                      {e.from_name || e.from_email || "Unknown"}
-                      {e.to_emails?.length
-                        ? ` → ${e.to_emails.slice(0, 2).join(", ")}${e.to_emails.length > 2 ? "…" : ""}`
-                        : ""}
-                    </p>
-                  </div>
-                  <span className="text-xs text-muted-foreground shrink-0">
-                    {formatDate(e.sent_at || e.received_at, "MMM d") || "—"}
-                  </span>
-                </div>
-                {e.body_text && (
-                  <p className="text-xs text-muted-foreground line-clamp-3">
-                    {e.body_text.slice(0, 400)}
-                  </p>
-                )}
-              </div>
+        <div className="flex flex-col gap-3 border-b p-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onBack}
+            className="-ml-2 h-7 w-fit gap-1 px-2 text-xs text-muted-foreground"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+            Back to emails
+          </Button>
+          <div>
+            <h3 className="text-base font-semibold">{thread.subject}</h3>
+            <p className="text-xs text-muted-foreground">
+              {thread.otherPartyName} · {thread.otherPartyEmail}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Assign to project</span>
+            <Select
+              value={projectId ?? "unassigned"}
+              onValueChange={(v) => onAssign(v === "unassigned" ? null : v)}
+            >
+              <SelectTrigger className="h-8 w-56 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unassigned">Unassigned</SelectItem>
+                {activeProjects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {assignedProject && (
+              <Badge variant="secondary" className="gap-1 pr-1 text-xs">
+                {assignedProject.title}
+                <button
+                  type="button"
+                  onClick={() => onAssign(null)}
+                  className="rounded-full p-0.5 hover:bg-background/60"
+                  aria-label={`Remove ${assignedProject.title} assignment`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            )}
+          </div>
+        </div>
+        <ScrollArea className="max-h-[600px]">
+          <div className="flex flex-col divide-y">
+            {thread.messages.map((m) => (
+              <EmailMessageBubble key={m.id} message={m} />
             ))}
           </div>
         </ScrollArea>
+      </CardContent>
+    </Card>
+  )
+}
+
+function EmailMessageBubble({ message }: { message: EmailMessageMock }) {
+  const [showQuoted, setShowQuoted] = useState(false)
+  return (
+    <div className="flex flex-col gap-1.5 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{message.fromName}</span>
+          <Badge variant="outline" className="text-xs capitalize">
+            {message.direction}
+          </Badge>
+        </div>
+        <span className="text-xs text-muted-foreground">
+          {formatDate(message.sentAt, "MMM d, yyyy · h:mm a")}
+        </span>
+      </div>
+      <p className="whitespace-pre-wrap text-sm text-foreground/90">{message.bodyText}</p>
+      {message.quotedText && (
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={() => setShowQuoted((s) => !s)}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            {showQuoted ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            {showQuoted ? "Hide quoted text" : "Show quoted text"}
+          </button>
+          {showQuoted && (
+            <blockquote className="mt-2 whitespace-pre-wrap border-l-2 pl-3 text-xs text-muted-foreground">
+              {message.quotedText}
+            </blockquote>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function EmailThreadsSkeleton() {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Skeleton className="h-7 w-12 rounded-full" />
+        <Skeleton className="h-7 w-20 rounded-full" />
+        <Skeleton className="h-7 w-28 rounded-full" />
+      </div>
+      <Card>
+        <CardContent className="p-0">
+          <div className="divide-y">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex items-start gap-3 p-4">
+                <Skeleton className="mt-1.5 h-2 w-2 rounded-full" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-1/3" />
+                  <Skeleton className="h-3 w-1/4" />
+                  <Skeleton className="h-3 w-2/3" />
+                </div>
+                <Skeleton className="h-3 w-10 shrink-0" />
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Messages sub-tab — the firm's side of the client-portal chat thread
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface PortalMessageMock {
+  id: string
+  sender: "firm" | "client"
+  senderName: string
+  bodyText: string
+  sentAt: string
+  seenByClient: boolean
+}
+
+const PORTAL_MESSAGE_EXCHANGES: Array<{ client: string; firm: string }> = [
+  {
+    client: "Hi! Just uploaded my W-2 and the 1099 from the freelance work — let me know if you need anything else.",
+    firm: "Got them, thank you! We'll get everything reconciled and reach out if anything's missing.",
+  },
+  {
+    client: "Any update on when the return will be ready for review?",
+    firm: "We're finishing the final review now — expect a draft in your portal by Friday.",
+  },
+  {
+    client: "Do you need the mortgage interest statement too?",
+    firm: "Yes please, if you can upload the 1098 that would be great.",
+  },
+  {
+    client: "Thanks so much for handling this so quickly, really appreciate it!",
+    firm: "Of course, happy to help! Let us know if any other questions come up.",
+  },
+  {
+    client: "I think there might be a mistake on the estimated Q4 payment amount, can you double check?",
+    firm: "Took a look — the number is correct given your updated income, but I'll send over the breakdown for your records.",
+  },
+  {
+    client: "Quick question — is the extension already filed for this year?",
+    firm: "Yes, that went in last week. You're all set until October.",
+  },
+]
+
+function generateMockPortalMessages(
+  clientId: string,
+  clientName: string,
+  teamMembers: Array<{ name: string; email: string | null }>,
+): PortalMessageMock[] {
+  const seed = hashString(clientId || clientName || "client")
+  const rng = mulberry32(seed)
+
+  // ~1 in 6 clients start with a clean slate so the empty state is
+  // reachable in this mock, matching how a brand-new portal user would
+  // have no message history yet.
+  if (seed % 6 === 0) return []
+
+  const staffName = teamMembers[0]?.name || "Motta Financial Team"
+  const exchangeCount = 3 + Math.floor(rng() * 3) // 3–5 exchanges
+  const shuffled = [...PORTAL_MESSAGE_EXCHANGES].sort(() => rng() - 0.5).slice(0, exchangeCount)
+
+  const now = Date.now()
+  let cursor = now - exchangeCount * 2 * 24 * 60 * 60 * 1000
+  const messages: PortalMessageMock[] = []
+
+  shuffled.forEach((exchange, idx) => {
+    cursor += (12 + Math.floor(rng() * 36)) * 60 * 60 * 1000
+    messages.push({
+      id: `${clientId}-portal-${idx}-client`,
+      sender: "client",
+      senderName: clientName,
+      bodyText: exchange.client,
+      sentAt: new Date(cursor).toISOString(),
+      seenByClient: false,
+    })
+    cursor += (1 + Math.floor(rng() * 6)) * 60 * 60 * 1000
+    const isLast = idx === shuffled.length - 1
+    messages.push({
+      id: `${clientId}-portal-${idx}-firm`,
+      sender: "firm",
+      senderName: staffName,
+      bodyText: exchange.firm,
+      sentAt: new Date(cursor).toISOString(),
+      // The very latest firm message may not have been seen yet; every
+      // earlier one has.
+      seenByClient: isLast ? rng() > 0.5 : true,
+    })
+  })
+
+  return messages
+}
+
+function PortalMessagesCard({
+  clientId,
+  clientName,
+  teamMembers,
+}: {
+  clientId: string
+  clientName: string
+  teamMembers: ClientBundle["teamMembers"]
+}) {
+  const [loading, setLoading] = useState(true)
+  const [messages, setMessages] = useState<PortalMessageMock[]>([])
+  const [draft, setDraft] = useState("")
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    const timer = setTimeout(() => {
+      setMessages(generateMockPortalMessages(clientId, clientName, teamMembers))
+      setLoading(false)
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [clientId, clientName, teamMembers])
+
+  useEffect(() => {
+    if (!loading) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+    }
+  }, [loading, messages.length])
+
+  const handleSend = useCallback(() => {
+    const text = draft.trim()
+    if (!text) return
+    const staffName = teamMembers[0]?.name || "You"
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `local-${Date.now()}`,
+        sender: "firm",
+        senderName: staffName,
+        bodyText: text,
+        sentAt: new Date().toISOString(),
+        seenByClient: false,
+      },
+    ])
+    setDraft("")
+  }, [draft, teamMembers])
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault()
+        handleSend()
+      }
+    },
+    [handleSend],
+  )
+
+  if (loading) return <PortalMessagesSkeleton />
+
+  return (
+    <Card className="overflow-hidden">
+      <CardContent className="flex h-[600px] flex-col p-0">
+        <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
+          {messages.length === 0 ? (
+            <div className="flex h-full items-center justify-center">
+              <EmptyState message="No messages yet." />
+            </div>
+          ) : (
+            messages.map((m) => <PortalMessageBubble key={m.id} message={m} />)
+          )}
+        </div>
+        <div className="flex items-end gap-2 border-t p-3">
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Write a reply… (⌘+Enter to send)"
+            className="max-h-32 min-h-[44px] resize-none text-sm"
+          />
+          <Button
+            size="sm"
+            onClick={handleSend}
+            disabled={!draft.trim()}
+            className="h-9 shrink-0 gap-1.5"
+          >
+            <Send className="h-3.5 w-3.5" />
+            Send
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function PortalMessageBubble({ message }: { message: PortalMessageMock }) {
+  const isFirm = message.sender === "firm"
+  return (
+    <div
+      className={cn(
+        "flex max-w-[75%] flex-col gap-1",
+        isFirm ? "ml-auto items-end self-end" : "items-start self-start",
+      )}
+    >
+      <div
+        className={cn(
+          "whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm",
+          isFirm ? "bg-[#1D2620] text-white" : "bg-muted text-foreground",
+        )}
+      >
+        {message.bodyText}
+      </div>
+      <div className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
+        <span>{message.senderName}</span>
+        <span aria-hidden="true">·</span>
+        <span>{relativeTime(message.sentAt)}</span>
+        {isFirm && message.seenByClient && (
+          <span className="ml-0.5 inline-flex items-center gap-0.5 text-[10px]">
+            <Check className="h-3 w-3" />
+            Seen
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PortalMessagesSkeleton() {
+  return (
+    <Card className="overflow-hidden">
+      <CardContent className="flex h-[600px] flex-col p-0">
+        <div className="flex-1 space-y-4 p-4">
+          <Skeleton className="ml-auto h-10 w-2/3 rounded-2xl" />
+          <Skeleton className="h-10 w-1/2 rounded-2xl" />
+          <Skeleton className="ml-auto h-14 w-3/5 rounded-2xl" />
+          <Skeleton className="h-10 w-2/5 rounded-2xl" />
+        </div>
+        <div className="flex items-end gap-2 border-t p-3">
+          <Skeleton className="h-11 flex-1 rounded-md" />
+          <Skeleton className="h-9 w-20 rounded-md" />
+        </div>
       </CardContent>
     </Card>
   )
