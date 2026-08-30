@@ -68,6 +68,7 @@ export default function MessagesPage() {
   )
 
   const messages = data?.messages ?? []
+  const hasTeamReply = messages.some((m) => m.sender_role === "team")
 
   const [body, setBody] = useState("")
   const [sending, setSending] = useState(false)
@@ -174,6 +175,15 @@ export default function MessagesPage() {
           Communicate directly with your Motta Financial team.
         </p>
       </div>
+
+      {/* First-time note — only shown before the team has ever replied, since
+          once a conversation is underway the client already knows how
+          responsive it is. */}
+      {!hasTeamReply && (
+        <p className="mb-3 shrink-0 text-xs text-gray-500">
+          {"For anything urgent, please call our office directly rather than waiting on a reply here."}
+        </p>
+      )}
 
       {/* Message thread */}
       <div className="flex flex-col flex-1 min-h-0 rounded-xl border-0 shadow-sm overflow-hidden bg-white">
@@ -288,7 +298,9 @@ export default function MessagesPage() {
             </Button>
           </div>
           <p className="text-[11px] text-gray-400 mt-1.5">
-            {"Cmd+Enter to send \u00b7 Your team typically replies within 1 business day"}
+            {hasTeamReply
+              ? "Cmd+Enter to send \u00b7 Your team typically replies within 1 business day"
+              : "Cmd+Enter to send \u00b7 Messages are reviewed by your team"}
           </p>
         </div>
       </div>
