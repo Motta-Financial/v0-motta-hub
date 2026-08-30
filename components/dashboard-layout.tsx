@@ -66,6 +66,7 @@ import {
   LibraryBig,
   Compass,
   HelpCircle,
+  GitCompareArrows,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -130,6 +131,7 @@ const navigation = [
         children: [
           { name: "Intake", href: "/sales/intake", icon: Inbox },
           { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
+          { name: "Change Requests", href: "/clients/change-requests", icon: GitCompareArrows },
         ],
       },
       // Meetings is now its OWN top-level Home section (it used to be
