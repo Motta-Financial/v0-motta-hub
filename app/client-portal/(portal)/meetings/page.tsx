@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/collapsible"
 import { MeetingCard } from "@/components/portal/meeting-card"
 import { MOCK_MEETINGS } from "@/lib/mock/meetings"
+import { PreviewFeature } from "@/components/shared/preview-feature"
 
 const RECENT_COUNT = 3
 
@@ -31,43 +32,45 @@ export default function MeetingsPage() {
         </p>
       </div>
 
-      {recentMeetings.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 py-12 text-center">
-          <Video className="h-8 w-8 text-gray-300" />
-          <p className="text-sm text-gray-500">No meetings on file yet.</p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {recentMeetings.map((meeting) => (
-            <MeetingCard key={meeting.id} meeting={meeting} />
-          ))}
-        </div>
-      )}
-
-      {earlierMeetings.length > 0 && (
-        <Collapsible open={showEarlier} onOpenChange={setShowEarlier}>
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="flex w-full items-center gap-1.5 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
-            >
-              <ChevronDown
-                className={`h-4 w-4 transition-transform ${
-                  showEarlier ? "rotate-180" : ""
-                }`}
-              />
-              {showEarlier
-                ? "Hide earlier meetings"
-                : `Show earlier meetings (${earlierMeetings.length})`}
-            </button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-4 pt-1">
-            {earlierMeetings.map((meeting) => (
+      <PreviewFeature id="meetings" disableInteraction>
+        {recentMeetings.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-12 text-center">
+            <Video className="h-8 w-8 text-gray-300" />
+            <p className="text-sm text-gray-500">No meetings on file yet.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {recentMeetings.map((meeting) => (
               <MeetingCard key={meeting.id} meeting={meeting} />
             ))}
-          </CollapsibleContent>
-        </Collapsible>
-      )}
+          </div>
+        )}
+
+        {earlierMeetings.length > 0 && (
+          <Collapsible open={showEarlier} onOpenChange={setShowEarlier}>
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                className="flex w-full items-center gap-1.5 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+              >
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${
+                    showEarlier ? "rotate-180" : ""
+                  }`}
+                />
+                {showEarlier
+                  ? "Hide earlier meetings"
+                  : `Show earlier meetings (${earlierMeetings.length})`}
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-4 pt-1">
+              {earlierMeetings.map((meeting) => (
+                <MeetingCard key={meeting.id} meeting={meeting} />
+              ))}
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+      </PreviewFeature>
     </div>
   )
 }

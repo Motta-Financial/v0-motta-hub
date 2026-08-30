@@ -12,6 +12,7 @@ import {
 import { AlertTriangle, FileText, CheckCircle2, CalendarDays, User2, ChevronDown } from "lucide-react"
 import { format, parseISO } from "date-fns"
 import { TaxReturnsArchive } from "@/components/portal/tax-returns-archive"
+import { PreviewFeature } from "@/components/shared/preview-feature"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -163,7 +164,9 @@ export default function TaxPage() {
       )}
 
       {/* Permanent archive of returns by tax year */}
-      <TaxReturnsArchive />
+      <PreviewFeature id="tax-returns-archive" disableInteraction>
+        <TaxReturnsArchive />
+      </PreviewFeature>
     </div>
   )
 }

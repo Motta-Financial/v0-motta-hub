@@ -1,4 +1,5 @@
 import { ChangeRequestsPanel } from "@/components/clients/change-requests-panel"
+import { PreviewFeature } from "@/components/shared/preview-feature"
 
 export const metadata = {
   title: "Change requests | Motta Hub",
@@ -14,7 +15,9 @@ export default function ChangeRequestsPage() {
           Review detail changes clients have submitted from their portal, then approve or dismiss them.
         </p>
       </div>
-      <ChangeRequestsPanel />
+      <PreviewFeature id="change-requests" disableInteraction>
+        <ChangeRequestsPanel />
+      </PreviewFeature>
     </div>
   )
 }
