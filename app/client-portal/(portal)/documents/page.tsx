@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { FileText, FolderOpen, Search, ArrowRight } from "lucide-react"
 import { DocumentRow, type PortalDocument } from "@/components/portal/task-documents"
+import { EmptyState, WarningBanner } from "@/components/shared/empty-state"
 
 const DEEP_GREEN = "#6B745D"
 
@@ -25,15 +26,20 @@ interface PortalDocumentWithTask extends PortalDocument {
   work_item_type: string | null
 }
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json())
+const fetcher = async (url: string) => {
+  const res = await fetch(url)
+  if (!res.ok) {
+    throw new Error(`Failed to load documents (HTTP ${res.status})`)
+  }
+  return res.json()
+}
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function DocumentsPage() {
-  const { data, isLoading } = useSWR<{ documents: PortalDocumentWithTask[] }>(
-    "/api/client-portal/documents",
-    fetcher,
-  )
+  const { data, isLoading, error, mutate } = useSWR<{
+    documents: PortalDocumentWithTask[]
+  }>("/api/client-portal/documents", fetcher)
 
   const [query, setQuery] = useState("")
 
@@ -103,17 +109,26 @@ export default function DocumentsPage() {
             <Skeleton key={i} className="h-24 w-full rounded-xl" />
           ))}
         </div>
+      ) : error ? (
+        <WarningBanner
+          heading="We couldn't load your documents"
+          description="Something went wrong fetching your files. Try refreshing — if this keeps happening, send us a message and we'll take a look."
+          action={{ label: "Try again", onClick: () => mutate() }}
+        />
+      ) : totalShown === 0 && query ? (
+        <EmptyState
+          icon={Search}
+          heading="No documents match your search"
+          description="Try a different name or clear the search to see everything on file."
+          action={{ label: "Clear search", onClick: () => setQuery("") }}
+        />
       ) : totalShown === 0 ? (
-        <Card className="border-0 shadow-sm">
-          <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
-            <FolderOpen className="h-8 w-8 text-gray-300" />
-            <p className="text-sm text-gray-500">
-              {query
-                ? "No documents match your search."
-                : "No documents yet. Files will appear here as you and your team share them."}
-            </p>
-          </CardContent>
-        </Card>
+        <EmptyState
+          icon={FolderOpen}
+          heading="No documents yet"
+          description="Files you upload and everything we prepare for you will appear here once you upload something to a project."
+          action={{ label: "Go to your projects", href: "/client-portal/tax" }}
+        />
       ) : (
         groups.map((group) => (
           <Card key={group.workItemId ?? "unassigned"} className="border-0 shadow-sm">

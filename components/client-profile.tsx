@@ -98,6 +98,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import { EmptyState as SharedEmptyState } from "@/components/shared/empty-state"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 import { summarizePayments, isPaid } from "@/lib/ignition/payments"
@@ -828,7 +829,7 @@ export function ClientProfile({ clientId = "" }: ClientProfileProps) {
         </TabsContent>
 
         <TabsContent value="documents" className="mt-4">
-          <DocumentsTab data={data} />
+          <DocumentsTab data={data} onJump={setActiveTab} />
         </TabsContent>
 
               <TabsContent value="people" className="mt-4">
@@ -1485,7 +1486,7 @@ function CommunicationsTab({
 // "history" across reloads) per the design spec. Swap the generators for
 // real fetches once those backends exist — the panel components themselves
 // don't care where the data came from.
-// ──────────────────────────────────────────────────────���──────────────────────
+// ──────────────��───────────────────────────────────────���──────────────────────
 
 function hashString(input: string): number {
   let h = 0
@@ -1811,9 +1812,24 @@ function EmailThreadsCard({
       </div>
 
       {threads.length === 0 ? (
-        <EmptyCard message="No email threads on file for this client." />
+        <SharedEmptyState
+          icon={Mail}
+          heading="No emails synced yet"
+          description="Emails to and from this client will show up here once your inbox is connected and starts syncing messages."
+        />
       ) : filtered.length === 0 ? (
-        <EmptyCard message="No emails match your filters." />
+        <SharedEmptyState
+          icon={Search}
+          heading="No emails match your filters"
+          description="Try a different search term, or clear the active project filter to see every synced email."
+          action={{
+            label: "Clear filters",
+            onClick: () => {
+              setFilter("all")
+              setSearch("")
+            },
+          }}
+        />
       ) : (
         <Card>
           <CardContent className="p-0">
@@ -2331,7 +2347,14 @@ function NotesCard({
     })
   }, [karbonNotes, manualNotes])
 
-  if (merged.length === 0) return <EmptyCard message="No notes recorded for this client yet." />
+  if (merged.length === 0)
+    return (
+      <SharedEmptyState
+        icon={StickyNote}
+        heading="No notes recorded for this client"
+        description="Internal notes — synced from Karbon or added by your team — will appear here as soon as someone logs one."
+      />
+    )
 
   return (
     <Card>
@@ -3441,9 +3464,32 @@ function TaxStat({
 // Documents tab
 // ───────────────────────────────────────────────────────────────────���─────────
 
-function DocumentsTab({ data }: { data: ClientBundle }) {
-  if (data.documents.length === 0)
-    return <EmptyCard message="No documents uploaded for this client yet." />
+function DocumentsTab({
+  data,
+  onJump,
+}: {
+  data: ClientBundle
+  onJump: (tab: string) => void
+}) {
+  if (data.documents.length === 0) {
+    const hasProjects = data.workItems.length > 0
+    return (
+      <SharedEmptyState
+        icon={Files}
+        heading="No documents on file yet"
+        description={
+          hasProjects
+            ? "Files the client uploads and anything your team shares will appear here, organized by project."
+            : "Files the client uploads and anything your team shares will appear here once a project is set up for them."
+        }
+        action={
+          hasProjects
+            ? { label: "View projects", onClick: () => onJump("projects") }
+            : undefined
+        }
+      />
+    )
+  }
   return (
     <Card>
       <CardContent className="p-0">

@@ -42,6 +42,7 @@ import {
   STATUS_CHIP_STYLE,
   type TaxReturnYear,
 } from "@/lib/mock/tax-returns-archive"
+import { EmptyState } from "@/components/shared/empty-state"
 
 const DEEP_GREEN = "#6B745D"
 const SAGE = "#8E9B79"
@@ -62,6 +63,16 @@ export function TaxReturnsArchive() {
     toast.success("Return approved", {
       description: "We've let your preparer know to proceed with filing.",
     })
+  }
+
+  if (years.length === 0) {
+    return (
+      <EmptyState
+        icon={FileText}
+        heading="No completed returns on file yet"
+        description="Once we finish and file a return for you, it'll show up here permanently — no expiring links, no re-uploading."
+      />
+    )
   }
 
   return (

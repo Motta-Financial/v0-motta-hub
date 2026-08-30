@@ -26,6 +26,7 @@ import {
   FileQuestion,
   FileUp,
   GitCommitHorizontal,
+  History,
   Inbox,
   Loader2,
   MessageCircle,
@@ -50,6 +51,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 import type { ClientBundle } from "@/components/client-profile"
+import { EmptyState } from "@/components/shared/empty-state"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -718,13 +720,26 @@ export function ClientTimelineTab({ data }: { data: ClientBundle }) {
       </div>
 
       {/* Feed */}
-      {filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed py-16 text-center">
-          <p className="text-sm font-medium text-foreground">No matching events</p>
-          <p className="text-xs text-muted-foreground">
-            Try adjusting the filters or search above.
-          </p>
-        </div>
+      {events.length === 0 ? (
+        <EmptyState
+          icon={History}
+          heading="Nothing recorded yet for this client"
+          description="Emails, meetings, documents, notes, and status changes will show up here as soon as something happens."
+        />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={Search}
+          heading="No matching events"
+          description="Try adjusting the filters or search above."
+          action={{
+            label: "Clear filters",
+            onClick: () => {
+              setEnabledTypes(new Set(ALL_EVENT_TYPES))
+              setProjectFilter("all")
+              setSearch("")
+            },
+          }}
+        />
       ) : (
         <div className="max-h-[720px] overflow-y-auto rounded-lg border">
           {groups.map((group, groupIdx) => (
