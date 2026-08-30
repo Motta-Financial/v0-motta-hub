@@ -13,6 +13,7 @@ import {
   Users,
 } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
+import { LatestMeetingCard } from "@/components/portal/latest-meeting-card"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -232,6 +233,9 @@ export default function PortalDashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Latest meeting recap */}
+      <LatestMeetingCard />
 
       {/* Your team */}
       <YourTeamCard meData={meData} isLoading={!meData} />

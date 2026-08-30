@@ -21,6 +21,7 @@ import {
   FileText,
   FolderOpen,
   MessageSquare,
+  Video,
   LogOut,
   Menu,
 } from "lucide-react"
@@ -34,6 +35,7 @@ const PORTAL_NAV = [
   { name: "My Account",   href: "/client-portal/client-info", icon: UserCircle },
   { name: "Tax",          href: "/client-portal/tax",         icon: FileText },
   { name: "Documents",    href: "/client-portal/documents",   icon: FolderOpen },
+  { name: "Meetings",     href: "/client-portal/meetings",    icon: Video },
   { name: "Messages",     href: "/client-portal/messages",    icon: MessageSquare },
 ] as const
 
