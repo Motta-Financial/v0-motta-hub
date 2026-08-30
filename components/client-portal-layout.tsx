@@ -24,9 +24,22 @@ import {
   Video,
   LogOut,
   Menu,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { clearUserCache } from "@/contexts/user-context"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
+  SIDEBAR_COLLAPSED_WIDTH,
+  SIDEBAR_EXPANDED_WIDTH_PORTAL,
+  useSidebarCollapsed,
+} from "@/lib/hooks/use-sidebar-collapsed"
 
 // ── Navigation items ──────────────────────────────────────────────────────────
 
@@ -69,6 +82,11 @@ export function ClientPortalLayout({
   unreadCount = 0,
 }: ClientPortalLayoutProps) {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const { collapsed, toggleCollapsed, hydrated } = useSidebarCollapsed()
+
+  // Only apply the collapsed width once we've synced with localStorage —
+  // this avoids a server/client hydration mismatch (see the hook's docs).
+  const sidebarWidth = hydrated && collapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH_PORTAL
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: HUB_BG }}>
@@ -79,13 +97,29 @@ export function ClientPortalLayout({
         setMobileOpen={setMobileOpen}
       />
 
-      {/* Desktop sidebar — fixed below header */}
-      <div className="hidden md:fixed md:top-16 md:bottom-0 md:flex md:w-56 md:flex-col">
-        <PortalSidebar unreadCount={unreadCount} />
+      {/* Desktop sidebar — fixed below header. Width animates between the
+          expanded and collapsed rail widths; mobile always uses the
+          off-canvas Sheet below at full width regardless of this state. */}
+      <div
+        className="hidden md:fixed md:top-16 md:bottom-0 md:flex md:flex-col transition-[width] duration-200 ease-in-out"
+        style={{ width: sidebarWidth }}
+      >
+        <PortalSidebar
+          unreadCount={unreadCount}
+          collapsed={hydrated && collapsed}
+          onToggleCollapsed={toggleCollapsed}
+        />
       </div>
 
-      {/* Content area — padded to clear the fixed header + sidebar */}
-      <div className="pt-16 md:pl-56">
+      {/* Content area — padded to clear the fixed header + sidebar. The
+          padding-left only applies at the md breakpoint (mobile has no
+          fixed sidebar to clear), and it animates in lockstep with the
+          sidebar's width via a CSS variable so content reflows smoothly
+          instead of jumping. */}
+      <div
+        className="pt-16 md:pl-[var(--portal-sidebar-w)] transition-[padding-left] duration-200 ease-in-out"
+        style={{ "--portal-sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
+      >
         <main className="py-6">
           <div className="mx-auto w-full max-w-[1400px] px-4 sm:px-6 lg:px-8">
             {children}
@@ -206,19 +240,22 @@ function NavItem({
   isActive,
   showBadge,
   unreadCount,
+  collapsed,
 }: {
   item: (typeof PORTAL_NAV)[number]
   isActive: boolean
   showBadge: boolean
   unreadCount: number
+  collapsed: boolean
 }) {
   const [hovered, setHovered] = useState(false)
 
   const style: React.CSSProperties = {
     backgroundColor: isActive ? NAV_ACTIVE_BG : hovered ? NAV_HOVER_BG : "transparent",
     color: isActive || hovered ? "#ffffff" : "#374151",
-    // Slide right on hover, spring back on leave
-    transform: hovered && !isActive ? "translateX(6px)" : "translateX(0px)",
+    // Slide right on hover, spring back on leave. Skipped when collapsed —
+    // there's no room in a 56px rail for a horizontal slide.
+    transform: hovered && !isActive && !collapsed ? "translateX(6px)" : "translateX(0px)",
     transition: [
       hovered
         ? "transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1)"
@@ -229,21 +266,34 @@ function NavItem({
     cursor: "pointer",
   }
 
-  return (
+  const link = (
     <a
       href={item.href}
       style={style}
-      className="flex items-center gap-x-3 rounded-xl px-3 py-2.5 text-sm font-medium leading-6 select-none"
+      className={cn(
+        "flex items-center rounded-xl py-2.5 text-sm font-medium leading-6 select-none",
+        collapsed ? "justify-center px-0" : "gap-x-3 px-3",
+      )}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <item.icon
-        className="h-5 w-5 shrink-0 transition-colors duration-150"
-        style={{ color: isActive || hovered ? "#ffffff" : "#9CA3AF" }}
-        aria-hidden="true"
-      />
-      <span className="flex-1">{item.name}</span>
-      {showBadge && (
+      <span className="relative shrink-0">
+        <item.icon
+          className="h-5 w-5 shrink-0 transition-colors duration-150"
+          style={{ color: isActive || hovered ? "#ffffff" : "#9CA3AF" }}
+          aria-hidden="true"
+        />
+        {collapsed && showBadge && (
+          <span
+            className="absolute -top-1 -right-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px] font-bold text-white"
+            style={{ backgroundColor: "#B45309" }}
+          >
+            {unreadCount > 9 ? "9+" : unreadCount}
+          </span>
+        )}
+      </span>
+      {!collapsed && <span className="flex-1">{item.name}</span>}
+      {!collapsed && showBadge && (
         <span
           className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
           style={{ backgroundColor: "#B45309" }}
@@ -253,49 +303,105 @@ function NavItem({
       )}
     </a>
   )
+
+  if (!collapsed) return link
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{link}</TooltipTrigger>
+      <TooltipContent side="right">{item.name}</TooltipContent>
+    </Tooltip>
+  )
 }
 
-function PortalSidebar({ unreadCount = 0 }: { unreadCount?: number }) {
+function PortalSidebar({
+  unreadCount = 0,
+  collapsed = false,
+  onToggleCollapsed,
+}: {
+  unreadCount?: number
+  /** Icon-only rail mode. Only meaningful on desktop — the mobile Sheet
+   *  always renders this component with `collapsed` left at its default
+   *  (false), so the drawer stays fully labeled. */
+  collapsed?: boolean
+  /** Omitted entirely inside the mobile Sheet, which hides the toggle. */
+  onToggleCollapsed?: () => void
+}) {
   const pathname = usePathname()
 
   return (
-    <div
-      className="flex grow flex-col overflow-y-auto bg-white px-2 pb-4 shadow-sm border-r"
-      style={{ borderColor: SIDEBAR_BORDER }}
-    >
-      <nav className="flex flex-1 flex-col pt-3">
-        <ul role="list" className="flex flex-1 flex-col">
-          <li>
-            <ul role="list" className="space-y-0.5">
-              {PORTAL_NAV.map((item) => {
-                const isActive =
-                  item.href === "/client-portal"
-                    ? pathname === "/client-portal"
-                    : pathname === item.href || pathname.startsWith(item.href + "/")
+    <TooltipProvider delayDuration={200}>
+      <div
+        className={cn(
+          "flex grow flex-col overflow-y-auto bg-white pb-4 shadow-sm border-r",
+          collapsed ? "px-1.5" : "px-2",
+        )}
+        style={{ borderColor: SIDEBAR_BORDER }}
+      >
+        <nav className="flex flex-1 flex-col pt-3">
+          <ul role="list" className="flex flex-1 flex-col">
+            <li>
+              <ul role="list" className="space-y-0.5">
+                {PORTAL_NAV.map((item) => {
+                  const isActive =
+                    item.href === "/client-portal"
+                      ? pathname === "/client-portal"
+                      : pathname === item.href || pathname.startsWith(item.href + "/")
 
-                return (
-                  <li key={item.name}>
-                    <NavItem
-                      item={item}
-                      isActive={isActive}
-                      showBadge={item.name === "Messages" && unreadCount > 0}
-                      unreadCount={unreadCount}
-                    />
-                  </li>
-                )
-              })}
-            </ul>
-          </li>
-        </ul>
+                  return (
+                    <li key={item.name}>
+                      <NavItem
+                        item={item}
+                        isActive={isActive}
+                        showBadge={item.name === "Messages" && unreadCount > 0}
+                        unreadCount={unreadCount}
+                        collapsed={collapsed}
+                      />
+                    </li>
+                  )
+                })}
+              </ul>
+            </li>
+          </ul>
 
-        {/* Footer note */}
-        <div className="px-2 pb-2 mt-auto">
-          <p className="text-[10px] text-gray-400 leading-tight">
-            {"Motta Financial \u2014 Client Portal"}
-          </p>
-        </div>
-      </nav>
-    </div>
+          {/* Footer note — hidden in the icon-only rail, there's no room
+              for prose at 56px. */}
+          {!collapsed && (
+            <div className="px-2 pb-2 mt-auto">
+              <p className="text-[10px] text-gray-400 leading-tight">
+                {"Motta Financial \u2014 Client Portal"}
+              </p>
+            </div>
+          )}
+
+          {/* Collapse toggle — desktop only. The mobile Sheet renders this
+              component without `onToggleCollapsed`, so the control simply
+              doesn't render there. */}
+          {onToggleCollapsed && (
+            <div className={cn("pt-2", !collapsed && "border-t border-gray-100 mt-2")}>
+              <button
+                type="button"
+                onClick={onToggleCollapsed}
+                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                className={cn(
+                  "flex w-full items-center rounded-lg py-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900",
+                  collapsed ? "justify-center px-0" : "justify-start gap-2 px-3",
+                )}
+              >
+                {collapsed ? (
+                  <ChevronsRight className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <>
+                    <ChevronsLeft className="h-4 w-4" aria-hidden="true" />
+                    <span className="text-xs font-medium">Collapse</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </nav>
+      </div>
+    </TooltipProvider>
   )
 }
 
