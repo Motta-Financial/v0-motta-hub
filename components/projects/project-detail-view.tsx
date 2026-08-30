@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { ChangeHistoryDialog } from "@/components/shared/change-history-dialog"
+import { DocumentRequestChecklistStaff } from "@/components/clients/document-request-checklist-staff"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -436,6 +437,9 @@ export function ProjectDetailView({ projectId }: { projectId: string }) {
           <TabsTrigger value="overview" className="flex-1">
             Project Overview
           </TabsTrigger>
+          <TabsTrigger value="documents" className="flex-1">
+            Documents
+          </TabsTrigger>
           <TabsTrigger value="intakes" className="flex-1">
             Intakes
             <span className="ml-1.5 text-xs text-muted-foreground">{intakes.length}</span>
@@ -480,6 +484,9 @@ export function ProjectDetailView({ projectId }: { projectId: string }) {
             periodGroups={periodGroups}
             upcoming={upcomingItems}
           />
+        </TabsContent>
+        <TabsContent value="documents" className="m-0">
+          <DocumentRequestChecklistStaff clientName={client?.name || undefined} />
         </TabsContent>
         <TabsContent value="intakes" className="m-0">
           <IntakesTab intakes={intakes} />

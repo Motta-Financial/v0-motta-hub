@@ -36,12 +36,17 @@ export const STATUS_LABEL: Record<DocRequestStatus, string> = {
   accepted: "Accepted",
 }
 
-// Tailwind classes for the staff-side status chip — neutral Hub palette.
+// Tailwind classes for the staff-side status chip — Hub green palette.
+// Not requested is a dashed, muted draft state (the firm hasn't decided to
+// send it yet); waiting uses the shared warning tint; received/accepted
+// step up through the pale → deep green scale, matching the "filled deep
+// green = done" convention used for active nav/list items elsewhere in
+// the Hub.
 export const STATUS_CHIP_CLASS: Record<DocRequestStatus, string> = {
-  not_requested: "bg-muted text-muted-foreground border-border",
-  waiting: "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-700/50",
-  received: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-700/50",
-  accepted: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-700/50",
+  not_requested: "border-dashed border-[#8E9B79]/50 bg-transparent text-[#6B745D]/70",
+  waiting: "border-[#8E9B79]/60 bg-[#FEF3C7] text-[#4A5240]",
+  received: "border-[#8E9B79]/60 bg-[#B5BFA8]/40 text-[#4A5240]",
+  accepted: "border-[#6B745D] bg-[#6B745D] text-white",
 }
 
 export const INITIAL_DOCUMENT_REQUESTS: DocRequest[] = [

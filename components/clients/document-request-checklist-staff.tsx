@@ -76,6 +76,8 @@ import {
   type DocRequestStatus,
 } from "@/lib/mock/document-requests"
 
+const DEEP_GREEN = "#6B745D"
+
 function isFulfilled(status: DocRequestStatus) {
   return status === "received" || status === "accepted"
 }
@@ -128,7 +130,7 @@ function SortableRequestRow({
             className={cn(
               "h-5 px-1.5 text-[11px] font-normal",
               request.required
-                ? "border-border text-foreground"
+                ? "border-[#8E9B79] text-[#4A5240]"
                 : "border-border text-muted-foreground",
             )}
           >
@@ -218,7 +220,7 @@ function AddRequestDialog({ onAdd }: { onAdd: (item: { name: string; instruction
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm" className="gap-1.5">
+        <Button size="sm" className="gap-1.5 bg-[#6B745D] text-white hover:bg-[#8E9B79]">
           <Plus className="h-3.5 w-3.5" />
           Add request
         </Button>
@@ -257,14 +259,23 @@ function AddRequestDialog({ onAdd }: { onAdd: (item: { name: string; instruction
                 Required documents block the return from moving forward.
               </p>
             </div>
-            <Switch id="doc-required" checked={required} onCheckedChange={setRequired} />
+            <Switch
+              id="doc-required"
+              checked={required}
+              onCheckedChange={setRequired}
+              className="data-[state=checked]:bg-[#6B745D]"
+            />
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={!name.trim()}>
+          <Button
+            onClick={handleSubmit}
+            disabled={!name.trim()}
+            className="bg-[#6B745D] text-white hover:bg-[#8E9B79]"
+          >
             Add request
           </Button>
         </DialogFooter>
@@ -352,11 +363,11 @@ export function DocumentRequestChecklistStaff({
   }
 
   return (
-    <Card>
+    <Card className="border-0 shadow-sm rounded-xl">
       <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 pb-3">
         <div>
           <CardTitle className="flex items-center gap-2 text-base">
-            <FileStack className="h-4 w-4 text-muted-foreground" />
+            <FileStack className="h-4 w-4" style={{ color: DEEP_GREEN }} />
             Requested documents
           </CardTitle>
           {clientName && (
@@ -366,7 +377,11 @@ export function DocumentRequestChecklistStaff({
         <div className="flex items-center gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-1.5">
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 border-[#8E9B79] text-[#4A5240] hover:bg-[#8E9B79]/10 hover:text-[#4A5240]"
+              >
                 <LayoutTemplate className="h-3.5 w-3.5" />
                 Add from template
               </Button>
@@ -395,7 +410,10 @@ export function DocumentRequestChecklistStaff({
       <CardContent className="p-0">
         {/* Progress summary */}
         <div className="flex items-center gap-3 border-b px-4 py-3">
-          <Progress value={progressPct} className="h-1.5 flex-1" />
+          <Progress
+            value={progressPct}
+            className="h-1.5 flex-1 bg-[#B5BFA8]/30 [&>div]:bg-[#6B745D]"
+          />
           <span className="shrink-0 text-xs font-medium text-muted-foreground">
             {fulfilledCount} of {total} received
           </span>
