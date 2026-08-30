@@ -14,6 +14,8 @@ import {
 } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 import { LatestMeetingCard } from "@/components/portal/latest-meeting-card"
+import { ProjectStatusChip, WaitingOnLine } from "@/components/portal/project-status"
+import { deriveClientStatus } from "@/lib/portal/client-status"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -293,30 +295,27 @@ function StatCard({
 }
 
 function WorkItemRow({ item }: { item: WorkItem }) {
+  const status = deriveClientStatus({
+    id: item.id,
+    rawLabel: item.statusDisplay.label,
+    hasBlockingTodos: item.has_blocking_todos,
+    assigneeName: item.assignee_name,
+  })
+
   return (
     <div className="flex items-start gap-3 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5">
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-gray-900 truncate">{item.title}</p>
-        <div className="flex items-center gap-2 mt-1">
-          <span
-            className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white"
-            style={{ backgroundColor: item.statusDisplay.color }}
-          >
-            {item.statusDisplay.label}
-          </span>
+        <div className="flex items-center gap-2 mt-1.5">
+          <ProjectStatusChip status={status} />
           {item.assignee_name && (
             <span className="text-xs text-gray-400 truncate">
               {item.assignee_name}
             </span>
           )}
         </div>
+        <WaitingOnLine status={status} className="mt-1" />
       </div>
-      {item.has_blocking_todos && (
-        <AlertTriangle
-          className="h-4 w-4 shrink-0 mt-0.5"
-          style={{ color: "#6B745D" }}
-        />
-      )}
     </div>
   )
 }
