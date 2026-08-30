@@ -47,6 +47,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock,
   DollarSign,
   ExternalLink,
@@ -114,6 +115,7 @@ import { ContactEditSheet } from "@/components/clients/contact-edit-sheet"
 import { OrganizationEditSheet } from "@/components/clients/organization-edit-sheet"
 import { ChangeHistoryDialog } from "@/components/shared/change-history-dialog"
 import { ClientTimelineTab } from "@/components/clients/client-timeline-tab"
+import { DocumentRequestChecklistStaff } from "@/components/clients/document-request-checklist-staff"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types matching /api/clients/[id] response
@@ -1483,7 +1485,7 @@ function CommunicationsTab({
 // "history" across reloads) per the design spec. Swap the generators for
 // real fetches once those backends exist — the panel components themselves
 // don't care where the data came from.
-// ─────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────���──────────────────────
 
 function hashString(input: string): number {
   let h = 0
@@ -2806,6 +2808,8 @@ function ProjectsTab({ data }: { data: ClientBundle }) {
   const completed = data.workItems.filter(
     (w) => (w.status || "").toLowerCase() === "completed",
   )
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const clientName = data.client?.clientName || undefined
 
   return (
     <div className="flex flex-col gap-4">
@@ -2822,7 +2826,20 @@ function ProjectsTab({ data }: { data: ClientBundle }) {
           ) : (
             <div className="divide-y">
               {active.map((w) => (
-                <ProjectRow key={w.id} workItem={w} />
+                <div key={w.id}>
+                  <ProjectRow
+                    workItem={w}
+                    expanded={expandedId === w.id}
+                    onToggleExpand={() =>
+                      setExpandedId((cur) => (cur === w.id ? null : w.id))
+                    }
+                  />
+                  {expandedId === w.id && (
+                    <div className="border-t bg-muted/30 p-4">
+                      <DocumentRequestChecklistStaff clientName={clientName} />
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           )}
@@ -2855,9 +2872,13 @@ function ProjectsTab({ data }: { data: ClientBundle }) {
 function ProjectRow({
   workItem: w,
   compact,
+  expanded,
+  onToggleExpand,
 }: {
   workItem: ClientBundle["workItems"][number]
   compact?: boolean
+  expanded?: boolean
+  onToggleExpand?: () => void
 }) {
   const url =
     w.karbon_url ||
@@ -2927,14 +2948,27 @@ function ProjectRow({
             )}
           </div>
         </div>
-        {url && (
-          <Button variant="ghost" size="sm" asChild>
-            <a href={url} target="_blank" rel="noopener noreferrer">
-              <ExternalLink className="h-3.5 w-3.5" />
-              <span className="sr-only">Open in Karbon</span>
-            </a>
-          </Button>
-        )}
+        <div className="flex shrink-0 items-center gap-1">
+          {onToggleExpand && (
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={onToggleExpand}>
+              <Files className="h-3.5 w-3.5" />
+              Documents
+              {expanded ? (
+                <ChevronUp className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          )}
+          {url && (
+            <Button variant="ghost" size="sm" asChild>
+              <a href={url} target="_blank" rel="noopener noreferrer">
+                <ExternalLink className="h-3.5 w-3.5" />
+                <span className="sr-only">Open in Karbon</span>
+              </a>
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -22,6 +22,7 @@ import {
 import { format, parseISO } from "date-fns"
 import { TaskCommentThread } from "@/components/portal/task-comment-thread"
 import { TaskDocuments } from "@/components/portal/task-documents"
+import { DocumentRequestChecklistClient } from "@/components/portal/document-request-checklist-client"
 
 const DEEP_GREEN = "#6B745D"
 const MID_GREEN = "#8E9B79"
@@ -207,7 +208,10 @@ export default function TaskDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Documents for this task */}
+      {/* Documents the firm has specifically requested for this project */}
+      <DocumentRequestChecklistClient />
+
+      {/* General document exchange for anything else */}
       <TaskDocuments workItemId={id} />
 
       {/* Per-task discussion */}
