@@ -158,15 +158,21 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         : Promise.resolve({ data: [], error: null }),
 
       // Karbon notes
+      // NOTE: karbon_notes only has karbon_contact_key (Karbon's generic
+      // ContactKey covers both people and orgs) — there is no
+      // karbon_organization_key column on this table, so we can't reuse the
+      // generic orFilter() (which assumes karbonCol matches isOrg/contact).
       (() => {
-        const f = orFilter({ hasIdCol: true, hasKarbonCol: true })
-        if (!f) return Promise.resolve({ data: [], error: null })
+        const parts: string[] = []
+        if (entityId) parts.push(`${idCol}.eq.${entityId}`)
+        if (karbonKey) parts.push(`karbon_contact_key.eq.${karbonKey}`)
+        if (!parts.length) return Promise.resolve({ data: [], error: null })
         return supabase
           .from("karbon_notes")
           .select(
             "id, karbon_note_key, subject, body, note_type, is_pinned, author_name, assignee_email, due_date, todo_date, comments, karbon_created_at, karbon_modified_at, karbon_url, karbon_work_item_key, work_item_title",
           )
-          .or(f)
+          .or(parts.join(","))
           .order("karbon_created_at", { ascending: false, nullsFirst: false })
           .limit(200)
       })(),

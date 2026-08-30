@@ -66,6 +66,9 @@ import {
   LibraryBig,
   Compass,
   HelpCircle,
+  GitCompareArrows,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -75,8 +78,19 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { useRouter } from "next/navigation"
 import { WorkItemSearchTrigger } from "@/components/work-item-search"
+import {
+  SIDEBAR_COLLAPSED_WIDTH,
+  SIDEBAR_EXPANDED_WIDTH_HUB,
+  useSidebarCollapsed,
+} from "@/lib/hooks/use-sidebar-collapsed"
 
 // Top-level sections are organised by *function*, not by team, and ordered
 // to mirror how teammates actually use the app day-to-day. The five
@@ -130,6 +144,7 @@ const navigation = [
         children: [
           { name: "Intake", href: "/sales/intake", icon: Inbox },
           { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
+          { name: "Change Requests", href: "/clients/change-requests", icon: GitCompareArrows },
         ],
       },
       // Meetings is now its OWN top-level Home section (it used to be
@@ -406,22 +421,38 @@ interface DashboardLayoutProps {
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const { collapsed, toggleCollapsed, hydrated } = useSidebarCollapsed()
+
+  // Only apply the collapsed width once we've synced with localStorage —
+  // this avoids a server/client hydration mismatch (see the hook's docs).
+  const sidebarWidth = hydrated && collapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH_HUB
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: "#EAE6E1" }}>
       {/* Top header banner - always visible */}
       <HubHeader sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
 
-      {/* Desktop sidebar - positioned below the header */}
-      <div className="hidden md:fixed md:top-16 md:bottom-0 md:flex md:w-64 md:flex-col">
-        <Sidebar />
+      {/* Desktop sidebar - positioned below the header. Width animates
+          between the expanded and collapsed rail widths; mobile always uses
+          the off-canvas Sheet below at full width regardless of this
+          state. */}
+      <div
+        className="hidden md:fixed md:top-16 md:bottom-0 md:flex md:flex-col transition-[width] duration-200 ease-in-out"
+        style={{ width: sidebarWidth }}
+      >
+        <Sidebar collapsed={hydrated && collapsed} onToggleCollapsed={toggleCollapsed} />
       </div>
 
-      {/* Main content. The sidebar is fixed-position 16rem wide, so the
-          content area only needs ONE `md:pl-64` to clear it. The previous
-          version stacked two of these, pushing content 32rem past the left
-          edge and overflowing the viewport on the right. */}
-      <div className="pt-16 md:pl-64">
+      {/* Main content. The sidebar is fixed-position, so the content area
+          only needs ONE responsive padding-left to clear it — driven by a
+          CSS variable so it animates in lockstep with the sidebar's width
+          instead of jumping. The previous version stacked two of these,
+          pushing content 32rem past the left edge and overflowing the
+          viewport on the right. */}
+      <div
+        className="pt-16 md:pl-[var(--hub-sidebar-w)] transition-[padding-left] duration-200 ease-in-out"
+        style={{ "--hub-sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
+      >
         {/* Sticky topbar — gives every page a global Cmd+K work-item search.
             Lives outside <main> so its sticky behavior survives any page that
             applies its own positioning context. */}
@@ -568,6 +599,7 @@ function NavNode({
   expandedSections,
   toggleSection,
   expandSection,
+  collapsed = false,
 }: {
   node: any
   depth: number
@@ -575,6 +607,10 @@ function NavNode({
   expandedSections: Record<string, boolean>
   toggleSection: (name: string) => void
   expandSection: (name: string) => void
+  // Icon-only rail mode. Only ever true at depth 0 — the rail is too
+  // narrow to show a nested tree, so children are simply not rendered
+  // while collapsed (they reappear once the sidebar is expanded again).
+  collapsed?: boolean
 }) {
   const hasChildren = !!node.children?.length
   const isExpanded = expandedSections[node.name] || false
@@ -593,6 +629,41 @@ function NavNode({
   const paddingLeft = NAV_INDENT_BASE_PX + depth * NAV_INDENT_STEP_PX
   const guideLeft = paddingLeft + 10 // sits under the icon center
   const iconSize = depth === 0 ? "h-5 w-5" : "h-4 w-4"
+
+  if (collapsed) {
+    // Narrow rail: just the icon, centered, with a tooltip carrying the
+    // name. Clicking still navigates to the section's own href (e.g.
+    // "Home" or "Departments") — subpages are only reachable by expanding
+    // the sidebar again, which matches the "icon-only rail" spec.
+    return (
+      <li>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <a
+              href={node.href}
+              aria-label={node.name}
+              style={{
+                backgroundColor: highlighted ? NAV_ACTIVE_BG : "transparent",
+              }}
+              className={cn(
+                highlighted ? "text-white" : "text-gray-400 hover:text-white",
+                "group flex items-center justify-center rounded-md py-2.5 transition-colors",
+              )}
+              onMouseEnter={(e) => {
+                if (!highlighted) e.currentTarget.style.backgroundColor = NAV_HOVER_BG
+              }}
+              onMouseLeave={(e) => {
+                if (!highlighted) e.currentTarget.style.backgroundColor = "transparent"
+              }}
+            >
+              <node.icon className="h-5 w-5 shrink-0" aria-hidden="true" />
+            </a>
+          </TooltipTrigger>
+          <TooltipContent side="right">{node.name}</TooltipContent>
+        </Tooltip>
+      </li>
+    )
+  }
 
   return (
     <li>
@@ -1135,7 +1206,17 @@ function filterNavigationByRole(
     )
 }
 
-function Sidebar() {
+function Sidebar({
+  collapsed = false,
+  onToggleCollapsed,
+}: {
+  /** Icon-only rail mode. Only meaningful on desktop — the mobile Sheet
+   *  always renders this component with `collapsed` left at its default
+   *  (false), so the drawer stays fully labeled. */
+  collapsed?: boolean
+  /** Omitted entirely inside the mobile Sheet, which hides the toggle. */
+  onToggleCollapsed?: () => void
+} = {}) {
   const pathname = usePathname()
   const router = useRouter()
   // Pull the caller's role so we can hide leadership-only ("PPD")
@@ -1242,62 +1323,102 @@ function Sidebar() {
   }
 
   return (
-    <div
-      className="flex grow flex-col gap-y-5 overflow-y-auto bg-white px-6 pb-4 shadow-sm border-r"
-      style={{ borderColor: "#8E9B79" }}
-    >
-      <nav className="flex flex-1 flex-col pt-6">
-        <ul role="list" className="flex flex-1 flex-col gap-y-7">
-          <li>
-            <ul role="list" className="-mx-2 space-y-1">
-              {/* The sidebar tree is now rendered by a single recursive
-                  <NavNode> (defined above DashboardLayout). It supports
-                  arbitrary nesting depth — Home → Meetings → Debriefs →
-                  New Debrief and Departments → Tax → Returns → Individual
-                  both go four levels deep — and gives every node that has
-                  children the same count-badge + chevron affordance so
-                  it's always obvious which rows expand. */}
-              {visibleNavigation.map((item) => (
-                <NavNode
-                  key={item.name}
-                  node={item}
-                  depth={0}
-                  pathname={pathname}
-                  expandedSections={expandedSections}
-                  toggleSection={toggleSection}
-                  expandSection={expandSection}
-                />
-              ))}
-            </ul>
-          </li>
-        </ul>
-      </nav>
-
-      <a
-        href="https://alfred.motta.cpa"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="block rounded-xl p-4 transition-all hover:shadow-lg bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-200 mb-2"
+    <TooltipProvider delayDuration={200}>
+      <div
+        className={cn(
+          "flex grow flex-col gap-y-5 overflow-y-auto bg-white pb-4 shadow-sm border-r",
+          collapsed ? "px-2" : "px-6",
+        )}
+        style={{ borderColor: "#8E9B79" }}
       >
-        <div className="flex items-center justify-center gap-3">
-          <div className="relative">
-            <img src="/images/alfred-logo.png" alt="ALFRED AI" className="h-10 w-auto" />
-            <div className="absolute -top-1 -right-1 h-3 w-3 bg-green-400 rounded-full border-2 border-white animate-pulse" />
-          </div>
-          <div className="text-left">
-            <p className="font-semibold text-gray-900 text-sm">ALFRED AI</p>
-            <p className="text-xs text-gray-500">Your AI Assistant</p>
-          </div>
-        </div>
-      </a>
+        <nav className="flex flex-1 flex-col pt-6">
+          <ul role="list" className="flex flex-1 flex-col gap-y-7">
+            <li>
+              <ul role="list" className={cn("space-y-1", !collapsed && "-mx-2")}>
+                {/* The sidebar tree is rendered by a single recursive
+                    <NavNode> (defined above DashboardLayout). It supports
+                    arbitrary nesting depth — Home → Meetings → Debriefs →
+                    New Debrief and Departments → Tax → Returns → Individual
+                    both go four levels deep — and gives every node that has
+                    children the same count-badge + chevron affordance so
+                    it's always obvious which rows expand. When the rail is
+                    collapsed, NavNode short-circuits to an icon + tooltip
+                    at depth 0 only — children never render in that mode. */}
+                {visibleNavigation.map((item) => (
+                  <NavNode
+                    key={item.name}
+                    node={item}
+                    depth={0}
+                    pathname={pathname}
+                    expandedSections={expandedSections}
+                    toggleSection={toggleSection}
+                    expandSection={expandSection}
+                    collapsed={collapsed}
+                  />
+                ))}
+              </ul>
+            </li>
+          </ul>
+        </nav>
 
-      <div className="pt-2">
-        <div className="flex items-center gap-2 text-xs text-gray-600">
-          <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-          <span>ALFRED AI Online</span>
-        </div>
+        {/* ALFRED AI promo card + status line — hidden in the icon-only
+            rail, there's no room for prose at 56px. */}
+        {!collapsed && (
+          <>
+            <a
+              href="https://alfred.motta.cpa"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block rounded-xl p-4 transition-all hover:shadow-lg bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-200 mb-2"
+            >
+              <div className="flex items-center justify-center gap-3">
+                <div className="relative">
+                  <img src="/images/alfred-logo.png" alt="ALFRED AI" className="h-10 w-auto" />
+                  <div className="absolute -top-1 -right-1 h-3 w-3 bg-green-400 rounded-full border-2 border-white animate-pulse" />
+                </div>
+                <div className="text-left">
+                  <p className="font-semibold text-gray-900 text-sm">ALFRED AI</p>
+                  <p className="text-xs text-gray-500">Your AI Assistant</p>
+                </div>
+              </div>
+            </a>
+
+            <div className="pt-2">
+              <div className="flex items-center gap-2 text-xs text-gray-600">
+                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                <span>ALFRED AI Online</span>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Collapse toggle — desktop only. The mobile Sheet renders this
+            component without `onToggleCollapsed`, so the control simply
+            doesn't render there. */}
+        {onToggleCollapsed && (
+          <div className={cn("pt-2", !collapsed && "border-t border-gray-100")}>
+            <button
+              type="button"
+              onClick={onToggleCollapsed}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              className={cn(
+                "flex w-full items-center rounded-lg py-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900",
+                collapsed ? "justify-center px-0" : "justify-start gap-2 px-3",
+              )}
+            >
+              {collapsed ? (
+                <ChevronsRight className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <>
+                  <ChevronsLeft className="h-4 w-4" aria-hidden="true" />
+                  <span className="text-xs font-medium">Collapse</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </div>
-    </div>
+    </TooltipProvider>
   )
 }
 

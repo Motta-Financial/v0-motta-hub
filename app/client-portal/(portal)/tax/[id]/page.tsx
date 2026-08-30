@@ -13,7 +13,6 @@ import { useParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  AlertTriangle,
   ArrowLeft,
   CalendarDays,
   CheckCircle2,
@@ -22,9 +21,11 @@ import {
 import { format, parseISO } from "date-fns"
 import { TaskCommentThread } from "@/components/portal/task-comment-thread"
 import { TaskDocuments } from "@/components/portal/task-documents"
+import { DocumentRequestChecklistClient } from "@/components/portal/document-request-checklist-client"
+import { ProjectStatusChip, StatusExplanation, WaitingOnLine } from "@/components/portal/project-status"
+import { deriveClientStatus } from "@/lib/portal/client-status"
 
 const DEEP_GREEN = "#6B745D"
-const MID_GREEN = "#8E9B79"
 
 interface TaskDetail {
   id: string
@@ -83,6 +84,13 @@ export default function TaskDetailPage() {
     )
   }
 
+  const status = deriveClientStatus({
+    id: task.id,
+    rawLabel: task.statusDisplay.label,
+    hasBlockingTodos: task.has_blocking_todos,
+    assigneeName: task.assignee_name,
+  })
+
   return (
     <div className="max-w-3xl space-y-6">
       {/* Back link */}
@@ -95,47 +103,21 @@ export default function TaskDetailPage() {
       </a>
 
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-bold text-balance text-gray-900">
-            {task.title}
-          </h1>
-          {task.work_type_name && (
-            <p className="mt-1 text-sm text-gray-500">{task.work_type_name}</p>
-          )}
-        </div>
-        <span
-          className="mt-1 inline-flex shrink-0 items-center rounded-full px-3 py-1 text-xs font-semibold text-white"
-          style={{ backgroundColor: task.statusDisplay.color }}
-        >
-          {task.statusDisplay.label}
-        </span>
-      </div>
-
-      {/* Action needed banner */}
-      {task.has_blocking_todos && (
-        <div
-          className="flex items-start gap-3 rounded-xl border px-4 py-3 text-sm"
-          style={{
-            backgroundColor: "#8E9B791A",
-            borderColor: MID_GREEN,
-            color: "#3F4635",
-          }}
-        >
-          <AlertTriangle
-            className="mt-0.5 h-5 w-5 shrink-0"
-            style={{ color: DEEP_GREEN }}
-          />
-          <div>
-            <p className="font-medium">Action needed from you</p>
-            <p className="mt-0.5 text-xs leading-relaxed">
-              Your team is waiting on something before this can move forward.
-              Upload the documents below or leave a comment if you have
-              questions.
-            </p>
+      <div className="space-y-2">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-balance text-gray-900">
+              {task.title}
+            </h1>
+            {task.work_type_name && (
+              <p className="mt-1 text-sm text-gray-500">{task.work_type_name}</p>
+            )}
           </div>
+          <ProjectStatusChip status={status} className="mt-1" />
         </div>
-      )}
+        <StatusExplanation status={status} />
+        <WaitingOnLine status={status} />
+      </div>
 
       {/* Overview */}
       <Card className="border-0 shadow-sm">
@@ -207,7 +189,10 @@ export default function TaskDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Documents for this task */}
+      {/* Documents the firm has specifically requested for this project */}
+      <DocumentRequestChecklistClient />
+
+      {/* General document exchange for anything else */}
       <TaskDocuments workItemId={id} />
 
       {/* Per-task discussion */}

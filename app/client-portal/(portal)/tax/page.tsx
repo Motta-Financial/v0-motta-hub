@@ -11,6 +11,10 @@ import {
 } from "@/components/ui/collapsible"
 import { AlertTriangle, FileText, CheckCircle2, CalendarDays, User2, ChevronDown } from "lucide-react"
 import { format, parseISO } from "date-fns"
+import { TaxReturnsArchive } from "@/components/portal/tax-returns-archive"
+import { PreviewFeature } from "@/components/shared/preview-feature"
+import { ProjectStatusChip, WaitingOnLine } from "@/components/portal/project-status"
+import { deriveClientStatus } from "@/lib/portal/client-status"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -160,6 +164,11 @@ export default function TaxPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Permanent archive of returns by tax year */}
+      <PreviewFeature id="tax-returns-archive" disableInteraction>
+        <TaxReturnsArchive />
+      </PreviewFeature>
     </div>
   )
 }
@@ -168,6 +177,12 @@ export default function TaxPage() {
 
 function WorkItemCard({ item }: { item: TaxWorkItem }) {
   const progressWidth = `${item.progressPct}%`
+  const status = deriveClientStatus({
+    id: item.id,
+    rawLabel: item.statusDisplay.label,
+    hasBlockingTodos: item.has_blocking_todos,
+    assigneeName: item.assignee_name,
+  })
 
   return (
     <a
@@ -188,13 +203,12 @@ function WorkItemCard({ item }: { item: TaxWorkItem }) {
             <p className="text-xs text-gray-400 mt-0.5">{item.work_type_name}</p>
           )}
         </div>
-        <span
-          className="shrink-0 inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold text-white"
-          style={{ backgroundColor: item.statusDisplay.color }}
-        >
-          {item.statusDisplay.label}
-        </span>
+        <div className="shrink-0 text-right">
+          <ProjectStatusChip status={status} />
+        </div>
       </div>
+
+      <WaitingOnLine status={status} className="-mt-1" />
 
       {/* Progress bar */}
       {item.todo_count > 0 && (
@@ -229,12 +243,6 @@ function WorkItemCard({ item }: { item: TaxWorkItem }) {
           <span className="flex items-center gap-1">
             <CalendarDays className="h-3.5 w-3.5" />
             Due {format(parseISO(item.due_date), "MMM d, yyyy")}
-          </span>
-        )}
-        {item.has_blocking_todos && (
-          <span className="flex items-center gap-1 font-medium" style={{ color: "#6B745D" }}>
-            <AlertTriangle className="h-3.5 w-3.5" />
-            Waiting on you
           </span>
         )}
       </div>
