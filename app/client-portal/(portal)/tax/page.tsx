@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/collapsible"
 import { AlertTriangle, FileText, CheckCircle2, CalendarDays, User2, ChevronDown } from "lucide-react"
 import { format, parseISO } from "date-fns"
+import { TaxReturnsArchive } from "@/components/portal/tax-returns-archive"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -160,6 +161,9 @@ export default function TaxPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Permanent archive of returns by tax year */}
+      <TaxReturnsArchive />
     </div>
   )
 }
