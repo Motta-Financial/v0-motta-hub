@@ -23,6 +23,15 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 
+const WARNING_BG = "#FEF3C7"
+const WARNING_BORDER = "#F3D98A"
+const WARNING_ICON = "#92720B"
+const WARNING_HEADING = "#5C4A0A"
+const WARNING_TEXT = "#7A6212"
+
+const MID_GREEN = "#8E9B79"
+const PALE_GREEN = "#B5BFA8"
+
 interface EmptyStateAction {
   label: string
   href?: string
@@ -47,8 +56,11 @@ export function EmptyState({
   return (
     <Card className={cn("rounded-xl border-0 shadow-sm", className)}>
       <CardContent className="flex flex-col items-center gap-3 px-6 py-12 text-center">
-        <div className="flex h-11 w-11 items-center justify-center rounded-full bg-muted">
-          <Icon className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+        <div
+          className="flex h-11 w-11 items-center justify-center rounded-full"
+          style={{ backgroundColor: `${PALE_GREEN}33` }}
+        >
+          <Icon className="h-5 w-5" style={{ color: MID_GREEN }} aria-hidden="true" />
         </div>
         <div className="max-w-sm space-y-1">
           <p className="text-sm font-medium text-foreground">{heading}</p>
@@ -99,20 +111,22 @@ export function WarningBanner({
     <div
       role="alert"
       className={cn(
-        "flex flex-col gap-3 rounded-xl border border-amber-300/70 bg-amber-100 px-4 py-3.5 dark:border-amber-700/40 dark:bg-amber-500/10 sm:flex-row sm:items-start sm:justify-between",
+        "flex flex-col gap-3 rounded-xl border px-4 py-3.5 sm:flex-row sm:items-start sm:justify-between",
         className,
       )}
+      style={{ backgroundColor: WARNING_BG, borderColor: WARNING_BORDER }}
     >
       <div className="flex items-start gap-2.5">
         <AlertTriangle
-          className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400"
+          className="mt-0.5 h-4 w-4 shrink-0"
+          style={{ color: WARNING_ICON }}
           aria-hidden="true"
         />
         <div className="space-y-0.5">
-          <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+          <p className="text-sm font-medium" style={{ color: WARNING_HEADING }}>
             {heading}
           </p>
-          <p className="text-xs leading-relaxed text-amber-800/90 dark:text-amber-300/80">
+          <p className="text-xs leading-relaxed" style={{ color: WARNING_TEXT }}>
             {description}
           </p>
         </div>
@@ -122,7 +136,8 @@ export function WarningBanner({
           type="button"
           size="sm"
           variant="outline"
-          className="shrink-0 gap-1.5 border-amber-400/70 bg-white text-amber-900 hover:bg-amber-50 dark:border-amber-700/50 dark:bg-transparent dark:text-amber-200"
+          className="shrink-0 gap-1.5 bg-white hover:bg-white/70"
+          style={{ borderColor: WARNING_BORDER, color: WARNING_HEADING }}
           onClick={action.onClick}
         >
           {action.label}
