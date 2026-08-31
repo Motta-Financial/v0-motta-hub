@@ -2,7 +2,7 @@
 
 import type React from "react"
 import { useState } from "react"
-import { usePathname, useRouter } from "next/navigation"
+import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -141,13 +141,26 @@ function PortalHeader({
   mobileOpen: boolean
   setMobileOpen: (v: boolean) => void
 }) {
-  const router = useRouter()
-
   async function handleSignOut() {
-    const supabase = createClient()
     clearUserCache()
-    await supabase.auth.signOut()
-    router.push("/client-portal/login")
+    try {
+      const supabase = createClient()
+      await supabase.auth.signOut()
+    } catch (err) {
+      // Even if the sign-out call itself fails (network hiccup, already
+      // expired session, etc.), we still need to leave the portal — the
+      // old bug here was that a rejected signOut() promise would throw
+      // before ever reaching the redirect, so clicking "Sign out" appeared
+      // to do nothing and the previous user's session stayed on screen.
+      console.warn("[client-portal] sign-out request failed:", err)
+    } finally {
+      // A hard navigation (not router.push) so the browser drops every
+      // cached RSC payload for the pages we just saw as the signed-in
+      // user and re-runs the server auth check from a clean slate on the
+      // next paint — a soft navigation can otherwise leave stale portal
+      // content visible for a moment (or indefinitely) after sign-out.
+      window.location.href = "/client-portal/login"
+    }
   }
 
   const initials = getInitials(portalUser.fullName ?? portalUser.email)
