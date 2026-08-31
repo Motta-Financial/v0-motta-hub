@@ -117,8 +117,19 @@ export async function middleware(request: NextRequest) {
   // the blanket API 401 gate below fired first for EVERY signed-out or
   // non-staff visitor, so the route's own graceful fallback never ran --
   // the client saw a raw 401 instead of the intended { user: null } shape.
+  // /api/auth/logout must be reachable by ANY authenticated session, not
+  // just staff. It only ever destroys the CALLER's own session via
+  // supabase.auth.signOut() -- it can't leak or mutate anything else -- so
+  // there's no reason to gate it behind hasStaffRow. Without this
+  // exemption, a portal client (a real Supabase user, just not a
+  // team_members row) whose session somehow ends up on the Hub side gets
+  // permanently stuck: the API 401 gate below fires before the handler
+  // ever runs, so clicking "Sign Out" does nothing and the session lives
+  // on forever.
   const isPublicAuthApi =
-    pathname.startsWith("/api/auth/forgot-password") || pathname === "/api/auth/user"
+    pathname.startsWith("/api/auth/forgot-password") ||
+    pathname === "/api/auth/user" ||
+    pathname === "/api/auth/logout"
   // /api/alfred/health is a deliberately unauthenticated status probe so
   // alfred.motta.cpa (and any external monitor) can verify the Hub is
   // reachable, the Supabase env is configured, and the ALFRED service

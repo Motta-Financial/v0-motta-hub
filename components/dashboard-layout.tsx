@@ -1106,12 +1106,24 @@ function HeaderUserMenu() {
   const router = useRouter()
 
   const handleLogout = async () => {
-    const response = await fetch("/api/auth/logout", { method: "POST" })
-    if (response.ok) {
-      // Clear the cached user data so the login page and any other pages
-      // don't show stale profile info if the user logs back in.
-      clearUserCache()
-      router.push("/login")
+    // Clear the cached user data up front, and always finish by leaving
+    // the Hub — even if the logout request itself fails (network hiccup,
+    // session already expired, etc). The previous version only did this
+    // `if (response.ok)`, so a failed/rejected request left the button
+    // appearing to do nothing and the prior user's session (and the
+    // header showing their name) stuck on screen.
+    clearUserCache()
+    try {
+      await fetch("/api/auth/logout", { method: "POST" })
+    } catch (error) {
+      console.warn("[hub] logout request failed:", error)
+    } finally {
+      // Hard navigation instead of router.push so the browser drops every
+      // cached RSC payload rendered for the previous user and re-runs the
+      // server auth check from a clean slate — a soft navigation can
+      // otherwise leave the old session's UI visible for a moment or
+      // indefinitely.
+      window.location.href = "/login"
     }
   }
 
