@@ -33,9 +33,9 @@ import { createHmac, timingSafeEqual } from "node:crypto"
 import {
   syncSingleClient,
   prefetchClientList,
-  refreshClientYearEngagements,
   hydrateEngagementEfile,
   deleteClient,
+  refreshCustomStatuses,
 } from "@/lib/proconnect/sync"
 import { exportReturnData } from "@/lib/proconnect/data"
 import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
@@ -446,49 +446,44 @@ async function maybeSendVerifierMissingAlert(
 /**
  * Process a TaxReturnWorkStatus event.
  *
- * The entity id maps to the return/engagement UUID (same id space as
- * TaxReturn events). Refresh that client+year's engagements — one API
- * call — so the new work status shows in the Hub immediately instead
- * of waiting for the nightly sync. If we can't resolve the engagement
- * yet, soft-succeed: the nightly sync will pick it up.
+ * ─── WHAT THIS EVENT ACTUALLY IS ────────────────────────────────────
+ * Intuit PD confirmed on 2026-08-24, via Steve: the event is published
+ * "only with the custom status LIST changes." It fires when the firm edits
+ * its catalog of statuses — adds one, renames one, removes one — NOT when
+ * an individual return moves from "In progress" to "E-Filed".
+ *
+ * The name reads as per-return work status and we built for that: this
+ * handler used to treat entity.id as an engagement UUID and look it up in
+ * proconnect_engagements. That lookup could never match, because the id is
+ * a status id. It would log "not yet in engagements", soft-succeed, and do
+ * nothing — so even the events we spent months waiting for would have been
+ * silently discarded on arrival.
+ *
+ * Zero have been delivered across 6,025 events, which is consistent: the
+ * firm's 40-status catalog has been stable. 702 of 923 engagements carry a
+ * custom status and those change constantly, but that is not what this
+ * event reports.
+ *
+ * ─── CONSEQUENCE ────────────────────────────────────────────────────
+ * There is NO real-time notification of a return's status changing. The
+ * nightly sync is the only path, permanently. Do not add a "waiting for
+ * the webhook" caveat to that anywhere — it is not coming.
  */
 async function processTaxReturnWorkStatusEvent(
   entity: WebhookEntity
 ): Promise<{ success: boolean; error?: string }> {
-  const sb = getSupabaseAdmin()
-  const { data: eng, error: engErr } = await sb
-    .from("proconnect_engagements")
-    .select("proconnect_client_id, tax_year")
-    .eq("engagement_id", entity.id)
-    .maybeSingle()
-
-  if (engErr) {
-    return { success: false, error: `engagement lookup failed: ${engErr.message}` }
-  }
-  if (!eng?.proconnect_client_id || !eng.tax_year) {
-    console.log(
-      `[ProConnect Webhook] TaxReturnWorkStatus ${entity.id} not yet in proconnect_engagements; nightly sync will pick it up`
-    )
-    return { success: true }
-  }
-
-  const result = await refreshClientYearEngagements(
-    eng.proconnect_client_id as string,
-    eng.tax_year as number
+  console.log(
+    `[ProConnect Webhook] TaxReturnWorkStatus ${entity.operation} (${entity.id}) — ` +
+      "custom status LIST changed; re-syncing the catalog"
   )
-  if (!result.success) {
-    // Soft-fail: the status change isn't lost, the nightly sync covers it.
+
+  const result = await refreshCustomStatuses()
+  if (result.errors.length > 0) {
+    // Soft-fail: the nightly sync re-reads the catalog anyway.
     console.warn(
-      `[ProConnect Webhook] work-status refresh failed for ${entity.id}: ${result.error}`
+      `[ProConnect Webhook] custom status re-sync had errors: ${result.errors.join("; ")}`
     )
   }
-
-  // The refresh above uses the engagement LIST endpoint, which has no
-  // filings — so it can't move e-file status even though a work-status
-  // change ("E-filed", "Accepted") is often exactly when it moved. One
-  // extra call for the engagement that actually changed.
-  await refreshEfileStatus(entity.id)
-
   return { success: true }
 }
 
