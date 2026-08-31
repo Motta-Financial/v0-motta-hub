@@ -548,7 +548,11 @@ async function syncEngagements(
 }
 
 /**
- * Sync custom statuses
+ * Sync custom statuses.
+ *
+ * Exported as `refreshCustomStatuses` below for the TaxReturnWorkStatus
+ * webhook, which — per Intuit PD, 2026-08-24 — fires when the custom status
+ * LIST changes, not when a return's status changes.
  */
 async function syncCustomStatuses(
   supabase: SupabaseClient
@@ -1721,6 +1725,19 @@ export async function syncSingleClient(
  * TaxReturnWorkStatus webhook so status changes land without waiting
  * for the nightly sync. One API call.
  */
+/**
+ * Re-sync the custom status catalog. One API call.
+ *
+ * The correct response to a TaxReturnWorkStatus webhook. Intuit's PD
+ * confirmed on 2026-08-24 that the event fires only when the custom status
+ * *list* is edited — a status added, renamed or removed — NOT when an
+ * individual return moves between statuses. The entity id on that event is
+ * therefore a status id, never an engagement id.
+ */
+export async function refreshCustomStatuses(): Promise<{ count: number; errors: string[] }> {
+  return syncCustomStatuses(getSupabaseAdmin())
+}
+
 export async function refreshClientYearEngagements(
   proconnectClientId: string,
   taxYear: number

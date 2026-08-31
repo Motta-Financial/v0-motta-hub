@@ -111,7 +111,7 @@ explicitly rather than rounded up to "done."
 |---|---|---|---|
 | `Client` | Create, Update | 2,161 | ✅ Delivering (222 processed since the 404 fix) |
 | `TaxReturn` | Create, Update, **Delete** | 3,498 | ✅ Delivering (3,425 processed) |
-| `TaxReturnWorkStatus` | — | **0** | 🔴 **Never delivered.** Receiver handles the entity type. Open question for Intuit. |
+| `TaxReturnWorkStatus` | — | **0** | ✅ **Answered 2026-08-24, not a gap.** Intuit PD, via Steve: the event is published *"only with the custom status LIST changes"* — when the firm edits its catalog of statuses, NOT when a return moves between them. Our 40-status catalog has been stable, so zero deliveries is correct. The name misleads: our handler treated `entity.id` as an engagement UUID and would have silently discarded any event that did arrive. Now re-syncs the catalog. **There is no real-time notification of a return's status changing — the nightly sync is the only path, permanently.** |
 
 ---
 
@@ -384,9 +384,12 @@ correct signature verification (5,659 events) · nightly full sync in 13
 seconds, 6/6 nights clean · client-identity bridge with DB-level
 uniqueness · tax dashboard · dryRun-gated, PII-redacted Import pipeline.
 
-**Blocked by Intuit:** `TaxReturnWorkStatus` webhooks never delivered · no
-delete/clear on Import (defect 3, acknowledged, no date) · zero M-series rows
-in the delivered catalog.
+**Blocked by Intuit:** no delete/clear on Import (defect 3, acknowledged, no
+date) · zero M-series rows in the delivered catalog.
+
+`TaxReturnWorkStatus` came off this list on 2026-08-24: it fires on custom
+status *list* edits, not per-return status changes, so zero deliveries was
+always correct behaviour.
 
 Everything else once on this list came off it. Export, Import, Create Tax
 Return and `esignature.envelopes[]` were each attributed to Intuit and each
