@@ -1,6 +1,28 @@
+/**
+ * Runs with the service-role client, matching /api/tax/clients and
+ * /api/tax/returns.
+ *
+ * It used the session client at first and failed with "permission denied for
+ * view tax_person_relationships_both". That is a missing GRANT, not an RLS
+ * policy rejection — this project revokes default PostgREST grants (see
+ * scripts/359), so new tables are unreachable by `authenticated` until
+ * granted explicitly.
+ *
+ * Granting was the wrong fix here. Views in this schema run as their owner
+ * and bypass base-table RLS for `authenticated` (scripts/359 documents this
+ * and deliberately left it in place), and client-portal users hold
+ * `authenticated` sessions in this same Supabase project. Granting the view
+ * would have exposed every household — who is married to whom, who claims
+ * which child — to any portal login.
+ *
+ * Staff-gating happens in middleware, which requires a session AND a
+ * team_members row before any /api route runs. The is_staff() RLS policies on
+ * both tables stay as defence in depth for any future caller that does use a
+ * session client.
+ */
 import { NextResponse, type NextRequest } from "next/server"
 
-import { createClient } from "@/lib/supabase/server"
+import { createAdminClient } from "@/lib/supabase/server"
 
 /**
  * Dependents for the household model (scripts/404_tax_household_model.sql).
@@ -52,7 +74,7 @@ function ageAtYearEnd(dateOfBirth: string | null, taxYear: number): number | nul
  */
 export async function GET(req: NextRequest) {
   try {
-    const sb = await createClient()
+    const sb = createAdminClient()
     const { searchParams } = new URL(req.url)
     const contactId = searchParams.get("contactId")
     const taxYearParam = searchParams.get("taxYear")
@@ -173,7 +195,7 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const sb = await createClient()
+    const sb = createAdminClient()
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
     if (!body) return NextResponse.json({ error: "body required" }, { status: 400 })
     const action = body.action
@@ -384,7 +406,7 @@ export async function POST(req: NextRequest) {
  * an IRS letter, so the message needs to read that way.
  */
 async function describeDoubleClaim(
-  sb: Awaited<ReturnType<typeof createClient>>,
+  sb: ReturnType<typeof createAdminClient>,
   dependentContactId: string,
   taxYear: number,
 ): Promise<string> {
