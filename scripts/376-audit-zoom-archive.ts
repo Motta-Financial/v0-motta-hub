@@ -13,6 +13,7 @@
  *   npx tsx scripts/376-audit-zoom-archive.ts [monthsBack=36]
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { readFileSync, writeFileSync } from "node:fs"
 import { createClient } from "@supabase/supabase-js"
 import { head } from "@vercel/blob"
@@ -53,7 +54,7 @@ function monthWindow(back: number): [string, string] {
 
 async function main() {
   const monthsBack = Math.max(1, Number(process.argv[2]) || 36)
-  const admin = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+  const admin = createClient(process.env.SUPABASE_URL!, getServiceKey()!)
   const blobToken = process.env.ZOOM_BLOB_READ_WRITE_TOKEN
   if (!blobToken) throw new Error("ZOOM_BLOB_READ_WRITE_TOKEN not set")
 

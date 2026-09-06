@@ -10,13 +10,14 @@
  * Targets every recap row with a null image and a non-empty top_three.
  * Run multiple times safely — already-backfilled rows are skipped.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient } from "@supabase/supabase-js"
 import { generatePodiumImage } from "../lib/tommy-awards/generate-podium-image"
 
 async function main() {
   const s = createClient(
     process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
   )
 
   const { data: recaps, error } = await s

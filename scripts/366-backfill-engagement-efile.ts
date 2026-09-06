@@ -46,6 +46,7 @@
  * Needs SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY (and CRON_SECRET for
  * --refresh-token) in .env.local. Requires migration 366 to be applied.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { existsSync, readFileSync } from "node:fs"
 
 interface Args {
@@ -120,7 +121,7 @@ async function main() {
   const { createClient } = await import("@supabase/supabase-js")
   const sb = createClient(
     (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false } }
   )
 

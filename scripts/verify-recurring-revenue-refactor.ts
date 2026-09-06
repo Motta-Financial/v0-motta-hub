@@ -6,6 +6,7 @@
  * Expected (per scripts/audit-recurring-revenue-import.ts on the
  * accepted lifecycle): MRR $40,872 / 1,709 service lines / 665 proposals.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient } from "@supabase/supabase-js"
 
 import {
@@ -36,7 +37,7 @@ function annualContribution(freq: IgnitionBillingFrequency, rate: number): numbe
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  getServiceKey()!,
   { auth: { persistSession: false } },
 )
 

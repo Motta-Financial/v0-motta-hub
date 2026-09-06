@@ -34,6 +34,7 @@
  *     too, which is a real question for Intuit rather than an assumption.
  *     Quote this sample size when asking.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { existsSync, readFileSync } from "node:fs"
 
 function loadEnv() {
@@ -75,7 +76,7 @@ async function main() {
   const { createClient } = await import("@supabase/supabase-js")
   const sb = createClient(
     process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false } },
   )
 

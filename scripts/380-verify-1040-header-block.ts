@@ -25,6 +25,7 @@
  * Run with:
  *   npx tsx --env-file=.env.local scripts/380-verify-1040-header-block.ts
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient } from "@supabase/supabase-js"
 import {
   renderForm1040,
@@ -50,7 +51,7 @@ const ADDRESS_LINES = ["hdr_address", "hdr_city", "hdr_state", "hdr_zip"] as con
 
 const sb = createClient(
   process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  getServiceKey()!,
   { auth: { persistSession: false } },
 )
 

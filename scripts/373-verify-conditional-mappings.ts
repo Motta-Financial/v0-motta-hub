@@ -13,6 +13,7 @@
  * Run with:
  *   npx tsx --env-file=.env.local scripts/373-verify-conditional-mappings.ts
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient } from "@supabase/supabase-js"
 import {
   renderForm1040,
@@ -26,7 +27,7 @@ const REAL = "2475868e-adc2-4b9c-875c-ef4a3143a179"
 
 const sb = createClient(
   process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  getServiceKey()!,
   { auth: { persistSession: false } },
 )
 
