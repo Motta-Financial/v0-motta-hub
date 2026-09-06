@@ -12,6 +12,7 @@
  * call from inside the app — wrap behind a layout guard if exposing
  * publicly.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { getCurrentUser, getForm, listWebhooks } from "@/lib/jotform/client"
@@ -59,7 +60,7 @@ export async function GET() {
   try {
     const supabase = createClient(
       process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY!,
+      getServiceKey()!,
       { auth: { persistSession: false, autoRefreshToken: false } },
     )
 

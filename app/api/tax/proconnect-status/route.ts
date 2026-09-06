@@ -1,3 +1,4 @@
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { buildExportPath, getPhase1Hosts } from "@/lib/proconnect/data"
@@ -69,7 +70,7 @@ async function findMissingTables(
 export async function GET() {
   const supabase = createClient(
     process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
+    getServiceKey()!
   )
 
   // 1. OAuth singleton

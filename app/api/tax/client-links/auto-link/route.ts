@@ -11,6 +11,7 @@
  *   We always return per-row signals + score so the operator can audit.
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import {
@@ -30,7 +31,7 @@ export const maxDuration = 120
 function admin() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false } },
   )
 }

@@ -8,6 +8,7 @@
  * Mapping card afterward; this endpoint is just a "do the obvious ones
  * for me" shortcut.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import {
@@ -22,7 +23,7 @@ export const runtime = "nodejs"
 function getSupabase() {
   return createClient(
     process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false } },
   )
 }

@@ -1,3 +1,4 @@
+import { getServiceKey } from "@/lib/supabase/service-key"
 /**
  * Direct 1040 line entry — evaluation.
  *
@@ -13,7 +14,7 @@
  *
  * Note it does NOT reuse `lib/forms/form-1040.ts#evaluateComputedLines`,
  * which is the same DSL: that module reads
- * `process.env.SUPABASE_SERVICE_ROLE_KEY` at module scope and constructs a
+ * `getServiceKey()` at module scope and constructs a
  * Supabase client, so importing it from a client component would pull the
  * admin client into the browser bundle. The DSL is ~30 lines; duplicating
  * it is cheaper than making the whole 1040 module isomorphic, and the two

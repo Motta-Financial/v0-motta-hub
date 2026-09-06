@@ -1,3 +1,4 @@
+import { getOAuthStateSecret } from "@/lib/oauth-state-secret"
 import { type NextRequest, NextResponse } from "next/server"
 import crypto from "crypto"
 import { createClient } from "@/lib/supabase/server"
@@ -39,9 +40,7 @@ export async function GET(request: NextRequest) {
     // key from the Supabase JWT secret since it's already required for
     // the rest of auth — no new env var needed.
     const stateSecret =
-      process.env.SUPABASE_JWT_SECRET ||
-      process.env.CALENDLY_CLIENT_SECRET ||
-      "calendly-state-secret"
+      getOAuthStateSecret()
     const payload = {
       teamMemberId: teamMember.id,
       timestamp: Date.now(),

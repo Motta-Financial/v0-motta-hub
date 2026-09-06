@@ -1,3 +1,4 @@
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextResponse, type NextRequest } from "next/server"
 import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/server"
@@ -30,7 +31,7 @@ interface InviteBody {
 
 function createAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const supabaseServiceKey = getServiceKey()
 
   if (!supabaseUrl || !supabaseServiceKey) {
     throw new Error("Missing Supabase environment variables")

@@ -15,6 +15,7 @@
  *   lib/proconnect/token-cipher.ts for the zero-downtime rollout behaviour.)
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient } from "@supabase/supabase-js"
 import {
   decryptToken,
@@ -25,7 +26,7 @@ import {
 import { firmConfigSync } from "@/lib/firm-settings"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const SUPABASE_SERVICE_KEY = getServiceKey()!
 
 const PROCONNECT_CLIENT_ID = process.env.PROCONNECT_CLIENT_ID!
 const PROCONNECT_CLIENT_SECRET = process.env.PROCONNECT_CLIENT_SECRET!

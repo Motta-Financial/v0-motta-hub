@@ -30,10 +30,11 @@
  *   for that line and the composer skips it.
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient } from "@supabase/supabase-js"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const SUPABASE_SERVICE_KEY = getServiceKey()!
 
 function admin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {

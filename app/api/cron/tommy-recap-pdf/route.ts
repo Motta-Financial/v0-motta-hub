@@ -13,6 +13,7 @@
 // HTTP + lays out the document) eating into that. A clean hand-off keeps
 // each step independently observable and retryable.
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { generatePodiumPdf, type PodiumPdfWinner } from "@/lib/tommy-awards/generate-podium-pdf"
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   const supabase = createClient(
     process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
   )
 
   const { data: recap, error: recapErr } = await supabase

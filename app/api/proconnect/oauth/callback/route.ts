@@ -13,6 +13,7 @@
  * Configured in Intuit Developer:
  *   Redirect URIs: https://hub.motta.cpa/api/proconnect/oauth/callback
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { getRedirectUri } from "@/lib/proconnect/oauth"
@@ -104,7 +105,7 @@ export async function GET(request: NextRequest) {
 
   const supabase = createClient(
     process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false } }
   )
 

@@ -14,6 +14,7 @@
  * occurrence is recorded in the audit log alongside the line code.
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/server"
@@ -27,7 +28,7 @@ import {
 } from "@/lib/forms/form-1040"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const SUPABASE_SERVICE_KEY = getServiceKey()!
 
 function admin() {
   return createSupabaseClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {

@@ -10,6 +10,7 @@
 // consider a separate auth-required `/api/alfred/diagnostics` route
 // instead. This one stays public.
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { applyAlfredCors, preflightResponse } from "@/lib/alfred/cors"
 import { createAdminClient } from "@/lib/supabase/server"
 import { getAlfredServiceAccount } from "@/lib/alfred/service-account"
@@ -32,7 +33,7 @@ export async function GET(req: Request) {
   // `alfredServiceAccountFound` step does, transitively.
   const supabaseConfigured = Boolean(
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
-      (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY),
+      (getServiceKey()),
   )
 
   // Probe for the singleton ALFRED row. We swallow the throw on purpose:

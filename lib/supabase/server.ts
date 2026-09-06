@@ -1,3 +1,4 @@
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createServerClient } from "@supabase/ssr"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { cookies } from "next/headers"
@@ -132,7 +133,7 @@ function withCookieAttributes(
  */
 export function createAdminClient() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const key = getServiceKey()
 
   if (!url || !key) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
@@ -148,7 +149,7 @@ export function createAdminClient() {
  */
 export function tryCreateAdminClient() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const key = getServiceKey()
 
   if (!url || !key) {
     return null

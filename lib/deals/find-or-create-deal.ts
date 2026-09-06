@@ -20,6 +20,7 @@
  * and we re-select the winner.
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 export type DealSource =
@@ -50,7 +51,7 @@ export interface FindOrCreateDealResult {
 
 function getServiceClient(): SupabaseClient {
   const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
+  const key = getServiceKey()
   if (!url || !key) {
     throw new Error("Supabase service-role credentials are not configured")
   }

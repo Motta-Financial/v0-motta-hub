@@ -13,11 +13,11 @@
  * lets the cross-domain Intuit redirect to /callback succeed even though
  * the browser may not send our session cookie back on that hop.
  *
- * Signing secret precedence matches the Calendly helper — we reuse
- * SUPABASE_JWT_SECRET (already required for auth) so no new env var is
- * needed. PROCONNECT_CLIENT_SECRET is a fallback for environments where the
- * JWT secret isn't exposed.
+ * Signed with OAUTH_STATE_SECRET — see lib/oauth-state-secret.ts. This used
+ * to borrow SUPABASE_JWT_SECRET, which coupled a CSRF defence to a database
+ * credential and inherited that credential's rotation limits.
  */
+import { getOAuthStateSecret } from "@/lib/oauth-state-secret"
 import crypto from "node:crypto"
 
 const STATE_TTL_MS = 10 * 60 * 1000 // 10 minutes
@@ -34,11 +34,7 @@ interface SignedPayload extends ProconnectStatePayload {
 }
 
 function getStateSecret(): string {
-  return (
-    process.env.SUPABASE_JWT_SECRET ||
-    process.env.PROCONNECT_CLIENT_SECRET ||
-    "proconnect-state-secret"
-  )
+  return getOAuthStateSecret()
 }
 
 function sign(payloadB64: string): string {

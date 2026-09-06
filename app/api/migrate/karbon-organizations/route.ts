@@ -1,3 +1,4 @@
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -155,7 +156,7 @@ export async function GET(request: Request) {
     // Initialize Supabase client
     const supabase = createClient(
       process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-      process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "",
+      getServiceKey() || "",
     )
 
     console.log("[v0] Starting Karbon organization migration...")
