@@ -21,6 +21,10 @@
  *   }]
  * }
  *
+ * Deliveries are acknowledged BEFORE processing (waitUntil), because Intuit
+ * times out slow endpoints and deactivates the subscription after 7 days of
+ * failures. See the note above the waitUntil call in POST.
+ *
  * Webhook verification uses the PROCONNECT_WEBHOOK_VERIFIER_TOKEN env var
  * and is mandatory: if the token is absent on the serving deployment, the
  * route rejects every request with 503 rather than processing unverified
@@ -29,6 +33,7 @@
 
 import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextRequest, NextResponse } from "next/server"
+import { waitUntil } from "@vercel/functions"
 import { createClient } from "@supabase/supabase-js"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import {
@@ -607,37 +612,59 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Fetch the client list at most once per delivery — Client
-    // Create/Update events resolve against it (no single-client GET),
-    // and per-entity fetches are what rate-limited us in the past.
-    const needsClientList = payload.eventNotifications.some((n) =>
-      (n.dataChangeEvent?.entities || []).some(
-        (e) => e.name === "Client" && e.operation !== "Delete"
-      )
+    // ─── ACK FIRST, PROCESS AFTER ────────────────────────────────────
+    // Intuit expects an immediate 200 and times out otherwise. This handler
+    // used to process inline and got away with it only because the work was
+    // fast for the wrong reason: every TaxReturn event attempts an Export,
+    // and while Export was 403-blocked that failed in milliseconds.
+    //
+    // Export started working on 2026-07-27. Each TaxReturn event now does a
+    // real export plus a snapshot write before responding, which pushed the
+    // handler past Intuit's timeout. Their dashboard began reporting
+    // "your service is taking too long" and warned the subscription would be
+    // deactivated — the fix that unblocked Export is what broke the ack.
+    //
+    // waitUntil keeps the function alive after the response is sent, so the
+    // work still completes. Without it, returning early on Vercel would kill
+    // the invocation and silently drop the processing.
+    const entityCount = payload.eventNotifications.reduce(
+      (n, notification) => n + (notification.dataChangeEvent?.entities || []).length,
+      0
     )
-    const sharedClientList = needsClientList ? await prefetchClientList() : null
 
-    // Process each notification
-    const results: Array<{ entity: string; success: boolean; error?: string }> = []
+    waitUntil(
+      (async () => {
+        try {
+          // Fetch the client list at most once per delivery — Client
+          // Create/Update events resolve against it (no single-client GET),
+          // and per-entity fetches are what rate-limited us in the past.
+          const needsClientList = payload.eventNotifications.some((n) =>
+            (n.dataChangeEvent?.entities || []).some(
+              (e) => e.name === "Client" && e.operation !== "Delete"
+            )
+          )
+          const sharedClientList = needsClientList ? await prefetchClientList() : null
 
-    for (const notification of payload.eventNotifications) {
-      const realmId = notification.realmId
-      const entities = notification.dataChangeEvent?.entities || []
+          for (const notification of payload.eventNotifications) {
+            const realmId = notification.realmId
+            const entities = notification.dataChangeEvent?.entities || []
+            for (const entity of entities) {
+              await processEntity(entity, realmId, payload, sharedClientList)
+            }
+          }
+        } catch (err) {
+          // Nothing to return to — the 200 has already gone. The event row
+          // still records the failure, and the nightly sync reconciles.
+          console.error(
+            "[ProConnect Webhook] background processing failed:",
+            err instanceof Error ? err.message : err
+          )
+        }
+      })()
+    )
 
-      for (const entity of entities) {
-        await processEntity(entity, realmId, payload, sharedClientList)
-        results.push({
-          entity: `${entity.name}:${entity.id}`,
-          success: true,
-        })
-      }
-    }
-
-    return NextResponse.json({
-      received: true,
-      processed: results.length,
-      results,
-    })
+    // `accepted`, not `processed`: the work is still running.
+    return NextResponse.json({ received: true, accepted: entityCount })
   } catch (err) {
     console.error(
       "[ProConnect Webhook] Error processing webhook:",
