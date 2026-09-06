@@ -52,6 +52,7 @@
  * first, which refreshes + stores the token server-side; the local calls
  * then ride the fresh DB-stored access token.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { existsSync, readFileSync } from "node:fs"
 
 // The one return designated for write tests: "SENTINEL TEST — DO NOT FILE".
@@ -132,7 +133,7 @@ async function main() {
   const { createClient } = await import("@supabase/supabase-js")
   const sb = createClient(
     process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false } },
   )
 

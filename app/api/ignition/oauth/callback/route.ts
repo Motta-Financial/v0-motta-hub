@@ -1,3 +1,4 @@
+import { getOAuthStateSecret } from "@/lib/oauth-state-secret"
 import { type NextRequest, NextResponse } from "next/server"
 import crypto from "crypto"
 import { createClient } from "@/lib/supabase/server"
@@ -27,9 +28,7 @@ function verifyState(state: string): { teamMemberId: string } | null {
   const payloadB64 = state.slice(0, dot)
   const signature = state.slice(dot + 1)
   const stateSecret =
-    process.env.SUPABASE_JWT_SECRET ||
-    process.env.IGNITION_CLIENT_SECRET ||
-    "ignition-state-secret"
+    getOAuthStateSecret()
   const expected = crypto
     .createHmac("sha256", stateSecret)
     .update(payloadB64)

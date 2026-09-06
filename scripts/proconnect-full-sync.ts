@@ -12,11 +12,12 @@
  * Unlike the Edge Function, this runs without timeout constraints.
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient, SupabaseClient } from "@supabase/supabase-js"
 
 // Load env vars
 const SUPABASE_URL = process.env.SUPABASE_URL!
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const SUPABASE_SERVICE_KEY = getServiceKey()!
 const PROCONNECT_CLIENT_ID = process.env.PROCONNECT_CLIENT_ID!
 const PROCONNECT_CLIENT_SECRET = process.env.PROCONNECT_CLIENT_SECRET!
 

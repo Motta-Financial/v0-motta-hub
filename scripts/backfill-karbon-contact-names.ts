@@ -20,6 +20,7 @@
  *     -r tsx/cjs scripts/backfill-karbon-contact-names.ts          # live run
  *   ...same... -- --dry-run                                        # preview only
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient } from "@supabase/supabase-js"
 import { getKarbonCredentials, karbonFetch } from "../lib/karbon-api"
 import { mapKarbonContactToSupabase } from "../lib/karbon/mappers/contact"
@@ -35,7 +36,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 function getDb() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY
+  const key = getServiceKey()
   if (!url || !key) throw new Error("Supabase service-role env vars not set")
   return createClient(url, key, { auth: { persistSession: false } })
 }

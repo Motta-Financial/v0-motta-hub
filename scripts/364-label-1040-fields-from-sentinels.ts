@@ -47,6 +47,7 @@
  * /api/proconnect/sync with CRON_SECRET, which refreshes + stores the token
  * server-side; the local export then rides the fresh DB-stored access token.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { readFileSync, writeFileSync, existsSync } from "node:fs"
 
 type CellKey = string // `${series}/${prefix}/${code}/${suffix}`
@@ -95,7 +96,7 @@ async function main() {
   const { createClient } = await import("@supabase/supabase-js")
   const sb = createClient(
     process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false } },
   )
 

@@ -15,6 +15,7 @@
  * Differs from /api/jotform/health by being cheap to call repeatedly
  * (SWR-friendly) and shaped for direct UI consumption.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { getForm, listWebhooks } from "@/lib/jotform/client"
@@ -24,7 +25,7 @@ const INTAKE_FORM_ID = "242306172162144"
 export async function GET() {
   const supabase = createClient(
     process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false, autoRefreshToken: false } },
   )
 

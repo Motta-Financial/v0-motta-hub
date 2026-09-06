@@ -29,6 +29,7 @@
  *   pnpm tsx scripts/123_reconcile_debriefs_with_karbon.ts            # dry run
  *   pnpm tsx scripts/123_reconcile_debriefs_with_karbon.ts --apply    # write
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 const APPLY = process.argv.includes("--apply")
@@ -110,7 +111,7 @@ async function pageAll<T>(
 
 async function main() {
   const url = process.env.SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const key = getServiceKey()
   if (!url || !key) {
     console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
     process.exit(1)

@@ -26,6 +26,7 @@
  * - RESEND_API_KEY / RESEND_FROM_EMAIL: failure alerts
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextRequest, NextResponse } from "next/server"
 import { Resend } from "resend"
 import { createClient } from "@supabase/supabase-js"
@@ -46,7 +47,7 @@ const ALERT_RECIPIENTS = ["team@motta.co"]
 
 function getSupabaseAdmin() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const key = getServiceKey()
   if (!url || !key) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
   }

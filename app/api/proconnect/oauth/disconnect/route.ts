@@ -11,6 +11,7 @@
  * Configured in Intuit Developer:
  *   App URLs > Disconnect URL: https://hub.motta.cpa/api/proconnect/oauth/disconnect
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { requireAdmin } from "@/lib/auth/require-admin"
@@ -24,7 +25,7 @@ async function performDisconnect(): Promise<{ ok: boolean; error?: string }> {
 
   const supabase = createClient(
     process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false } }
   )
 

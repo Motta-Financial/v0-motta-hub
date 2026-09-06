@@ -16,13 +16,14 @@
  *     the entire set on each successful export to avoid stale rows.
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { exportReturnData } from "@/lib/proconnect/data"
 import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const SUPABASE_SERVICE_KEY = getServiceKey()!
 
 function admin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {

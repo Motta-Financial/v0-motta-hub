@@ -1,3 +1,4 @@
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { normalizeState } from "@/lib/sales/us-geo"
@@ -65,7 +66,7 @@ export async function GET(req: Request) {
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      getServiceKey()!,
     )
 
     // ── Pull all invoices ────────────────────────────────────────────────

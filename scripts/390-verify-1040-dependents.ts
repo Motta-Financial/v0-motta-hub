@@ -25,6 +25,7 @@
  * Run with:
  *   npx tsx --env-file=.env.local scripts/390-verify-1040-dependents.ts
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient } from "@supabase/supabase-js"
 import {
   renderForm1040,
@@ -39,7 +40,7 @@ const DEP_LINES = ["dep_name", "dep_last", "dep_ssn", "dep_rel", "dep_ctc"] as c
 
 const sb = createClient(
   process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  getServiceKey()!,
   { auth: { persistSession: false } },
 )
 

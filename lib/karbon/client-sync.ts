@@ -9,12 +9,13 @@
  * Used by Jotform intake webhook to auto-create clients when they don't exist.
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { getKarbonCredentials, karbonFetch } from "@/lib/karbon-api"
 import { createClient } from "@supabase/supabase-js"
 
 function getServiceClient() {
   const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY
+  const key = getServiceKey()
   if (!url || !key) {
     throw new Error("Supabase service-role credentials are not configured")
   }

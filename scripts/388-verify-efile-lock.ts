@@ -26,6 +26,7 @@
  *
  * Read-only. Touches Supabase with SELECTs and never calls ProConnect.
  */
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { existsSync, readFileSync } from "node:fs"
 import { createClient } from "@supabase/supabase-js"
 import {
@@ -281,7 +282,7 @@ function runCases(): number {
 function sb() {
   return createClient(
     (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
     { auth: { persistSession: false } },
   )
 }

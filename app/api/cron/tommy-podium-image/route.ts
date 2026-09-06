@@ -17,6 +17,7 @@
 // (HeroProfile.imageUrl → multimodal input → gpt-image-2) are unchanged
 // — see the user `tommy-image-generation` memory file.
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { generatePodiumImage } from "@/lib/tommy-awards/generate-podium-image"
@@ -53,7 +54,7 @@ export async function POST(req: NextRequest) {
 
   const supabase = createClient(
     process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
   )
 
   // Pull the recap + the top-three so we know who to render.

@@ -22,6 +22,7 @@
  * Read-only. Safe to re-run. No code changes here.
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { createClient } from "@supabase/supabase-js"
 import {
   classifyService,
@@ -31,7 +32,7 @@ import {
 } from "../lib/sales/ignition-recurring.ts"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+const SUPABASE_KEY = getServiceKey()
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error("Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY")

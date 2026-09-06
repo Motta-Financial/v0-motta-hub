@@ -1,3 +1,4 @@
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import {
@@ -53,7 +54,7 @@ export async function GET(req: Request) {
 
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    getServiceKey()!,
   )
 
   const [servicesRes, lineItems, proposalRows] = await Promise.all([

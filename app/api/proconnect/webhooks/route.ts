@@ -27,6 +27,7 @@
  * webhooks. See maybeSendVerifierMissingAlert below.
  */
 
+import { getServiceKey } from "@/lib/supabase/service-key"
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { createHmac, timingSafeEqual } from "node:crypto"
@@ -43,7 +44,7 @@ import { scanRelationships } from "@/lib/tax/relationships/scanner"
 
 const SUPABASE_URL = (process.env.SUPABASE_URL ||
   process.env.NEXT_PUBLIC_SUPABASE_URL)!
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const SUPABASE_SERVICE_KEY = getServiceKey()!
 
 interface WebhookEntity {
   name: string
