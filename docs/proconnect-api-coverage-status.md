@@ -100,7 +100,7 @@ explicitly rather than rounded up to "done."
 |---|---|---|
 | `intuit-signature` HMAC-SHA256 over **raw** body | ✅ **Correct** | Hashes `request.text()` — not re-serialized JSON — compared base64 with `timingSafeEqual` |
 | Session-gate exemption | ✅ | |
-| Fast 2xx ack | ⚠️ **Partial** | Acks, but processes **synchronously** before responding (including an Export attempt per TaxReturn event). Known issue; on our fix list. |
+| Fast 2xx ack | ✅ **Fixed 2026-09-06** | Was processing synchronously before responding. Harmless while Export was 403-blocked (it failed in milliseconds); once Export started working on 07-27 each TaxReturn event did a real export inline and Intuit began rejecting deliveries as too slow, warning of subscription deactivation. Now acknowledges immediately and processes in `waitUntil`. |
 | Dedupe on realm + entity + id + operation + lastUpdated | ✅ | |
 | Branch on `entities[].name` + `operation` (no event-type field) | ✅ | |
 | Reconciling periodic reads | ✅ | Nightly full sync, 13s |
