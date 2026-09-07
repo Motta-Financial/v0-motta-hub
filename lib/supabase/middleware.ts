@@ -1,3 +1,4 @@
+import { getPublishableKey } from "@/lib/supabase/publishable-key"
 import { createServerClient } from "@supabase/ssr"
 import type { Session } from "@supabase/supabase-js"
 import { NextResponse, type NextRequest } from "next/server"
@@ -8,7 +9,7 @@ export async function updateSession(request: NextRequest) {
   })
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const supabaseAnonKey = getPublishableKey()
 
   if (!supabaseUrl || !supabaseAnonKey) {
     // If env vars are not set, skip Supabase auth checks
