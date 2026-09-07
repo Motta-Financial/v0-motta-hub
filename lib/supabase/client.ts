@@ -1,3 +1,4 @@
+import { getPublishableKey } from "@/lib/supabase/publishable-key"
 import { createBrowserClient } from "@supabase/ssr"
 
 // NOTE: intentionally not cached as a singleton.
@@ -51,11 +52,12 @@ export function createClient() {
   // forgot-password handlers) still work, but the message now tells
   // the operator exactly what to do.
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const anonKey = getPublishableKey()
   if (!url || !anonKey) {
     throw new Error(
       "Supabase env vars are missing from the client bundle. " +
-        "NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY must be " +
+        "NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or the " +
+        "legacy NEXT_PUBLIC_SUPABASE_ANON_KEY) must be " +
         "present in process.env when `next build` or `next dev` runs. In the " +
         "v0 sandbox, ensure `.env.local` symlinks to /vercel/share/.env.project " +
         "so Next.js picks them up at build time.",
