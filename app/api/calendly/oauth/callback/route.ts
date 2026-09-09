@@ -9,6 +9,7 @@ import {
   fetchMe,
   type CalendlyConnectionRow,
 } from "@/lib/calendly-api"
+import { runCalendlySync } from "@/lib/calendly-sync"
 
 /**
  * Where to send users after the OAuth round-trip completes. We point at
@@ -148,6 +149,21 @@ export async function GET(request: NextRequest) {
     )
     if (sub.error) {
       console.error("[calendly] post-connect webhook subscribe failed:", sub.error)
+    }
+
+    // Sync this connection's event types inline instead of waiting for
+    // the next 30-minute cron pass. Without this, a newly (re)connected
+    // teammate has zero rows in calendly_event_types until the cron
+    // runs, which means they're silently absent from booking_hosts on
+    // the public intake form the moment they finish connecting — the
+    // exact "why can't we see their Calendly" gap. This is scoped to
+    // just this team_member_id so it stays fast, and failures are
+    // logged but never block the redirect (the cron will still pick it
+    // up as a fallback).
+    try {
+      await runCalendlySync({ teamMemberId: decoded.teamMemberId, syncPast: false })
+    } catch (syncErr) {
+      console.error("[calendly] post-connect event type sync failed:", syncErr)
     }
 
     return NextResponse.redirect(new URL(SUCCESS_REDIRECT, request.url))
