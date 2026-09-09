@@ -278,7 +278,7 @@ export function saltCapFor(
   return Math.max(floor, cap - (magi - start) * c.saltPhaseoutRate)
 }
 
-interface ScheduleAResult {
+export interface ScheduleAResult {
   lines: ScheduleALine[]
   total: number
   notes: string[]
@@ -289,8 +289,15 @@ interface ScheduleAResult {
  * Schedule A, given AGI (the medical floor and the SALT phase-down both
  * depend on it, which is why this runs after line 11 rather than with the
  * rest of the income lines).
+ *
+ * Exported because the ProConnect render path needs the SAME computation:
+ * lib/forms/form-1040-estimates.ts maps s400/s200M/s8284 cells into a
+ * ScheduleAInput and calls this for 1040 line 12a. Two implementations of
+ * the medical floor and the SALT phase-down would drift, and a Schedule A
+ * that disagrees with itself between the intake preview and the rendered
+ * return is worse than either being wrong on its own.
  */
-function computeScheduleA(
+export function computeScheduleA(
   a: ScheduleAInput,
   fs: FilingStatus,
   agi: number,

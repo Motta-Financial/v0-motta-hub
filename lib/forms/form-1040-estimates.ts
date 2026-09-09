@@ -8,8 +8,10 @@
  * published IRS worksheets:
  *
  *   6b  — Social Security Benefits Worksheet
- *   12a — standard deduction by filing status (+ §63(f) age/blindness
- *         boxes for both taxpayer and spouse)
+ *   7   — Schedule D: dispositions netted by holding period, IRC 1211(b)
+ *         loss cap
+ *   12a — the greater of the standard deduction (by filing status, + §63(f)
+ *         age/blindness boxes for both taxpayer and spouse) and Schedule A
  *   13b — Schedule 1-A line 38, senior portion only (Part V)
  *   16  — Qualified Dividends and Capital Gain Tax Worksheet over the
  *         TY bracket tables
@@ -22,14 +24,24 @@
  * render path).
  *
  * CAVEATS (all conservative, all visible via the "estimated" badge):
- *   - 12a is written only when itemizing provably cannot win (the Schedule A
- *     inputs, whose raw sum bounds the itemized total from above, do not beat
- *     the statutory figure) — otherwise it is left blank rather than assumed.
- *     That test IS live: form_1040_line_inputs carried one schedule/input,
- *     one override and two control rows for 12a as of 2026-08-11. But one
- *     input row makes a loose upper bound, so in practice it almost never
- *     suppresses (0 of 31 TY2025 returns); it tightens as more Schedule A
- *     inputs are recorded. Age and blindness are read for BOTH people from the s1
+ *   - 12a COMPUTES Schedule A when the return carries one, and takes the
+ *     greater of it and the statutory standard deduction (§63(e)), honouring
+ *     the s400 force-standard / force-itemized controls and the itemized
+ *     [Override]. Until 2026-09 it always asserted the standard deduction,
+ *     guarded only by an upper bound that was INERT (standardDeductionIsSafe
+ *     skips derivation rows with no code id, and the sole 12a row was a bare
+ *     series) — so 18 of 47 returns carrying Schedule A data rendered the
+ *     standard deduction while ALL 18 genuinely itemized. The bound survives
+ *     only for the case where Schedule A inputs exist but cannot be totalled.
+ *     The computation is `computeScheduleA` from the intake path, shared
+ *     rather than reimplemented so the two surfaces cannot disagree about the
+ *     same return. Still NOT applied: the §163(h)(3) acquisition-debt limit
+ *     (its inputs are populated on zero IND returns, so ProConnect is not
+ *     limiting either), the §163(d) investment-interest limit, charitable AGI
+ *     percentage limits and carryovers, and the optional state SALES TAX
+ *     TABLE — that last one is Intuit-calculated and absent from the export,
+ *     which caps Schedule A parity at roughly 98.5% on a return that elects
+ *     it. Age and blindness are read for BOTH people from the s1
  *     taxpayer/spouse cell pairs (scripts/379). Spouse boxes count on MFJ
  *     only: on MFS they require the spouse to have no gross income and to
  *     not be another taxpayer's dependent, neither of which the export
@@ -43,8 +55,18 @@
  *     vehicle loan interest (Parts II-IV) are not estimated.
  *   - 6b assumes MFS lived WITH their spouse; line 6d, the checkbox that
  *     says otherwise, is unmapped (scripts/386).
- *   - 16 treats line 7 (capital gain distributions) + 3a as LTCG/qualified,
- *     which matches how those mapped inputs behave on real returns.
+ *   - 16 takes 3a plus the LONG-TERM portion of line 7 surviving Schedule D
+ *     netting as the qualified amount — NOT line 7 wholesale, which is a net
+ *     of short and long and would hand a net short-term gain the 15% rate
+ *     (a silent under-tax). 1099-DIV capital gain distributions are folded
+ *     into the long-term bucket, which is where they belong.
+ *   - 7 resolves holding period by the s52 term override first, then
+ *     acquired/sold date math per IRC 1222, then short-term as the
+ *     conservative fallback. Wash-sale disallowed amounts are added back;
+ *     a net capital loss is capped per IRC 1211(b). NOT applied: loss
+ *     carryforwards (invisible to the export) and the collectibles /
+ *     §1202 / unrecaptured §1250 rate baskets, so a return holding those
+ *     gets the ordinary 0/15/20 treatment.
  *   - 19 uses Form 1040 line 18 as the credit limit. Schedule 8812's Credit
  *     Limit Worksheet A subtracts Schedule 3 lines 1-4, 5b, 6d, 6f, 6l and
  *     6m first; those credits are invisible to the export, so 19 overstates
@@ -68,6 +90,7 @@
  * absent the estimator quietly does nothing rather than guess.
  */
 
+import { computeScheduleA, type ScheduleAResult } from "@/lib/tax/intake/compute"
 import {
   evaluateComputedLines,
   type FieldCell,
@@ -108,6 +131,32 @@ const LINE8_COMPONENTS = [
   { seriesId: "s200M", codeId: "c5", suffixId: "x1" },      // alimony received (note suffix)
   { seriesId: "s19", codeId: "c3", suffixId: "x1000" },     // gambling winnings (W-2G box 1)
 ] as const
+/**
+ * Schedule D dispositions (s52). One PREFIX per disposition — p1, p2, … are
+ * the first, second, … sale, exactly like the W-2 and 1099-R screens.
+ *
+ * Not a mapping: line 7 is `proceeds − basis − expenses + wash-sale
+ * disallowed`, and form_1040_proconnect_map can only ever SUM cells. The
+ * arithmetic has to live here.
+ *
+ * `term` decides which rate applies, and getting it wrong is not a rounding
+ * error — a short-term gain routed into the qualified bucket is taxed at 15%
+ * instead of the ordinary rate, i.e. a silent UNDER-tax. Order of authority
+ * matches ProConnect's own: the explicit override first, then date math.
+ */
+const SCHED_D = {
+  seriesId: "s52",
+  proceeds: "c27",
+  basis: "c29",
+  expenses: "c28",
+  /** Wash sale disallowed; -1 means "disallow the whole loss", not one dollar. */
+  washSale: "c101",
+  acquired: "c25",
+  sold: "c26",
+  /** 1 = short-term, 2 = long-term [Override]. */
+  termOverride: "c51",
+} as const
+
 const EDUCATOR_CELL = { seriesId: "s300", codeId: "c28", suffixId: "x1000" }
 const STUDENT_LOAN_CELL = { seriesId: "s300", codeId: "c23", suffixId: "x1000" }
 const HSA_CELL = { seriesId: "s2800", codeId: "c5", suffixId: "x1000" }
@@ -345,6 +394,244 @@ function sumCells(
 }
 
 /**
+ * Schedule A (s400), plus the two components that live off it: SSA-1099
+ * Medicare premiums (`s200M` c13/c63, taxpayer and spouse) and Form 8283
+ * non-cash contributions (`s8284/c7`).
+ *
+ * Every code here is observed on a real IND return. Codes that appear only
+ * on SCO/PAR/COR snapshots are deliberately excluded — `s400` is a
+ * DIFFERENT SCREEN on those modules (it carries AMT and state-specific
+ * overrides), so a return_type-blind code list would pull in figures that
+ * are not Schedule A at all.
+ *
+ * The Medicare premiums are easy to miss and not optional: they are 6,544
+ * of one MFJ return's 67,369 medical total, and the tie-out to ProConnect
+ * does not close without them.
+ */
+const SCH_A_CELLS = {
+  medPrescriptions: [["s400", "c4"]],
+  medDoctors: [["s400", "c5"]],
+  medHospitals: [["s400", "c6"]],
+  medInsurance: [["s400", "c7"], ["s400", "c17"]],
+  medReimbursement: [["s400", "c8"]],
+  /** Out-of-pocket + other + BOTH spouses' Medicare premiums off the SSA-1099. */
+  medOther: [["s400", "c9"], ["s400", "c10"], ["s400", "c40"], ["s200M", "c13"], ["s200M", "c63"]],
+  taxStateIncome: [["s400", "c11"], ["s400", "c13"], ["s400", "c96"]],
+  taxRealestateResidence: [["s400", "c15"]],
+  taxPersonalProperty: [["s400", "c18"]],
+  intMortgage1098: [["s400", "c21"]],
+  intMortgageNo1098: [["s400", "c22"]],
+  intPointsNo1098: [["s400", "c23"]],
+  intInvestment: [["s400", "c24"]],
+  charityCash: [["s400", "c32"], ["s400", "c41"]],
+  charityNoncash50: [["s8284", "c7"]],
+} as const satisfies Record<string, ReadonlyArray<readonly [string, string]>>
+
+/** Medical MILES driven (s400/c52) — miles, not dollars. */
+const MED_MILES_CELL = { seriesId: "s400", codeId: "c52" } as const
+
+/**
+ * s400 controls that displace the max(standard, itemized) choice. None are
+ * populated on any IND return in the current book, so these are inert
+ * today — but a preparer ticking "force standard" and being overruled by a
+ * computed itemized total would be a bad surprise, so honour them.
+ */
+const SCH_A_ITEMIZED_OVERRIDE = { seriesId: "s400", codeId: "c118" } as const
+const SCH_A_CONTROLS = [
+  /** 1=must itemize, 2=elect to itemize, 3=force standard. */
+  { seriesId: "s400", codeId: "c1", forceStandard: ["3"], forceItemized: ["1", "2"] },
+  /** 1=force itemized, 2=force standard. */
+  { seriesId: "s400", codeId: "c100", forceStandard: ["2"], forceItemized: ["1"] },
+  /** 1=itemize, 2=standard deduction. */
+  { seriesId: "s400", codeId: "c146", forceStandard: ["2"], forceItemized: ["1"] },
+] as const
+
+/** Sum one (series, code) across every prefix AND suffix — grids included. */
+function sumAnySuffix(cells: FieldCell[], seriesId: string, codeId: string): number {
+  let total = 0
+  for (const c of cells) {
+    if (c.seriesId === seriesId && c.codeId === codeId) total += toNum(c.val)
+  }
+  return total
+}
+
+/**
+ * Parse a ProConnect date cell. A LEADING MINUS means the preparer entered
+ * "various" (broker summary rows), but the date behind it is still real and
+ * is what ProConnect itself uses for the holding period. Every c25/c26 value
+ * in the book matches [-]MM/DD/YYYY; anything else returns null.
+ */
+function parsePcDate(v: unknown): Date | null {
+  const m = /^-?(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(v ?? "").trim())
+  if (!m) return null
+  const [, mm, dd, yyyy] = m
+  const d = new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd)))
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/**
+ * §1222: long-term means held MORE THAN one year. The holding period starts
+ * the day AFTER acquisition, so "more than a year" is sold > acquired + 1yr.
+ */
+function isLongTermHolding(acquired: Date, sold: Date): boolean {
+  const oneYearOn = new Date(acquired.getTime())
+  oneYearOn.setUTCFullYear(oneYearOn.getUTCFullYear() + 1)
+  return sold.getTime() > oneYearOn.getTime()
+}
+
+/** One Schedule D disposition, netted by holding period. */
+interface ScheduleDResult {
+  /** Net short-term gain/loss. */
+  netShort: number
+  /** Net long-term gain/loss, INCLUDING 1099-DIV capital gain distributions. */
+  netLong: number
+  /** netShort + netLong, before the §1211(b) loss cap. */
+  net: number
+  /** How many disposition rows contributed. 0 = no Schedule D on this return. */
+  count: number
+}
+
+/**
+ * Net every s52 disposition into short- and long-term buckets.
+ *
+ * `capGainDistributions` (1040 line 7's existing mapped value, 1099-DIV box
+ * 2a) folds into the LONG-term bucket: distributions are always long-term,
+ * and when a Schedule D is filed they land on its line 13 and net with
+ * everything else. Folding them in here is what makes the two sources
+ * combine correctly instead of double-counting.
+ */
+function netScheduleD(cells: FieldCell[], capGainDistributions: number): ScheduleDResult {
+  const byPrefix = new Map<string, Map<string, string | null>>()
+  for (const c of cells) {
+    if (c.seriesId !== SCHED_D.seriesId) continue
+    const row = byPrefix.get(c.prefixId) ?? new Map<string, string | null>()
+    row.set(c.codeId, c.val)
+    byPrefix.set(c.prefixId, row)
+  }
+
+  let netShort = 0
+  let netLong = capGainDistributions
+  let count = 0
+
+  for (const row of byPrefix.values()) {
+    const proceeds = row.get(SCHED_D.proceeds)
+    const basis = row.get(SCHED_D.basis)
+    // A prefix carrying neither is a settings/flag row, not a disposition.
+    if (proceeds == null && basis == null) continue
+    count++
+
+    let gain = toNum(proceeds) - toNum(basis) - toNum(row.get(SCHED_D.expenses))
+
+    // Wash sale: the disallowed loss is added BACK, reducing the deductible
+    // loss. -1 is ProConnect's "disallow the entire loss" sentinel (same
+    // shape as the HSA "1 = maximum" case), which zeroes a loss outright.
+    const wash = toNum(row.get(SCHED_D.washSale))
+    if (wash === -1) {
+      if (gain < 0) gain = 0
+    } else if (wash > 0) {
+      gain += wash
+    }
+
+    const override = Number.parseInt(String(row.get(SCHED_D.termOverride) ?? ""), 10)
+    let long: boolean
+    if (override === 1) long = false
+    else if (override === 2) long = true
+    else {
+      const acq = parsePcDate(row.get(SCHED_D.acquired))
+      const sold = parsePcDate(row.get(SCHED_D.sold))
+      // No override and an unparseable date: treat as SHORT-term. Ordinary
+      // rates are the conservative branch — never hand an unknown holding
+      // period the 15% rate. (Never hit in the current book: every
+      // disposition has either the override or both dates.)
+      long = acq !== null && sold !== null ? isLongTermHolding(acq, sold) : false
+    }
+
+    if (long) netLong += gain
+    else netShort += gain
+  }
+
+  return { netShort, netLong, net: netShort + netLong, count }
+}
+
+/**
+ * The portion of a Schedule D net gain that keeps the preferential rate.
+ *
+ * Netting runs SHORT against LONG (Schedule D Part III), so a short-term loss
+ * eats into the long-term gain that would otherwise get 0/15/20% treatment,
+ * and a long-term loss simply reduces the total. Capping at netLong is what
+ * stops a short-term GAIN from being handed the 15% rate.
+ */
+function qualifiedPortion(r: ScheduleDResult): number {
+  if (r.net <= 0) return 0
+  return Math.min(r.net, Math.max(0, r.netLong))
+}
+
+/**
+ * Build a Schedule A from the exported cells, or return null when the return
+ * carries no Schedule A input at all (the common case — most clients take
+ * the standard deduction and have no s400 screen).
+ *
+ * Delegates the actual arithmetic to `computeScheduleA` in the intake path
+ * rather than reimplementing the medical floor and the SALT phase-down. The
+ * two surfaces must not be able to disagree about the same return.
+ */
+function scheduleAFromCells(
+  cells: FieldCell[],
+  constants: Form1040Constant[],
+  fs: StatusKey,
+  agi: number,
+): ScheduleAResult | null {
+  let sawAny = false
+  const input = {} as Record<string, number | null>
+  for (const [field, addrs] of Object.entries(SCH_A_CELLS)) {
+    let total = 0
+    let present = false
+    for (const [seriesId, codeId] of addrs) {
+      const cellsHere = cells.filter((c) => c.seriesId === seriesId && c.codeId === codeId)
+      if (cellsHere.length > 0) present = true
+      total += sumAnySuffix(cells, seriesId, codeId)
+    }
+    input[field] = present ? total : null
+    if (present) sawAny = true
+  }
+
+  // Medical mileage: c52 is MILES. ScheduleAInput has no medical-mileage
+  // field (only charitable), so convert here and fold the dollars into
+  // medOther. The medical rate is NOT the charitable rate — 0.21 vs 0.14 —
+  // so reusing charitableMileageRate would silently understate it.
+  const medMiles = sumAnySuffix(cells, MED_MILES_CELL.seriesId, MED_MILES_CELL.codeId)
+  if (medMiles > 0) {
+    const rate = constNum(constants, "medical_mileage_rate")
+    if (rate !== null) {
+      input.medOther = (input.medOther ?? 0) + medMiles * rate
+      sawAny = true
+    }
+  }
+
+  if (!sawAny) return null
+
+  // computeScheduleA reads only the Schedule A slice of Form1040Constants.
+  const c = {
+    medicalAgiFloorPct: constNum(constants, "medical_agi_floor_pct") ?? 0.075,
+    saltCap: constNum(constants, "salt_cap") ?? 0,
+    saltCapMfs: constNum(constants, "salt_cap_mfs") ?? 0,
+    saltPhaseoutStart: constNum(constants, "salt_phaseout_start") ?? Infinity,
+    saltPhaseoutStartMfs: constNum(constants, "salt_phaseout_start_mfs") ?? Infinity,
+    saltPhaseoutRate: constNum(constants, "salt_phaseout_rate") ?? 0,
+    saltPhaseoutFloor: constNum(constants, "salt_phaseout_floor") ?? 0,
+    saltPhaseoutFloorMfs: constNum(constants, "salt_phaseout_floor_mfs") ?? 0,
+    charitableMileageRate: constNum(constants, "charitable_mileage_rate") ?? 0.14,
+  } as unknown as Parameters<typeof computeScheduleA>[3]
+
+  return computeScheduleA(
+    input as unknown as Parameters<typeof computeScheduleA>[0],
+    fs as Parameters<typeof computeScheduleA>[1],
+    agi,
+    c,
+  )
+}
+
+/**
  * Fill estimable lines in-place-ish (returns a new Form1040Data). Runs
  * evaluateComputedLines between stages so downstream totals absorb each
  * estimate before the next one reads them.
@@ -391,6 +678,46 @@ export function estimateDeterministicLines(
     let rollup = mapped
     for (const sel of LINE8_COMPONENTS) rollup += sumCells(cells, sel)
     if (rollup > mapped) setEstimate("8", rollup)
+  }
+
+  // ── 7: capital gain or loss (Schedule D) ─────────────────────────────
+  // Line 7's MAPPING is only 1099-DIV box 2a capital gain distributions
+  // (s13/c3). Actual dispositions live on s52 and cannot be mapped at all —
+  // the value is proceeds − basis − expenses + wash-sale disallowed, and a
+  // mapping can only sum. So Schedule D arrives here.
+  //
+  // Runs BEFORE stages 10, 6b, 12a and 16 because line 7 feeds line 9 → 11,
+  // which those read as MAGI / AGI / provisional income.
+  //
+  // `qualifiedLtcg` is carried out of this block for stage 16. Line 7 alone
+  // is NOT a safe proxy for the preferential-rate amount: it is a NET of
+  // short and long, and taxing a net short-term gain at 15% would be a
+  // silent under-tax. See qualifiedPortion.
+  let qualifiedLtcg = 0
+  {
+    const capGainDistributions = Math.max(0, num("7"))
+    const sd = netScheduleD(cells, capGainDistributions)
+    qualifiedLtcg = qualifiedPortion(sd)
+
+    if (sd.count > 0) {
+      // §1211(b): an individual's net capital LOSS deduction is capped at
+      // 3,000 (1,500 MFS). The excess carries forward — invisible to us, and
+      // not our line to write.
+      const cap = constNum(constants, fs === "mfs" ? "capital_loss_limit_mfs" : "capital_loss_limit")
+      const line7 = sd.net < 0 && cap !== null ? Math.max(sd.net, -cap) : sd.net
+
+      // `!==`, not `>`: unlike the line-8 rollup, a Schedule D LOSS must be
+      // able to pull line 7 DOWN — including below zero.
+      //
+      // The `isEmpty` half matters: when a Schedule D nets to exactly the
+      // mapped figure the mapped cell is already the answer, so leave it
+      // alone and keep its "proconnect" provenance rather than re-badging a
+      // real value as "estimated". But when line 7 is BLANK, net zero is a
+      // real result that must be written — a Schedule D reporting a wash-sale
+      // disallowed loss of exactly its own size nets to 0, and rendering that
+      // as an empty line hides a filed schedule.
+      if (isEmpty("7") || line7 !== capGainDistributions) setEstimate("7", line7)
+    }
   }
 
   // ── 10: Schedule 1 adjustments (rollup, PARTIAL) ─────────────────────
@@ -527,12 +854,49 @@ export function estimateDeterministicLines(
         )
         if (perBox !== null) deduction += perBox * boxes
       }
-      // Only assert the statutory figure when itemizing provably cannot beat
-      // it. Otherwise leave 12a blank: "unknown" is honest, "standard
-      // deduction" would not be.
-      if (standardDeductionIsSafe(cells, lineInputs, deduction)) {
+      // Schedule A, when the return carries one. Before this the answer was
+      // always the standard deduction, guarded only by a bound that could
+      // refuse to answer — and the bound was inert, so 18 of 47 returns
+      // carrying Schedule A data rendered the STANDARD deduction while all
+      // 18 genuinely itemized. Computing it is the only real fix; the bound
+      // survives below purely for the case where there is nothing to compute.
+      const schA = scheduleAFromCells(cells, constants, fs, num("11"))
+
+      // An explicit [Override] on the itemized total displaces the
+      // computation entirely.
+      const overrideRaw = findCell(cells, {
+        ...SCH_A_ITEMIZED_OVERRIDE,
+        prefixId: "p0",
+        suffixId: "x1000",
+      })?.val
+      const itemizedOverride =
+        overrideRaw !== null && overrideRaw !== undefined && String(overrideRaw).trim() !== ""
+          ? toNum(overrideRaw)
+          : null
+
+      // "Force standard" / "force itemized" controls beat max().
+      let forced: "standard" | "itemized" | null = null
+      for (const ctl of SCH_A_CONTROLS) {
+        const raw = findCell(cells, { seriesId: ctl.seriesId, prefixId: "p0", codeId: ctl.codeId, suffixId: "x1000" })?.val
+        const v = String(raw ?? "").trim()
+        if (!v) continue
+        if ((ctl.forceStandard as readonly string[]).includes(v)) forced = "standard"
+        else if ((ctl.forceItemized as readonly string[]).includes(v)) forced = "itemized"
+      }
+
+      const itemizedTotal = itemizedOverride ?? schA?.total ?? null
+
+      if (itemizedTotal !== null && forced !== "standard") {
+        // §63(e): the larger of the two, which is the election ProConnect
+        // makes unless a control says otherwise.
+        setEstimate("12a", forced === "itemized" ? itemizedTotal : Math.max(deduction, itemizedTotal))
+      } else if (standardDeductionIsSafe(cells, lineInputs, deduction)) {
+        // Nothing to compute (no Schedule A screen) and itemizing provably
+        // cannot win — assert the statutory figure.
         setEstimate("12a", deduction)
       } else {
+        // Schedule A inputs exist that we cannot turn into a total. Leave
+        // 12a blank: "unknown" is honest, "standard deduction" would not be.
         deductionUnknown = true
       }
     }
@@ -590,7 +954,12 @@ export function estimateDeterministicLines(
     const fifteenTop = constNum(constants, `qdcg_fifteen_top_${fs}`)
     const taxable = num("15")
     if (brackets && zeroTop !== null && fifteenTop !== null && taxable > 0) {
-      const qualified = clamp(Math.max(0, num("3a")) + Math.max(0, num("7")), 0, taxable)
+      // `qualifiedLtcg`, NOT line 7. Line 7 is a net of short and long, so
+      // using it directly handed a net SHORT-term gain the 15% rate — an
+      // under-tax. qualifiedLtcg is the long-term portion surviving
+      // Schedule D netting, and already includes 1099-DIV capital gain
+      // distributions (always long-term). 3a is qualified dividends.
+      const qualified = clamp(Math.max(0, num("3a")) + qualifiedLtcg, 0, taxable)
       const ordinary = taxable - qualified
       const at0 = clamp(Math.min(taxable, zeroTop) - ordinary, 0, qualified)
       const at15 = clamp(Math.min(taxable, fifteenTop) - ordinary - at0, 0, qualified - at0)
