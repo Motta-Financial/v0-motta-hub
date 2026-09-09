@@ -38,11 +38,13 @@
  *     resolve to a real form_uuid.
  */
 
-import { NextRequest, NextResponse } from "next/server"
+import { NextRequest, NextResponse, after } from "next/server"
 import { randomUUID } from "node:crypto"
 import { withPublicCors, jsonWithCors, optionsForCors } from "@/lib/cors"
-import { upsertIntakeSubmission } from "@/lib/jotform/ingest"
-import { listDiscoveryBookingHosts } from "@/lib/intake/booking-link"
+import { upsertIntakeSubmission, getFormUuidByJotformId } from "@/lib/jotform/ingest"
+import { buildIntakeRow } from "@/lib/jotform/parse"
+import { resolvePreferredTeamMember } from "@/lib/jotform/assign"
+import { listDiscoveryBookingHosts, resolveDiscoveryBookingUrl } from "@/lib/intake/booking-link"
 import { createAdminClient } from "@/lib/supabase/server"
 import type { JotformSubmission, JotformAnswer } from "@/lib/jotform/client"
 
@@ -346,50 +348,130 @@ export const POST = withPublicCors(async (req: NextRequest) => {
     )
   }
 
-  // Synthesize and ingest. We swallow errors here because the website
-  // form has nowhere useful to display them — the Hub will retry on
-  // the next sync, and Sentry will catch the underlying cause.
+  // ── Fast path ─────────────────────────────────────────────────────
+  // Everything the prospect's confirmation screen actually needs — the
+  // row persisted, a real (not generic) booking link, and the host
+  // picker — only requires cheap Supabase-only reads/writes. The
+  // expensive part of the pipeline (Hub/Karbon contact + deal linking,
+  // AI enrichment + question research + fee estimate, the Karbon
+  // timeline note, the team notification email) does NOT need to
+  // finish before we respond, and was previously the entire reason
+  // this endpoint took 1.2-1.7s+ (4s+ cold). So: persist the row and
+  // resolve the booking link/hosts here, respond immediately, then run
+  // the full pipeline via `after()` so it still completes — just after
+  // the response is already on the wire.
+  //
+  // `contact_id` / `organization_id` on the response are therefore
+  // always null now — that linking hasn't happened yet at response
+  // time. `booking_url` / `booking_hosts` are the fields the
+  // confirmation screen actually renders, so this is a safe trade for
+  // the latency win.
+  const submission = synthesizeJotformSubmission(payload)
   try {
-    const submission = synthesizeJotformSubmission(payload)
-    const result = await upsertIntakeSubmission(submission)
-    // `booking_url` is the point of this response: it lets the form show
-    // the prospect a live "book your discovery call" step instead of
-    // "someone will follow up within one business day". It carries a
-    // salesforce_uuid tying the resulting booking back to this intake,
-    // so the website must use THIS url rather than hardcoding a generic
-    // Calendly link. Null only if the pipeline couldn't resolve one —
-    // render the plain thank-you in that case.
-    // The host list travels with the response so the confirmation screen
-    // can ask "who would you like to speak with?" before showing any
-    // calendar, without a second round-trip. `booking_url` remains the
-    // default (the prospect's requested teammate, else the firm
-    // round-robin) so a caller that ignores `booking_hosts` still works
-    // exactly as before.
+    const supabase = createAdminClient()
+    const formUuid = await getFormUuidByJotformId(submission.form_id)
+    const row = buildIntakeRow(submission, formUuid)
+
+    const { error: upsertErr } = await supabase
+      .from("jotform_intake_submissions")
+      .upsert(row, { onConflict: "jotform_submission_id" })
+    if (upsertErr) {
+      throw new Error(`Failed to persist intake submission: ${upsertErr.message}`)
+    }
+
+    const { data: persisted } = await supabase
+      .from("jotform_intake_submissions")
+      .select("id, preferred_team_member, assigned_to_id")
+      .eq("jotform_submission_id", submission.id)
+      .maybeSingle()
+
+    const fullName =
+      [asString(payload.first_name), asString(payload.last_name)]
+        .filter(Boolean)
+        .join(" ") || asString(payload.full_name)
+    const email = asString(payload.email)
+
+    let bookingUrl: string | null = null
     let bookingHosts: Awaited<ReturnType<typeof listDiscoveryBookingHosts>>["hosts"] = []
-    if (result.row_id) {
+
+    if (persisted?.id) {
       try {
-        const listed = await listDiscoveryBookingHosts(createAdminClient(), {
-          submissionId: result.row_id,
-          fullName:
-            [asString(payload.first_name), asString(payload.last_name)]
-              .filter(Boolean)
-              .join(" ") || asString(payload.full_name),
-          email: asString(payload.email),
+        // Same resolution `runIntakePostProcessing` normally performs,
+        // run here instead so it isn't stuck behind the Karbon/AI
+        // steps. That function checks `booking_url IS NULL` (and skips
+        // recomputing the preferred-teammate FK when already set)
+        // before touching either, so running it again in the
+        // background below is idempotent — no duplicate work, no
+        // divergent link.
+        let preferredTeamMemberId: string | null = null
+        if (persisted.preferred_team_member) {
+          const resolved = await resolvePreferredTeamMember(supabase, persisted.preferred_team_member)
+          if (resolved.team_member_id) {
+            preferredTeamMemberId = resolved.team_member_id
+            await supabase
+              .from("jotform_intake_submissions")
+              .update({
+                preferred_team_member_id: resolved.team_member_id,
+                ...(persisted.assigned_to_id ? {} : { assigned_to_id: resolved.team_member_id }),
+              })
+              .eq("id", persisted.id)
+          }
+        }
+
+        const booking = await resolveDiscoveryBookingUrl(supabase, {
+          submissionId: persisted.id,
+          fullName,
+          email,
+          preferredTeamMemberId: preferredTeamMemberId ?? persisted.assigned_to_id ?? null,
+        })
+        await supabase
+          .from("jotform_intake_submissions")
+          .update({ booking_url: booking.url })
+          .eq("id", persisted.id)
+        bookingUrl = booking.url
+      } catch (err) {
+        console.error("[v0] /api/public/intake fast booking resolve failed:", err)
+      }
+
+      // The host list travels with the response so the confirmation screen
+      // can ask "who would you like to speak with?" before showing any
+      // calendar, without a second round-trip.
+      try {
+        const listed = await listDiscoveryBookingHosts(supabase, {
+          submissionId: persisted.id,
+          fullName,
+          email,
         })
         bookingHosts = listed.hosts
+        if (!bookingUrl) bookingUrl = listed.defaultUrl
       } catch (err) {
-        // Non-fatal: the single booking_url below is the important path.
+        // Non-fatal: the single booking_url above is the important path.
         console.error("[v0] /api/public/intake host list failed:", err)
       }
     }
 
+    // The rest of the pipeline — Hub/Karbon contact + deal linking, AI
+    // enrichment/research/fee-estimate, the Karbon timeline note, and
+    // the team notification email. `upsertIntakeSubmission`'s own
+    // upsert is a harmless idempotent re-write of the row we already
+    // wrote above, and every step it runs checks for existing state
+    // before recomputing, so re-running the full function here in the
+    // background is safe.
+    after(async () => {
+      try {
+        await upsertIntakeSubmission(submission)
+      } catch (err) {
+        console.error("[v0] /api/public/intake background processing error:", err)
+      }
+    })
+
     return jsonWithCors(req, {
       ok: true,
       submission_id: submission.id,
-      booking_url: result.booking_url,
+      booking_url: bookingUrl,
       booking_hosts: bookingHosts,
-      contact_id: result.contact_id,
-      organization_id: result.organization_id,
+      contact_id: null,
+      organization_id: null,
     })
   } catch (err) {
     console.error("[v0] /api/public/intake error:", err)

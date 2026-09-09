@@ -10,6 +10,7 @@
 import crypto from "crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { firmConfigSync } from "@/lib/firm-settings"
+import { sendEmail } from "@/lib/email"
 
 const CALENDLY_API_BASE = "https://api.calendly.com"
 const CALENDLY_AUTH_BASE = "https://auth.calendly.com"
@@ -246,6 +247,18 @@ export async function refreshAccessToken(
     if (isPermanent) update.is_active = false
 
     await supabase.from("calendly_connections").update(update).eq("id", connection.id)
+
+    // A permanent failure means this connection is dead until the person
+    // reconnects. Two things need to happen right away rather than
+    // waiting for someone to notice a missing name on the public intake
+    // form: stop offering their (now-unverifiable) event types as
+    // booking options, and tell them directly — there is no other
+    // alerting path for a dead Calendly connection anywhere in the Hub.
+    if (isPermanent) {
+      void deactivateEventTypesForConnection(connection, supabase)
+      void alertConnectionOwnerOfTokenDeath(connection)
+    }
+
     return null
   }
 
@@ -280,6 +293,69 @@ export async function refreshAccessToken(
   connection.expires_at = expiresAtIso
 
   return tokens.access_token
+}
+
+/**
+ * When a connection's OAuth grant dies for good (not a transient
+ * network/5xx blip), the event types we last synced for that person
+ * are now unverifiable — Calendly will reject any request made with
+ * this connection, and handing a prospect a scheduling_url tied to it
+ * risks a dead booking. Soft-deactivating (`active = false`) removes
+ * them from `listDiscoveryBookingHosts` immediately instead of leaving
+ * them listed until the person happens to notice they're missing and
+ * reconnects.
+ */
+async function deactivateEventTypesForConnection(
+  connection: CalendlyConnectionRow,
+  supabase: SupabaseClient,
+): Promise<void> {
+  if (!connection.calendly_user_uri) return
+  const { error } = await supabase
+    .from("calendly_event_types")
+    .update({ active: false, updated_at: new Date().toISOString() })
+    .eq("calendly_user_uri", connection.calendly_user_uri)
+  if (error) {
+    console.error(
+      `[calendly] failed to deactivate event types for dead connection ${connection.id}:`,
+      error.message,
+    )
+  }
+}
+
+/**
+ * There is no alerting anywhere in the Hub today when a teammate's
+ * Calendly token dies — the only signal is the Setup tab, which
+ * nobody checks proactively. Email the affected person directly so
+ * they find out the same day their booking link silently stops
+ * working, instead of whenever someone else happens to notice they've
+ * gone missing from the public intake form.
+ */
+async function alertConnectionOwnerOfTokenDeath(
+  connection: CalendlyConnectionRow,
+): Promise<void> {
+  if (!connection.calendly_user_email) return
+  try {
+    const reconnectUrl = `${getAppBaseUrl()}/calendly`
+    await sendEmail({
+      to: connection.calendly_user_email,
+      subject: "Your Calendly connection needs to be reconnected",
+      html: `
+        <div style="font-family: sans-serif; font-size: 14px; color: #1F2520; line-height: 1.5;">
+          <p>Hi${connection.calendly_user_name ? ` ${connection.calendly_user_name}` : ""},</p>
+          <p>Motta Hub's connection to your Calendly account has stopped working, so you've
+          been removed from the discovery-call booking options on the public intake form
+          until you reconnect.</p>
+          <p><a href="${reconnectUrl}" style="color: #6B745D; font-weight: 600;">Reconnect your Calendly account &rarr;</a></p>
+          <p style="color: #6B7066; font-size: 12px;">This is an automated alert from Motta Hub.</p>
+        </div>
+      `,
+    })
+  } catch (err) {
+    console.error(
+      `[calendly] failed to send token-death alert for connection ${connection.id}:`,
+      err,
+    )
+  }
 }
 
 /**

@@ -256,14 +256,34 @@ export interface DiscoveryHost {
  * `profile_name` otherwise — so a teammate who takes discovery calls but
  * has never authorized the Hub still appears, just without the extras.
  */
-export async function listDiscoveryBookingHosts(
-  supabase: SupabaseClient,
-  input: BookingLinkInput,
-): Promise<{ hosts: DiscoveryHost[]; defaultUrl: string }> {
-  const config = await getFirmConfig().catch(() => null)
-  const firmName = config?.name ?? "Motta Financial"
-  const fallbackUrl =
-    config?.discoveryBookingUrl || "https://calendly.com/motta-financial/discovery-meeting"
+/**
+ * `listDiscoveryBookingHosts` used to run two fresh Supabase reads on
+ * every single intake submission, even though the underlying data —
+ * who currently has an active Discovery event type — only changes when
+ * someone connects/disconnects Calendly (at most a handful of times a
+ * month). A short in-memory TTL cache means a burst of submissions
+ * hitting the same warm serverless instance shares one pair of reads
+ * instead of paying for it on every call.
+ *
+ * This is process-scoped, not cross-instance — Vercel spins up
+ * multiple instances under load, so it reduces redundant reads on a
+ * cache hit rather than guaranteeing one true precomputed list. A
+ * worst case of a ≤5-minute-stale host list is an acceptable trade:
+ * the event-type data itself already only refreshes on a 30-minute
+ * cron, so this doesn't introduce staleness beyond what the rest of
+ * the system already tolerates.
+ */
+const HOST_CACHE_TTL_MS = 5 * 60 * 1000
+let hostSourceCache: {
+  eventTypes: any[]
+  connections: any[]
+  fetchedAt: number
+} | null = null
+
+async function loadHostSourceRows(supabase: SupabaseClient) {
+  if (hostSourceCache && Date.now() - hostSourceCache.fetchedAt < HOST_CACHE_TTL_MS) {
+    return hostSourceCache
+  }
 
   const [{ data: eventTypes }, { data: connections }] = await Promise.all([
     supabase
@@ -278,6 +298,25 @@ export async function listDiscoveryBookingHosts(
       .select("calendly_user_uri, team_member_id, team_members(id, full_name, role, title, avatar_url)")
       .eq("is_active", true),
   ])
+
+  hostSourceCache = {
+    eventTypes: eventTypes ?? [],
+    connections: connections ?? [],
+    fetchedAt: Date.now(),
+  }
+  return hostSourceCache
+}
+
+export async function listDiscoveryBookingHosts(
+  supabase: SupabaseClient,
+  input: BookingLinkInput,
+): Promise<{ hosts: DiscoveryHost[]; defaultUrl: string }> {
+  const config = await getFirmConfig().catch(() => null)
+  const firmName = config?.name ?? "Motta Financial"
+  const fallbackUrl =
+    config?.discoveryBookingUrl || "https://calendly.com/motta-financial/discovery-meeting"
+
+  const { eventTypes, connections } = await loadHostSourceRows(supabase)
 
   const byUri = new Map<string, any>()
   for (const c of connections ?? []) {

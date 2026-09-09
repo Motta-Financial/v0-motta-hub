@@ -1,13 +1,15 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useUser } from "@/contexts/user-context"
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Link2,
   LogOut,
@@ -37,6 +39,7 @@ import { TeamCalendarView } from "./team-calendar-view"
 
 interface CalendlyConnection {
   id: string
+  team_member_id?: string
   calendly_user_name: string
   calendly_user_email: string
   calendly_user_avatar?: string
@@ -44,6 +47,11 @@ interface CalendlyConnection {
   is_active: boolean
   sync_enabled: boolean
   last_synced_at?: string
+  health?: {
+    tokenExpired?: boolean
+    syncStale?: boolean
+    needsReauthForScopes?: boolean
+  }
   team_members?: {
     id: string
     full_name: string
@@ -51,6 +59,14 @@ interface CalendlyConnection {
     avatar_url?: string
     title?: string
   }
+}
+
+interface TeamMemberLite {
+  id: string
+  full_name: string | null
+  email: string | null
+  avatar_url?: string | null
+  title?: string | null
 }
 
 export function TeamCalendarPageClient({
@@ -66,6 +82,7 @@ export function TeamCalendarPageClient({
 }) {
   const { teamMember } = useUser()
   const [connections, setConnections] = useState<CalendlyConnection[]>([])
+  const [teamMembers, setTeamMembers] = useState<TeamMemberLite[]>([])
   const [myConnection, setMyConnection] = useState<CalendlyConnection | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -73,13 +90,20 @@ export function TeamCalendarPageClient({
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch("/api/calendly/connections")
-        if (!res.ok) throw new Error("connections failed")
-        const data = await res.json()
+        const [connRes, teamRes] = await Promise.all([
+          fetch("/api/calendly/connections"),
+          fetch("/api/team-members"),
+        ])
+        if (!connRes.ok) throw new Error("connections failed")
+        const data = await connRes.json()
         const list: CalendlyConnection[] = data.connections ?? []
         setConnections(list)
         if (teamMember?.id) {
           setMyConnection(list.find((c) => c.team_members?.id === teamMember.id) ?? null)
+        }
+        if (teamRes.ok) {
+          const teamData = await teamRes.json()
+          setTeamMembers(teamData.team_members ?? [])
         }
       } catch (e) {
         console.error(e)
@@ -88,6 +112,35 @@ export function TeamCalendarPageClient({
     }
     load()
   }, [teamMember])
+
+  // Every active teammate who either has no Calendly connection on
+  // file at all, or has one that's dead/reauth-required. This is the
+  // gap the "why can't we see so-and-so's Calendly" question kept
+  // coming back to: nothing surfaced it anywhere before now — someone
+  // had to notice a name missing from the public intake form's host
+  // picker to even know there was a problem.
+  const needsSetup = useMemo(() => {
+    return teamMembers
+      .map((tm) => {
+        const conn = connections.find(
+          (c) => c.team_members?.id === tm.id || c.team_member_id === tm.id,
+        )
+        if (!conn) {
+          return { member: tm, statusLabel: "Not connected" }
+        }
+        if (!conn.is_active) {
+          return { member: tm, statusLabel: "Reconnect needed" }
+        }
+        if (conn.health?.tokenExpired) {
+          return { member: tm, statusLabel: "Token expired" }
+        }
+        if (conn.health?.needsReauthForScopes) {
+          return { member: tm, statusLabel: "Reauthorize for new scopes" }
+        }
+        return null
+      })
+      .filter((x): x is { member: TeamMemberLite; statusLabel: string } => x !== null)
+  }, [teamMembers, connections])
 
   const handleConnect = () => {
     window.location.href = "/api/calendly/oauth/authorize"
@@ -194,6 +247,50 @@ export function TeamCalendarPageClient({
           <Card className="flex items-center gap-3 border-rose-200 bg-rose-50 p-4">
             <AlertCircle className="h-5 w-5 text-rose-600" />
             <p className="text-sm text-rose-800">{error}</p>
+          </Card>
+        ) : null}
+
+        {/* Teammates missing or with a broken Calendly connection —
+            each of these is invisible to the public intake form's
+            booking-host picker right now. */}
+        {needsSetup.length > 0 ? (
+          <Card className="border-amber-200 bg-amber-50 p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-700" />
+              <span className="text-sm font-medium text-amber-900">
+                Needs Calendly setup ({needsSetup.length})
+              </span>
+            </div>
+            <p className="mb-3 text-xs text-amber-800">
+              These teammates can&apos;t appear as a discovery-call booking option on the
+              public intake form until they connect (or reconnect) their Calendly account.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {needsSetup.map(({ member, statusLabel }) => (
+                <div
+                  key={member.id}
+                  className="flex items-center gap-2 rounded-full border border-amber-200 bg-white px-3 py-1.5"
+                >
+                  <Avatar className="h-6 w-6">
+                    <AvatarImage src={member.avatar_url || ""} alt={member.full_name || ""} />
+                    <AvatarFallback className="text-xs">
+                      {(member.full_name || "?")
+                        .split(" ")
+                        .map((n) => n[0])
+                        .slice(0, 2)
+                        .join("")}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-sm">{member.full_name}</span>
+                  <Badge
+                    variant="outline"
+                    className="border-amber-300 bg-amber-100 text-xs text-amber-800"
+                  >
+                    {statusLabel}
+                  </Badge>
+                </div>
+              ))}
+            </div>
           </Card>
         ) : null}
 
