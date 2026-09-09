@@ -8,9 +8,10 @@
  * Resolution order for the bytes:
  *   1. If the recording file was already copied to private Vercel Blob
  *      (recording_files[].blob_pathname), stream from Blob.
- *   2. Otherwise stream Zoom's short-lived `download_url`, authenticated with
- *      the account-wide Server-to-Server token. The token/URL are NEVER sent
- *      to the browser.
+ *   2. Otherwise — or whenever the Blob read fails for ANY reason (a rotated
+ *      ZOOM_BLOB_READ_WRITE_TOKEN 403s the whole archive) — stream Zoom's
+ *      `download_url`, authenticated with the account-wide Server-to-Server
+ *      token. The token/URL are NEVER sent to the browser.
  *
  * Range-aware: the client's `Range` header is forwarded so the browser can
  * seek, and we relay the upstream 206 + Content-Range. We also normalize the
@@ -33,6 +34,7 @@ interface ZoomFile {
   recording_type?: string
   download_url?: string
   file_size?: number
+  blob_url?: string | null
   blob_pathname?: string | null
 }
 
@@ -43,6 +45,65 @@ function mediaContentType(file: ZoomFile): string {
   if (t === "MP4" || ext === "MP4") return "video/mp4"
   if (t === "M4A" || ext === "M4A") return "audio/mp4"
   return "application/octet-stream"
+}
+
+/**
+ * Try the archived Blob copy. Returns null — never throws — when there is no
+ * copy, or when the private store won't serve it (rotated/missing
+ * ZOOM_BLOB_READ_WRITE_TOKEN, deleted blob, transport error). The caller then
+ * falls back to Zoom, so a broken store token degrades playback instead of
+ * killing it.
+ *
+ * Reads by `blob_url` when we stored one: that's the canonical URL `put()`
+ * handed back, already percent-encoded. Zoom meeting UUIDs are base64, so
+ * every pathname carries `+`/`=` — characters the SDK interpolates raw when
+ * it rebuilds the URL from a pathname.
+ */
+async function streamFromBlob(
+  file: ZoomFile,
+  contentType: string,
+  rangeHeader: string | null,
+): Promise<NextResponse | null> {
+  const target = file.blob_url || file.blob_pathname
+  if (!target) return null
+
+  try {
+    const result = await get(target, {
+      access: "private",
+      // Recordings live in the dedicated private store, not the default one.
+      token: process.env.ZOOM_BLOB_READ_WRITE_TOKEN,
+      ...(rangeHeader ? { headers: { range: rangeHeader } } : {}),
+    })
+    if (!result || result.statusCode !== 200 || !result.stream) return null
+
+    const headers = new Headers()
+    headers.set("Content-Type", contentType)
+    headers.set("Accept-Ranges", "bytes")
+    headers.set("Content-Disposition", "inline")
+    const cr = result.headers.get("content-range")
+    const cl = result.headers.get("content-length")
+    if (cr) headers.set("Content-Range", cr)
+    if (cl) headers.set("Content-Length", cl)
+    else if (result.blob.size != null && !rangeHeader) {
+      headers.set("Content-Length", String(result.blob.size))
+    }
+    const status = rangeHeader && cr ? 206 : 200
+    return new NextResponse(result.stream as unknown as ReadableStream, { status, headers })
+  } catch (err) {
+    console.warn(
+      `[v0] [Zoom Stream] blob read failed (falling back to Zoom) store=${blobStoreId()} dedicatedToken=${Boolean(
+        process.env.ZOOM_BLOB_READ_WRITE_TOKEN,
+      )}:`,
+      err instanceof Error ? err.message : err,
+    )
+    return null
+  }
+}
+
+/** Store id of the token we're reading with — public (it's in every blob URL). */
+function blobStoreId(): string {
+  const token = process.env.ZOOM_BLOB_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN || ""
+  return token.split("_")[3] || "unknown"
 }
 
 export async function GET(req: NextRequest) {
@@ -79,30 +140,8 @@ export async function GET(req: NextRequest) {
 
   try {
     // ── 1. Prefer a permanent Blob copy if one exists ───────────────────
-    if (file.blob_pathname) {
-      const result = await get(file.blob_pathname, {
-        access: "private",
-        // Recordings live in the dedicated private store, not the default one.
-        token: process.env.ZOOM_BLOB_READ_WRITE_TOKEN,
-        ...(rangeHeader ? { headers: { range: rangeHeader } } : {}),
-      })
-      if (result && result.statusCode === 200 && result.stream) {
-        const headers = new Headers()
-        headers.set("Content-Type", contentType)
-        headers.set("Accept-Ranges", "bytes")
-        headers.set("Content-Disposition", "inline")
-        const cr = result.headers.get("content-range")
-        const cl = result.headers.get("content-length")
-        if (cr) headers.set("Content-Range", cr)
-        if (cl) headers.set("Content-Length", cl)
-        else if (result.blob.size != null && !rangeHeader) {
-          headers.set("Content-Length", String(result.blob.size))
-        }
-        const status = rangeHeader && cr ? 206 : 200
-        return new NextResponse(result.stream as unknown as ReadableStream, { status, headers })
-      }
-      // fall through to Zoom if the blob read didn't pan out
-    }
+    const fromBlob = await streamFromBlob(file, contentType, rangeHeader)
+    if (fromBlob) return fromBlob
 
     // ── 2. Stream Zoom's download_url with the S2S token ────────────────
     if (!file.download_url) {

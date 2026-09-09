@@ -20,6 +20,14 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
+/**
+ * Media files the scheduled sweep will copy in one invocation. See the call
+ * site — this is an OOM guard, not a throughput knob. If the log starts
+ * reporting `stoppedEarly=true` every night, the archive is falling behind:
+ * drain it with the POST driver rather than raising this.
+ */
+const CRON_MAX_MEDIA_COPIES = 8
+
 function hasCronSecret(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET
   if (!secret) return false
@@ -61,10 +69,35 @@ export async function GET(req: NextRequest) {
       months: 1,
       includeMedia: true,
       tagParticipants: false,
+      // Bound the per-invocation media transfer. Memory builds across
+      // sequential copies inside one invocation, so an uncapped run that hits
+      // a backlog (a stalled token, a busy week) gets OOM-killed at 3009 MB
+      // instead of finishing. 8 is the value the backfill driver proved safe.
+      maxMediaCopies: CRON_MAX_MEDIA_COPIES,
     })
     console.log(
-      `[v0] [Zoom Account Sync:cron] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} tagged=${result.meetingsTagged} links=${result.clientLinksWritten} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,
+      `[v0] [Zoom Account Sync:cron] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} media=${result.mediaCopied} mediaFailed=${result.mediaFailed}${
+        result.stoppedEarly ? " stoppedEarly=true" : ""
+      } tagged=${result.meetingsTagged} links=${result.clientLinksWritten} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,
     )
+    // Media failures used to be invisible here: they only console.warn deep in
+    // the ingest worker, and this line reported `errors=0 failed=0` (that
+    // `failed` is transcript PARSE failures) — so a dead
+    // ZOOM_BLOB_READ_WRITE_TOKEN silently stopped the archive for days while
+    // the cron kept returning 200. Log at error level so it lands in the
+    // runtime-errors dashboard, where a human actually looks.
+    if (result.mediaFailed > 0) {
+      console.error(
+        `[v0] [Zoom Account Sync:cron] ARCHIVE DEGRADED — ${result.mediaFailed} media file(s) failed to copy to Blob (${result.mediaCopied} succeeded). Check ZOOM_BLOB_READ_WRITE_TOKEN against the zoom-recordings store.`,
+      )
+    }
+    // A capped run that stopped early leaves a backlog no later run is
+    // guaranteed to reach, so make the leftover loud rather than silent.
+    if (result.stoppedEarly) {
+      console.error(
+        `[v0] [Zoom Account Sync:cron] BACKLOG — hit the ${CRON_MAX_MEDIA_COPIES}-copy cap with media left to archive. Drain it with POST /api/zoom/recordings/sync-account {"includeMedia":true,"maxMediaCopies":8} until mediaCopied=0.`,
+      )
+    }
     return NextResponse.json({ ok: true, ...result, ms: Date.now() - startedAt })
   } catch (err) {
     console.error("[v0] [Zoom Account Sync:cron] failed:", err)
@@ -137,8 +170,15 @@ export async function POST(req: NextRequest) {
       maxMediaCopies,
     })
     console.log(
-      `[v0] [Zoom Account Sync] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} media=${result.mediaCopied} tagged=${result.meetingsTagged} links=${result.clientLinksWritten} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,
+      `[v0] [Zoom Account Sync] users=${result.usersScanned} withRecs=${result.usersWithRecordings} recs=${result.recordingsUpserted} parsed=${result.transcriptsParsed} failed=${result.transcriptsFailed} media=${result.mediaCopied} mediaFailed=${result.mediaFailed}${
+        result.stoppedEarly ? " stoppedEarly=true" : ""
+      } tagged=${result.meetingsTagged} links=${result.clientLinksWritten} errors=${result.errors.length} (${Date.now() - startedAt}ms)`,
     )
+    if (result.mediaFailed > 0) {
+      console.error(
+        `[v0] [Zoom Account Sync] ARCHIVE DEGRADED — ${result.mediaFailed} media file(s) failed to copy to Blob (${result.mediaCopied} succeeded). Check ZOOM_BLOB_READ_WRITE_TOKEN against the zoom-recordings store.`,
+      )
+    }
     return NextResponse.json({ ok: true, ...result, ms: Date.now() - startedAt })
   } catch (err) {
     console.error("[v0] [Zoom Account Sync] failed:", err)
