@@ -108,6 +108,32 @@ const LINE8_COMPONENTS = [
   { seriesId: "s200M", codeId: "c5", suffixId: "x1" },      // alimony received (note suffix)
   { seriesId: "s19", codeId: "c3", suffixId: "x1000" },     // gambling winnings (W-2G box 1)
 ] as const
+/**
+ * Schedule D dispositions (s52). One PREFIX per disposition — p1, p2, … are
+ * the first, second, … sale, exactly like the W-2 and 1099-R screens.
+ *
+ * Not a mapping: line 7 is `proceeds − basis − expenses + wash-sale
+ * disallowed`, and form_1040_proconnect_map can only ever SUM cells. The
+ * arithmetic has to live here.
+ *
+ * `term` decides which rate applies, and getting it wrong is not a rounding
+ * error — a short-term gain routed into the qualified bucket is taxed at 15%
+ * instead of the ordinary rate, i.e. a silent UNDER-tax. Order of authority
+ * matches ProConnect's own: the explicit override first, then date math.
+ */
+const SCHED_D = {
+  seriesId: "s52",
+  proceeds: "c27",
+  basis: "c29",
+  expenses: "c28",
+  /** Wash sale disallowed; -1 means "disallow the whole loss", not one dollar. */
+  washSale: "c101",
+  acquired: "c25",
+  sold: "c26",
+  /** 1 = short-term, 2 = long-term [Override]. */
+  termOverride: "c51",
+} as const
+
 const EDUCATOR_CELL = { seriesId: "s300", codeId: "c28", suffixId: "x1000" }
 const STUDENT_LOAN_CELL = { seriesId: "s300", codeId: "c23", suffixId: "x1000" }
 const HSA_CELL = { seriesId: "s2800", codeId: "c5", suffixId: "x1000" }
@@ -345,6 +371,117 @@ function sumCells(
 }
 
 /**
+ * Parse a ProConnect date cell. A LEADING MINUS means the preparer entered
+ * "various" (broker summary rows), but the date behind it is still real and
+ * is what ProConnect itself uses for the holding period. Every c25/c26 value
+ * in the book matches [-]MM/DD/YYYY; anything else returns null.
+ */
+function parsePcDate(v: unknown): Date | null {
+  const m = /^-?(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(v ?? "").trim())
+  if (!m) return null
+  const [, mm, dd, yyyy] = m
+  const d = new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd)))
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/**
+ * §1222: long-term means held MORE THAN one year. The holding period starts
+ * the day AFTER acquisition, so "more than a year" is sold > acquired + 1yr.
+ */
+function isLongTermHolding(acquired: Date, sold: Date): boolean {
+  const oneYearOn = new Date(acquired.getTime())
+  oneYearOn.setUTCFullYear(oneYearOn.getUTCFullYear() + 1)
+  return sold.getTime() > oneYearOn.getTime()
+}
+
+/** One Schedule D disposition, netted by holding period. */
+interface ScheduleDResult {
+  /** Net short-term gain/loss. */
+  netShort: number
+  /** Net long-term gain/loss, INCLUDING 1099-DIV capital gain distributions. */
+  netLong: number
+  /** netShort + netLong, before the §1211(b) loss cap. */
+  net: number
+  /** How many disposition rows contributed. 0 = no Schedule D on this return. */
+  count: number
+}
+
+/**
+ * Net every s52 disposition into short- and long-term buckets.
+ *
+ * `capGainDistributions` (1040 line 7's existing mapped value, 1099-DIV box
+ * 2a) folds into the LONG-term bucket: distributions are always long-term,
+ * and when a Schedule D is filed they land on its line 13 and net with
+ * everything else. Folding them in here is what makes the two sources
+ * combine correctly instead of double-counting.
+ */
+function netScheduleD(cells: FieldCell[], capGainDistributions: number): ScheduleDResult {
+  const byPrefix = new Map<string, Map<string, string | null>>()
+  for (const c of cells) {
+    if (c.seriesId !== SCHED_D.seriesId) continue
+    const row = byPrefix.get(c.prefixId) ?? new Map<string, string | null>()
+    row.set(c.codeId, c.val)
+    byPrefix.set(c.prefixId, row)
+  }
+
+  let netShort = 0
+  let netLong = capGainDistributions
+  let count = 0
+
+  for (const row of byPrefix.values()) {
+    const proceeds = row.get(SCHED_D.proceeds)
+    const basis = row.get(SCHED_D.basis)
+    // A prefix carrying neither is a settings/flag row, not a disposition.
+    if (proceeds == null && basis == null) continue
+    count++
+
+    let gain = toNum(proceeds) - toNum(basis) - toNum(row.get(SCHED_D.expenses))
+
+    // Wash sale: the disallowed loss is added BACK, reducing the deductible
+    // loss. -1 is ProConnect's "disallow the entire loss" sentinel (same
+    // shape as the HSA "1 = maximum" case), which zeroes a loss outright.
+    const wash = toNum(row.get(SCHED_D.washSale))
+    if (wash === -1) {
+      if (gain < 0) gain = 0
+    } else if (wash > 0) {
+      gain += wash
+    }
+
+    const override = Number.parseInt(String(row.get(SCHED_D.termOverride) ?? ""), 10)
+    let long: boolean
+    if (override === 1) long = false
+    else if (override === 2) long = true
+    else {
+      const acq = parsePcDate(row.get(SCHED_D.acquired))
+      const sold = parsePcDate(row.get(SCHED_D.sold))
+      // No override and an unparseable date: treat as SHORT-term. Ordinary
+      // rates are the conservative branch — never hand an unknown holding
+      // period the 15% rate. (Never hit in the current book: every
+      // disposition has either the override or both dates.)
+      long = acq !== null && sold !== null ? isLongTermHolding(acq, sold) : false
+    }
+
+    if (long) netLong += gain
+    else netShort += gain
+  }
+
+  return { netShort, netLong, net: netShort + netLong, count }
+}
+
+/**
+ * The portion of a Schedule D net gain that keeps the preferential rate.
+ *
+ * Netting runs SHORT against LONG (Schedule D Part III), so a short-term loss
+ * eats into the long-term gain that would otherwise get 0/15/20% treatment,
+ * and a long-term loss simply reduces the total. Capping at netLong is what
+ * stops a short-term GAIN from being handed the 15% rate.
+ */
+function qualifiedPortion(r: ScheduleDResult): number {
+  if (r.net <= 0) return 0
+  return Math.min(r.net, Math.max(0, r.netLong))
+}
+
+/**
  * Fill estimable lines in-place-ish (returns a new Form1040Data). Runs
  * evaluateComputedLines between stages so downstream totals absorb each
  * estimate before the next one reads them.
@@ -391,6 +528,46 @@ export function estimateDeterministicLines(
     let rollup = mapped
     for (const sel of LINE8_COMPONENTS) rollup += sumCells(cells, sel)
     if (rollup > mapped) setEstimate("8", rollup)
+  }
+
+  // ── 7: capital gain or loss (Schedule D) ─────────────────────────────
+  // Line 7's MAPPING is only 1099-DIV box 2a capital gain distributions
+  // (s13/c3). Actual dispositions live on s52 and cannot be mapped at all —
+  // the value is proceeds − basis − expenses + wash-sale disallowed, and a
+  // mapping can only sum. So Schedule D arrives here.
+  //
+  // Runs BEFORE stages 10, 6b, 12a and 16 because line 7 feeds line 9 → 11,
+  // which those read as MAGI / AGI / provisional income.
+  //
+  // `qualifiedLtcg` is carried out of this block for stage 16. Line 7 alone
+  // is NOT a safe proxy for the preferential-rate amount: it is a NET of
+  // short and long, and taxing a net short-term gain at 15% would be a
+  // silent under-tax. See qualifiedPortion.
+  let qualifiedLtcg = 0
+  {
+    const capGainDistributions = Math.max(0, num("7"))
+    const sd = netScheduleD(cells, capGainDistributions)
+    qualifiedLtcg = qualifiedPortion(sd)
+
+    if (sd.count > 0) {
+      // §1211(b): an individual's net capital LOSS deduction is capped at
+      // 3,000 (1,500 MFS). The excess carries forward — invisible to us, and
+      // not our line to write.
+      const cap = constNum(constants, fs === "mfs" ? "capital_loss_limit_mfs" : "capital_loss_limit")
+      const line7 = sd.net < 0 && cap !== null ? Math.max(sd.net, -cap) : sd.net
+
+      // `!==`, not `>`: unlike the line-8 rollup, a Schedule D LOSS must be
+      // able to pull line 7 DOWN — including below zero.
+      //
+      // The `isEmpty` half matters: when a Schedule D nets to exactly the
+      // mapped figure the mapped cell is already the answer, so leave it
+      // alone and keep its "proconnect" provenance rather than re-badging a
+      // real value as "estimated". But when line 7 is BLANK, net zero is a
+      // real result that must be written — a Schedule D reporting a wash-sale
+      // disallowed loss of exactly its own size nets to 0, and rendering that
+      // as an empty line hides a filed schedule.
+      if (isEmpty("7") || line7 !== capGainDistributions) setEstimate("7", line7)
+    }
   }
 
   // ── 10: Schedule 1 adjustments (rollup, PARTIAL) ─────────────────────
@@ -590,7 +767,12 @@ export function estimateDeterministicLines(
     const fifteenTop = constNum(constants, `qdcg_fifteen_top_${fs}`)
     const taxable = num("15")
     if (brackets && zeroTop !== null && fifteenTop !== null && taxable > 0) {
-      const qualified = clamp(Math.max(0, num("3a")) + Math.max(0, num("7")), 0, taxable)
+      // `qualifiedLtcg`, NOT line 7. Line 7 is a net of short and long, so
+      // using it directly handed a net SHORT-term gain the 15% rate — an
+      // under-tax. qualifiedLtcg is the long-term portion surviving
+      // Schedule D netting, and already includes 1099-DIV capital gain
+      // distributions (always long-term). 3a is qualified dividends.
+      const qualified = clamp(Math.max(0, num("3a")) + qualifiedLtcg, 0, taxable)
       const ordinary = taxable - qualified
       const at0 = clamp(Math.min(taxable, zeroTop) - ordinary, 0, qualified)
       const at15 = clamp(Math.min(taxable, fifteenTop) - ordinary - at0, 0, qualified - at0)

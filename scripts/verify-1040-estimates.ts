@@ -125,6 +125,9 @@ const K = (key: string, value: unknown): Form1040Constant => ({ taxYear: 2025, k
 const CONSTANTS: Form1040Constant[] = [
   // OBBBA standard deduction (scripts/352)
   K("std_deduction_single", 15750),
+  // IRC 1211(b) net capital loss caps (scripts/409).
+  K("capital_loss_limit", 3000),
+  K("capital_loss_limit_mfs", 1500),
   K("std_deduction_mfj", 31500),
   K("std_deduction_hoh", 23625),
   K("std_deduction_mfs", 15750),
@@ -203,6 +206,24 @@ interface Scenario {
   lineInputs?: LineInputRow[]
   /** Extra raw cells, e.g. Schedule A amounts for the 12a gate. */
   cells?: FieldCell[]
+  /** Schedule D dispositions (s52). One entry per prefix = one sale. */
+  dispositions?: Disposition[]
+}
+
+/**
+ * One s52 disposition. `term` sets the c51 override; omit it to exercise the
+ * c25/c26 date math instead. Dates take ProConnect's [-]MM/DD/YYYY shape —
+ * a leading minus means "various" and must NOT defeat the holding-period
+ * calculation.
+ */
+interface Disposition {
+  proceeds: number
+  basis: number
+  expenses?: number
+  washSale?: number
+  term?: "short" | "long"
+  acquired?: string
+  sold?: string
 }
 
 const cell = (seriesId: string, prefixId: string, codeId: string, val: string): FieldCell => ({
@@ -229,6 +250,16 @@ function run(s: Scenario): Form1040Data {
     if (dep.ctcFlag !== undefined) cells.push(cell("s2", prefix, "c1000200014", String(dep.ctcFlag)))
     if (dep.eicFlag !== undefined) cells.push(cell("s2", prefix, "c1000200007", String(dep.eicFlag)))
   })
+  s.dispositions?.forEach((d, i) => {
+    const prefix = `p${i + 1}`
+    cells.push(cell("s52", prefix, "c27", String(d.proceeds)))
+    cells.push(cell("s52", prefix, "c29", String(d.basis)))
+    if (d.expenses !== undefined) cells.push(cell("s52", prefix, "c28", String(d.expenses)))
+    if (d.washSale !== undefined) cells.push(cell("s52", prefix, "c101", String(d.washSale)))
+    if (d.term !== undefined) cells.push(cell("s52", prefix, "c51", d.term === "short" ? "1" : "2"))
+    if (d.acquired) cells.push(cell("s52", prefix, "c25", d.acquired))
+    if (d.sold) cells.push(cell("s52", prefix, "c26", d.sold))
+  })
   if (s.cells) cells.push(...s.cells)
 
   const data: Form1040Data = {}
@@ -247,6 +278,150 @@ function run(s: Scenario): Form1040Data {
 
 const val = (d: Form1040Data, lineCode: string) => d[lineCode]?.value ?? null
 const src = (d: Form1040Data, lineCode: string) => d[lineCode]?.source ?? null
+
+// ===========================================================================
+// 0. Schedule D / line 7 (scripts/409)
+// ===========================================================================
+console.log("\nCapital gain or loss (7) and the qualified-rate split (16)")
+{
+  // Medrano, Isai TY2025 — the return that motivated the stage. A long-term
+  // gain and a short-term loss, both on broker summary rows with "various"
+  // (negative) dates and NO c51 override, so term comes from date math.
+  const isai = run({
+    status: "single",
+    lines: { "1z": 70625, "12a": 15750 },
+    dispositions: [
+      { proceeds: 17091, basis: 4534, acquired: "-03/31/2023", sold: "-11/04/2025" },
+      { proceeds: 959, basis: 1061, acquired: "-03/06/2025", sold: "-10/30/2025" },
+    ],
+  })
+  check("Isai: line 7 nets LT gain against ST loss", val(isai, "7"), 12455)
+  check("Isai: line 9 total income", val(isai, "9"), 83080)
+  check("Isai: line 15 taxable income", val(isai, "15"), 67330)
+  // 54,875 ordinary at the single brackets = 6,987; 12,455 LTCG above the
+  // 48,350 zero-rate top, so all of it at 15% = 1,868.
+  check("Isai: line 16 tax = ordinary + 15% LTCG", val(isai, "16"), 8855)
+
+  // The under-tax this stage exists to prevent: a net SHORT-term gain must be
+  // taxed at ordinary rates, never handed the 15% preferential rate.
+  const shortGain = run({
+    status: "single",
+    lines: { "1z": 60000, "12a": 15750 },
+    dispositions: [{ proceeds: 30000, basis: 10000, term: "short" }],
+  })
+  check("net ST gain lands on line 7", val(shortGain, "7"), 20000)
+  check(
+    "REGRESSION net ST gain is taxed ORDINARY, not 15%",
+    val(shortGain, "16"),
+    // 64,250 taxable, all ordinary: 11,925@10 + 36,550@12 + 15,775@22
+    Math.round(11925 * 0.1 + (48475 - 11925) * 0.12 + (64250 - 48475) * 0.22),
+  )
+
+  // A long-term gain of the same size DOES get the preferential rate — this
+  // is the control that proves the split is doing real work.
+  const longGain = run({
+    status: "single",
+    lines: { "1z": 60000, "12a": 15750 },
+    dispositions: [{ proceeds: 30000, basis: 10000, term: "long" }],
+  })
+  // Taxable 64,250 = 44,250 ordinary + 20,000 qualified. The zero-rate top for
+  // single is 48,350, so 4,100 of the gain rides at 0% and 15,900 at 15%.
+  // 5,071.50 ordinary + 2,385 = 7,456.50 -> 7,457. Compare 9,049 for the
+  // identical SHORT-term gain above: the split is worth 1,592 here.
+  const LT_20K = 7457
+  check("net LT gain gets the 0%/15% brackets", val(longGain, "16"), LT_20K)
+  check("LT beats ST on the same gain", val(longGain, "16") < val(shortGain, "16"), true)
+
+  // Mixed: a short-term LOSS eats into the long-term gain, so the qualified
+  // amount is the NET, not the gross long-term figure.
+  const mixed = run({
+    status: "single",
+    lines: { "1z": 60000, "12a": 15750 },
+    dispositions: [
+      { proceeds: 50000, basis: 20000, term: "long" },
+      { proceeds: 5000, basis: 15000, term: "short" },
+    ],
+  })
+  check("ST loss nets against LT gain on line 7", val(mixed, "7"), 20000)
+  // Same 20,000 net as longGain, so the same tax. Had the code used the GROSS
+  // long-term figure (30,000) instead of the net, this would be 6,257.
+  check("qualified amount is the net, not gross LT", val(mixed, "16"), LT_20K)
+
+  // A short-term GAIN with a long-term loss nets to ordinary income only.
+  const ltLoss = run({
+    status: "single",
+    lines: { "1z": 60000, "12a": 15750 },
+    dispositions: [
+      { proceeds: 30000, basis: 10000, term: "short" },
+      { proceeds: 5000, basis: 15000, term: "long" },
+    ],
+  })
+  check("LT loss reduces line 7", val(ltLoss, "7"), 10000)
+  check("nothing qualifies for 15% when net long is negative", val(ltLoss, "16"),
+    Math.round(11925 * 0.1 + (48475 - 11925) * 0.12 + (54250 - 48475) * 0.22))
+
+  // IRC 1211(b): net capital loss deduction capped at 3,000 / 1,500 MFS.
+  check("net capital loss capped at 3,000",
+    val(run({ status: "single", lines: { "1z": 60000 },
+      dispositions: [{ proceeds: 1000, basis: 26000, term: "long" }] }), "7"), -3000)
+  check("net capital loss capped at 1,500 for MFS",
+    val(run({ status: "mfs", lines: { "1z": 60000 },
+      dispositions: [{ proceeds: 1000, basis: 26000, term: "long" }] }), "7"), -1500)
+  check("a loss UNDER the cap is not inflated to it",
+    val(run({ status: "single", lines: { "1z": 60000 },
+      dispositions: [{ proceeds: 1000, basis: 2200, term: "long" }] }), "7"), -1200)
+
+  // Wash sale disallowed is added BACK, reducing the deductible loss.
+  check("wash sale disallowed reduces the loss",
+    val(run({ status: "single", lines: { "1z": 60000 },
+      dispositions: [{ proceeds: 8000, basis: 10000, washSale: 1200, term: "short" }] }), "7"), -800)
+  check("wash sale -1 disallows the whole loss",
+    val(run({ status: "single", lines: { "1z": 60000 },
+      dispositions: [{ proceeds: 8000, basis: 10000, washSale: -1, term: "short" }] }), "7"), 0)
+  check("expenses of sale reduce the gain",
+    val(run({ status: "single", lines: { "1z": 60000 },
+      dispositions: [{ proceeds: 9000, basis: 5000, expenses: 167, term: "long" }] }), "7"), 3833)
+
+  // Holding period, IRC 1222: MORE than one year. Exactly one year is SHORT.
+  check("held exactly 1 year is short-term (ordinary)",
+    val(run({ status: "single", lines: { "1z": 60000, "12a": 15750 },
+      dispositions: [{ proceeds: 30000, basis: 10000, acquired: "01/15/2024", sold: "01/15/2025" }] }), "16"),
+    Math.round(11925 * 0.1 + (48475 - 11925) * 0.12 + (64250 - 48475) * 0.22))
+  check("held 1 year and a day is long-term",
+    val(run({ status: "single", lines: { "1z": 60000, "12a": 15750 },
+      dispositions: [{ proceeds: 30000, basis: 10000, acquired: "01/15/2024", sold: "01/16/2025" }] }), "16"),
+    LT_20K)
+  check("c51 override BEATS the dates",
+    val(run({ status: "single", lines: { "1z": 60000, "12a": 15750 },
+      // Dates say long-term; the override says short. Override wins.
+      dispositions: [{ proceeds: 30000, basis: 10000, term: "short",
+                       acquired: "01/15/2020", sold: "11/04/2025" }] }), "16"),
+    Math.round(11925 * 0.1 + (48475 - 11925) * 0.12 + (64250 - 48475) * 0.22))
+  check("unparseable dates with no override fall back to SHORT term",
+    val(run({ status: "single", lines: { "1z": 60000, "12a": 15750 },
+      dispositions: [{ proceeds: 30000, basis: 10000, acquired: "various", sold: "" }] }), "16"),
+    Math.round(11925 * 0.1 + (48475 - 11925) * 0.12 + (64250 - 48475) * 0.22))
+
+  // 1099-DIV capital gain distributions (the pre-existing line 7 mapping) are
+  // always long-term and must net with Schedule D rather than double-count.
+  const withDist = run({
+    status: "single",
+    lines: { "1z": 60000, "12a": 15750, "7": 5000 },
+    dispositions: [{ proceeds: 5000, basis: 15000, term: "short" }],
+  })
+  // 5,000 distributions - 10,000 ST loss = -5,000 net, then IRC 1211(b) caps
+  // the deduction at 3,000. Both steps have to fire, in that order.
+  check("distributions net against a ST loss, then the cap applies", val(withDist, "7"), -3000)
+  const distOnly = run({ status: "single", lines: { "1z": 60000, "12a": 15750, "7": 5000 } })
+  check("no Schedule D: line 7 keeps the mapped distributions", val(distOnly, "7"), 5000)
+  // Taxable 49,250 = 44,250 ordinary + 5,000 qualified. 4,100 at 0%, 900 at
+  // 15%: 5,071.50 + 135 = 5,206.50 -> 5,207.
+  check("distributions alone still get the preferential rate", val(distOnly, "16"), 5207)
+
+  // A return with no s52 at all must be untouched.
+  check("no dispositions leaves line 7 null",
+    val(run({ status: "single", lines: { "1z": 60000 } }), "7"), null)
+}
 
 // ===========================================================================
 // 1. Standard deduction (line 12a)
