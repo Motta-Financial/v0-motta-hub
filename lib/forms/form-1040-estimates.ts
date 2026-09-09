@@ -8,8 +8,10 @@
  * published IRS worksheets:
  *
  *   6b  — Social Security Benefits Worksheet
- *   12a — standard deduction by filing status (+ §63(f) age/blindness
- *         boxes for both taxpayer and spouse)
+ *   7   — Schedule D: dispositions netted by holding period, IRC 1211(b)
+ *         loss cap
+ *   12a — the greater of the standard deduction (by filing status, + §63(f)
+ *         age/blindness boxes for both taxpayer and spouse) and Schedule A
  *   13b — Schedule 1-A line 38, senior portion only (Part V)
  *   16  — Qualified Dividends and Capital Gain Tax Worksheet over the
  *         TY bracket tables
@@ -22,14 +24,24 @@
  * render path).
  *
  * CAVEATS (all conservative, all visible via the "estimated" badge):
- *   - 12a is written only when itemizing provably cannot win (the Schedule A
- *     inputs, whose raw sum bounds the itemized total from above, do not beat
- *     the statutory figure) — otherwise it is left blank rather than assumed.
- *     That test IS live: form_1040_line_inputs carried one schedule/input,
- *     one override and two control rows for 12a as of 2026-08-11. But one
- *     input row makes a loose upper bound, so in practice it almost never
- *     suppresses (0 of 31 TY2025 returns); it tightens as more Schedule A
- *     inputs are recorded. Age and blindness are read for BOTH people from the s1
+ *   - 12a COMPUTES Schedule A when the return carries one, and takes the
+ *     greater of it and the statutory standard deduction (§63(e)), honouring
+ *     the s400 force-standard / force-itemized controls and the itemized
+ *     [Override]. Until 2026-09 it always asserted the standard deduction,
+ *     guarded only by an upper bound that was INERT (standardDeductionIsSafe
+ *     skips derivation rows with no code id, and the sole 12a row was a bare
+ *     series) — so 18 of 47 returns carrying Schedule A data rendered the
+ *     standard deduction while ALL 18 genuinely itemized. The bound survives
+ *     only for the case where Schedule A inputs exist but cannot be totalled.
+ *     The computation is `computeScheduleA` from the intake path, shared
+ *     rather than reimplemented so the two surfaces cannot disagree about the
+ *     same return. Still NOT applied: the §163(h)(3) acquisition-debt limit
+ *     (its inputs are populated on zero IND returns, so ProConnect is not
+ *     limiting either), the §163(d) investment-interest limit, charitable AGI
+ *     percentage limits and carryovers, and the optional state SALES TAX
+ *     TABLE — that last one is Intuit-calculated and absent from the export,
+ *     which caps Schedule A parity at roughly 98.5% on a return that elects
+ *     it. Age and blindness are read for BOTH people from the s1
  *     taxpayer/spouse cell pairs (scripts/379). Spouse boxes count on MFJ
  *     only: on MFS they require the spouse to have no gross income and to
  *     not be another taxpayer's dependent, neither of which the export
@@ -43,8 +55,18 @@
  *     vehicle loan interest (Parts II-IV) are not estimated.
  *   - 6b assumes MFS lived WITH their spouse; line 6d, the checkbox that
  *     says otherwise, is unmapped (scripts/386).
- *   - 16 treats line 7 (capital gain distributions) + 3a as LTCG/qualified,
- *     which matches how those mapped inputs behave on real returns.
+ *   - 16 takes 3a plus the LONG-TERM portion of line 7 surviving Schedule D
+ *     netting as the qualified amount — NOT line 7 wholesale, which is a net
+ *     of short and long and would hand a net short-term gain the 15% rate
+ *     (a silent under-tax). 1099-DIV capital gain distributions are folded
+ *     into the long-term bucket, which is where they belong.
+ *   - 7 resolves holding period by the s52 term override first, then
+ *     acquired/sold date math per IRC 1222, then short-term as the
+ *     conservative fallback. Wash-sale disallowed amounts are added back;
+ *     a net capital loss is capped per IRC 1211(b). NOT applied: loss
+ *     carryforwards (invisible to the export) and the collectibles /
+ *     §1202 / unrecaptured §1250 rate baskets, so a return holding those
+ *     gets the ordinary 0/15/20 treatment.
  *   - 19 uses Form 1040 line 18 as the credit limit. Schedule 8812's Credit
  *     Limit Worksheet A subtracts Schedule 3 lines 1-4, 5b, 6d, 6f, 6l and
  *     6m first; those credits are invisible to the export, so 19 overstates
@@ -68,6 +90,7 @@
  * absent the estimator quietly does nothing rather than guess.
  */
 
+import { computeScheduleA, type ScheduleAResult } from "@/lib/tax/intake/compute"
 import {
   evaluateComputedLines,
   type FieldCell,
@@ -371,6 +394,68 @@ function sumCells(
 }
 
 /**
+ * Schedule A (s400), plus the two components that live off it: SSA-1099
+ * Medicare premiums (`s200M` c13/c63, taxpayer and spouse) and Form 8283
+ * non-cash contributions (`s8284/c7`).
+ *
+ * Every code here is observed on a real IND return. Codes that appear only
+ * on SCO/PAR/COR snapshots are deliberately excluded — `s400` is a
+ * DIFFERENT SCREEN on those modules (it carries AMT and state-specific
+ * overrides), so a return_type-blind code list would pull in figures that
+ * are not Schedule A at all.
+ *
+ * The Medicare premiums are easy to miss and not optional: they are 6,544
+ * of one MFJ return's 67,369 medical total, and the tie-out to ProConnect
+ * does not close without them.
+ */
+const SCH_A_CELLS = {
+  medPrescriptions: [["s400", "c4"]],
+  medDoctors: [["s400", "c5"]],
+  medHospitals: [["s400", "c6"]],
+  medInsurance: [["s400", "c7"], ["s400", "c17"]],
+  medReimbursement: [["s400", "c8"]],
+  /** Out-of-pocket + other + BOTH spouses' Medicare premiums off the SSA-1099. */
+  medOther: [["s400", "c9"], ["s400", "c10"], ["s400", "c40"], ["s200M", "c13"], ["s200M", "c63"]],
+  taxStateIncome: [["s400", "c11"], ["s400", "c13"], ["s400", "c96"]],
+  taxRealestateResidence: [["s400", "c15"]],
+  taxPersonalProperty: [["s400", "c18"]],
+  intMortgage1098: [["s400", "c21"]],
+  intMortgageNo1098: [["s400", "c22"]],
+  intPointsNo1098: [["s400", "c23"]],
+  intInvestment: [["s400", "c24"]],
+  charityCash: [["s400", "c32"], ["s400", "c41"]],
+  charityNoncash50: [["s8284", "c7"]],
+} as const satisfies Record<string, ReadonlyArray<readonly [string, string]>>
+
+/** Medical MILES driven (s400/c52) — miles, not dollars. */
+const MED_MILES_CELL = { seriesId: "s400", codeId: "c52" } as const
+
+/**
+ * s400 controls that displace the max(standard, itemized) choice. None are
+ * populated on any IND return in the current book, so these are inert
+ * today — but a preparer ticking "force standard" and being overruled by a
+ * computed itemized total would be a bad surprise, so honour them.
+ */
+const SCH_A_ITEMIZED_OVERRIDE = { seriesId: "s400", codeId: "c118" } as const
+const SCH_A_CONTROLS = [
+  /** 1=must itemize, 2=elect to itemize, 3=force standard. */
+  { seriesId: "s400", codeId: "c1", forceStandard: ["3"], forceItemized: ["1", "2"] },
+  /** 1=force itemized, 2=force standard. */
+  { seriesId: "s400", codeId: "c100", forceStandard: ["2"], forceItemized: ["1"] },
+  /** 1=itemize, 2=standard deduction. */
+  { seriesId: "s400", codeId: "c146", forceStandard: ["2"], forceItemized: ["1"] },
+] as const
+
+/** Sum one (series, code) across every prefix AND suffix — grids included. */
+function sumAnySuffix(cells: FieldCell[], seriesId: string, codeId: string): number {
+  let total = 0
+  for (const c of cells) {
+    if (c.seriesId === seriesId && c.codeId === codeId) total += toNum(c.val)
+  }
+  return total
+}
+
+/**
  * Parse a ProConnect date cell. A LEADING MINUS means the preparer entered
  * "various" (broker summary rows), but the date behind it is still real and
  * is what ProConnect itself uses for the holding period. Every c25/c26 value
@@ -479,6 +564,71 @@ function netScheduleD(cells: FieldCell[], capGainDistributions: number): Schedul
 function qualifiedPortion(r: ScheduleDResult): number {
   if (r.net <= 0) return 0
   return Math.min(r.net, Math.max(0, r.netLong))
+}
+
+/**
+ * Build a Schedule A from the exported cells, or return null when the return
+ * carries no Schedule A input at all (the common case — most clients take
+ * the standard deduction and have no s400 screen).
+ *
+ * Delegates the actual arithmetic to `computeScheduleA` in the intake path
+ * rather than reimplementing the medical floor and the SALT phase-down. The
+ * two surfaces must not be able to disagree about the same return.
+ */
+function scheduleAFromCells(
+  cells: FieldCell[],
+  constants: Form1040Constant[],
+  fs: StatusKey,
+  agi: number,
+): ScheduleAResult | null {
+  let sawAny = false
+  const input = {} as Record<string, number | null>
+  for (const [field, addrs] of Object.entries(SCH_A_CELLS)) {
+    let total = 0
+    let present = false
+    for (const [seriesId, codeId] of addrs) {
+      const cellsHere = cells.filter((c) => c.seriesId === seriesId && c.codeId === codeId)
+      if (cellsHere.length > 0) present = true
+      total += sumAnySuffix(cells, seriesId, codeId)
+    }
+    input[field] = present ? total : null
+    if (present) sawAny = true
+  }
+
+  // Medical mileage: c52 is MILES. ScheduleAInput has no medical-mileage
+  // field (only charitable), so convert here and fold the dollars into
+  // medOther. The medical rate is NOT the charitable rate — 0.21 vs 0.14 —
+  // so reusing charitableMileageRate would silently understate it.
+  const medMiles = sumAnySuffix(cells, MED_MILES_CELL.seriesId, MED_MILES_CELL.codeId)
+  if (medMiles > 0) {
+    const rate = constNum(constants, "medical_mileage_rate")
+    if (rate !== null) {
+      input.medOther = (input.medOther ?? 0) + medMiles * rate
+      sawAny = true
+    }
+  }
+
+  if (!sawAny) return null
+
+  // computeScheduleA reads only the Schedule A slice of Form1040Constants.
+  const c = {
+    medicalAgiFloorPct: constNum(constants, "medical_agi_floor_pct") ?? 0.075,
+    saltCap: constNum(constants, "salt_cap") ?? 0,
+    saltCapMfs: constNum(constants, "salt_cap_mfs") ?? 0,
+    saltPhaseoutStart: constNum(constants, "salt_phaseout_start") ?? Infinity,
+    saltPhaseoutStartMfs: constNum(constants, "salt_phaseout_start_mfs") ?? Infinity,
+    saltPhaseoutRate: constNum(constants, "salt_phaseout_rate") ?? 0,
+    saltPhaseoutFloor: constNum(constants, "salt_phaseout_floor") ?? 0,
+    saltPhaseoutFloorMfs: constNum(constants, "salt_phaseout_floor_mfs") ?? 0,
+    charitableMileageRate: constNum(constants, "charitable_mileage_rate") ?? 0.14,
+  } as unknown as Parameters<typeof computeScheduleA>[3]
+
+  return computeScheduleA(
+    input as unknown as Parameters<typeof computeScheduleA>[0],
+    fs as Parameters<typeof computeScheduleA>[1],
+    agi,
+    c,
+  )
 }
 
 /**
@@ -704,12 +854,49 @@ export function estimateDeterministicLines(
         )
         if (perBox !== null) deduction += perBox * boxes
       }
-      // Only assert the statutory figure when itemizing provably cannot beat
-      // it. Otherwise leave 12a blank: "unknown" is honest, "standard
-      // deduction" would not be.
-      if (standardDeductionIsSafe(cells, lineInputs, deduction)) {
+      // Schedule A, when the return carries one. Before this the answer was
+      // always the standard deduction, guarded only by a bound that could
+      // refuse to answer — and the bound was inert, so 18 of 47 returns
+      // carrying Schedule A data rendered the STANDARD deduction while all
+      // 18 genuinely itemized. Computing it is the only real fix; the bound
+      // survives below purely for the case where there is nothing to compute.
+      const schA = scheduleAFromCells(cells, constants, fs, num("11"))
+
+      // An explicit [Override] on the itemized total displaces the
+      // computation entirely.
+      const overrideRaw = findCell(cells, {
+        ...SCH_A_ITEMIZED_OVERRIDE,
+        prefixId: "p0",
+        suffixId: "x1000",
+      })?.val
+      const itemizedOverride =
+        overrideRaw !== null && overrideRaw !== undefined && String(overrideRaw).trim() !== ""
+          ? toNum(overrideRaw)
+          : null
+
+      // "Force standard" / "force itemized" controls beat max().
+      let forced: "standard" | "itemized" | null = null
+      for (const ctl of SCH_A_CONTROLS) {
+        const raw = findCell(cells, { seriesId: ctl.seriesId, prefixId: "p0", codeId: ctl.codeId, suffixId: "x1000" })?.val
+        const v = String(raw ?? "").trim()
+        if (!v) continue
+        if ((ctl.forceStandard as readonly string[]).includes(v)) forced = "standard"
+        else if ((ctl.forceItemized as readonly string[]).includes(v)) forced = "itemized"
+      }
+
+      const itemizedTotal = itemizedOverride ?? schA?.total ?? null
+
+      if (itemizedTotal !== null && forced !== "standard") {
+        // §63(e): the larger of the two, which is the election ProConnect
+        // makes unless a control says otherwise.
+        setEstimate("12a", forced === "itemized" ? itemizedTotal : Math.max(deduction, itemizedTotal))
+      } else if (standardDeductionIsSafe(cells, lineInputs, deduction)) {
+        // Nothing to compute (no Schedule A screen) and itemizing provably
+        // cannot win — assert the statutory figure.
         setEstimate("12a", deduction)
       } else {
+        // Schedule A inputs exist that we cannot turn into a total. Leave
+        // 12a blank: "unknown" is honest, "standard deduction" would not be.
         deductionUnknown = true
       }
     }
