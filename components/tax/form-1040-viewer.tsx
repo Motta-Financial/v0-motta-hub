@@ -538,6 +538,22 @@ export function Form1040Viewer({
                 reported as unavailable rather than computed with the wrong year&apos;s
                 figures.
               </p>
+              {/*
+                Two hops of uncertainty, not one. The borrowed layout can
+                ITSELF be unverified — a TY2023 return borrows TY2024, which
+                scripts/401 inherited from TY2025 and nobody has checked
+                against the IRS form yet. These two banners used to be
+                mutually exclusive, so that second hop went unsaid on exactly
+                the returns furthest from solid ground.
+              */}
+              {data.layoutVerified === false && (
+                <p className="mt-1 text-xs font-medium opacity-90">
+                  The {data.layoutFallbackYear} layout being borrowed has not itself
+                  been verified against the IRS {data.layoutFallbackYear} Form 1040 —
+                  it was inherited from a later year. Treat every line number here as
+                  unconfirmed.
+                </p>
+              )}
             </div>
           </div>
         ) : data.layoutVerified === false ? (
