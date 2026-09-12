@@ -218,10 +218,43 @@ comment on column form_1040_proconnect_map.editable_basis is
 -- The catalog is partner-confidential and loaded out-of-band
 -- (scripts/358-load-proconnect-catalog.mjs), so it may be empty in a given
 -- environment. Applying the catalog gate against an empty catalog would
--- silently mark everything non-editable. Fail LOUD instead of fail-quiet:
--- gate only where the catalog is actually populated for that
--- (tax_year, return_type), and record that in editable_basis.
-with catalog_loaded as (
+-- silently mark everything non-editable, which is useless in a dev checkout.
+--
+-- ═══ REVISED 2026-09-11 — the per-year skip was backwards ════════════
+--
+-- The original rule skipped the catalog gate whenever the catalog was empty
+-- for that (tax_year, return_type). That is right for an environment with NO
+-- catalog at all, and exactly WRONG for a year that simply has not been
+-- loaded yet in an environment that does have one.
+--
+-- Concretely: prod carries 67,810 catalog rows, all (2025, IND). TY2024 has
+-- 90 inherited mappings and zero catalog rows. Under the old rule, a re-run
+-- of this derivation read "no catalog for 2024" as "gate not applicable" and
+-- marked all 90 TY2024 cells EDITABLE — authorising live writes to filed
+-- client returns on the weakest possible basis (an inherited, unverified
+-- mapping with no field definitions to validate against). scripts/401
+-- hardcoded editable = false for TY2024 precisely to hold that line, and left
+-- a prose warning not to re-run this script. But scripts/389 and the raw-cell
+-- browser both instruct a re-run after any mapping round, so the warning was
+-- one forgotten sentence away from inverting the gate on real returns.
+--
+-- The distinction the rule actually needs is ENVIRONMENT-level, not year-level:
+--
+--   catalog empty everywhere      → dev checkout; skip the gate (as before)
+--   catalog present, year loaded  → gate on the (series, code) definition
+--   catalog present, year absent  → NOT editable. The catalog is the thing
+--                                   that would tell us this cell is writable,
+--                                   it exists, and it does not cover this year.
+--
+-- Fail closed on the third case. A missing year is missing evidence, and
+-- missing evidence must never read as permission.
+with catalog_any as (
+  -- Does this ENVIRONMENT have a catalog at all?
+  select exists (
+    select 1 from proconnect_field_catalog where agency = 'Federal'
+  ) as present
+),
+catalog_loaded as (
   select tax_year, return_type, count(*) > 0 as loaded
   from proconnect_field_catalog
   where agency = 'Federal'
@@ -240,7 +273,14 @@ update form_1040_proconnect_map m
         and m2.cell_role in ('primary', 'override')
         and not coalesce(l.is_computed, false)
         and not coalesce(l.not_applicable, false)
-        and (not coalesce(cl.loaded, false) or c.code_id is not null)
+        and (case
+               -- Dev checkout with no catalog anywhere: skip the gate.
+               when not ca.present then true
+               -- Catalog exists in this environment: require a definition for
+               -- THIS cell. A year the catalog does not cover fails here,
+               -- because c.code_id cannot join.
+               else c.code_id is not null
+             end)
       ) as ok,
       case
         when m2.series_id is null or m2.code_id is null
@@ -257,16 +297,24 @@ update form_1040_proconnect_map m
           then 'not editable: ProConnect computes this line from the underlying entries'
         when coalesce(l.not_applicable, false)
           then 'not editable: line cannot hold a value this tax year'
-        when coalesce(cl.loaded, false) and c.code_id is null
+        when ca.present and not coalesce(cl.loaded, false)
+          then 'not editable: proconnect_field_catalog has no rows for tax year '
+               || m2.tax_year || ' / ' || m2.return_type || '. The catalog IS loaded '
+               'in this environment, just not for this year, so this mapping is '
+               'inherited or undiscovered and has no field definitions to validate a '
+               'write against. Load the catalog for that year, then re-run scripts/387.'
+        when ca.present and c.code_id is null
           then 'not editable: no proconnect_field_catalog definition for '
                || m2.series_id || '/' || m2.code_id || ' (M-series detail grid or '
                'undiscovered code) — no constraints to pre-validate a write against'
-        when not coalesce(cl.loaded, false)
-          then 'editable: raw input cell at a concrete prefix (catalog NOT loaded in '
-               'this environment — catalog gate skipped, re-run scripts/387 after load)'
+        when not ca.present
+          then 'editable: raw input cell at a concrete prefix (NO catalog anywhere in '
+               'this environment — dev checkout, catalog gate skipped. This verdict is '
+               'not meaningful in prod; re-run scripts/387 there.)'
         else 'editable: catalog-backed raw input cell at a concrete prefix'
       end as basis
     from form_1040_proconnect_map m2
+    cross join catalog_any ca
     left join form_1040_lines l
       on l.tax_year = m2.tax_year and l.form = m2.form and l.line_code = m2.line_code
     left join catalog_loaded cl

@@ -74,6 +74,51 @@ try {
     console.error(`\n!! ${unexplained.length} row(s) with no editable_basis:`, unexplained.map((r) => r.line_code))
   }
 
+  // ── EVERY tax year, not just 2025 ──────────────────────────────────
+  // The listing above is TY2025-only, which is how the TY2024 catalog
+  // inversion stayed invisible: a year with no catalog rows used to come
+  // out fully editable and nothing here would have said so. Summarise
+  // every year, and hard-fail any year that has mappings but no catalog
+  // yet still derived an editable cell.
+  const { rows: byYear } = await client.query(`
+    select m.tax_year, m.return_type,
+           count(*)                                   as mappings,
+           count(*) filter (where m.editable)         as editable,
+           coalesce((select count(*) from proconnect_field_catalog c
+                      where c.tax_year = m.tax_year
+                        and c.return_type = m.return_type
+                        and c.agency = 'Federal'), 0) as catalog_rows
+      from form_1040_proconnect_map m
+     group by m.tax_year, m.return_type
+     order by m.tax_year, m.return_type`)
+
+  console.log("\n── editable by tax year ──")
+  console.log("  year  type  mappings  editable  catalog rows")
+  for (const r of byYear) {
+    console.log(
+      `  ${String(r.tax_year).padEnd(6)}${String(r.return_type).padEnd(6)}` +
+        `${String(r.mappings).padEnd(10)}${String(r.editable).padEnd(10)}${r.catalog_rows}`,
+    )
+  }
+
+  // The invariant this script exists to protect.
+  const catalogAnywhere = byYear.some((r) => Number(r.catalog_rows) > 0)
+  if (catalogAnywhere) {
+    const inverted = byYear.filter(
+      (r) => Number(r.catalog_rows) === 0 && Number(r.editable) > 0,
+    )
+    if (inverted.length) {
+      throw new Error(
+        "catalog gate inverted — " +
+          inverted
+            .map((r) => `${r.tax_year}/${r.return_type}: ${r.editable} editable with 0 catalog rows`)
+            .join("; ") +
+          ". A year with no catalog must never derive an editable cell.",
+      )
+    }
+    console.log("\n  OK — no year derives an editable cell without a catalog.")
+  }
+
   if (APPLY) {
     await client.query("commit")
     console.log("\n387 APPLIED (committed).")
