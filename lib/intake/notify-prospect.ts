@@ -128,6 +128,25 @@ export function buildProspectConfirmationHtml(
 }
 
 /**
+ * Domains reserved by RFC 2606 / RFC 6761 — permanently undeliverable, and
+ * what people type when they're testing a form.
+ */
+const RESERVED_EMAIL_DOMAINS = new Set([
+  "example.com",
+  "example.net",
+  "example.org",
+  "test.com",
+])
+const RESERVED_EMAIL_TLDS = [".example", ".invalid", ".test", ".localhost"]
+
+export function isUndeliverableDomain(email: string): boolean {
+  const domain = email.trim().toLowerCase().split("@")[1]
+  if (!domain) return true
+  if (RESERVED_EMAIL_DOMAINS.has(domain)) return true
+  return RESERVED_EMAIL_TLDS.some((tld) => domain.endsWith(tld))
+}
+
+/**
  * Send the confirmation. Returns whether it actually went out so the
  * caller only stamps `prospect_confirmation_sent_at` on success —
  * `sendEmail` reports transport failures by returning `success: false`
@@ -136,9 +155,16 @@ export function buildProspectConfirmationHtml(
  */
 export async function sendProspectIntakeConfirmation(
   ctx: ProspectConfirmationContext,
-): Promise<{ sent: boolean; error?: string }> {
+): Promise<{ sent: boolean; error?: string; skipped?: boolean }> {
   if (!ctx.email) return { sent: false, error: "no email address" }
   if (!ctx.bookingUrl) return { sent: false, error: "no booking url" }
+  // The intake form is public, so the address may be a test or throwaway.
+  // Reserved domains (RFC 2606/6761) can never receive mail and Resend
+  // rejects them with a 422 — attempting the send just manufactures error
+  // noise that buries real failures. `skipped` marks "correctly not sent".
+  if (isUndeliverableDomain(ctx.email)) {
+    return { sent: false, skipped: true, error: `reserved test domain: ${ctx.email}` }
+  }
 
   const firm = await getFirmConfig().catch(() => null)
   const resolved = {

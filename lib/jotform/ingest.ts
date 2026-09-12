@@ -859,7 +859,7 @@ export async function runIntakePostProcessing(
       try {
         const firstName =
           submissionRow.submitter_full_name?.trim().split(/\s+/)[0] ?? null
-        const { sent, error: sendErr } = await sendProspectIntakeConfirmation({
+        const { sent, error: sendErr, skipped } = await sendProspectIntakeConfirmation({
           firstName,
           email: submissionRow.submitter_email,
           bookingUrl: submissionRow.booking_url,
@@ -880,6 +880,12 @@ export async function runIntakePostProcessing(
             console.log("[Jotform] prospect confirmation stamp error:", stampErr.message)
           }
           console.log(`[Jotform] intake ${jotformSubmissionId} prospect confirmation sent`)
+        } else if (skipped) {
+          // Undeliverable by construction (test/reserved domain). Not a
+          // failure — log at info so it doesn't drown real send errors.
+          console.log(
+            `[Jotform] intake ${jotformSubmissionId} prospect confirmation skipped: ${sendErr ?? "undeliverable address"}`,
+          )
         } else {
           console.error(
             `[Jotform] intake ${jotformSubmissionId} prospect confirmation NOT sent: ${sendErr ?? "unknown"}`,

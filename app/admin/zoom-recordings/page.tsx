@@ -34,6 +34,16 @@ interface StatusResponse {
   transcriptsFailed: number
   transcriptsExpired: number
   mediaArchived: number
+  blobStore?: {
+    store: string
+    dedicatedToken: boolean
+    /** Blob API — what uploads use. */
+    api: boolean | null
+    /** Direct store read — what playback uses. */
+    read: boolean | null
+    checkedPathname: string | null
+    error: string | null
+  }
   lastSyncedAt: string | null
   newestRecordingStart: string | null
   recent: Array<{
@@ -96,6 +106,11 @@ export default function ZoomRecordingsAdminPage() {
   }, [from, to, includeMedia, tagParticipants, mutate, showFlash])
 
   const s2sOff = data && data.s2sConfigured === false
+  // Uploads and playback authorize against the store independently, so name
+  // which half is down — that's the difference between "the archive stopped"
+  // and "nothing already archived will play".
+  const blob = data?.blobStore
+  const blobBroken = blob ? blob.api === false || blob.read === false : false
 
   return (
     <DashboardLayout>
@@ -119,6 +134,31 @@ export default function ZoomRecordingsAdminPage() {
             {flash.kind === "ok" ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
             <AlertTitle>{flash.kind === "ok" ? "Done" : "Error"}</AlertTitle>
             <AlertDescription>{flash.msg}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        {blobBroken && blob ? (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>
+              Recording archive unreachable —{" "}
+              {blob.api === false && blob.read === false
+                ? "uploads and playback are both failing"
+                : blob.api === false
+                  ? "uploads are failing (archive has stopped)"
+                  : "playback of archived recordings is failing"}
+            </AlertTitle>
+            <AlertDescription>
+              The private <code>zoom-recordings</code> store rejected us (store{" "}
+              <code>{blob.store}</code>
+              {blob.dedicatedToken ? "" : ", and ZOOM_BLOB_READ_WRITE_TOKEN is NOT set — we fell back to the default store's token"}
+              ). Replace <code>ZOOM_BLOB_READ_WRITE_TOKEN</code> in Vercel with the store&apos;s current
+              read-write token and redeploy. Recordings newer than the failure still play from Zoom, so
+              playback looking fine does not mean the archive is fine.
+              {blob.error ? (
+                <span className="mt-1 block font-mono text-xs opacity-80">{blob.error}</span>
+              ) : null}
+            </AlertDescription>
           </Alert>
         ) : null}
 

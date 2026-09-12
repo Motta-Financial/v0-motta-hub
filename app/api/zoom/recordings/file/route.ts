@@ -85,7 +85,17 @@ export async function GET(req: NextRequest) {
       headers,
     })
   } catch (err) {
-    console.error("[v0] [Zoom Blob Proxy] failed:", err instanceof Error ? err.message : err)
-    return NextResponse.json({ error: "fetch_failed" }, { status: 500 })
+    // A 403 here is the private store refusing our credential — almost always
+    // a rotated ZOOM_BLOB_READ_WRITE_TOKEN, which takes down every archived
+    // recording at once. Name the store and whether the dedicated token is
+    // even set (both are public facts) so the log says which it is.
+    const token = process.env.ZOOM_BLOB_READ_WRITE_TOKEN
+    console.error(
+      `[v0] [Zoom Blob Proxy] failed store=${
+        (token || process.env.BLOB_READ_WRITE_TOKEN || "").split("_")[3] || "unknown"
+      } dedicatedToken=${Boolean(token)}:`,
+      err instanceof Error ? err.message : err,
+    )
+    return NextResponse.json({ error: "blob_unavailable" }, { status: 502 })
   }
 }
