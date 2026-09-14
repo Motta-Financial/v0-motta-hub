@@ -34,6 +34,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import useSWR from "swr"
 import { format, formatDistanceToNow, parseISO } from "date-fns"
 import { toast } from "sonner"
 import {
@@ -1202,6 +1203,20 @@ function CountChip({ n }: { n: number }) {
   )
 }
 
+// Distinct from CountChip on purpose — this signals "needs a reply" rather
+// than "here's how many items exist," so it gets the firm's dark-green
+// action color instead of a neutral secondary badge.
+function UnreadChip({ n }: { n: number }) {
+  return (
+    <Badge
+      className="ml-2 h-5 min-w-5 justify-center px-1.5 text-xs font-semibold border-0 text-white"
+      style={{ backgroundColor: "#4A5240" }}
+    >
+      {n}
+    </Badge>
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Overview tab
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1421,6 +1436,16 @@ function CommunicationsTab({
   const noteCount =
     (data.karbonNotes?.length || 0) + (data.manualNotes?.length || 0)
 
+  // Shares the "portal-messages" SWR key with PortalMessagesCard below, so
+  // this badge and the thread itself always agree on what's unread without
+  // a second mock-data generation pass.
+  const { data: portalMessages } = usePortalMessages(
+    data.client.id,
+    data.client.clientName,
+    data.teamMembers,
+  )
+  const unreadMessageCount = unreadClientMessageCount(portalMessages)
+
   return (
     <Tabs value={tab} onValueChange={onTabChange} className="w-full">
       <TabsList className="grid grid-cols-5 w-full max-w-3xl">
@@ -1428,7 +1453,10 @@ function CommunicationsTab({
           Emails
           {data.emails.length > 0 && <CountChip n={data.emails.length} />}
         </TabsTrigger>
-        <TabsTrigger value="messages">Messages</TabsTrigger>
+        <TabsTrigger value="messages">
+          Messages
+          {unreadMessageCount > 0 && <UnreadChip n={unreadMessageCount} />}
+        </TabsTrigger>
         <TabsTrigger value="notes">
           Notes
           {noteCount > 0 && <CountChip n={noteCount} />}
@@ -1831,7 +1859,7 @@ function EmailThreadsCard({
           }}
         />
       ) : (
-        <Card>
+        <Card className="border-0 shadow-sm">
           <CardContent className="p-0">
             <ScrollArea className="max-h-[700px]">
               <div className="divide-y">
@@ -1839,10 +1867,10 @@ function EmailThreadsCard({
                   <EmailThreadRow
                     key={t.id}
                     thread={t}
-                    projectName={
-                      activeProjects.find((p) => p.id === assignments[t.id])?.title || null
-                    }
-                    onClick={() => setSelectedThreadId(t.id)}
+                    projectId={assignments[t.id] ?? null}
+                    activeProjects={activeProjects}
+                    onAssign={(pid) => setAssignments((prev) => ({ ...prev, [t.id]: pid }))}
+                    onOpen={() => setSelectedThreadId(t.id)}
                   />
                 ))}
               </div>
@@ -1867,12 +1895,12 @@ function FilterPill({
     <button
       type="button"
       onClick={onClick}
-      className={cn(
-        "h-7 rounded-full border px-3 text-xs font-medium transition-colors",
+      className="h-7 rounded-full border px-3 text-xs font-medium transition-colors"
+      style={
         active
-          ? "border-primary bg-primary text-primary-foreground"
-          : "border-border bg-background text-muted-foreground hover:bg-muted",
-      )}
+          ? { backgroundColor: "#6B745D", borderColor: "#6B745D", color: "#FFFFFF" }
+          : { backgroundColor: "transparent", borderColor: "#B5BFA8", color: "#4A5240" }
+      }
     >
       {children}
     </button>
@@ -1881,48 +1909,94 @@ function FilterPill({
 
 function EmailThreadRow({
   thread,
-  projectName,
-  onClick,
+  projectId,
+  activeProjects,
+  onAssign,
+  onOpen,
 }: {
   thread: EmailThreadMock
-  projectName: string | null
-  onClick: () => void
+  projectId: string | null
+  activeProjects: Array<{ id: string; title: string }>
+  onAssign: (projectId: string | null) => void
+  onOpen: () => void
 }) {
   const last = thread.messages[thread.messages.length - 1]
+  const assignedProject = activeProjects.find((p) => p.id === projectId) || null
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-start gap-3 p-4 text-left transition-colors hover:bg-muted/50"
-    >
-      <span
-        className={cn(
-          "mt-2 block h-2 w-2 shrink-0 rounded-full",
-          thread.unread ? "bg-primary" : "bg-transparent",
-        )}
-        aria-hidden="true"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={cn("truncate text-sm", thread.unread ? "font-semibold" : "font-medium")}>
-            {thread.subject}
-          </span>
-          <Badge variant="outline" className="text-xs capitalize">
-            {last.direction}
+    <div className="flex flex-col gap-2 p-4">
+      {/* Assign-to-project control sits above the thread preview, separate
+          from the button below it, so a Select trigger never nests inside
+          an interactive <button>. */}
+      <div className="flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        <span className="text-xs font-medium" style={{ color: "#4A5240" }}>
+          Assign to project
+        </span>
+        <Select
+          value={projectId ?? "unassigned"}
+          onValueChange={(v) => onAssign(v === "unassigned" ? null : v)}
+        >
+          <SelectTrigger
+            className="h-7 w-56 text-xs"
+            style={{ borderColor: "#B5BFA8" }}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="unassigned">Unassigned</SelectItem>
+            {activeProjects.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.title}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {assignedProject && (
+          <Badge
+            variant="outline"
+            className="gap-1 pr-1 text-xs"
+            style={{ borderColor: "#B5BFA8", backgroundColor: "#EAE6E1", color: "#4A5240" }}
+          >
+            {assignedProject.title}
+            <button
+              type="button"
+              onClick={() => onAssign(null)}
+              className="rounded-full p-0.5 hover:bg-black/10"
+              aria-label={`Remove ${assignedProject.title} assignment`}
+            >
+              <X className="h-3 w-3" />
+            </button>
           </Badge>
-          {projectName && (
-            <Badge variant="secondary" className="text-xs">
-              {projectName}
-            </Badge>
-          )}
-        </div>
-        <p className="truncate text-xs text-muted-foreground">{thread.otherPartyName}</p>
-        <p className="truncate text-xs text-muted-foreground">{last.bodyText}</p>
+        )}
       </div>
-      <span className="shrink-0 text-xs text-muted-foreground">
-        {formatDate(thread.lastActivityAt, "MMM d") || "—"}
-      </span>
-    </button>
+
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex w-full items-start gap-3 rounded-md text-left transition-colors hover:bg-muted/50"
+      >
+        <span
+          className="mt-2 block h-2 w-2 shrink-0 rounded-full"
+          style={{ backgroundColor: thread.unread ? "#6B745D" : "transparent" }}
+          aria-hidden="true"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cn("truncate text-sm", thread.unread ? "font-semibold" : "font-medium")}>
+              {thread.subject}
+            </span>
+            <Badge variant="outline" className="text-xs capitalize">
+              {last.direction}
+            </Badge>
+          </div>
+          <p className="truncate text-xs text-muted-foreground">{thread.otherPartyName}</p>
+          <p className="truncate text-xs text-muted-foreground">{last.bodyText}</p>
+        </div>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {formatDate(thread.lastActivityAt, "MMM d") || "—"}
+        </span>
+      </button>
+    </div>
   )
 }
 
@@ -1942,7 +2016,7 @@ function EmailThreadDetail({
   const assignedProject = activeProjects.find((p) => p.id === projectId) || null
 
   return (
-    <Card>
+    <Card className="border-0 shadow-sm">
       <CardContent className="p-0">
         <div className="flex flex-col gap-3 border-b p-4">
           <Button
@@ -1961,12 +2035,14 @@ function EmailThreadDetail({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">Assign to project</span>
+            <span className="text-xs font-medium" style={{ color: "#4A5240" }}>
+              Assign to project
+            </span>
             <Select
               value={projectId ?? "unassigned"}
               onValueChange={(v) => onAssign(v === "unassigned" ? null : v)}
             >
-              <SelectTrigger className="h-8 w-56 text-xs">
+              <SelectTrigger className="h-8 w-56 text-xs" style={{ borderColor: "#B5BFA8" }}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1979,12 +2055,16 @@ function EmailThreadDetail({
               </SelectContent>
             </Select>
             {assignedProject && (
-              <Badge variant="secondary" className="gap-1 pr-1 text-xs">
+              <Badge
+                variant="outline"
+                className="gap-1 pr-1 text-xs"
+                style={{ borderColor: "#B5BFA8", backgroundColor: "#EAE6E1", color: "#4A5240" }}
+              >
                 {assignedProject.title}
                 <button
                   type="button"
                   onClick={() => onAssign(null)}
-                  className="rounded-full p-0.5 hover:bg-background/60"
+                  className="rounded-full p-0.5 hover:bg-black/10"
                   aria-label={`Remove ${assignedProject.title} assignment`}
                 >
                   <X className="h-3 w-3" />
@@ -2115,6 +2195,15 @@ const PORTAL_MESSAGE_EXCHANGES: Array<{ client: string; firm: string }> = [
   },
 ]
 
+// Standalone client messages sent after the last firm reply — these are
+// what an unanswered thread looks like and what powers the unread badge.
+const PORTAL_FOLLOWUP_MESSAGES: string[] = [
+  "Following up on this — any update?",
+  "Just checking in, did you get a chance to look at this yet?",
+  "One more thing — can you also confirm the filing deadline for this?",
+  "Sorry to bug you, but wanted to bump this up in your inbox.",
+]
+
 function generateMockPortalMessages(
   clientId: string,
   clientName: string,
@@ -2160,7 +2249,58 @@ function generateMockPortalMessages(
     })
   })
 
+  // Roughly 1 in 3 clients have sent something since the firm's last
+  // reply — an open question nobody has answered yet. This is the state
+  // the unread badge on the sub-tab exists to surface.
+  if (seed % 3 === 0) {
+    cursor += (2 + Math.floor(rng() * 22)) * 60 * 60 * 1000
+    messages.push({
+      id: `${clientId}-portal-followup`,
+      sender: "client",
+      senderName: clientName,
+      bodyText: PORTAL_FOLLOWUP_MESSAGES[seed % PORTAL_FOLLOWUP_MESSAGES.length],
+      sentAt: new Date(cursor).toISOString(),
+      seenByClient: false,
+    })
+  }
+
   return messages
+}
+
+// Shared SWR key so the unread badge (in CommunicationsTab) and the thread
+// itself (in PortalMessagesCard) always read/write the same cached list —
+// sending a reply from the card clears the badge instantly, no refetch.
+function portalMessagesKey(clientId: string): [string, string] | null {
+  return clientId ? ["portal-messages", clientId] : null
+}
+
+function usePortalMessages(
+  clientId: string,
+  clientName: string,
+  teamMembers: ClientBundle["teamMembers"],
+) {
+  return useSWR<PortalMessageMock[]>(
+    portalMessagesKey(clientId),
+    () =>
+      new Promise<PortalMessageMock[]>((resolve) => {
+        setTimeout(
+          () => resolve(generateMockPortalMessages(clientId, clientName, teamMembers)),
+          500,
+        )
+      }),
+    { revalidateOnFocus: false },
+  )
+}
+
+// Unread = trailing client messages with no firm reply after them yet.
+function unreadClientMessageCount(messages: PortalMessageMock[] | undefined): number {
+  if (!messages || messages.length === 0) return 0
+  let count = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].sender !== "client") break
+    count++
+  }
+  return count
 }
 
 function PortalMessagesCard({
@@ -2172,47 +2312,42 @@ function PortalMessagesCard({
   clientName: string
   teamMembers: ClientBundle["teamMembers"]
 }) {
-  const [loading, setLoading] = useState(true)
-  const [messages, setMessages] = useState<PortalMessageMock[]>([])
+  const { data: messages, isLoading, mutate } = usePortalMessages(
+    clientId,
+    clientName,
+    teamMembers,
+  )
   const [draft, setDraft] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    setLoading(true)
-    const timer = setTimeout(() => {
-      setMessages(generateMockPortalMessages(clientId, clientName, teamMembers))
-      setLoading(false)
-    }, 500)
-    return () => clearTimeout(timer)
-  }, [clientId, clientName, teamMembers])
-
-  useEffect(() => {
-    if (!loading) {
+    if (!isLoading) {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
     }
-  }, [loading, messages.length])
+  }, [isLoading, messages?.length])
 
   const handleSend = useCallback(() => {
     const text = draft.trim()
     if (!text) return
     const staffName = teamMembers[0]?.name || "You"
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `local-${Date.now()}`,
-        sender: "firm",
-        senderName: staffName,
-        bodyText: text,
-        sentAt: new Date().toISOString(),
-        seenByClient: false,
-      },
-    ])
+    const reply: PortalMessageMock = {
+      id: `local-${Date.now()}`,
+      sender: "firm",
+      senderName: staffName,
+      bodyText: text,
+      sentAt: new Date().toISOString(),
+      seenByClient: false,
+    }
+    // Optimistic — a reply clears any unread badge immediately since it
+    // answers the trailing client message(s).
+    mutate((current) => [...(current ?? []), reply], { revalidate: false })
     setDraft("")
-  }, [draft, teamMembers])
+  }, [draft, teamMembers, mutate])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        if (e.nativeEvent.isComposing) return
         e.preventDefault()
         handleSend()
       }
@@ -2220,18 +2355,20 @@ function PortalMessagesCard({
     [handleSend],
   )
 
-  if (loading) return <PortalMessagesSkeleton />
+  if (isLoading) return <PortalMessagesSkeleton />
+
+  const list = messages ?? []
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden rounded-xl border-0 shadow-sm">
       <CardContent className="flex h-[600px] flex-col p-0">
         <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
-          {messages.length === 0 ? (
+          {list.length === 0 ? (
             <div className="flex h-full items-center justify-center">
               <EmptyState message="No messages yet." />
             </div>
           ) : (
-            messages.map((m) => <PortalMessageBubble key={m.id} message={m} />)
+            list.map((m) => <PortalMessageBubble key={m.id} message={m} />)
           )}
         </div>
         <div className="flex items-end gap-2 border-t p-3">
@@ -2246,7 +2383,8 @@ function PortalMessagesCard({
             size="sm"
             onClick={handleSend}
             disabled={!draft.trim()}
-            className="h-9 shrink-0 gap-1.5"
+            className="h-9 shrink-0 gap-1.5 text-white hover:opacity-90"
+            style={{ backgroundColor: "#6B745D" }}
           >
             <Send className="h-3.5 w-3.5" />
             Send
@@ -2267,10 +2405,12 @@ function PortalMessageBubble({ message }: { message: PortalMessageMock }) {
       )}
     >
       <div
-        className={cn(
-          "whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm",
-          isFirm ? "bg-[#1D2620] text-white" : "bg-muted text-foreground",
-        )}
+        className="whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm"
+        style={
+          isFirm
+            ? { backgroundColor: "#6B745D", color: "#FFFFFF" }
+            : { backgroundColor: "#E3E0D9", color: "#3F4438" }
+        }
       >
         {message.bodyText}
       </div>
@@ -2279,7 +2419,10 @@ function PortalMessageBubble({ message }: { message: PortalMessageMock }) {
         <span aria-hidden="true">·</span>
         <span>{relativeTime(message.sentAt)}</span>
         {isFirm && message.seenByClient && (
-          <span className="ml-0.5 inline-flex items-center gap-0.5 text-[10px]">
+          <span
+            className="ml-0.5 inline-flex items-center gap-0.5 text-[10px]"
+            style={{ color: "#6B745D" }}
+          >
             <Check className="h-3 w-3" />
             Seen
           </span>
@@ -2291,7 +2434,7 @@ function PortalMessageBubble({ message }: { message: PortalMessageMock }) {
 
 function PortalMessagesSkeleton() {
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden rounded-xl border-0 shadow-sm">
       <CardContent className="flex h-[600px] flex-col p-0">
         <div className="flex-1 space-y-4 p-4">
           <Skeleton className="ml-auto h-10 w-2/3 rounded-2xl" />
@@ -3549,7 +3692,7 @@ function DocumentsTab({
   )
 }
 
-// ──────────────────────────────────────��──────────────────────────────────────
+// ──────────────────────────────────────��──────────���───────────────────────────
 // People tab
 // ─────────────────────────────────────────────────────────────────────────────
 

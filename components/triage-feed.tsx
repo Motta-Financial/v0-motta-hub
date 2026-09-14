@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import useSWR from "swr"
 import { formatDistanceToNow } from "date-fns"
 import {
+  ArrowDownLeft,
+  ArrowUpRight,
   Bell,
   Briefcase,
   Calendar,
@@ -20,6 +22,8 @@ import {
   MessageSquare,
   Paperclip,
   Receipt,
+  Reply,
+  Search,
   Send,
   Smile,
   Sparkles,
@@ -41,10 +45,19 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-context"
+import { PreviewFeature } from "@/components/shared/preview-feature"
+import { createMockClientEmailThreads, type ClientEmailThread } from "@/lib/mock/client-emails"
 
 const COMMON_EMOJIS = ["👍", "❤️", "😊", "🎉", "🔥", "👏", "💯", "✨"]
 
@@ -59,6 +72,7 @@ type TriageSourceType =
   | "calendly_meeting"
   | "daily_briefing"
   | "accepted_proposal"
+  | "client_email"
 
 interface TriageItem {
   id: string
@@ -95,6 +109,7 @@ const SOURCE_META: Record<
   calendly_meeting: { label: "Meetings", icon: Calendar, accent: "text-purple-600" },
   daily_briefing: { label: "Briefings", icon: Sparkles, accent: "text-amber-600" },
   accepted_proposal: { label: "Proposals", icon: CheckCircle2, accent: "text-rose-600" },
+  client_email: { label: "Emails", icon: Mail, accent: "text-[#C97B3F]" },
 }
 
 const FILTERS = [
@@ -105,7 +120,53 @@ const FILTERS = [
   { value: "calendly_meeting", label: "Meetings" },
   { value: "daily_briefing", label: "Briefings" },
   { value: "accepted_proposal", label: "Proposals" },
+  { value: "client_email", label: "Emails" },
 ] as const
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Client email helpers — the "Emails" tab is sample data (see
+ * lib/mock/client-emails.ts), kept separate from the real feed items so it
+ * never mixes into the "All" tab or its counts.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+function latestEmailMessage(thread: ClientEmailThread) {
+  return thread.messages[thread.messages.length - 1]
+}
+
+function isInboundUnread(thread: ClientEmailThread): boolean {
+  return latestEmailMessage(thread).direction === "inbound" && !thread.read
+}
+
+function emailThreadToTriageItem(
+  thread: ClientEmailThread,
+  callbacks: {
+    onReply: (threadId: string, text: string) => void
+    onAssignProject: (threadId: string, projectId: string) => void
+    onUnassignProject: (threadId: string) => void
+    onMarkRead: (threadId: string) => void
+  },
+): TriageItem {
+  const latest = latestEmailMessage(thread)
+  return {
+    id: thread.id,
+    source_type: "client_email",
+    source_id: thread.id,
+    timestamp: latest.sentAt,
+    actor_name: thread.clientName,
+    title: thread.clientName,
+    summary: latest.bodyText,
+    metadata: {
+      thread,
+      direction: latest.direction,
+      unread: isInboundUnread(thread),
+      messageCount: thread.messages.length,
+      onReply: (text: string) => callbacks.onReply(thread.id, text),
+      onAssignProject: (projectId: string) => callbacks.onAssignProject(thread.id, projectId),
+      onUnassignProject: () => callbacks.onUnassignProject(thread.id),
+      onMarkRead: () => callbacks.onMarkRead(thread.id),
+    },
+  }
+}
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Main component
@@ -114,6 +175,7 @@ const FILTERS = [
 export function TriageFeed() {
   const { teamMember } = useUser()
   const teamMemberId = teamMember?.id ?? null
+  const displayName = useDisplayName()
   const [filter, setFilter] = useState<string>("all")
 
   // The feed endpoint always wants the team_member_id so it can anti-join
@@ -133,6 +195,127 @@ export function TriageFeed() {
     () => (filter === "all" ? items : items.filter((it) => it.source_type === filter)),
     [items, filter],
   )
+
+  /* ── Client emails (mock, Emails tab only) ────────────────────────────
+   * Kept as separate local state rather than flowing through the SWR
+   * cache above — there's no backing table yet, so reply/assign/read are
+   * plain client-side mutations. Cleared threads are hidden locally
+   * (mirroring "Clear" elsewhere, which is also a per-user view state).
+   */
+  const [emailThreads, setEmailThreads] = useState<ClientEmailThread[]>(() =>
+    createMockClientEmailThreads(),
+  )
+  const [dismissedEmailIds, setDismissedEmailIds] = useState<Set<string>>(() => new Set())
+  const [emailSubFilter, setEmailSubFilter] = useState<string>("all")
+  const [emailSearch, setEmailSearch] = useState("")
+
+  function replyToEmailThread(threadId: string, text: string) {
+    setEmailThreads((prev) =>
+      prev.map((t) =>
+        t.id === threadId
+          ? {
+              ...t,
+              read: true,
+              messages: [
+                ...t.messages,
+                {
+                  id: `${threadId}-reply-${Date.now()}`,
+                  direction: "outbound" as const,
+                  senderName: displayName || "You",
+                  senderEmail: "team@mottafinancial.com",
+                  bodyText: text,
+                  sentAt: new Date().toISOString(),
+                },
+              ],
+            }
+          : t,
+      ),
+    )
+  }
+
+  function assignEmailProject(threadId: string, projectId: string) {
+    setEmailThreads((prev) =>
+      prev.map((t) => (t.id === threadId ? { ...t, assignedProjectId: projectId } : t)),
+    )
+  }
+
+  function unassignEmailProject(threadId: string) {
+    setEmailThreads((prev) =>
+      prev.map((t) => (t.id === threadId ? { ...t, assignedProjectId: null } : t)),
+    )
+  }
+
+  function markEmailThreadRead(threadId: string) {
+    setEmailThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, read: true } : t)))
+  }
+
+  function dismissEmailThread(item: TriageItem) {
+    setDismissedEmailIds((prev) => new Set(prev).add(item.source_id))
+  }
+
+  const emailItems = useMemo(
+    () =>
+      emailThreads
+        .filter((t) => !dismissedEmailIds.has(t.id))
+        .map((t) =>
+          emailThreadToTriageItem(t, {
+            onReply: replyToEmailThread,
+            onAssignProject: assignEmailProject,
+            onUnassignProject: unassignEmailProject,
+            onMarkRead: markEmailThreadRead,
+          }),
+        )
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [emailThreads, dismissedEmailIds, displayName],
+  )
+
+  const unreadEmailCount = useMemo(
+    () =>
+      emailThreads.filter((t) => !dismissedEmailIds.has(t.id) && isInboundUnread(t)).length,
+    [emailThreads, dismissedEmailIds],
+  )
+
+  // "By project" options in the Emails sub-filter bar — only projects
+  // currently assigned to at least one visible thread, so the list never
+  // shows a project nobody's email is actually sorted into.
+  const emailProjectFilterOptions = useMemo(() => {
+    const seen = new Map<string, string>()
+    for (const t of emailThreads) {
+      if (dismissedEmailIds.has(t.id) || !t.assignedProjectId) continue
+      const project = t.activeProjects.find((p) => p.id === t.assignedProjectId)
+      if (project) seen.set(project.id, project.name)
+    }
+    return Array.from(seen, ([id, name]) => ({ id, name }))
+  }, [emailThreads, dismissedEmailIds])
+
+  const visibleEmailItems = useMemo(() => {
+    const query = emailSearch.trim().toLowerCase()
+    return emailItems.filter((it) => {
+      const thread = it.metadata!.thread as ClientEmailThread
+      if (emailSubFilter === "unread" && !it.metadata!.unread) return false
+      if (emailSubFilter === "unassigned" && thread.assignedProjectId) return false
+      if (
+        emailSubFilter !== "all" &&
+        emailSubFilter !== "unread" &&
+        emailSubFilter !== "unassigned" &&
+        thread.assignedProjectId !== emailSubFilter
+      ) {
+        return false
+      }
+      if (query) {
+        const haystack = [
+          thread.subject,
+          thread.clientName,
+          ...thread.messages.flatMap((m) => [m.senderName, m.senderEmail, m.bodyText]),
+        ]
+          .join(" ")
+          .toLowerCase()
+        if (!haystack.includes(query)) return false
+      }
+      return true
+    })
+  }, [emailItems, emailSubFilter, emailSearch])
 
   // Counts per source feed the filter chips with a "5" pill so partners
   // can scan to see where new activity is concentrated without clicking.
@@ -246,7 +429,14 @@ export function TriageFeed() {
         <Tabs value={filter} onValueChange={setFilter}>
           <TabsList className="flex flex-wrap gap-1 h-auto bg-gray-100 p-1">
             {FILTERS.map((f) => {
-              const count = f.value === "all" ? items.length : countsBySource[f.value] || 0
+              // The Emails tab shows unread inbound threads, not a total —
+              // that's the number that actually needs a reply.
+              const count =
+                f.value === "client_email"
+                  ? unreadEmailCount
+                  : f.value === "all"
+                    ? items.length
+                    : countsBySource[f.value] || 0
               return (
                 <TabsTrigger key={f.value} value={f.value} className="gap-1.5">
                   {f.label}
@@ -262,7 +452,36 @@ export function TriageFeed() {
         </Tabs>
 
         {/* Feed list. */}
-        {isLoading ? (
+        {filter === "client_email" ? (
+          <PreviewFeature
+            id="triage-client-emails"
+            message="Preview — mailbox sync isn't connected yet. These are sample threads for reviewing the layout, not real client emails."
+          >
+            <div className="space-y-3">
+              <EmailFilterBar
+                subFilter={emailSubFilter}
+                onSubFilterChange={setEmailSubFilter}
+                search={emailSearch}
+                onSearchChange={setEmailSearch}
+                unreadCount={unreadEmailCount}
+                unassignedCount={
+                  emailThreads.filter((t) => !dismissedEmailIds.has(t.id) && !t.assignedProjectId)
+                    .length
+                }
+                projectOptions={emailProjectFilterOptions}
+              />
+              {visibleEmailItems.length === 0 ? (
+                <EmptyState filter="client_email" />
+              ) : (
+                <ul className="space-y-2">
+                  {visibleEmailItems.map((item) => (
+                    <FeedCard key={item.source_id} item={item} onDismiss={dismissEmailThread} />
+                  ))}
+                </ul>
+              )}
+            </div>
+          </PreviewFeature>
+        ) : isLoading ? (
           <div className="flex items-center justify-center py-10 text-gray-500">
             <Loader2 className="h-5 w-5 animate-spin mr-2" />
             Loading activity…
@@ -278,6 +497,76 @@ export function TriageFeed() {
         )}
       </CardContent>
     </Card>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * EmailFilterBar — secondary toolbar shown only above the Emails tab's
+ * list: All / Unread / Unassigned / by-project chips, plus a search box
+ * over sender, subject, and body.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+function EmailFilterBar({
+  subFilter,
+  onSubFilterChange,
+  search,
+  onSearchChange,
+  unreadCount,
+  unassignedCount,
+  projectOptions,
+}: {
+  subFilter: string
+  onSubFilterChange: (v: string) => void
+  search: string
+  onSearchChange: (v: string) => void
+  unreadCount: number
+  unassignedCount: number
+  projectOptions: Array<{ id: string; name: string }>
+}) {
+  const chips: Array<{ value: string; label: string; count?: number }> = [
+    { value: "all", label: "All" },
+    { value: "unread", label: "Unread", count: unreadCount },
+    { value: "unassigned", label: "Unassigned", count: unassignedCount },
+    ...projectOptions.map((p) => ({ value: p.id, label: p.name })),
+  ]
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 p-2.5">
+      <div className="flex flex-wrap gap-1">
+        {chips.map((chip) => (
+          <button
+            key={chip.value}
+            type="button"
+            onClick={() => onSubFilterChange(chip.value)}
+            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+              subFilter === chip.value
+                ? "bg-[#4A5240] text-white"
+                : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-100"
+            }`}
+          >
+            {chip.label}
+            {chip.count ? (
+              <span
+                className={`inline-flex items-center justify-center rounded-full px-1.5 text-[10px] font-medium min-w-[16px] h-[16px] ${
+                  subFilter === chip.value ? "bg-white/20 text-white" : "bg-gray-100 text-gray-600"
+                }`}
+              >
+                {chip.count}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+      <div className="relative flex-1 min-w-[200px]">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+        <Input
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          placeholder="Search sender, subject, or body…"
+          className="h-8 pl-8 text-sm bg-white"
+        />
+      </div>
+    </div>
   )
 }
 
@@ -481,11 +770,36 @@ function FeedCard({
   const Icon = meta.icon
   const [expanded, setExpanded] = useState(false)
 
-  const toggle = () => setExpanded((v) => !v)
+  // Inbound-unread client emails get a visually louder card (amber left
+  // border + tint) — everything else keeps the standard neutral treatment.
+  const isUnreadEmail = item.source_type === "client_email" && Boolean(item.metadata?.unread)
+
+  const toggle = () => {
+    const next = !expanded
+    setExpanded(next)
+    // Side effect belongs in the event handler, not the setState updater —
+    // updater functions can run during React's render phase, and calling
+    // another component's setState from there trips "Cannot update a
+    // component while rendering a different component."
+    if (next && isUnreadEmail) {
+      ;(item.metadata?.onMarkRead as (() => void) | undefined)?.()
+    }
+  }
   const panelId = `triage-card-${item.source_type}-${item.source_id}-detail`
 
   return (
-    <li className="group relative rounded-lg border border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm transition-all">
+    <li
+      className={`group relative rounded-lg border bg-white hover:shadow-sm transition-all ${
+        isUnreadEmail
+          ? "border-l-4 hover:border-gray-300"
+          : "border-gray-200 hover:border-gray-300"
+      }`}
+      style={
+        isUnreadEmail
+          ? { borderLeftColor: "#C97B3F", backgroundColor: "#FEF3C7" }
+          : undefined
+      }
+    >
       <div className="flex items-start gap-2 p-3">
         {/* Expand toggle — full-height hit target on the left edge so
             keyboard users get an obvious affordance and the entire row
@@ -590,6 +904,8 @@ function SourceBody({ item }: { item: TriageItem }) {
       return <BriefingBody item={item} />
     case "accepted_proposal":
       return <ProposalBody item={item} />
+    case "client_email":
+      return <EmailThreadBody item={item} />
   }
 }
 
@@ -749,6 +1065,145 @@ function ProposalBody({ item }: { item: TriageItem }) {
   )
 }
 
+/**
+ * EmailThreadBody — always-visible summary for a client email thread.
+ * Shows the client link, subject, latest sender, a two-line snippet, a
+ * direction indicator, and the three primary actions (Assign to project,
+ * Reply, Clear — Clear is the existing dismiss button in FeedCard's
+ * corner). Reply opens its own inline compose box here, independent of
+ * the chevron-driven full-thread expand/collapse.
+ */
+function EmailThreadBody({ item }: { item: TriageItem }) {
+  const thread = item.metadata!.thread as ClientEmailThread
+  const direction = item.metadata!.direction as "inbound" | "outbound"
+  const unread = Boolean(item.metadata!.unread)
+  const messageCount = item.metadata!.messageCount as number
+  const onReply = item.metadata!.onReply as (text: string) => void
+  const onAssignProject = item.metadata!.onAssignProject as (projectId: string) => void
+  const onUnassignProject = item.metadata!.onUnassignProject as () => void
+
+  const latest = thread.messages[thread.messages.length - 1]
+  const assignedProject = thread.activeProjects.find((p) => p.id === thread.assignedProjectId)
+
+  const [replyOpen, setReplyOpen] = useState(false)
+  const [draft, setDraft] = useState("")
+
+  function sendReply() {
+    const text = draft.trim()
+    if (!text) return
+    onReply(text)
+    setDraft("")
+    setReplyOpen(false)
+  }
+
+  return (
+    <>
+      <div className="mt-0.5 flex items-center gap-1.5 flex-wrap">
+        {unread ? (
+          <span
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ backgroundColor: "#C97B3F" }}
+            aria-hidden="true"
+          />
+        ) : null}
+        <Link
+          href={`/clients/${thread.clientId}`}
+          onClick={(e) => e.stopPropagation()}
+          className={`text-sm font-semibold hover:underline ${
+            unread ? "text-gray-900" : "text-gray-700"
+          }`}
+        >
+          {thread.clientName}
+        </Link>
+        {messageCount > 1 ? (
+          <span className="text-xs text-gray-500">{messageCount} messages</span>
+        ) : null}
+      </div>
+      <p className={`text-sm ${unread ? "font-medium text-gray-900" : "text-gray-700"}`}>
+        {thread.subject}
+      </p>
+      <p className="mt-0.5 flex items-center gap-1 text-xs text-gray-500">
+        {direction === "inbound" ? (
+          <ArrowDownLeft className="h-3 w-3 text-[#C97B3F]" />
+        ) : (
+          <ArrowUpRight className="h-3 w-3 text-gray-400" />
+        )}
+        {latest.senderName} &lt;{latest.senderEmail}&gt;
+      </p>
+      <p className="mt-1 text-sm text-gray-600 line-clamp-2">{latest.bodyText}</p>
+
+      <div
+        className="mt-2 flex flex-wrap items-center gap-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {assignedProject ? (
+          <Badge
+            variant="outline"
+            className="gap-1 border-[#B5BFA8] bg-[#EAE6E1] text-[#4A5240] text-[10px]"
+          >
+            <Briefcase className="h-3 w-3" />
+            {assignedProject.name}
+            <button
+              type="button"
+              onClick={onUnassignProject}
+              aria-label="Remove project assignment"
+              className="ml-0.5 rounded hover:bg-black/10"
+            >
+              <X className="h-2.5 w-2.5" />
+            </button>
+          </Badge>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-7 gap-1 text-xs">
+                <Briefcase className="h-3 w-3" />
+                Assign to project
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {thread.activeProjects.map((p) => (
+                <DropdownMenuItem key={p.id} onClick={() => onAssignProject(p.id)}>
+                  {p.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1 text-xs"
+          onClick={() => setReplyOpen((v) => !v)}
+        >
+          <Reply className="h-3 w-3" />
+          Reply
+        </Button>
+      </div>
+
+      {replyOpen ? (
+        <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
+          <Textarea
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={`Reply to ${thread.clientName}…`}
+            className="min-h-[70px] resize-none bg-white text-sm"
+          />
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setReplyOpen(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={sendReply} disabled={!draft.trim()} className="gap-1.5">
+              <Send className="h-3.5 w-3.5" />
+              Send
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </>
+  )
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * ExpandedDetail — full-record view rendered when the card is opened.
  * Each branch surfaces the untruncated fields the corresponding
@@ -769,6 +1224,8 @@ function ExpandedDetail({ item }: { item: TriageItem }) {
       return <BriefingExpanded item={item} />
     case "accepted_proposal":
       return <ProposalExpanded item={item} />
+    case "client_email":
+      return <EmailThreadExpanded item={item} />
   }
 }
 
@@ -1152,6 +1609,45 @@ function ProposalExpanded({ item }: { item: TriageItem }) {
   )
 }
 
+/**
+ * EmailThreadExpanded — full thread, oldest first / newest last. This is
+ * what the chevron reveals: the collapsed card only shows the message
+ * count and latest snippet, this shows every message in order.
+ */
+function EmailThreadExpanded({ item }: { item: TriageItem }) {
+  const thread = item.metadata!.thread as ClientEmailThread
+  return (
+    <div className="space-y-2">
+      {thread.messages.map((m) => (
+        <div
+          key={m.id}
+          className={`rounded-md border p-2.5 text-sm ${
+            m.direction === "inbound"
+              ? "border-[#E9D28F] bg-white"
+              : "border-gray-200 bg-gray-50"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-gray-700">
+              {m.direction === "inbound" ? (
+                <ArrowDownLeft className="h-3 w-3 text-[#C97B3F]" />
+              ) : (
+                <ArrowUpRight className="h-3 w-3 text-gray-400" />
+              )}
+              {m.senderName}
+              <span className="font-normal text-gray-400">&lt;{m.senderEmail}&gt;</span>
+            </span>
+            <span className="text-[11px] text-gray-500">
+              {formatDistanceToNow(new Date(m.sentAt), { addSuffix: true })}
+            </span>
+          </div>
+          <p className="whitespace-pre-wrap text-gray-800">{m.bodyText}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Footer of contextual "Open in …" links. Each builds on metadata IDs
  * shipped by /api/triage/feed so we never need a per-card follow-up
@@ -1256,6 +1752,17 @@ function ItemLinkFooter({ item }: { item: TriageItem }) {
       links.push({ label: "View today on calendar", href: "/meetings/calendar", icon: Calendar })
       break
     }
+    case "client_email": {
+      const thread = md.thread as { clientId: string } | undefined
+      if (thread?.clientId) {
+        links.push({
+          label: "View client",
+          href: `/clients/${thread.clientId}`,
+          icon: User,
+        })
+      }
+      break
+    }
   }
 
   if (links.length === 0) return null
@@ -1336,7 +1843,9 @@ function EmptyState({ filter }: { filter: string }) {
       <p className="text-sm">
         {filter === "all"
           ? "You're all caught up — no new activity to triage."
-          : `No ${meta.label.toLowerCase()} in your feed right now.`}
+          : filter === "client_email"
+            ? "No client emails yet — mailbox sync isn't connected."
+            : `No ${meta.label.toLowerCase()} in your feed right now.`}
       </p>
     </div>
   )
