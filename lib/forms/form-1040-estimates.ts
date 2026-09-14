@@ -157,6 +157,56 @@ const SCHED_D = {
   termOverride: "c51",
 } as const
 
+/**
+ * Schedule C (s51). One PREFIX per business — a taxpayer may run several
+ * (three is the most in the book), and they must be netted SEPARATELY before
+ * being summed, because a loss on one does not reduce the other's net
+ * earnings for the SE tax floor.
+ *
+ * Codes are enumerated and IND-scoped for the same reason as Schedule A:
+ * s51 carries state-specific fields on other modules. Every code here is
+ * observed on a real IND return.
+ */
+const SCHED_C = {
+  seriesId: "s51",
+  /** Part I income. */
+  income: ["c51", "c54"],
+  /** Part III cost of goods sold. Ending inventory SUBTRACTS. */
+  cogsAdd: ["c14", "c15", "c17", "c18", "c19"],
+  cogsSubtract: ["c20"],
+  /**
+   * Part II expenses, taken at face value. Deliberately excludes every
+   * limitation-bearing and non-dollar field — meals are handled separately,
+   * and c6/c7/c10/c44/c418/c801 are method codes and flags, not money.
+   */
+  expenses: [
+    "c56", "c59", "c60", "c66", "c67", "c69", "c70", "c72", "c73", "c74",
+    "c75", "c76", "c77", "c87", "c90", "c201", "c203", "c205", "c208",
+    "c210", "c211", "c214", "c215", "c216",
+  ],
+  /**
+   * Meals. ProConnect stores the UNLIMITED figure here and applies the
+   * IRC 274(n) haircut itself, so this must be multiplied by
+   * meals_deductible_pct. Summing it raw doubles the deduction. The 80% DOT
+   * (c86), 0% entertainment (c845) and 100% (c846) variants are populated on
+   * zero IND returns and are not handled.
+   */
+  mealsInFull: "c81",
+} as const
+
+/**
+ * Depreciable assets. ProConnect CALCULATES depreciation from cost, date and
+ * method; the export carries only the [Override] (c15) and an undecoded form
+ * selector (c18), so Schedule C line 13 is not derivable — the same class of
+ * absence as the Form 2210 penalty. A return holding these assets therefore
+ * has an INDETERMINATE net profit, and the estimator declines to write line 8
+ * rather than overstate it. 6 of 19 Schedule C returns are affected.
+ */
+const DEPRECIATION_SERIES = "s61"
+
+/** W-2 social security wages — reduces the OASDI base for SE tax. */
+const W2_SS_WAGES_CELL = { seriesId: "s11", codeId: "c5" }
+
 const EDUCATOR_CELL = { seriesId: "s300", codeId: "c28", suffixId: "x1000" }
 const STUDENT_LOAN_CELL = { seriesId: "s300", codeId: "c23", suffixId: "x1000" }
 const HSA_CELL = { seriesId: "s2800", codeId: "c5", suffixId: "x1000" }
@@ -566,6 +616,95 @@ function qualifiedPortion(r: ScheduleDResult): number {
   return Math.min(r.net, Math.max(0, r.netLong))
 }
 
+/** Outcome of netting every Schedule C on a return. */
+interface ScheduleCResult {
+  /** Combined net profit or loss across all businesses. */
+  net: number
+  /** How many businesses contributed. 0 = no Schedule C on this return. */
+  count: number
+  /**
+   * True when the return carries depreciable assets, whose depreciation
+   * ProConnect calculates and does not export. Net profit is then an
+   * OVERSTATEMENT of unknown size and must not be written.
+   */
+  indeterminate: boolean
+}
+
+/**
+ * Net every Schedule C, business by business.
+ *
+ *   net = income − cost of goods sold − expenses − (meals × 274(n) pct)
+ *
+ * Businesses are netted per prefix and then summed. The per-business split
+ * matters for SE tax (the 400 floor applies to combined net earnings, but a
+ * loss business genuinely offsets a profitable one on Schedule SE, so the
+ * simple sum is right here) and for QBI.
+ */
+function netScheduleC(cells: FieldCell[], constants: Form1040Constant[]): ScheduleCResult {
+  const mealsPct = constNum(constants, "meals_deductible_pct") ?? 0.5
+  const byPrefix = new Map<string, Map<string, number>>()
+  for (const c of cells) {
+    if (c.seriesId !== SCHED_C.seriesId) continue
+    // c10xx are the PRIOR-YEAR proforma mirrors of cNN — same trap as
+    // Schedule A and the 1099-R screen. Including them is nonsense.
+    if (/^c1\d{3}$/.test(c.codeId)) continue
+    const row = byPrefix.get(c.prefixId) ?? new Map<string, number>()
+    row.set(c.codeId, (row.get(c.codeId) ?? 0) + toNum(c.val))
+    byPrefix.set(c.prefixId, row)
+  }
+
+  let net = 0
+  let count = 0
+  for (const row of byPrefix.values()) {
+    const get = (code: string) => row.get(code) ?? 0
+    const income = SCHED_C.income.reduce((a, k) => a + get(k), 0)
+    // A prefix with no income and no expenses is a settings row, not a business.
+    const spend =
+      SCHED_C.cogsAdd.reduce((a, k) => a + get(k), 0) -
+      SCHED_C.cogsSubtract.reduce((a, k) => a + get(k), 0) +
+      SCHED_C.expenses.reduce((a, k) => a + get(k), 0) +
+      get(SCHED_C.mealsInFull) * mealsPct
+    if (income === 0 && spend === 0) continue
+    count++
+    net += income - spend
+  }
+
+  const indeterminate = cells.some((c) => c.seriesId === DEPRECIATION_SERIES)
+  return { net, count, indeterminate }
+}
+
+/**
+ * Self-employment tax (Schedule SE), and the half of it that is deductible.
+ *
+ * Net earnings are 92.35% of net profit. Below the statutory floor there is
+ * no tax at all. The OASDI portion stops at the Social Security wage base
+ * and that base is REDUCED by W-2 wages already taxed — a client with a job
+ * and a side business may owe only the Medicare portion. Medicare itself is
+ * uncapped.
+ */
+function selfEmploymentTax(
+  netProfit: number,
+  w2SocialSecurityWages: number,
+  constants: Form1040Constant[],
+): { tax: number; deduction: number } {
+  const none = { tax: 0, deduction: 0 }
+  if (netProfit <= 0) return none
+  const pct = constNum(constants, "se_net_earnings_pct")
+  const ssRate = constNum(constants, "se_ss_rate")
+  const medRate = constNum(constants, "se_medicare_rate")
+  const base = constNum(constants, "se_ss_wage_base")
+  const floor = constNum(constants, "se_minimum_net_earnings")
+  const dedPct = constNum(constants, "se_deduction_pct")
+  if (pct === null || ssRate === null || medRate === null || base === null || floor === null || dedPct === null) {
+    return none
+  }
+  const netEarnings = netProfit * pct
+  if (netEarnings < floor) return none
+  const oasdiBase = Math.max(0, Math.min(netEarnings, base - Math.max(0, w2SocialSecurityWages)))
+  const tax = oasdiBase * ssRate + netEarnings * medRate
+  return { tax, deduction: tax * dedPct }
+}
+
 /**
  * Build a Schedule A from the exported cells, or return null when the return
  * carries no Schedule A input at all (the common case — most clients take
@@ -720,6 +859,52 @@ export function estimateDeterministicLines(
     }
   }
 
+  // ── Schedule C: line 8 income, and the SE tax chain ──────────────────
+  // Net profit drives FOUR lines that push opposite ways — 8 (income up),
+  // 23 (SE tax up), 10 (half the SE tax, income down) and 13 (QBI, taxable
+  // down). All four were missing, so they partially cancelled; shipping any
+  // one alone makes these returns worse. They are computed together here and
+  // consumed by the stages below.
+  //
+  // Runs before stage 10 so the SE-tax deduction lands in the adjustments
+  // rollup, and before 6b/12a/16 which all read AGI.
+  let seTax = 0
+  let seDeduction = 0
+  let qbiBase = 0
+  {
+    const sc = netScheduleC(cells, constants)
+    // FAIL CLOSED on a half-provisioned environment. If the SE constants are
+    // absent, selfEmploymentTax silently returns zero — and writing business
+    // income with no self-employment tax against it UNDERSTATES tax, which is
+    // worse than the blank line this replaces. Deploying this code without
+    // its constants must therefore change nothing at all.
+    const seProvisioned =
+      constNum(constants, "se_net_earnings_pct") !== null &&
+      constNum(constants, "se_ss_rate") !== null &&
+      constNum(constants, "se_medicare_rate") !== null &&
+      constNum(constants, "se_ss_wage_base") !== null &&
+      constNum(constants, "se_minimum_net_earnings") !== null &&
+      constNum(constants, "se_deduction_pct") !== null
+    if (sc.count > 0 && !sc.indeterminate && seProvisioned) {
+      const w2Ss = sumAnySuffix(cells, W2_SS_WAGES_CELL.seriesId, W2_SS_WAGES_CELL.codeId)
+      const se = selfEmploymentTax(sc.net, w2Ss, constants)
+      seTax = se.tax
+      seDeduction = se.deduction
+      // Only a PROFIT generates QBI. A Schedule C loss carries forward as
+      // negative QBI, which we cannot track across years.
+      qbiBase = Math.max(0, sc.net)
+
+      // Line 8 is a rollup, so add to whatever the mapped cell already holds
+      // rather than replacing it.
+      const existing = num("8")
+      setEstimate("8", existing + sc.net)
+    }
+    // sc.indeterminate: depreciation is calculated by ProConnect and absent
+    // from the export, so net profit would be overstated by an unknown
+    // amount. Leaving line 8 alone keeps it blank, which is honest — the
+    // same choice 12a makes when Schedule A cannot be totalled.
+  }
+
   // ── 10: Schedule 1 adjustments (rollup, PARTIAL) ─────────────────────
   // Only the components we have verified. Self-employment adjustments (SE
   // tax, SE retirement, SE health insurance) and the IRA deduction are
@@ -769,6 +954,10 @@ export function estimateDeterministicLines(
 
     // Early withdrawal penalty: no statutory cap; sums across payers.
     adjustments += sumCells(cells, EARLY_WITHDRAWAL_CELL)
+
+    // Deductible half of self-employment tax (IRC 164(f), Schedule 1 line 15),
+    // computed in the Schedule C stage above.
+    adjustments += seDeduction
 
     if (adjustments > 0) setEstimate("10", adjustments)
   }
@@ -947,6 +1136,30 @@ export function estimateDeterministicLines(
     }
   }
 
+  // ── 13: qualified business income deduction (IRC 199A) ───────────────
+  // BELOW the taxable-income threshold there is no SSTB test and no W-2
+  // wage / UBIA limit, so the deduction is a flat percentage of QBI capped
+  // by taxable income before the deduction. That case is fully computable
+  // and covers most affected returns.
+  //
+  // ABOVE the threshold the limits phase in and depend on facts the export
+  // does not carry (SSTB status, W-2 wages paid, property basis). Line 13 is
+  // left UNAVAILABLE there rather than guessed — overstating it would
+  // understate tax on exactly the highest-income returns.
+  if (qbiBase > 0 && isEmpty("13")) {
+    const pct = constNum(constants, "qbi_deduction_pct")
+    const threshold = constNum(constants, isMfj ? "qbi_threshold_mfj" : "qbi_threshold_single")
+    if (pct !== null && threshold !== null) {
+      // 199A(a): taxable income computed WITHOUT the QBI deduction, which is
+      // line 11 less line 12c/13b — line 14 minus this line.
+      const taxableBeforeQbi = Math.max(0, num("11") - num("12c") - num("13b"))
+      if (taxableBeforeQbi <= threshold) {
+        setEstimate("13", Math.min(pct * qbiBase, pct * taxableBeforeQbi))
+      }
+      // else: above the threshold — leave 13 blank.
+    }
+  }
+
   // ── 16: tax (QD & LTCG worksheet over the bracket tables) ────────────
   if (isEmpty("16") && !deductionUnknown) {
     const brackets = constJson<Array<[number, number | null]>>(constants, `tax_brackets_${fs}`)
@@ -985,6 +1198,8 @@ export function estimateDeterministicLines(
       // (qualified ⊆ ordinary). Line-7 losses clamp to 0 (slight overstate).
       const nii = Math.max(0, num("2b")) + Math.max(0, num("3b")) + Math.max(0, num("7"))
       const magi = num("11") // MAGI ≈ AGI (foreign exclusions invisible)
+      // Self-employment tax (Schedule 2 line 4) joins NIIT and Additional
+      // Medicare on line 23. Computed in the Schedule C stage above.
       const niit = 0.038 * Math.min(nii, Math.max(0, magi - niitThreshold))
 
       // Medicare wages = W-2 box 5 (s11 c7) summed across instances;
@@ -996,7 +1211,7 @@ export function estimateDeterministicLines(
       if (medicareWages === 0) medicareWages = num("1a")
       const addlMedicare = 0.009 * Math.max(0, medicareWages - amThreshold)
 
-      const total = niit + addlMedicare
+      const total = niit + addlMedicare + seTax
       if (total > 0) setEstimate("23", total)
     }
   }

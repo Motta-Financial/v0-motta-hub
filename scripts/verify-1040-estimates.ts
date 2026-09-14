@@ -127,6 +127,17 @@ const CONSTANTS: Form1040Constant[] = [
   K("std_deduction_single", 15750),
   // IRC 1211(b) net capital loss caps (scripts/409).
   K("capital_loss_limit", 3000),
+  // Schedule C / SE tax / QBI (scripts/411).
+  K("meals_deductible_pct", 0.5),
+  K("se_net_earnings_pct", 0.9235),
+  K("se_ss_rate", 0.124),
+  K("se_medicare_rate", 0.029),
+  K("se_ss_wage_base", 176100),
+  K("se_minimum_net_earnings", 400),
+  K("se_deduction_pct", 0.5),
+  K("qbi_deduction_pct", 0.20),
+  K("qbi_threshold_single", 197300),
+  K("qbi_threshold_mfj", 394600),
   K("capital_loss_limit_mfs", 1500),
   K("std_deduction_mfj", 31500),
   K("std_deduction_hoh", 23625),
@@ -208,6 +219,24 @@ interface Scenario {
   cells?: FieldCell[]
   /** Schedule D dispositions (s52). One entry per prefix = one sale. */
   dispositions?: Disposition[]
+  /** Schedule C businesses (s51). One entry per prefix = one business. */
+  businesses?: Business[]
+  /** W-2 social security wages (s11/c5) — reduces the SE tax OASDI base. */
+  w2SocialSecurityWages?: number
+  /** Depreciable assets present (s61) — makes Schedule C net indeterminate. */
+  hasDepreciableAssets?: boolean
+}
+
+/** One Schedule C. `meals` is the UNLIMITED figure, as ProConnect stores it. */
+interface Business {
+  grossReceipts?: number
+  otherIncome?: number
+  purchases?: number
+  costOfLabor?: number
+  beginningInventory?: number
+  endingInventory?: number
+  expenses?: number
+  meals?: number
 }
 
 /**
@@ -260,6 +289,18 @@ function run(s: Scenario): Form1040Data {
     if (d.acquired) cells.push(cell("s52", prefix, "c25", d.acquired))
     if (d.sold) cells.push(cell("s52", prefix, "c26", d.sold))
   })
+  s.businesses?.forEach((b, i) => {
+    const prefix = `p${i + 1}`
+    const put = (code: string, v: number | undefined) => {
+      if (v !== undefined) cells.push(cell("s51", prefix, code, String(v)))
+    }
+    put("c51", b.grossReceipts); put("c54", b.otherIncome)
+    put("c15", b.purchases);     put("c17", b.costOfLabor)
+    put("c14", b.beginningInventory); put("c20", b.endingInventory)
+    put("c56", b.expenses);      put("c81", b.meals)
+  })
+  if (s.w2SocialSecurityWages !== undefined) cells.push(cell("s11", "p1", "c5", String(s.w2SocialSecurityWages)))
+  if (s.hasDepreciableAssets) cells.push(cell("s61", "p1", "c3", "25000"))
   if (s.cells) cells.push(...s.cells)
 
   const data: Form1040Data = {}
@@ -278,6 +319,112 @@ function run(s: Scenario): Form1040Data {
 
 const val = (d: Form1040Data, lineCode: string) => d[lineCode]?.value ?? null
 const src = (d: Form1040Data, lineCode: string) => d[lineCode]?.source ?? null
+
+// ===========================================================================
+// 0a. Schedule C / self-employment chain (scripts/411)
+// ===========================================================================
+console.log("\nSchedule C (8), SE tax (23), SE deduction (10), QBI (13)")
+{
+  // Net profit reaches line 8.
+  const simple = run({ status: "single", businesses: [{ grossReceipts: 100000, expenses: 40000 }] })
+  check("net profit lands on line 8", val(simple, "8"), 60000)
+
+  // IRC 274(n): ProConnect stores meals IN FULL and halves them itself.
+  // 100,000 - 10,000 expenses - (8,000 x 50%) = 86,000.
+  check(
+    "REGRESSION meals are halved, not taken in full",
+    val(run({ status: "single", businesses: [{ grossReceipts: 100000, expenses: 10000, meals: 8000 }] }), "8"),
+    86000,
+  )
+
+  // Cost of goods sold, with inventory: COGS = begin + purchases + labor - end.
+  check("COGS nets inventory", val(run({ status: "single", businesses: [
+    { grossReceipts: 200000, beginningInventory: 10000, purchases: 50000, costOfLabor: 30000, endingInventory: 15000 },
+  ] }), "8"), 200000 - (10000 + 50000 + 30000 - 15000))
+
+  // Several businesses net against each other.
+  check("multiple Schedule Cs net together", val(run({ status: "single", businesses: [
+    { grossReceipts: 90000, expenses: 20000 },
+    { grossReceipts: 10000, expenses: 35000 },
+  ] }), "8"), 45000)
+
+  // Self-employment tax. Net earnings = 92.35% of profit; OASDI 12.4% under
+  // the wage base, Medicare 2.9% uncapped.
+  const se = run({ status: "single", businesses: [{ grossReceipts: 100000, expenses: 40000 }] })
+  const netEarnings = 60000 * 0.9235
+  check("SE tax reaches line 23", val(se, "23"), Math.round(netEarnings * 0.124 + netEarnings * 0.029))
+  check("half the SE tax is deducted on line 10", val(se, "10"),
+    Math.round((netEarnings * 0.124 + netEarnings * 0.029) * 0.5))
+
+  // The OASDI base is reduced by W-2 wages already taxed; Medicare is not.
+  const withJob = run({ status: "single", w2SocialSecurityWages: 170000,
+    businesses: [{ grossReceipts: 100000, expenses: 40000 }] })
+  check("REGRESSION W-2 wages shrink the OASDI base", val(withJob, "23"),
+    Math.round(Math.min(netEarnings, 176100 - 170000) * 0.124 + netEarnings * 0.029))
+
+  // Below the statutory floor there is no SE tax at all.
+  check("no SE tax under the 400 floor",
+    val(run({ status: "single", businesses: [{ grossReceipts: 1000, expenses: 600 }] }), "23"), null)
+
+  // A loss produces no SE tax and no QBI.
+  const loss = run({ status: "single", businesses: [{ grossReceipts: 20000, expenses: 50000 }] })
+  check("a Schedule C loss still reaches line 8", val(loss, "8"), -30000)
+  check("a loss generates no SE tax", val(loss, "23"), null)
+  check("a loss generates no QBI deduction", val(loss, "13"), null)
+
+  // QBI below the 199A threshold: flat 20%, no SSTB or wage limit — but
+  // 199A(a) ALSO caps it at 20% of taxable income computed without it. On a
+  // return that is nothing but the business, the cap is what binds:
+  // AGI 60,000 - 4,239 SE deduction = 55,761, less the 15,750 standard
+  // deduction = 40,011 taxable, and 20% of that (8,002) is less than 20% of
+  // the 60,000 QBI (12,000).
+  const qbiCapped = run({ status: "single", businesses: [{ grossReceipts: 100000, expenses: 40000 }] })
+  check("QBI is capped by taxable income", val(qbiCapped, "13"),
+    Math.round(0.2 * (val(qbiCapped, "11") as number - 15750)))
+  check("...and that cap is below 20% of QBI here", (val(qbiCapped, "13") as number) < 0.2 * 60000, true)
+
+  // With enough other income the taxable-income cap stops binding and the
+  // deduction is the full 20% of QBI.
+  check("QBI is 20% of net profit when the cap does not bind",
+    val(run({ status: "single", lines: { "1z": 120000 },
+      businesses: [{ grossReceipts: 100000, expenses: 40000 }] }), "13"),
+    Math.round(0.2 * 60000))
+
+  // Above the threshold the limits depend on facts the export lacks, so the
+  // line is left UNAVAILABLE rather than guessed.
+  check("QBI is withheld above the threshold",
+    val(run({ status: "single", lines: { "1z": 400000 },
+      businesses: [{ grossReceipts: 100000, expenses: 40000 }] }), "13"), null)
+
+  // Depreciation is calculated by ProConnect and absent from the export, so a
+  // return holding assets has an indeterminate net profit.
+  const dep = run({ status: "single", hasDepreciableAssets: true,
+    businesses: [{ grossReceipts: 100000, expenses: 40000 }] })
+  check("REGRESSION depreciable assets leave line 8 BLANK, not overstated", val(dep, "8"), null)
+  check("...and no SE tax is invented either", val(dep, "23"), null)
+
+  // No Schedule C at all must change nothing.
+  check("no Schedule C leaves line 8 alone", val(run({ status: "single", lines: { "1z": 50000 } }), "8"), null)
+
+  // FAIL CLOSED: without the SE constants, writing business income with no
+  // self-employment tax against it would UNDERSTATE tax. A half-provisioned
+  // environment must change nothing rather than produce a wrong number.
+  {
+    const bare = CONSTANTS.filter((c) => !c.key.startsWith("se_"))
+    const cells: FieldCell[] = [
+      cell("s1", "p0", "c1000100036", "1"),
+      cell("s51", "p1", "c51", "100000"),
+      cell("s51", "p1", "c56", "40000"),
+    ]
+    const data: Form1040Data = {}
+    for (const line of LINES) data[line.lineCode] = { value: null, line, source: "proconnect" }
+    const out = estimateDeterministicLines(
+      evaluateComputedLines(data, LINES, bare), cells, LINES, bare, [],
+    )
+    check("REGRESSION no SE constants -> line 8 stays blank", val(out, "8"), null)
+    check("REGRESSION no SE constants -> no SE tax either", val(out, "23"), null)
+  }
+}
 
 // ===========================================================================
 // 0. Schedule D / line 7 (scripts/409)
