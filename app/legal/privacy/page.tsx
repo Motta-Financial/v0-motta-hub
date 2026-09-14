@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 }
 
 export default function PrivacyPolicyPage() {
-  const lastUpdated = "May 10, 2026"
+  const lastUpdated = "September 14, 2026"
 
   return (
     <main className="min-h-screen bg-background">
@@ -60,8 +60,20 @@ export default function PrivacyPolicyPage() {
                 <strong>Zoom data.</strong> When you connect a Zoom account, we receive
                 your Zoom user profile (name, email, account ID, time zone), your scheduled
                 and past meeting metadata, your cloud recording metadata and download URLs,
-                and your phone call history. We do not download recording media files; we
-                store only the metadata and the Zoom-hosted URL.
+                and your phone call history.
+              </li>
+              <li>
+                <strong>Zoom recording media.</strong> We download and retain our own copy
+                of cloud recording media files (video and audio) for meetings recorded to
+                your Zoom account, so that recordings remain available in the Platform
+                independently of Zoom&apos;s own storage and retention. These files contain
+                the full audio and video of the meeting, including anything said by other
+                participants.
+              </li>
+              <li>
+                <strong>Zoom transcripts and summaries.</strong> We download and retain
+                recording transcripts, store their text in our database so meetings are
+                searchable, and retain AI-generated meeting summaries produced by Zoom.
               </li>
               <li>
                 <strong>Zoom webhook events.</strong> Real-time event payloads delivered
@@ -106,11 +118,18 @@ export default function PrivacyPolicyPage() {
           <section className="mb-10">
             <h2 className="text-xl font-semibold mb-4">5. Where Data Is Stored</h2>
             <p className="leading-relaxed mb-4">
-              All Motta Hub data, including Zoom data, is stored in Supabase Postgres
-              hosted in the United States. The database is encrypted at rest using AES-256
-              and is accessed only by the Motta Hub application running on Vercel.
-              Row-level security policies isolate each team member&apos;s connection
-              records and tokens.
+              Motta Hub structured data, including Zoom metadata and transcript text, is
+              stored in Supabase Postgres hosted in the United States. The database is
+              encrypted at rest using AES-256 and is accessed only by the Motta Hub
+              application running on Vercel. Row-level security policies isolate each team
+              member&apos;s connection records and tokens.
+            </p>
+            <p className="leading-relaxed mb-4">
+              Recording media and transcript files are stored in a private Vercel Blob
+              store in the United States. These files are not publicly addressable: they
+              carry no shareable URL and can only be retrieved through authenticated
+              Platform endpoints, which serve them exclusively to signed-in Motta team
+              members.
             </p>
             <p className="leading-relaxed">
               All network traffic between the user&apos;s browser, the Platform, Zoom,

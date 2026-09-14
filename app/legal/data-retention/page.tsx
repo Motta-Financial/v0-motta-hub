@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 }
 
 export default function DataRetentionPolicyPage() {
-  const lastUpdated = "May 10, 2026"
+  const lastUpdated = "September 14, 2026"
 
   return (
     <main className="min-h-screen bg-background">
@@ -66,7 +66,17 @@ export default function DataRetentionPolicyPage() {
                     <td className="py-2">Deletion request, or when no longer needed</td>
                   </tr>
                   <tr className="border-b border-border">
-                    <td className="py-2 pr-4">Zoom recording metadata (no media)</td>
+                    <td className="py-2 pr-4">Zoom recording metadata</td>
+                    <td className="py-2 pr-4">Operational lifetime</td>
+                    <td className="py-2">Deletion request, or when no longer needed</td>
+                  </tr>
+                  <tr className="border-b border-border">
+                    <td className="py-2 pr-4">Zoom recording media (video and audio)</td>
+                    <td className="py-2 pr-4">Operational lifetime</td>
+                    <td className="py-2">Deletion request, or when no longer needed</td>
+                  </tr>
+                  <tr className="border-b border-border">
+                    <td className="py-2 pr-4">Zoom transcripts (file and text)</td>
                     <td className="py-2 pr-4">Operational lifetime</td>
                     <td className="py-2">Deletion request, or when no longer needed</td>
                   </tr>
@@ -114,13 +124,21 @@ export default function DataRetentionPolicyPage() {
             <p className="leading-relaxed">
               We store meeting metadata (meeting ID, topic, host, start time, duration,
               join URL) and recording metadata (recording ID, host, start time, file types,
-              Zoom-hosted download URL, transcript URL) in dedicated tables. We do not
-              download recording media files; we store only the metadata and the
-              Zoom-hosted URL, which remains subject to Zoom&apos;s own retention.
-              Metadata is retained for as long as it is operationally useful to the team
-              (for example to link a past meeting to a client work item) and is deleted
-              on explicit user request or when the user&apos;s account is removed from
-              the Platform.
+              download URL, transcript URL) in dedicated tables.
+            </p>
+            <p className="leading-relaxed mt-4">
+              We also download and retain our own copy of the recording media (video and
+              audio) and transcripts. Media and transcript files are held in a private
+              Vercel Blob store in the United States; transcript text is additionally
+              stored in the database so meetings are searchable. Because the Platform holds
+              its own copy, a recording remains available here after it is deleted from
+              Zoom, and is no longer governed by Zoom&apos;s retention settings.
+            </p>
+            <p className="leading-relaxed mt-4">
+              Recordings, transcripts, and metadata are retained for as long as they are
+              operationally useful to the team (for example to link a past meeting to a
+              client work item) and are deleted on explicit user request or when the
+              user&apos;s account is removed from the Platform.
             </p>
 
             <h3 className="text-lg font-semibold mt-6 mb-3">3.3 Webhook Event Payloads</h3>
