@@ -200,11 +200,23 @@ export function isValuePredicate(m: ProConnectMapping): boolean {
  *                  (e.g. the s200M/c11 suffix rows behind line 8's "other
  *                  income" total). Carried by the schema so a drill-down
  *                  has somewhere to live; NOT consumed as a line value.
+ *   addend         one of several named sibling cells whose SUM is the line
+ *                  (e.g. s5400 c2/c4/c6/c8 = Q1-Q4 estimated payments, whose
+ *                  total is line 26). Numeric lines only. Distinct from an
+ *                  aggregate "*" mapping, which sums ONE code across every
+ *                  instance of a repeating screen; addends are DIFFERENT
+ *                  codes at the SAME prefix.
  *   override       an [Override] field that displaces a computation
  *   discriminator  routes a value to one line vs another (e.g. s14/c2)
  *   control        changes which branch computes
  */
-export type CellRole = "primary" | "detail" | "override" | "discriminator" | "control"
+export type CellRole =
+  | "primary"
+  | "detail"
+  | "addend"
+  | "override"
+  | "discriminator"
+  | "control"
 
 export interface ProConnectMapping {
   /** IRS artifact ('1040', 'Schedule 1', …) — see DEFAULT_FORM. */
@@ -588,7 +600,19 @@ export async function renderForm1040(
   // total (e.g. the s200M/c11 suffix rows behind line 8) and belong to a
   // drill-down, not to the line itself. Folding them in here would make the
   // line's value depend on map iteration order.
-  const mappings = allMappings.filter((m) => m.cellRole !== "detail")
+  //
+  // `addend` is the OTHER multi-cell shape, and it is not a drill-down: the
+  // line's value IS the sum of several named sibling cells on one screen.
+  // Line 26 is the motivating case — ProConnect keeps the four quarterly
+  // estimated-tax payments in four distinct codes on s5400, and the 1040
+  // line is their total. Addends are excluded here for the same reason
+  // `detail` is: the scalar loop below ASSIGNS rather than accumulates, so
+  // four primary mappings on one line would resolve to whichever cell the
+  // iteration happened to reach last. They are summed in their own pass.
+  const mappings = allMappings.filter(
+    (m) => m.cellRole !== "detail" && m.cellRole !== "addend",
+  )
+  const addendMappings = allMappings.filter((m) => m.cellRole === "addend")
 
   const cellKey = (c: {
     seriesId: string
@@ -669,6 +693,68 @@ export async function renderForm1040(
         editableBasis: mapping.editableBasis,
         confidence: mapping.confidence,
         valueDecode: mapping.valueDecode,
+      }
+    }
+  }
+
+  // Addend mappings: sum several named sibling cells into one line.
+  //
+  // Distinct from the aggregate ("*") fold below, which sums ONE code across
+  // every instance of a repeating screen. Here the cells are DIFFERENT codes
+  // at the SAME prefix — s5400 c2/c4/c6/c8 are Q1/Q2/Q3/Q4 on a single
+  // estimated-payments screen — and the line is their total.
+  //
+  // Only numeric lines can carry addends; summing text is meaningless, and
+  // silently rendering the first one is how line 26 read Q1-only for a year.
+  // A line with addends is populated ONLY when at least one of them is
+  // present, so a return with no estimated payments still reads null rather
+  // than a misleading 0.
+  if (addendMappings.length > 0) {
+    const addendByCell = new Map<string, ProConnectMapping[]>()
+    for (const m of addendMappings) {
+      const arr = addendByCell.get(cellKey(m)) ?? []
+      arr.push(m)
+      addendByCell.set(cellKey(m), arr)
+    }
+    const sums = new Map<string, number>()
+    const contributors = new Map<string, number>()
+    const addendMappingByLine = new Map<string, ProConnectMapping>()
+    for (const cell of cells) {
+      const ms = addendByCell.get(cellKey(cell))
+      if (!ms) continue
+      for (const mapping of ms) {
+        const line = lineByCode.get(mapping.lineCode)
+        if (!line) continue
+        if (line.dataType !== "currency" && line.dataType !== "integer") continue
+        if (!gatePasses(mapping, cell)) continue
+        const raw = readCellField(cell, mapping.cellField)
+        if (raw === null || raw === "") continue
+        const n = coerceToLineType(raw, line.dataType)
+        if (typeof n !== "number") continue
+        addendMappingByLine.set(line.lineCode, mapping)
+        sums.set(line.lineCode, (sums.get(line.lineCode) ?? 0) + n)
+        contributors.set(line.lineCode, (contributors.get(line.lineCode) ?? 0) + 1)
+      }
+    }
+    for (const [lineCode, sum] of sums) {
+      const line = lineByCode.get(lineCode)
+      if (!line) continue
+      const mapping = addendMappingByLine.get(lineCode)
+      data[lineCode] = {
+        value: sum,
+        line,
+        source: "proconnect",
+        // An addend cell is a real input, but the LINE is a total with no
+        // single cell behind it — there is nowhere to write a corrected
+        // total to. Per-quarter edits go through the raw-cell browser,
+        // which addresses each cell directly. Mirrors how "*" aggregates
+        // are treated (scripts/387).
+        editable: false,
+        editableBasis:
+          `not editable: line total is the sum of ${contributors.get(lineCode)} ` +
+          "sibling cells; edit the individual cell in the raw browser",
+        confidence: mapping?.confidence,
+        valueDecode: null,
       }
     }
   }

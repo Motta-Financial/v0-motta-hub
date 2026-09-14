@@ -141,7 +141,11 @@ alter table form_1040_proconnect_map
   drop constraint if exists form_1040_pcmap_cell_role_chk;
 alter table form_1040_proconnect_map
   add constraint form_1040_pcmap_cell_role_chk
-  check (cell_role in ('primary', 'detail', 'override', 'discriminator', 'control'));
+  -- 'addend' added by scripts/412. It MUST stay in this list: this file is
+  -- re-run routinely to re-derive `editable`, and it drops and re-adds the
+  -- constraint every time — omitting a role here would reject rows that a
+  -- later migration legitimately created.
+  check (cell_role in ('primary', 'detail', 'addend', 'override', 'discriminator', 'control'));
 
 -- `cell` as a single comparable value. Generated + STORED so it can carry
 -- the primary key and serve as a PostgREST on_conflict target. Unmapped
@@ -291,6 +295,12 @@ update form_1040_proconnect_map m
         when m2.condition -> 'cell' is not null
           then 'not editable: instance-gated mapping — the sibling condition on the '
                'write target cannot be verified, so a write could misroute'
+        when m2.cell_role = 'addend'
+          -- Specific, because the generic message below would be wrong: an
+          -- addend IS value-bearing, it just is not the whole line.
+          then 'not editable: one addend of a multi-cell line total; there is '
+               'no single cell holding the total to write to. Edit the '
+               'individual cell in the raw-cell browser.'
         when m2.cell_role not in ('primary', 'override')
           then 'not editable: cell_role=' || m2.cell_role || ' is not a value-bearing input'
         when coalesce(l.is_computed, false)
