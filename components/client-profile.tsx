@@ -43,7 +43,6 @@ import {
   Briefcase,
   Building2,
   Calendar,
-  Check,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -1439,11 +1438,7 @@ function CommunicationsTab({
   // Shares the "portal-messages" SWR key with PortalMessagesCard below, so
   // this badge and the thread itself always agree on what's unread without
   // a second mock-data generation pass.
-  const { data: portalMessages } = usePortalMessages(
-    data.client.id,
-    data.client.clientName,
-    data.teamMembers,
-  )
+  const { data: portalMessages } = usePortalMessages(data.client.id)
   const unreadMessageCount = unreadClientMessageCount(portalMessages)
 
   return (
@@ -1482,7 +1477,6 @@ function CommunicationsTab({
       <TabsContent value="messages" className="mt-4">
         <PortalMessagesCard
           clientId={data.client.id}
-          clientName={data.client.clientName}
           teamMembers={data.teamMembers}
         />
       </TabsContent>
@@ -2159,112 +2153,12 @@ function EmailThreadsSkeleton() {
 // Messages sub-tab — the firm's side of the client-portal chat thread
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface PortalMessageMock {
+interface PortalMessage {
   id: string
   sender: "firm" | "client"
   senderName: string
   bodyText: string
   sentAt: string
-  seenByClient: boolean
-}
-
-const PORTAL_MESSAGE_EXCHANGES: Array<{ client: string; firm: string }> = [
-  {
-    client: "Hi! Just uploaded my W-2 and the 1099 from the freelance work — let me know if you need anything else.",
-    firm: "Got them, thank you! We'll get everything reconciled and reach out if anything's missing.",
-  },
-  {
-    client: "Any update on when the return will be ready for review?",
-    firm: "We're finishing the final review now — expect a draft in your portal by Friday.",
-  },
-  {
-    client: "Do you need the mortgage interest statement too?",
-    firm: "Yes please, if you can upload the 1098 that would be great.",
-  },
-  {
-    client: "Thanks so much for handling this so quickly, really appreciate it!",
-    firm: "Of course, happy to help! Let us know if any other questions come up.",
-  },
-  {
-    client: "I think there might be a mistake on the estimated Q4 payment amount, can you double check?",
-    firm: "Took a look — the number is correct given your updated income, but I'll send over the breakdown for your records.",
-  },
-  {
-    client: "Quick question — is the extension already filed for this year?",
-    firm: "Yes, that went in last week. You're all set until October.",
-  },
-]
-
-// Standalone client messages sent after the last firm reply — these are
-// what an unanswered thread looks like and what powers the unread badge.
-const PORTAL_FOLLOWUP_MESSAGES: string[] = [
-  "Following up on this — any update?",
-  "Just checking in, did you get a chance to look at this yet?",
-  "One more thing — can you also confirm the filing deadline for this?",
-  "Sorry to bug you, but wanted to bump this up in your inbox.",
-]
-
-function generateMockPortalMessages(
-  clientId: string,
-  clientName: string,
-  teamMembers: Array<{ name: string; email: string | null }>,
-): PortalMessageMock[] {
-  const seed = hashString(clientId || clientName || "client")
-  const rng = mulberry32(seed)
-
-  // ~1 in 6 clients start with a clean slate so the empty state is
-  // reachable in this mock, matching how a brand-new portal user would
-  // have no message history yet.
-  if (seed % 6 === 0) return []
-
-  const staffName = teamMembers[0]?.name || "Motta Financial Team"
-  const exchangeCount = 3 + Math.floor(rng() * 3) // 3–5 exchanges
-  const shuffled = [...PORTAL_MESSAGE_EXCHANGES].sort(() => rng() - 0.5).slice(0, exchangeCount)
-
-  const now = Date.now()
-  let cursor = now - exchangeCount * 2 * 24 * 60 * 60 * 1000
-  const messages: PortalMessageMock[] = []
-
-  shuffled.forEach((exchange, idx) => {
-    cursor += (12 + Math.floor(rng() * 36)) * 60 * 60 * 1000
-    messages.push({
-      id: `${clientId}-portal-${idx}-client`,
-      sender: "client",
-      senderName: clientName,
-      bodyText: exchange.client,
-      sentAt: new Date(cursor).toISOString(),
-      seenByClient: false,
-    })
-    cursor += (1 + Math.floor(rng() * 6)) * 60 * 60 * 1000
-    const isLast = idx === shuffled.length - 1
-    messages.push({
-      id: `${clientId}-portal-${idx}-firm`,
-      sender: "firm",
-      senderName: staffName,
-      bodyText: exchange.firm,
-      sentAt: new Date(cursor).toISOString(),
-      // The very latest firm message may not have been seen yet; every
-      // earlier one has.
-      seenByClient: isLast ? rng() > 0.5 : true,
-    })
-  })
-
-  // Roughly 1 in 3 clients have sent something since the firm's last
-  // reply — an open question nobody has answered yet. This is the state
-  // the unread badge on the sub-tab exists to surface.
-  if (seed % 3 === 0) {
-    cursor += (2 + Math.floor(rng() * 22)) * 60 * 60 * 1000
-    messages.push({
-      id: `${clientId}-portal-followup`,
-      sender: "client",
-      senderName: clientName,
-      bodyText: PORTAL_FOLLOWUP_MESSAGES[seed % PORTAL_FOLLOWUP_MESSAGES.length],
-      sentAt: new Date(cursor).toISOString(),
-      seenByClient: false,
-    })
-  }
-
-  return messages
 }
 
 // Shared SWR key so the unread badge (in CommunicationsTab) and the thread
@@ -2274,26 +2168,21 @@ function portalMessagesKey(clientId: string): [string, string] | null {
   return clientId ? ["portal-messages", clientId] : null
 }
 
-function usePortalMessages(
-  clientId: string,
-  clientName: string,
-  teamMembers: ClientBundle["teamMembers"],
-) {
-  return useSWR<PortalMessageMock[]>(
+function usePortalMessages(clientId: string) {
+  return useSWR<PortalMessage[]>(
     portalMessagesKey(clientId),
-    () =>
-      new Promise<PortalMessageMock[]>((resolve) => {
-        setTimeout(
-          () => resolve(generateMockPortalMessages(clientId, clientName, teamMembers)),
-          500,
-        )
-      }),
+    async ([, id]: [string, string]) => {
+      const res = await fetch(`/api/clients/${encodeURIComponent(id)}/messages`)
+      if (!res.ok) throw new Error("Failed to load messages")
+      const json = await res.json()
+      return (json.messages ?? []) as PortalMessage[]
+    },
     { revalidateOnFocus: false },
   )
 }
 
 // Unread = trailing client messages with no firm reply after them yet.
-function unreadClientMessageCount(messages: PortalMessageMock[] | undefined): number {
+function unreadClientMessageCount(messages: PortalMessage[] | undefined): number {
   if (!messages || messages.length === 0) return 0
   let count = 0
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -2305,18 +2194,12 @@ function unreadClientMessageCount(messages: PortalMessageMock[] | undefined): nu
 
 function PortalMessagesCard({
   clientId,
-  clientName,
   teamMembers,
 }: {
   clientId: string
-  clientName: string
   teamMembers: ClientBundle["teamMembers"]
 }) {
-  const { data: messages, isLoading, mutate } = usePortalMessages(
-    clientId,
-    clientName,
-    teamMembers,
-  )
+  const { data: messages, isLoading, mutate } = usePortalMessages(clientId)
   const [draft, setDraft] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -2326,23 +2209,39 @@ function PortalMessagesCard({
     }
   }, [isLoading, messages?.length])
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     const text = draft.trim()
     if (!text) return
     const staffName = teamMembers[0]?.name || "You"
-    const reply: PortalMessageMock = {
-      id: `local-${Date.now()}`,
+    const optimistic: PortalMessage = {
+      id: `pending-${Date.now()}`,
       sender: "firm",
       senderName: staffName,
       bodyText: text,
       sentAt: new Date().toISOString(),
-      seenByClient: false,
     }
-    // Optimistic — a reply clears any unread badge immediately since it
-    // answers the trailing client message(s).
-    mutate((current) => [...(current ?? []), reply], { revalidate: false })
+    const previous = messages ?? []
+    // Optimistic — a reply clears the unread badge immediately, since the
+    // badge counts trailing client messages and this answers them.
+    mutate([...previous, optimistic], { revalidate: false })
     setDraft("")
-  }, [draft, teamMembers, mutate])
+
+    try {
+      const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: text }),
+      })
+      if (!res.ok) throw new Error("Failed to send")
+      const { message } = await res.json()
+      mutate([...previous, message as PortalMessage], { revalidate: false })
+    } catch {
+      // Put the draft back rather than silently losing what they typed.
+      mutate(previous, { revalidate: false })
+      setDraft(text)
+      toast.error("Couldn't send that message. Try again.")
+    }
+  }, [draft, teamMembers, mutate, messages, clientId])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2395,7 +2294,7 @@ function PortalMessagesCard({
   )
 }
 
-function PortalMessageBubble({ message }: { message: PortalMessageMock }) {
+function PortalMessageBubble({ message }: { message: PortalMessage }) {
   const isFirm = message.sender === "firm"
   return (
     <div
@@ -2418,15 +2317,6 @@ function PortalMessageBubble({ message }: { message: PortalMessageMock }) {
         <span>{message.senderName}</span>
         <span aria-hidden="true">·</span>
         <span>{relativeTime(message.sentAt)}</span>
-        {isFirm && message.seenByClient && (
-          <span
-            className="ml-0.5 inline-flex items-center gap-0.5 text-[10px]"
-            style={{ color: "#6B745D" }}
-          >
-            <Check className="h-3 w-3" />
-            Seen
-          </span>
-        )}
       </div>
     </div>
   )
