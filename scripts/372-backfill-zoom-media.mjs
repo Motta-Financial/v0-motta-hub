@@ -10,7 +10,16 @@
  * Usage:
  *   CRON_SECRET=... node scripts/372-backfill-zoom-media.mjs [monthsBack]
  *
- * CRON_SECRET falls back to .env.local. Default monthsBack = 24.
+ * CRON_SECRET falls back to .env.local. Default monthsBack = 36 — match the
+ * audit's window (scripts/376). A shorter run looks clean while leaving older
+ * months untouched: running this with 12 on 2026-09-13 stopped at 2025-10 and
+ * left 398 media files (48.5 GB) of 2024-2025 recordings unarchived, which the
+ * audit then caught. Size the window to the audit, not to the gaps you can
+ * already see in the DB — the DB is missing the recordings it never ingested.
+ *
+ * MAX_MEDIA_COPIES=n caps files per invocation (default 8). Drop it when a
+ * window keeps OOM-killing the 3009 MB function; multi-GB recordings need
+ * scripts/379-copy-oversized-zoom-media.ts instead, which has no such ceiling.
  * Safe to interrupt and re-run at any time.
  */
 
@@ -18,6 +27,15 @@ import { readFileSync } from "node:fs"
 
 const BASE_URL = process.env.HUB_URL || "https://hub.motta.cpa"
 const MAX_PASSES_PER_WINDOW = 120
+
+/**
+ * Media files copied per invocation. Memory accumulates across sequential
+ * copies, so the safe number depends on how large that window's videos are:
+ * 8 cleared most of 2026 but OOM-killed on the months holding multi-GB files.
+ * An OOM is not fatal (progress persists per recording), but each one wastes
+ * the in-flight download.
+ */
+const MAX_MEDIA_COPIES = Number(process.env.MAX_MEDIA_COPIES) || 8
 
 function loadEnvLocal() {
   let text
@@ -57,7 +75,13 @@ async function runPass(secret, from, to) {
       },
       // Cap copies per invocation so the function exits cleanly before
       // memory accumulates (sustained GB-scale copying OOMs otherwise).
-      body: JSON.stringify({ from, to, includeMedia: true, tagParticipants: false, maxMediaCopies: 8 }),
+      body: JSON.stringify({
+        from,
+        to,
+        includeMedia: true,
+        tagParticipants: false,
+        maxMediaCopies: MAX_MEDIA_COPIES,
+      }),
     })
     // 5xx = function timed out or crashed mid-run (e.g. OOM on one huge
     // file). Progress persists per-recording, so another pass resumes where
@@ -81,7 +105,7 @@ async function main() {
     process.exit(1)
   }
 
-  const monthsBack = Math.max(1, Number(process.argv[2]) || 24)
+  const monthsBack = Math.max(1, Number(process.argv[2]) || 36)
   let totalMedia = 0
 
   for (let back = 0; back < monthsBack; back++) {
