@@ -34,6 +34,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import useSWR from "swr"
 import { format, formatDistanceToNow, parseISO } from "date-fns"
 import { toast } from "sonner"
 import {
@@ -1202,6 +1203,20 @@ function CountChip({ n }: { n: number }) {
   )
 }
 
+// Distinct from CountChip on purpose — this signals "needs a reply" rather
+// than "here's how many items exist," so it gets the firm's dark-green
+// action color instead of a neutral secondary badge.
+function UnreadChip({ n }: { n: number }) {
+  return (
+    <Badge
+      className="ml-2 h-5 min-w-5 justify-center px-1.5 text-xs font-semibold border-0 text-white"
+      style={{ backgroundColor: "#4A5240" }}
+    >
+      {n}
+    </Badge>
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Overview tab
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1421,6 +1436,16 @@ function CommunicationsTab({
   const noteCount =
     (data.karbonNotes?.length || 0) + (data.manualNotes?.length || 0)
 
+  // Shares the "portal-messages" SWR key with PortalMessagesCard below, so
+  // this badge and the thread itself always agree on what's unread without
+  // a second mock-data generation pass.
+  const { data: portalMessages } = usePortalMessages(
+    data.client.id,
+    data.client.clientName,
+    data.teamMembers,
+  )
+  const unreadMessageCount = unreadClientMessageCount(portalMessages)
+
   return (
     <Tabs value={tab} onValueChange={onTabChange} className="w-full">
       <TabsList className="grid grid-cols-5 w-full max-w-3xl">
@@ -1428,7 +1453,10 @@ function CommunicationsTab({
           Emails
           {data.emails.length > 0 && <CountChip n={data.emails.length} />}
         </TabsTrigger>
-        <TabsTrigger value="messages">Messages</TabsTrigger>
+        <TabsTrigger value="messages">
+          Messages
+          {unreadMessageCount > 0 && <UnreadChip n={unreadMessageCount} />}
+        </TabsTrigger>
         <TabsTrigger value="notes">
           Notes
           {noteCount > 0 && <CountChip n={noteCount} />}
@@ -2115,6 +2143,15 @@ const PORTAL_MESSAGE_EXCHANGES: Array<{ client: string; firm: string }> = [
   },
 ]
 
+// Standalone client messages sent after the last firm reply — these are
+// what an unanswered thread looks like and what powers the unread badge.
+const PORTAL_FOLLOWUP_MESSAGES: string[] = [
+  "Following up on this — any update?",
+  "Just checking in, did you get a chance to look at this yet?",
+  "One more thing — can you also confirm the filing deadline for this?",
+  "Sorry to bug you, but wanted to bump this up in your inbox.",
+]
+
 function generateMockPortalMessages(
   clientId: string,
   clientName: string,
@@ -2160,7 +2197,58 @@ function generateMockPortalMessages(
     })
   })
 
+  // Roughly 1 in 3 clients have sent something since the firm's last
+  // reply — an open question nobody has answered yet. This is the state
+  // the unread badge on the sub-tab exists to surface.
+  if (seed % 3 === 0) {
+    cursor += (2 + Math.floor(rng() * 22)) * 60 * 60 * 1000
+    messages.push({
+      id: `${clientId}-portal-followup`,
+      sender: "client",
+      senderName: clientName,
+      bodyText: PORTAL_FOLLOWUP_MESSAGES[seed % PORTAL_FOLLOWUP_MESSAGES.length],
+      sentAt: new Date(cursor).toISOString(),
+      seenByClient: false,
+    })
+  }
+
   return messages
+}
+
+// Shared SWR key so the unread badge (in CommunicationsTab) and the thread
+// itself (in PortalMessagesCard) always read/write the same cached list —
+// sending a reply from the card clears the badge instantly, no refetch.
+function portalMessagesKey(clientId: string): [string, string] | null {
+  return clientId ? ["portal-messages", clientId] : null
+}
+
+function usePortalMessages(
+  clientId: string,
+  clientName: string,
+  teamMembers: ClientBundle["teamMembers"],
+) {
+  return useSWR<PortalMessageMock[]>(
+    portalMessagesKey(clientId),
+    () =>
+      new Promise<PortalMessageMock[]>((resolve) => {
+        setTimeout(
+          () => resolve(generateMockPortalMessages(clientId, clientName, teamMembers)),
+          500,
+        )
+      }),
+    { revalidateOnFocus: false },
+  )
+}
+
+// Unread = trailing client messages with no firm reply after them yet.
+function unreadClientMessageCount(messages: PortalMessageMock[] | undefined): number {
+  if (!messages || messages.length === 0) return 0
+  let count = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].sender !== "client") break
+    count++
+  }
+  return count
 }
 
 function PortalMessagesCard({
@@ -2172,47 +2260,42 @@ function PortalMessagesCard({
   clientName: string
   teamMembers: ClientBundle["teamMembers"]
 }) {
-  const [loading, setLoading] = useState(true)
-  const [messages, setMessages] = useState<PortalMessageMock[]>([])
+  const { data: messages, isLoading, mutate } = usePortalMessages(
+    clientId,
+    clientName,
+    teamMembers,
+  )
   const [draft, setDraft] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    setLoading(true)
-    const timer = setTimeout(() => {
-      setMessages(generateMockPortalMessages(clientId, clientName, teamMembers))
-      setLoading(false)
-    }, 500)
-    return () => clearTimeout(timer)
-  }, [clientId, clientName, teamMembers])
-
-  useEffect(() => {
-    if (!loading) {
+    if (!isLoading) {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
     }
-  }, [loading, messages.length])
+  }, [isLoading, messages?.length])
 
   const handleSend = useCallback(() => {
     const text = draft.trim()
     if (!text) return
     const staffName = teamMembers[0]?.name || "You"
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `local-${Date.now()}`,
-        sender: "firm",
-        senderName: staffName,
-        bodyText: text,
-        sentAt: new Date().toISOString(),
-        seenByClient: false,
-      },
-    ])
+    const reply: PortalMessageMock = {
+      id: `local-${Date.now()}`,
+      sender: "firm",
+      senderName: staffName,
+      bodyText: text,
+      sentAt: new Date().toISOString(),
+      seenByClient: false,
+    }
+    // Optimistic — a reply clears any unread badge immediately since it
+    // answers the trailing client message(s).
+    mutate((current) => [...(current ?? []), reply], { revalidate: false })
     setDraft("")
-  }, [draft, teamMembers])
+  }, [draft, teamMembers, mutate])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        if (e.nativeEvent.isComposing) return
         e.preventDefault()
         handleSend()
       }
@@ -2220,18 +2303,20 @@ function PortalMessagesCard({
     [handleSend],
   )
 
-  if (loading) return <PortalMessagesSkeleton />
+  if (isLoading) return <PortalMessagesSkeleton />
+
+  const list = messages ?? []
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden rounded-xl border-0 shadow-sm">
       <CardContent className="flex h-[600px] flex-col p-0">
         <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
-          {messages.length === 0 ? (
+          {list.length === 0 ? (
             <div className="flex h-full items-center justify-center">
               <EmptyState message="No messages yet." />
             </div>
           ) : (
-            messages.map((m) => <PortalMessageBubble key={m.id} message={m} />)
+            list.map((m) => <PortalMessageBubble key={m.id} message={m} />)
           )}
         </div>
         <div className="flex items-end gap-2 border-t p-3">
@@ -2246,7 +2331,8 @@ function PortalMessagesCard({
             size="sm"
             onClick={handleSend}
             disabled={!draft.trim()}
-            className="h-9 shrink-0 gap-1.5"
+            className="h-9 shrink-0 gap-1.5 text-white hover:opacity-90"
+            style={{ backgroundColor: "#6B745D" }}
           >
             <Send className="h-3.5 w-3.5" />
             Send
@@ -2267,10 +2353,12 @@ function PortalMessageBubble({ message }: { message: PortalMessageMock }) {
       )}
     >
       <div
-        className={cn(
-          "whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm",
-          isFirm ? "bg-[#1D2620] text-white" : "bg-muted text-foreground",
-        )}
+        className="whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm"
+        style={
+          isFirm
+            ? { backgroundColor: "#6B745D", color: "#FFFFFF" }
+            : { backgroundColor: "#E3E0D9", color: "#3F4438" }
+        }
       >
         {message.bodyText}
       </div>
@@ -2279,7 +2367,10 @@ function PortalMessageBubble({ message }: { message: PortalMessageMock }) {
         <span aria-hidden="true">·</span>
         <span>{relativeTime(message.sentAt)}</span>
         {isFirm && message.seenByClient && (
-          <span className="ml-0.5 inline-flex items-center gap-0.5 text-[10px]">
+          <span
+            className="ml-0.5 inline-flex items-center gap-0.5 text-[10px]"
+            style={{ color: "#6B745D" }}
+          >
             <Check className="h-3 w-3" />
             Seen
           </span>
@@ -2291,7 +2382,7 @@ function PortalMessageBubble({ message }: { message: PortalMessageMock }) {
 
 function PortalMessagesSkeleton() {
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden rounded-xl border-0 shadow-sm">
       <CardContent className="flex h-[600px] flex-col p-0">
         <div className="flex-1 space-y-4 p-4">
           <Skeleton className="ml-auto h-10 w-2/3 rounded-2xl" />
