@@ -16,6 +16,7 @@
 import { readFile, readdir } from "node:fs/promises"
 import { join } from "node:path"
 import { Client } from "pg"
+import { classify, plan, record, stripTx } from "./lib/oob-migrations.mjs"
 
 const APPLY = process.argv.includes("--apply")
 // This directory is SHARED between workstreams. The runner applies every *.sql
@@ -48,19 +49,32 @@ await client.connect()
 try {
   await client.query("begin")
 
-  const files = (await readdir(SQL_DIR))
-    .filter((f) => f.endsWith(".sql") && !f.endsWith(".report.sql"))
-    .filter((f) => !ONLY || f.includes(ONLY))
-    .sort()
-  if (ONLY) console.log(`  --only=${ONLY} -> ${files.length} file(s)\n`)
-  if (!files.length) throw new Error(`No *.sql migrations found in ${SQL_DIR}`)
-  for (const f of files) {
-    const raw = await readFile(join(SQL_DIR, f), "utf8")
+  // ── Ledger-gated selection (scripts/416) ──────────────────────────────
+  // This runner used to apply EVERY *.sql in SQL_DIR on every invocation, so
+  // dropping a file in the directory was indistinguishable from deploying it.
+  // On 2026-09-14 that put an unreviewed migration (415) into production: the
+  // runner was invoked for the Schedule C work and swept up a file staged for
+  // review. Now only files ABSENT FROM THE LEDGER run, and only with --apply.
+  const classified = await classify(client, SQL_DIR)
+  if (ONLY) {
+    const before = classified.pending.length
+    classified.pending = classified.pending.filter((p) => p.name.includes(ONLY))
+    console.log(`  --only=${ONLY} -> ${classified.pending.length} of ${before} pending file(s)`)
+  }
+  const toRun = plan(classified, { apply: APPLY })
+
+  // Backfill hashes for rows applied before the ledger existed, so drift is
+  // detectable from here on.
+  for (const a of classified.applied.filter((x) => x.backfill)) {
+    await record(client, a, "backfill", null)
+  }
+
+  for (const f of toRun) {
     // Each file carries its own begin/commit; strip them so this script owns
     // the transaction and can choose to roll back.
-    const sql = raw.replace(/^\s*begin\s*;\s*$/gim, "").replace(/^\s*commit\s*;\s*$/gim, "")
-    await client.query(sql)
-    console.log(`  applied ${f}`)
+    await client.query(stripTx(f.raw))
+    await record(client, f, "apply-1040-parity.mjs")
+    console.log(`  applied ${f.name}`)
   }
 
   console.log("\n── form_1040_proconnect_map: lines 6a / 25b ──")

@@ -19,9 +19,9 @@
  *   nothing else moved         every other line on those returns is
  *                              unchanged — an addend must not leak
  */
-import { readFile, readdir } from "node:fs/promises"
-import { join } from "node:path"
+import { readFile } from "node:fs/promises"
 import { Client } from "pg"
+import { classify, plan, record, stripTx } from "./lib/oob-migrations.mjs"
 
 const APPLY = process.argv.includes("--apply")
 const arg = process.argv.find((a) => a.startsWith("--sql-dir="))
@@ -35,7 +35,6 @@ if (!url) {
 }
 url = url.replace(/([?&])sslmode=[^&]*(&?)/, (_, pre, post) => (post ? pre : ""))
 
-const strip = (s) => s.replace(/^\s*begin\s*;\s*$/gim, "").replace(/^\s*commit\s*;\s*$/gim, "")
 const client = new Client({ connectionString: url, ssl: { rejectUnauthorized: false } })
 await client.connect()
 const fail = []
@@ -60,7 +59,7 @@ try {
   await client.query("begin")
 
   // 412 first (schema), then everything in the out-of-band dir.
-  await client.query(strip(await readFile(new URL("./412_form_1040_addend_cell_role.sql", import.meta.url), "utf8")))
+  await client.query(stripTx(await readFile(new URL("./412_form_1040_addend_cell_role.sql", import.meta.url), "utf8")))
   console.log("  applied 412_form_1040_addend_cell_role.sql")
 
   if (!SQL_DIR) {
@@ -69,9 +68,17 @@ try {
     console.error("tuples. See this repo's scripts/360 and the directory's README.")
     throw new Error("no --sql-dir")
   }
-  for (const f of (await readdir(SQL_DIR)).filter((f) => f.endsWith(".sql") && !f.endsWith(".report.sql")).sort()) {
-    await client.query(strip(await readFile(join(SQL_DIR, f), "utf8")))
-    console.log(`  applied ${f}`)
+  // Ledger-gated (scripts/416): only PENDING files run. This runner used to
+  // apply every *.sql in the shared directory, which is how an unreviewed 415
+  // reached production on 2026-09-14.
+  const classified = await classify(client, SQL_DIR)
+  for (const a of classified.applied.filter((x) => x.backfill)) {
+    await record(client, a, "backfill", null)
+  }
+  for (const f of plan(classified, { apply: APPLY })) {
+    await client.query(stripTx(f.raw))
+    await record(client, f, "412-run-addend-role.mjs")
+    console.log(`  applied ${f.name}`)
   }
 
   // Re-derive `editable`. This is not optional bookkeeping — it is the
@@ -82,7 +89,7 @@ try {
   // inside this transaction means the assertions below test the state the
   // team will actually have, not an intermediate one.
   await client.query(
-    strip(await readFile(new URL("./387_form_1040_mapping_key_and_editable.sql", import.meta.url), "utf8")),
+    stripTx(await readFile(new URL("./387_form_1040_mapping_key_and_editable.sql", import.meta.url), "utf8")),
   )
   console.log("  re-derived editable (387)")
 
