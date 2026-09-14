@@ -1859,7 +1859,7 @@ function EmailThreadsCard({
           }}
         />
       ) : (
-        <Card>
+        <Card className="border-0 shadow-sm">
           <CardContent className="p-0">
             <ScrollArea className="max-h-[700px]">
               <div className="divide-y">
@@ -1867,10 +1867,10 @@ function EmailThreadsCard({
                   <EmailThreadRow
                     key={t.id}
                     thread={t}
-                    projectName={
-                      activeProjects.find((p) => p.id === assignments[t.id])?.title || null
-                    }
-                    onClick={() => setSelectedThreadId(t.id)}
+                    projectId={assignments[t.id] ?? null}
+                    activeProjects={activeProjects}
+                    onAssign={(pid) => setAssignments((prev) => ({ ...prev, [t.id]: pid }))}
+                    onOpen={() => setSelectedThreadId(t.id)}
                   />
                 ))}
               </div>
@@ -1895,12 +1895,12 @@ function FilterPill({
     <button
       type="button"
       onClick={onClick}
-      className={cn(
-        "h-7 rounded-full border px-3 text-xs font-medium transition-colors",
+      className="h-7 rounded-full border px-3 text-xs font-medium transition-colors"
+      style={
         active
-          ? "border-primary bg-primary text-primary-foreground"
-          : "border-border bg-background text-muted-foreground hover:bg-muted",
-      )}
+          ? { backgroundColor: "#6B745D", borderColor: "#6B745D", color: "#FFFFFF" }
+          : { backgroundColor: "transparent", borderColor: "#B5BFA8", color: "#4A5240" }
+      }
     >
       {children}
     </button>
@@ -1909,48 +1909,94 @@ function FilterPill({
 
 function EmailThreadRow({
   thread,
-  projectName,
-  onClick,
+  projectId,
+  activeProjects,
+  onAssign,
+  onOpen,
 }: {
   thread: EmailThreadMock
-  projectName: string | null
-  onClick: () => void
+  projectId: string | null
+  activeProjects: Array<{ id: string; title: string }>
+  onAssign: (projectId: string | null) => void
+  onOpen: () => void
 }) {
   const last = thread.messages[thread.messages.length - 1]
+  const assignedProject = activeProjects.find((p) => p.id === projectId) || null
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-start gap-3 p-4 text-left transition-colors hover:bg-muted/50"
-    >
-      <span
-        className={cn(
-          "mt-2 block h-2 w-2 shrink-0 rounded-full",
-          thread.unread ? "bg-primary" : "bg-transparent",
-        )}
-        aria-hidden="true"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={cn("truncate text-sm", thread.unread ? "font-semibold" : "font-medium")}>
-            {thread.subject}
-          </span>
-          <Badge variant="outline" className="text-xs capitalize">
-            {last.direction}
+    <div className="flex flex-col gap-2 p-4">
+      {/* Assign-to-project control sits above the thread preview, separate
+          from the button below it, so a Select trigger never nests inside
+          an interactive <button>. */}
+      <div className="flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        <span className="text-xs font-medium" style={{ color: "#4A5240" }}>
+          Assign to project
+        </span>
+        <Select
+          value={projectId ?? "unassigned"}
+          onValueChange={(v) => onAssign(v === "unassigned" ? null : v)}
+        >
+          <SelectTrigger
+            className="h-7 w-56 text-xs"
+            style={{ borderColor: "#B5BFA8" }}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="unassigned">Unassigned</SelectItem>
+            {activeProjects.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.title}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {assignedProject && (
+          <Badge
+            variant="outline"
+            className="gap-1 pr-1 text-xs"
+            style={{ borderColor: "#B5BFA8", backgroundColor: "#EAE6E1", color: "#4A5240" }}
+          >
+            {assignedProject.title}
+            <button
+              type="button"
+              onClick={() => onAssign(null)}
+              className="rounded-full p-0.5 hover:bg-black/10"
+              aria-label={`Remove ${assignedProject.title} assignment`}
+            >
+              <X className="h-3 w-3" />
+            </button>
           </Badge>
-          {projectName && (
-            <Badge variant="secondary" className="text-xs">
-              {projectName}
-            </Badge>
-          )}
-        </div>
-        <p className="truncate text-xs text-muted-foreground">{thread.otherPartyName}</p>
-        <p className="truncate text-xs text-muted-foreground">{last.bodyText}</p>
+        )}
       </div>
-      <span className="shrink-0 text-xs text-muted-foreground">
-        {formatDate(thread.lastActivityAt, "MMM d") || "—"}
-      </span>
-    </button>
+
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex w-full items-start gap-3 rounded-md text-left transition-colors hover:bg-muted/50"
+      >
+        <span
+          className="mt-2 block h-2 w-2 shrink-0 rounded-full"
+          style={{ backgroundColor: thread.unread ? "#6B745D" : "transparent" }}
+          aria-hidden="true"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cn("truncate text-sm", thread.unread ? "font-semibold" : "font-medium")}>
+              {thread.subject}
+            </span>
+            <Badge variant="outline" className="text-xs capitalize">
+              {last.direction}
+            </Badge>
+          </div>
+          <p className="truncate text-xs text-muted-foreground">{thread.otherPartyName}</p>
+          <p className="truncate text-xs text-muted-foreground">{last.bodyText}</p>
+        </div>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {formatDate(thread.lastActivityAt, "MMM d") || "—"}
+        </span>
+      </button>
+    </div>
   )
 }
 
@@ -1970,7 +2016,7 @@ function EmailThreadDetail({
   const assignedProject = activeProjects.find((p) => p.id === projectId) || null
 
   return (
-    <Card>
+    <Card className="border-0 shadow-sm">
       <CardContent className="p-0">
         <div className="flex flex-col gap-3 border-b p-4">
           <Button
@@ -1989,12 +2035,14 @@ function EmailThreadDetail({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">Assign to project</span>
+            <span className="text-xs font-medium" style={{ color: "#4A5240" }}>
+              Assign to project
+            </span>
             <Select
               value={projectId ?? "unassigned"}
               onValueChange={(v) => onAssign(v === "unassigned" ? null : v)}
             >
-              <SelectTrigger className="h-8 w-56 text-xs">
+              <SelectTrigger className="h-8 w-56 text-xs" style={{ borderColor: "#B5BFA8" }}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -2007,12 +2055,16 @@ function EmailThreadDetail({
               </SelectContent>
             </Select>
             {assignedProject && (
-              <Badge variant="secondary" className="gap-1 pr-1 text-xs">
+              <Badge
+                variant="outline"
+                className="gap-1 pr-1 text-xs"
+                style={{ borderColor: "#B5BFA8", backgroundColor: "#EAE6E1", color: "#4A5240" }}
+              >
                 {assignedProject.title}
                 <button
                   type="button"
                   onClick={() => onAssign(null)}
-                  className="rounded-full p-0.5 hover:bg-background/60"
+                  className="rounded-full p-0.5 hover:bg-black/10"
                   aria-label={`Remove ${assignedProject.title} assignment`}
                 >
                   <X className="h-3 w-3" />
@@ -3640,7 +3692,7 @@ function DocumentsTab({
   )
 }
 
-// ──────────────────────────────────────��──────────────────────────────────────
+// ──────────────────────────────────────��──────────���───────────────────────────
 // People tab
 // ─────────────────────────────────────────────────────────────────────────────
 
