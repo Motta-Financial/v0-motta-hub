@@ -37,6 +37,25 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
+  // Opening the thread is what "seen" means. Stamp the FIRM's messages
+  // only -- a client reading their own message is not a receipt. Fire and
+  // forget: a failed stamp must never block the client from reading their
+  // mail, it just means the firm sees no marker yet.
+  const unseenFromFirm = (messages ?? [])
+    .filter((m) => m.sender_role === "team_member")
+    .map((m) => m.id)
+
+  if (unseenFromFirm.length > 0) {
+    const { error: stampError } = await supabase
+      .from("portal_messages")
+      .update({ read_at: new Date().toISOString() })
+      .in("id", unseenFromFirm)
+      .is("read_at", null)
+    if (stampError) {
+      console.error("Could not stamp portal message read receipts:", stampError)
+    }
+  }
+
   return NextResponse.json({ messages: messages ?? [] })
 }
 

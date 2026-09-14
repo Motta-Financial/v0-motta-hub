@@ -47,6 +47,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Check,
   ChevronUp,
   Clock,
   DollarSign,
@@ -2159,6 +2160,8 @@ interface PortalMessage {
   senderName: string
   bodyText: string
   sentAt: string
+  /** Firm messages only: the client has opened the thread since we sent it. */
+  seenByClient: boolean
 }
 
 // Shared SWR key so the unread badge (in CommunicationsTab) and the thread
@@ -2219,6 +2222,7 @@ function PortalMessagesCard({
       senderName: staffName,
       bodyText: text,
       sentAt: new Date().toISOString(),
+      seenByClient: false,
     }
     const previous = messages ?? []
     // Optimistic — a reply clears the unread badge immediately, since the
@@ -2317,6 +2321,15 @@ function PortalMessageBubble({ message }: { message: PortalMessage }) {
         <span>{message.senderName}</span>
         <span aria-hidden="true">·</span>
         <span>{relativeTime(message.sentAt)}</span>
+        {isFirm && message.seenByClient && (
+          <span
+            className="ml-0.5 inline-flex items-center gap-0.5 text-[10px]"
+            style={{ color: "#6B745D" }}
+          >
+            <Check className="h-3 w-3" />
+            Seen
+          </span>
+        )}
       </div>
     </div>
   )

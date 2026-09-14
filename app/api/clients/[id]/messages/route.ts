@@ -71,6 +71,7 @@ function toClientShape(row: {
   sender_name: string
   body: string
   created_at: string
+  read_at: string | null
 }) {
   return {
     id: row.id,
@@ -79,6 +80,9 @@ function toClientShape(row: {
     senderName: row.sender_name,
     bodyText: row.body,
     sentAt: row.created_at,
+    // Only meaningful on firm messages, where it means the client opened
+    // the thread after we sent it (scripts/417).
+    seenByClient: row.read_at !== null,
   }
 }
 
@@ -101,13 +105,33 @@ export async function GET(
 
     const { data, error } = await supabase
       .from("portal_messages")
-      .select("id, sender_role, sender_name, body, created_at")
+      .select("id, sender_role, sender_name, body, created_at, read_at")
       .eq(entityColumn(entity), entity.id)
       .order("created_at", { ascending: true })
 
     if (error) throw error
 
-    return NextResponse.json({ messages: (data ?? []).map(toClientShape) })
+    const messages = data ?? []
+
+    // Staff opening the tab is the receipt for the CLIENT's messages. The
+    // client side does the mirror of this for ours. Best-effort: a failed
+    // stamp must not stop staff reading the thread.
+    const unseenFromClient = messages
+      .filter((m) => m.sender_role === "client" && m.read_at === null)
+      .map((m) => m.id)
+
+    if (unseenFromClient.length > 0) {
+      const { error: stampError } = await supabase
+        .from("portal_messages")
+        .update({ read_at: new Date().toISOString() })
+        .in("id", unseenFromClient)
+        .is("read_at", null)
+      if (stampError) {
+        console.error("Could not stamp client message read receipts:", stampError)
+      }
+    }
+
+    return NextResponse.json({ messages: messages.map(toClientShape) })
   } catch (error) {
     console.error("Error loading portal messages:", error)
     return NextResponse.json({ error: "Failed to load messages" }, { status: 500 })
@@ -171,7 +195,7 @@ export async function POST(
         sender_name: teamMember.full_name ?? teamMember.email ?? "Motta Financial",
         body,
       })
-      .select("id, sender_role, sender_name, body, created_at")
+      .select("id, sender_role, sender_name, body, created_at, read_at")
       .single()
 
     if (error) throw error

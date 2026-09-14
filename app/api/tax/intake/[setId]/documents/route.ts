@@ -31,7 +31,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ setId: string 
   } = await sb.auth.getUser()
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  let body: { docType?: string; label?: string; taxpayerSpouse?: string }
+  let body: {
+    docType?: string
+    label?: string
+    taxpayerSpouse?: string
+    /** Client-authored note about this specific document (scripts/419). */
+    clientNote?: string
+  }
   try {
     body = await req.json()
   } catch {
@@ -88,10 +94,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ setId: string 
       doc_type: docType,
       instance_index: nextIndex,
       label: body.label ?? null,
+      // label is preparer-facing; client_note is what the CLIENT said about
+      // this file ("second W-2, the first is from my old job"). Kept apart
+      // so neither overwrites the other.
+      client_note: body.clientNote?.trim() || null,
       taxpayer_spouse: body.taxpayerSpouse === "S" ? "S" : "T",
       submitted_by: await actingTeamMember(admin, user.id),
     })
-    .select("id, doc_type, instance_index, label, taxpayer_spouse")
+    .select("id, doc_type, instance_index, label, taxpayer_spouse, client_note")
     .single()
 
   if (error) {
@@ -120,6 +130,7 @@ export async function PUT(req: Request, ctx: { params: Promise<{ setId: string }
     documentId?: string
     values?: Record<string, string | number | boolean | null>
     label?: string
+    clientNote?: string
     taxpayerSpouse?: string
   }
   try {
@@ -205,6 +216,9 @@ export async function PUT(req: Request, ctx: { params: Promise<{ setId: string }
 
   const docPatch: Record<string, unknown> = { updated_at: now }
   if (typeof body.label === "string") docPatch.label = body.label
+  if (typeof body.clientNote === "string") {
+    docPatch.client_note = body.clientNote.trim() || null
+  }
   if (body.taxpayerSpouse === "T" || body.taxpayerSpouse === "S") {
     docPatch.taxpayer_spouse = body.taxpayerSpouse
   }
