@@ -13,8 +13,21 @@ import { getMicrosoftOAuthConfig, MICROSOFT_REQUESTED_SCOPES } from "@/lib/outlo
  * Outlook mailbox to the victim's team_member.
  */
 export async function GET(request: NextRequest) {
+  // Clicking "Connect" is a full-page navigation (window.location.href),
+  // not a fetch the UI can inspect — so any failure here MUST end in a
+  // redirect back to the settings page with an `error` code, matching
+  // the callback route's pattern. A raw JSON response renders as a
+  // blank page with no chrome, which just looks like the button did
+  // nothing.
+  let clientId: string, tenantId: string, redirectUri: string
   try {
-    const { clientId, tenantId, redirectUri } = getMicrosoftOAuthConfig()
+    ;({ clientId, tenantId, redirectUri } = getMicrosoftOAuthConfig())
+  } catch (err) {
+    console.error("[outlook] authorize config error:", err)
+    return NextResponse.redirect(new URL("/settings/outlook?error=not_configured", request.url))
+  }
+
+  try {
     const supabase = await createClient()
 
     const {
@@ -31,7 +44,7 @@ export async function GET(request: NextRequest) {
       .single()
 
     if (!teamMember) {
-      return NextResponse.json({ error: "Team member not found" }, { status: 404 })
+      return NextResponse.redirect(new URL("/settings/outlook?error=team_member_missing", request.url))
     }
 
     const stateSecret = getOAuthStateSecret()
@@ -58,9 +71,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(authUrl.toString())
   } catch (error) {
     console.error("[outlook] authorize error:", error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to initiate OAuth" },
-      { status: 500 },
-    )
+    return NextResponse.redirect(new URL("/settings/outlook?error=authorize_failed", request.url))
   }
 }
