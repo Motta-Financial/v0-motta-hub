@@ -5,6 +5,7 @@ import {
   Calendar as CalendarIcon,
   ChevronRight,
   ListChecks,
+  Mail,
   Settings as SettingsIcon,
   ShieldCheck,
   UserCircle,
@@ -75,6 +76,13 @@ const categories: SettingsCategory[] = [
           "Connect your Calendly account, manage the OAuth scopes, and view your upcoming events and event types.",
         href: "/settings/calendly",
         icon: CalendarIcon,
+      },
+      {
+        name: "Outlook",
+        description:
+          "Connect your Outlook mailbox so client emails and calendar events sync into the Hub.",
+        href: "/settings/outlook",
+        icon: Mail,
       },
     ],
   },
