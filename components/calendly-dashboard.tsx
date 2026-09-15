@@ -26,6 +26,7 @@ import {
   Loader2,
 } from "lucide-react"
 import type { CalendlyUser, CalendlyEventType, CalendlyScheduledEvent } from "@/lib/calendly-types"
+import { useUser } from "@/hooks/use-user"
 
 /**
  * Per-user Calendly dashboard. Renders the OAuth-connected Calendly
@@ -71,6 +72,7 @@ interface DiagnosticsConnection {
 }
 
 export function CalendlyDashboard() {
+  const { teamMember, isLoading: teamMemberLoading } = useUser()
   const [user, setUser] = useState<CalendlyUser | null>(null)
   const [eventTypes, setEventTypes] = useState<CalendlyEventType[]>([])
   const [scheduledEvents, setScheduledEvents] = useState<CalendlyScheduledEvent[]>([])
@@ -93,8 +95,12 @@ export function CalendlyDashboard() {
   const [activityError, setActivityError] = useState<string | null>(null)
 
   useEffect(() => {
+    // Wait for the current team member to resolve before loading —
+    // diagnostics returns every team member's connection, and we need
+    // our own id to pick the right one out of that list (see loadAll).
+    if (teamMemberLoading) return
     void loadAll()
-  }, [])
+  }, [teamMemberLoading, teamMember?.id])
 
   const loadAll = async () => {
     setLoading(true)
@@ -107,12 +113,16 @@ export function CalendlyDashboard() {
       const diagRes = await fetch("/api/calendly/diagnostics")
       if (diagRes.ok) {
         const diag = await diagRes.json()
-        // Try to find the current caller's connection. Without a userId
-        // hint here we use the first connection that the diagnostics
-        // route exposes for the caller; in practice the API masks any
-        // connection the caller can't read.
-        const myConn: DiagnosticsConnection | undefined =
-          diag.connections?.[0] ?? undefined
+        // Diagnostics is a firm-wide, unscoped list (the admin webhooks
+        // page needs to see every team member's connection). We must
+        // filter it down to OUR connection by team_member id — grabbing
+        // connections[0] here previously showed whichever team member
+        // connected Calendly most recently to every other viewer.
+        const myConn: DiagnosticsConnection | undefined = teamMember
+          ? diag.connections?.find(
+              (c: DiagnosticsConnection) => c.teamMember?.id === teamMember.id,
+            )
+          : undefined
         setDiagnostics(myConn || null)
 
         if (!myConn) {
