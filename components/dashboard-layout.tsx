@@ -69,6 +69,7 @@ import {
   GitCompareArrows,
   ChevronsLeft,
   ChevronsRight,
+  Mail,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -173,6 +174,7 @@ const navigation = [
           { name: "Calendar", href: "/meetings/calendar", icon: Calendar },
           { name: "Calendly", href: "/meetings/calendly", icon: Calendar },
           { name: "Zoom", href: "/meetings/zoom", icon: Video },
+          { name: "Outlook", href: "/meetings/outlook", icon: Mail },
           // Debriefs is now expandable: the parent row + "All Debriefs"
           // both open the list at /meetings/debriefs, while "New Debrief"
           // jumps straight to the logging form (also reachable from the

@@ -107,10 +107,26 @@ interface OutlookCalendarEvent {
   location: string | null
 }
 
+// A hung request (bad Supabase/network config, a stalled cold compile,
+// etc.) previously left the page spinning forever with no way out —
+// there was nothing to reject the SWR promise. Bounding it means a
+// stall surfaces as a retryable error within 15s instead of an
+// indefinite spinner.
 async function fetcher(url: string) {
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`Request failed: ${res.status}`)
-  return res.json()
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15_000)
+  try {
+    const res = await fetch(url, { signal: controller.signal })
+    if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+    return res.json()
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Request timed out. Please try again.")
+    }
+    throw err
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 export function OutlookDashboard() {
