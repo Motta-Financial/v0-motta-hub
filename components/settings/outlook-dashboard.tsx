@@ -45,7 +45,26 @@ import {
   KeyRound,
   Webhook,
   Link2,
+  XCircle,
 } from "lucide-react"
+
+// Codes appended as ?error=<code> when a full-page OAuth redirect
+// (authorize or callback route) fails. These are navigations, not
+// fetches the UI can inspect directly, so the routes redirect back
+// here with a code instead of leaving the button looking like it did
+// nothing.
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  not_configured:
+    "Outlook isn't configured yet — Microsoft app credentials are missing. Contact an administrator.",
+  team_member_missing: "Your account isn't registered as a Motta team member.",
+  authorize_failed: "Couldn't start the Outlook connection. Please try again.",
+  oauth_denied: "Microsoft sign-in was cancelled or denied.",
+  missing_params: "The connection attempt was missing required information. Please try again.",
+  invalid_state: "That connection link expired or was invalid. Please try connecting again.",
+  user_fetch_failed: "Connected to Microsoft, but couldn't read your mailbox details.",
+  save_failed: "Connected to Microsoft, but saving the connection failed. Please try again.",
+  callback_failed: "Something went wrong finishing the Outlook connection. Please try again.",
+}
 
 const DEEP_GREEN = "#6B745D"
 const MID_GREEN = "#8E9B79"
@@ -95,10 +114,12 @@ async function fetcher(url: string) {
 }
 
 export function OutlookDashboard() {
-  const { data: connection, isLoading, mutate } = useSWR<OutlookOwnConnection>(
-    "/api/outlook/connections",
-    fetcher,
-  )
+  const {
+    data: connection,
+    error: connectionError,
+    isLoading,
+    mutate,
+  } = useSWR<OutlookOwnConnection>("/api/outlook/connections", fetcher)
   const [emails, setEmails] = useState<OutlookRecentEmail[]>([])
   const [events, setEvents] = useState<OutlookCalendarEvent[]>([])
   const [disconnectOpen, setDisconnectOpen] = useState(false)
@@ -107,6 +128,22 @@ export function OutlookDashboard() {
   const [refreshing, setRefreshing] = useState(false)
   const [subscribing, setSubscribing] = useState(false)
   const [syncError, setSyncError] = useState<string | null>(null)
+
+  // Read the ?error=<code> the authorize/callback routes redirect back
+  // with on failure (plain window.location parsing, not useSearchParams,
+  // so this doesn't force the page into a Suspense boundary). Clear it
+  // from the URL once shown so a refresh doesn't re-surface a stale error.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get("error")
+    if (code) {
+      setSyncError(OAUTH_ERROR_MESSAGES[code] || "Something went wrong connecting Outlook. Please try again.")
+      params.delete("error")
+      const query = params.toString()
+      window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`)
+    }
+  }, [])
 
   const runSync = async () => {
     const res = await fetch("/api/outlook/sync", { method: "POST" })
@@ -186,10 +223,47 @@ export function OutlookDashboard() {
     }
   }
 
-  if (isLoading || !connection) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center py-24">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
+      </div>
+    )
+  }
+
+  // A failed fetch (network error, 401, 500, etc.) left `connection`
+  // undefined. Previously this fell through to the loading branch above
+  // and spun forever with no way to tell the button click "did"
+  // anything — surface it instead, with a retry.
+  if (connectionError || !connection) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground">Outlook</h1>
+          <p className="text-muted-foreground mt-1">
+            Connect your Outlook mailbox so client emails and events sync into
+            the Hub.
+          </p>
+        </div>
+        <Card className="rounded-xl border shadow-sm" style={{ backgroundColor: WARNING_BG, borderColor: WARNING_BORDER }}>
+          <CardContent className="p-6 flex items-start gap-3">
+            <XCircle className="mt-0.5 h-5 w-5 shrink-0" style={{ color: WARNING_ICON }} aria-hidden="true" />
+            <div className="flex-1 space-y-3">
+              <div>
+                <h2 className="text-sm font-semibold" style={{ color: WARNING_HEADING }}>
+                  Couldn&apos;t load your Outlook connection
+                </h2>
+                <p className="text-sm mt-1" style={{ color: WARNING_TEXT }}>
+                  {connectionError instanceof Error ? connectionError.message : "Please try again."}
+                </p>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => mutate()}>
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                Retry
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     )
   }
