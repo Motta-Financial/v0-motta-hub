@@ -489,8 +489,9 @@ function NotConnectedCard({ onConnect }: { onConnect: () => void }) {
           </h2>
           <p className="text-sm leading-relaxed text-muted-foreground">
             Authorize the Hub to read your mail and calendar so client emails
-            and meetings sync in automatically. We never send from your
-            account.
+            and meetings sync in automatically. The Hub only ever sends mail
+            when you click Send on a reply you wrote in Triage — never
+            automatically.
           </p>
         </div>
         <Button
@@ -504,7 +505,11 @@ function NotConnectedCard({ onConnect }: { onConnect: () => void }) {
         <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
           <li className="flex items-center gap-1.5">
             <Shield className="h-3 w-3" aria-hidden="true" />
-            Read your mail
+            Read and mark your mail as read
+          </li>
+          <li className="flex items-center gap-1.5">
+            <Shield className="h-3 w-3" aria-hidden="true" />
+            Send replies you write in Triage
           </li>
           <li className="flex items-center gap-1.5">
             <Shield className="h-3 w-3" aria-hidden="true" />

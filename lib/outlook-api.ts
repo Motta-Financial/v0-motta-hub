@@ -14,8 +14,18 @@ const GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
 /**
  * Delegated Graph scopes the Hub requests. `offline_access` is required
- * to receive a refresh_token; the rest are read-only by design — the
- * Hub never sends mail or writes calendar events on a user's behalf.
+ * to receive a refresh_token. Calendar access stays read-only. Mail is
+ * `Mail.ReadWrite` (needed to mark synced messages as read) plus
+ * `Mail.Send` so a team member can reply to a client thread directly
+ * from the Triage feed — the Hub only ever sends when a person clicks
+ * Send on a reply they wrote, never automatically.
+ *
+ * NOTE: connections created before Mail.Send/Mail.ReadWrite were added
+ * only hold the narrower `Mail.Read` grant. Microsoft won't silently
+ * upgrade a refresh token's scope, so those users must reconnect
+ * (re-consent) via /api/outlook/oauth/authorize before reply or
+ * mark-as-read calls will succeed — see GraphApiError handling in the
+ * threads routes.
  */
 export const MICROSOFT_REQUESTED_SCOPES = [
   "openid",
@@ -23,7 +33,8 @@ export const MICROSOFT_REQUESTED_SCOPES = [
   "email",
   "offline_access",
   "User.Read",
-  "Mail.Read",
+  "Mail.ReadWrite",
+  "Mail.Send",
   "Calendars.Read",
 ] as const
 
@@ -395,6 +406,193 @@ export async function fetchUpcomingEvents(
     headers: { Prefer: 'outlook.timezone="UTC"' },
   })
   return result?.value ?? []
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Triage "Emails" tab — real Outlook threads
+ * ─────────────────────────────────────────────────────────────────────── */
+
+export interface GraphMessageFull {
+  id: string
+  conversationId: string
+  subject: string | null
+  receivedDateTime: string
+  isRead: boolean
+  bodyPreview: string | null
+  body?: { contentType: string; content: string } | null
+  from: { emailAddress?: { name?: string | null; address?: string | null } } | null
+  toRecipients?: Array<{ emailAddress?: { name?: string | null; address?: string | null } }> | null
+}
+
+export interface OutlookThreadSummary {
+  id: string // conversationId
+  subject: string
+  participantName: string
+  participantEmail: string
+  latestMessageId: string
+  latestDirection: "inbound" | "outbound"
+  latestBodyPreview: string
+  latestSentAt: string
+  messageCount: number
+  unread: boolean
+}
+
+export interface OutlookThreadMessage {
+  id: string
+  direction: "inbound" | "outbound"
+  senderName: string
+  senderEmail: string
+  bodyText: string
+  sentAt: string
+}
+
+export interface OutlookThreadDetail {
+  id: string
+  subject: string
+  messages: OutlookThreadMessage[]
+}
+
+function isSelf(address: string | null | undefined, mailbox: string | null): boolean {
+  if (!address || !mailbox) return false
+  return address.toLowerCase() === mailbox.toLowerCase()
+}
+
+function messageDirection(msg: GraphMessageFull, mailbox: string | null): "inbound" | "outbound" {
+  return isSelf(msg.from?.emailAddress?.address, mailbox) ? "outbound" : "inbound"
+}
+
+function otherPartyName(msg: GraphMessageFull, mailbox: string | null): { name: string; email: string } {
+  if (messageDirection(msg, mailbox) === "inbound") {
+    return {
+      name: msg.from?.emailAddress?.name || msg.from?.emailAddress?.address || "Unknown sender",
+      email: msg.from?.emailAddress?.address || "",
+    }
+  }
+  const to = msg.toRecipients?.[0]?.emailAddress
+  return { name: to?.name || to?.address || "Unknown recipient", email: to?.address || "" }
+}
+
+/**
+ * Fetches the most recent messages across the mailbox (inbox + sent, via
+ * the unscoped /me/messages endpoint so a team member's own replies show
+ * up in the thread too) and groups them by conversationId into threads,
+ * newest-first. Used by the Triage feed's "Emails" tab.
+ */
+export async function fetchInboxThreads(
+  connection: OutlookConnectionRow,
+  supabase: SupabaseClient,
+  { messageLimit = 100, threadLimit = 40 }: { messageLimit?: number; threadLimit?: number } = {},
+): Promise<OutlookThreadSummary[]> {
+  const result = await graphRequest<{ value: GraphMessageFull[] }>(connection, supabase, "/me/messages", {
+    query: {
+      $top: messageLimit,
+      $orderby: "receivedDateTime desc",
+      $select: "id,conversationId,subject,receivedDateTime,isRead,bodyPreview,from,toRecipients",
+    },
+  })
+  const messages = result?.value ?? []
+  const mailbox = connection.outlook_email
+
+  const byConversation = new Map<string, GraphMessageFull[]>()
+  for (const msg of messages) {
+    const list = byConversation.get(msg.conversationId)
+    if (list) list.push(msg)
+    else byConversation.set(msg.conversationId, [msg])
+  }
+
+  const threads: OutlookThreadSummary[] = []
+  for (const [conversationId, msgs] of byConversation) {
+    msgs.sort((a, b) => new Date(b.receivedDateTime).getTime() - new Date(a.receivedDateTime).getTime())
+    const latest = msgs[0]
+    const other = otherPartyName(latest, mailbox)
+    threads.push({
+      id: conversationId,
+      subject: latest.subject || "(no subject)",
+      participantName: other.name,
+      participantEmail: other.email,
+      latestMessageId: latest.id,
+      latestDirection: messageDirection(latest, mailbox),
+      latestBodyPreview: latest.bodyPreview || "",
+      latestSentAt: latest.receivedDateTime,
+      messageCount: msgs.length,
+      unread: msgs.some((m) => !m.isRead && messageDirection(m, mailbox) === "inbound"),
+    })
+  }
+
+  threads.sort((a, b) => new Date(b.latestSentAt).getTime() - new Date(a.latestSentAt).getTime())
+  return threads.slice(0, threadLimit)
+}
+
+/**
+ * Loads every message in a conversation (full plain-text body, via the
+ * outlook.body-content-type=text Prefer header so we never have to strip
+ * HTML client-side) and marks any unread inbound message as read — the
+ * Graph analogue of "opening" the thread in Outlook.
+ */
+export async function fetchThreadDetail(
+  connection: OutlookConnectionRow,
+  supabase: SupabaseClient,
+  conversationId: string,
+): Promise<OutlookThreadDetail | null> {
+  const result = await graphRequest<{ value: GraphMessageFull[] }>(connection, supabase, "/me/messages", {
+    query: {
+      $filter: `conversationId eq '${conversationId.replace(/'/g, "''")}'`,
+      $orderby: "receivedDateTime asc",
+      $select: "id,conversationId,subject,receivedDateTime,isRead,bodyPreview,body,from,toRecipients",
+    },
+    headers: { Prefer: 'outlook.body-content-type="text"' },
+  })
+  const msgs = result?.value ?? []
+  if (msgs.length === 0) return null
+
+  const mailbox = connection.outlook_email
+  const unreadIds = msgs.filter((m) => !m.isRead && messageDirection(m, mailbox) === "inbound").map((m) => m.id)
+  if (unreadIds.length > 0) {
+    await Promise.all(unreadIds.map((id) => markMessageRead(connection, supabase, id).catch(() => null)))
+  }
+
+  return {
+    id: conversationId,
+    subject: msgs[msgs.length - 1].subject || "(no subject)",
+    messages: msgs.map((m) => ({
+      id: m.id,
+      direction: messageDirection(m, mailbox),
+      senderName: m.from?.emailAddress?.name || m.from?.emailAddress?.address || "Unknown sender",
+      senderEmail: m.from?.emailAddress?.address || "",
+      bodyText: (m.body?.content ?? m.bodyPreview ?? "").trim(),
+      sentAt: m.receivedDateTime,
+    })),
+  }
+}
+
+/** Marks a single message read/unread. Requires the Mail.ReadWrite scope. */
+export async function markMessageRead(
+  connection: OutlookConnectionRow,
+  supabase: SupabaseClient,
+  messageId: string,
+  isRead = true,
+): Promise<void> {
+  await graphRequest(connection, supabase, `/me/messages/${encodeURIComponent(messageId)}`, {
+    method: "PATCH",
+    body: { isRead },
+  })
+}
+
+/**
+ * Replies to a message (sender + original recipients) with plain-text
+ * `comment`. Requires the Mail.Send scope. Graph returns 202 Accepted
+ * with no body on success.
+ */
+export async function replyToMessage(
+  connection: OutlookConnectionRow,
+  supabase: SupabaseClient,
+  messageId: string,
+  comment: string,
+): Promise<void> {
+  await graphRequest(connection, supabase, `/me/messages/${encodeURIComponent(messageId)}/reply`, {
+    method: "POST",
+    body: { comment },
+  })
 }
 
 /**
