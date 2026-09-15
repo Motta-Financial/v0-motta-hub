@@ -12,12 +12,14 @@
  *   2. connected         — mailbox, connected date, sync stats, disconnect
  *   3. needs_reconnect   — amber banner, reason, reconnect action
  *
- * Data is mocked (lib/mock/outlook-connections.ts) until the real
- * outlook_connections table and /api/outlook/* routes exist, so the
- * whole thing is wrapped in <PreviewFeature>.
+ * Backed by real data: connection status comes from
+ * GET /api/outlook/connections (outlook_connections table), and recent
+ * emails / calendar events / stat counts come from a live Microsoft
+ * Graph fetch via POST /api/outlook/sync.
  */
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
+import useSWR from "swr"
 import { formatDistanceToNow } from "date-fns"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -32,7 +34,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { PreviewFeature } from "@/components/shared/preview-feature"
 import {
   Mail,
   Calendar,
@@ -45,12 +46,6 @@ import {
   Webhook,
   Link2,
 } from "lucide-react"
-import {
-  MOCK_MY_CONNECTION,
-  MOCK_RECENT_EMAILS,
-  MOCK_CALENDAR_EVENTS,
-  type OutlookOwnConnection,
-} from "@/lib/mock/outlook-connections"
 
 const DEEP_GREEN = "#6B745D"
 const MID_GREEN = "#8E9B79"
@@ -63,202 +58,297 @@ const WARNING_ICON = "#92720B"
 const WARNING_HEADING = "#5C4A0A"
 const WARNING_TEXT = "#7A6212"
 
+type OutlookConnectionStatus = "not_connected" | "connected" | "needs_reconnect"
+
+interface OutlookOwnConnection {
+  status: OutlookConnectionStatus
+  mailbox: string | null
+  connectedAt: string | null
+  lastSyncAt: string | null
+  emailsSynced: number
+  calendarEventsSynced: number
+  webhookConfigured: boolean
+  reconnectReason: string | null
+  brokenAt: string | null
+}
+
+interface OutlookRecentEmail {
+  id: string
+  subject: string
+  from: string
+  receivedAt: string
+  preview: string
+}
+
+interface OutlookCalendarEvent {
+  id: string
+  title: string
+  startsAt: string
+  attendees: number
+  location: string | null
+}
+
+async function fetcher(url: string) {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+  return res.json()
+}
+
 export function OutlookDashboard() {
-  const [connection, setConnection] = useState<OutlookOwnConnection>(MOCK_MY_CONNECTION)
+  const { data: connection, isLoading, mutate } = useSWR<OutlookOwnConnection>(
+    "/api/outlook/connections",
+    fetcher,
+  )
+  const [emails, setEmails] = useState<OutlookRecentEmail[]>([])
+  const [events, setEvents] = useState<OutlookCalendarEvent[]>([])
   const [disconnectOpen, setDisconnectOpen] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [subscribing, setSubscribing] = useState(false)
+  const [syncError, setSyncError] = useState<string | null>(null)
+
+  const runSync = async () => {
+    const res = await fetch("/api/outlook/sync", { method: "POST" })
+    const json = await res.json()
+    if (!res.ok) {
+      throw new Error(json.error || "Sync failed")
+    }
+    setEmails(json.recentEmails || [])
+    setEvents(json.calendarEvents || [])
+    await mutate()
+  }
+
+  // Pull real mail/calendar content as soon as we know we're connected.
+  useEffect(() => {
+    if (connection?.status === "connected") {
+      runSync().catch((err) => setSyncError(err instanceof Error ? err.message : "Sync failed"))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection?.status])
 
   const handleConnect = () => {
-    window.location.href = "/api/outlook/oauth/connect"
+    window.location.href = "/api/outlook/oauth/authorize"
   }
 
   const handleReconnect = () => {
-    window.location.href = "/api/outlook/oauth/connect"
+    window.location.href = "/api/outlook/oauth/authorize"
   }
 
   const handleDisconnect = async () => {
     setDisconnecting(true)
     try {
-      await fetch("/api/outlook/oauth/disconnect", { method: "DELETE" })
-    } catch {
-      // mocked — ignore network errors in preview
+      await fetch("/api/outlook/oauth/disconnect", { method: "POST" })
+      setEmails([])
+      setEvents([])
+      await mutate()
     } finally {
-      setConnection((prev) => ({
-        ...prev,
-        status: "not_connected",
-        mailbox: null,
-        connectedAt: null,
-        lastSyncAt: null,
-      }))
       setDisconnecting(false)
       setDisconnectOpen(false)
     }
   }
 
-  const handleSubscribeWebhook = () => {
-    setConnection((prev) => ({ ...prev, webhookConfigured: true }))
+  const handleSubscribeWebhook = async () => {
+    setSubscribing(true)
+    try {
+      const res = await fetch("/api/outlook/webhook/subscribe", { method: "POST" })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}))
+        throw new Error(json.error || "Failed to subscribe")
+      }
+      await mutate()
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : "Failed to subscribe")
+    } finally {
+      setSubscribing(false)
+    }
   }
 
   const handleRefresh = async () => {
     setRefreshing(true)
-    await new Promise((r) => setTimeout(r, 500))
-    setRefreshing(false)
+    setSyncError(null)
+    try {
+      await mutate()
+    } finally {
+      setRefreshing(false)
+    }
   }
 
   const handleSync = async () => {
     setSyncing(true)
-    await new Promise((r) => setTimeout(r, 800))
-    setConnection((prev) => ({ ...prev, lastSyncAt: new Date().toISOString() }))
-    setSyncing(false)
+    setSyncError(null)
+    try {
+      await runSync()
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : "Sync failed")
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  if (isLoading || !connection) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
+      </div>
+    )
   }
 
   return (
-    <PreviewFeature id="outlook-connection">
-      <div className="space-y-6">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-foreground">Outlook</h1>
-            <p className="text-muted-foreground mt-1">
-              Connect your Outlook mailbox so client emails and events sync into
-              the Hub.
-            </p>
-          </div>
-          {connection.status === "connected" && (
-            <div className="flex items-center gap-2">
-              <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
-                <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
-                Refresh
-              </Button>
-              <Button
-                onClick={handleSync}
-                disabled={syncing}
-                className="text-white hover:opacity-90"
-                style={{ backgroundColor: DEEP_GREEN }}
-              >
-                <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
-                {syncing ? "Syncing…" : "Sync now"}
-              </Button>
-            </div>
-          )}
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground">Outlook</h1>
+          <p className="text-muted-foreground mt-1">
+            Connect your Outlook mailbox so client emails and events sync into
+            the Hub.
+          </p>
         </div>
-
-        {connection.status === "connected" && !connection.webhookConfigured && (
-          <Card className="rounded-xl border shadow-sm" style={{ backgroundColor: "#E9EEE3", borderColor: PALE_GREEN }}>
-            <CardContent className="p-4">
-              <div className="flex items-start gap-3">
-                <Webhook className="mt-0.5 h-5 w-5 shrink-0" style={{ color: DARK_GREEN }} aria-hidden="true" />
-                <div className="flex-1">
-                  <h3 className="font-medium" style={{ color: DARK_GREEN }}>
-                    Webhooks not configured
-                  </h3>
-                  <p className="text-sm mt-1" style={{ color: MID_GREEN }}>
-                    Real-time notifications for new mail and calendar changes
-                    require an active webhook subscription.
-                  </p>
-                </div>
-                <Button size="sm" variant="outline" onClick={handleSubscribeWebhook}>
-                  Subscribe
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {connection.status === "not_connected" && <NotConnectedCard onConnect={handleConnect} />}
-
         {connection.status === "connected" && (
-          <ConnectedCard connection={connection} onDisconnect={() => setDisconnectOpen(true)} />
-        )}
-
-        {connection.status === "needs_reconnect" && (
-          <NeedsReconnectCard connection={connection} onReconnect={handleReconnect} />
-        )}
-
-        {connection.status === "connected" && (
-          <>
-            <div className="grid gap-4 md:grid-cols-3">
-              <StatCard icon={Mail} label="Emails synced" value={connection.emailsSynced.toLocaleString()} />
-              <StatCard
-                icon={Calendar}
-                label="Calendar events synced"
-                value={connection.calendarEventsSynced.toLocaleString()}
-              />
-              <StatCard
-                icon={RefreshCw}
-                label="Last sync"
-                value={
-                  connection.lastSyncAt
-                    ? `${formatDistanceToNow(new Date(connection.lastSyncAt))} ago`
-                    : "never"
-                }
-              />
-            </div>
-
-            <Tabs defaultValue="emails" className="space-y-4">
-              <TabsList>
-                <TabsTrigger value="emails">Recent Emails</TabsTrigger>
-                <TabsTrigger value="events">Calendar Events</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="emails" className="space-y-3">
-                {MOCK_RECENT_EMAILS.length === 0 ? (
-                  <EmptyState icon={Mail} title="No recent emails" description="Nothing has synced from this mailbox yet." />
-                ) : (
-                  MOCK_RECENT_EMAILS.map((email) => (
-                    <Card key={email.id} className="rounded-xl border-0 shadow-sm">
-                      <CardContent className="p-4">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="min-w-0">
-                            <p className="text-sm font-semibold text-foreground truncate">{email.subject}</p>
-                            <p className="text-xs text-muted-foreground mt-0.5">{email.from}</p>
-                            <p className="text-sm text-muted-foreground mt-2 line-clamp-1">{email.preview}</p>
-                          </div>
-                          <p className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
-                            {formatDistanceToNow(new Date(email.receivedAt))} ago
-                          </p>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))
-                )}
-              </TabsContent>
-
-              <TabsContent value="events" className="space-y-3">
-                {MOCK_CALENDAR_EVENTS.length === 0 ? (
-                  <EmptyState icon={Calendar} title="No upcoming events" description="Your synced calendar has nothing coming up." />
-                ) : (
-                  MOCK_CALENDAR_EVENTS.map((event) => (
-                    <Card key={event.id} className="rounded-xl border-0 shadow-sm">
-                      <CardContent className="p-4">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="min-w-0">
-                            <p className="text-sm font-semibold text-foreground truncate">{event.title}</p>
-                            <p className="text-xs text-muted-foreground mt-0.5">
-                              {new Date(event.startsAt).toLocaleString("en-US", {
-                                weekday: "short",
-                                month: "short",
-                                day: "numeric",
-                                hour: "numeric",
-                                minute: "2-digit",
-                              })}
-                              {event.location ? ` · ${event.location}` : ""}
-                            </p>
-                          </div>
-                          <p className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
-                            {event.attendees} attendee{event.attendees === 1 ? "" : "s"}
-                          </p>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))
-                )}
-              </TabsContent>
-            </Tabs>
-          </>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+            <Button
+              onClick={handleSync}
+              disabled={syncing}
+              className="text-white hover:opacity-90"
+              style={{ backgroundColor: DEEP_GREEN }}
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
+              {syncing ? "Syncing…" : "Sync now"}
+            </Button>
+          </div>
         )}
       </div>
+
+      {syncError && (
+        <Card className="rounded-xl border shadow-sm" style={{ backgroundColor: WARNING_BG, borderColor: WARNING_BORDER }}>
+          <CardContent className="p-4 flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" style={{ color: WARNING_ICON }} aria-hidden="true" />
+            <p className="text-sm" style={{ color: WARNING_TEXT }}>
+              {syncError}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {connection.status === "connected" && !connection.webhookConfigured && (
+        <Card className="rounded-xl border shadow-sm" style={{ backgroundColor: "#E9EEE3", borderColor: PALE_GREEN }}>
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <Webhook className="mt-0.5 h-5 w-5 shrink-0" style={{ color: DARK_GREEN }} aria-hidden="true" />
+              <div className="flex-1">
+                <h3 className="font-medium" style={{ color: DARK_GREEN }}>
+                  Webhooks not configured
+                </h3>
+                <p className="text-sm mt-1" style={{ color: MID_GREEN }}>
+                  Real-time notifications for new mail and calendar changes
+                  require an active webhook subscription.
+                </p>
+              </div>
+              <Button size="sm" variant="outline" onClick={handleSubscribeWebhook} disabled={subscribing}>
+                {subscribing ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : null}
+                Subscribe
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {connection.status === "not_connected" && <NotConnectedCard onConnect={handleConnect} />}
+
+      {connection.status === "connected" && (
+        <ConnectedCard connection={connection} onDisconnect={() => setDisconnectOpen(true)} />
+      )}
+
+      {connection.status === "needs_reconnect" && (
+        <NeedsReconnectCard connection={connection} onReconnect={handleReconnect} />
+      )}
+
+      {connection.status === "connected" && (
+        <>
+          <div className="grid gap-4 md:grid-cols-3">
+            <StatCard icon={Mail} label="Emails synced" value={connection.emailsSynced.toLocaleString()} />
+            <StatCard
+              icon={Calendar}
+              label="Calendar events synced"
+              value={connection.calendarEventsSynced.toLocaleString()}
+            />
+            <StatCard
+              icon={RefreshCw}
+              label="Last sync"
+              value={
+                connection.lastSyncAt
+                  ? `${formatDistanceToNow(new Date(connection.lastSyncAt))} ago`
+                  : "never"
+              }
+            />
+          </div>
+
+          <Tabs defaultValue="emails" className="space-y-4">
+            <TabsList>
+              <TabsTrigger value="emails">Recent Emails</TabsTrigger>
+              <TabsTrigger value="events">Calendar Events</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="emails" className="space-y-3">
+              {emails.length === 0 ? (
+                <EmptyState icon={Mail} title="No recent emails" description="Nothing has synced from this mailbox yet." />
+              ) : (
+                emails.map((email) => (
+                  <Card key={email.id} className="rounded-xl border-0 shadow-sm">
+                    <CardContent className="p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-foreground truncate">{email.subject}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{email.from}</p>
+                          <p className="text-sm text-muted-foreground mt-2 line-clamp-1">{email.preview}</p>
+                        </div>
+                        <p className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
+                          {formatDistanceToNow(new Date(email.receivedAt))} ago
+                        </p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </TabsContent>
+
+            <TabsContent value="events" className="space-y-3">
+              {events.length === 0 ? (
+                <EmptyState icon={Calendar} title="No upcoming events" description="Your synced calendar has nothing coming up." />
+              ) : (
+                events.map((event) => (
+                  <Card key={event.id} className="rounded-xl border-0 shadow-sm">
+                    <CardContent className="p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-foreground truncate">{event.title}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {new Date(event.startsAt).toLocaleString("en-US", {
+                              weekday: "short",
+                              month: "short",
+                              day: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            })}
+                            {event.location ? ` · ${event.location}` : ""}
+                          </p>
+                        </div>
+                        <p className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
+                          {event.attendees} attendee{event.attendees === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </TabsContent>
+          </Tabs>
+        </>
+      )}
 
       <AlertDialog open={disconnectOpen} onOpenChange={setDisconnectOpen}>
         <AlertDialogContent>
@@ -289,7 +379,7 @@ export function OutlookDashboard() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </PreviewFeature>
+    </div>
   )
 }
 
