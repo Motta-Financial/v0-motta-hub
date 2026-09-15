@@ -18,15 +18,25 @@ export interface OutlookOwnConnection {
   lastSyncAt: string | null // ISO
   emailsSynced: number
   calendarEventsSynced: number
+  webhookConfigured: boolean
   reconnectReason: string | null
   brokenAt: string | null // ISO
 }
 
-export interface OutlookTeamCoverage {
+export interface OutlookRecentEmail {
   id: string
-  fullName: string
-  avatarUrl: string | null
-  mailbox: string | null // null = not connected
+  subject: string
+  from: string
+  receivedAt: string // ISO
+  preview: string
+}
+
+export interface OutlookCalendarEvent {
+  id: string
+  title: string
+  startsAt: string // ISO
+  attendees: number
+  location: string | null
 }
 
 // Flip this to "not_connected" or "needs_reconnect" to preview the other
@@ -38,18 +48,48 @@ export const MOCK_MY_CONNECTION: OutlookOwnConnection = {
   lastSyncAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
   emailsSynced: 1842,
   calendarEventsSynced: 96,
+  webhookConfigured: false,
   reconnectReason: "Your password changed, or access was revoked.",
   brokenAt: "2025-09-10T09:15:00.000Z",
 }
 
-export const MOCK_TEAM_COVERAGE: OutlookTeamCoverage[] = [
-  { id: "tm-1", fullName: "Jordan Reyes", avatarUrl: null, mailbox: "jordan.reyes@mottacpa.com" },
-  { id: "tm-2", fullName: "Priya Nair", avatarUrl: null, mailbox: "priya.nair@mottacpa.com" },
-  { id: "tm-3", fullName: "Sam Okafor", avatarUrl: null, mailbox: "sam.okafor@mottacpa.com" },
-  { id: "tm-4", fullName: "Dana Whitfield", avatarUrl: null, mailbox: "dana.whitfield@mottacpa.com" },
-  { id: "tm-5", fullName: "Marcus Lee", avatarUrl: null, mailbox: "marcus.lee@mottacpa.com" },
-  { id: "tm-6", fullName: "Elena Vasquez", avatarUrl: null, mailbox: "elena.vasquez@mottacpa.com" },
-  { id: "tm-7", fullName: "Tom Bradshaw", avatarUrl: null, mailbox: null },
-  { id: "tm-8", fullName: "Ariana Petrov", avatarUrl: null, mailbox: null },
-  { id: "tm-9", fullName: "Devon Marsh", avatarUrl: null, mailbox: null },
+export const MOCK_RECENT_EMAILS: OutlookRecentEmail[] = [
+  {
+    id: "em-1",
+    subject: "Re: Q3 estimated payments",
+    from: "Karen Ibarra",
+    receivedAt: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+    preview: "Thanks for the reminder — I'll send the wire confirmation over today.",
+  },
+  {
+    id: "em-2",
+    subject: "1099s for review",
+    from: "Devon Marsh",
+    receivedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    preview: "Attached are the three 1099s that still need a second look before filing.",
+  },
+  {
+    id: "em-3",
+    subject: "Signed engagement letter",
+    from: "Priya Nair",
+    receivedAt: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
+    preview: "Client countersigned this morning — copy attached for the file.",
+  },
+]
+
+export const MOCK_CALENDAR_EVENTS: OutlookCalendarEvent[] = [
+  {
+    id: "ev-1",
+    title: "Client call — Ibarra Consulting",
+    startsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    attendees: 3,
+    location: "Microsoft Teams",
+  },
+  {
+    id: "ev-2",
+    title: "Internal review — year-end close",
+    startsAt: new Date(Date.now() + 26 * 60 * 60 * 1000).toISOString(),
+    attendees: 5,
+    location: null,
+  },
 ]

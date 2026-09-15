@@ -2,19 +2,15 @@
 
 /**
  * OutlookDashboard — per-user Outlook mailbox connection at
- * /settings/outlook. Mirrors the shape of CalendlyDashboard: one
- * component handles every state so the page itself stays a thin
- * wrapper.
+ * /settings/outlook and /meetings/outlook. Mirrors the layout of
+ * CalendlyDashboard (components/calendly-dashboard.tsx): one connected
+ * account card, stat tiles, and a tabbed view of synced content — so
+ * the page reads the same way whichever integration you're looking at.
  *
  * Three states for the signed-in user's own connection:
  *   1. not_connected    — prompt to connect, explain what access is requested
  *   2. connected         — mailbox, connected date, sync stats, disconnect
  *   3. needs_reconnect   — amber banner, reason, reconnect action
- *
- * Below that, a read-only "Firm coverage" list of who else has
- * connected — triage only covers connected mailboxes, so staff need to
- * know at a glance who isn't covered yet. There is no way to connect on
- * someone else's behalf here.
  *
  * Data is mocked (lib/mock/outlook-connections.ts) until the real
  * outlook_connections table and /api/outlook/* routes exist, so the
@@ -25,7 +21,7 @@ import { useState } from "react"
 import { formatDistanceToNow } from "date-fns"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,10 +42,13 @@ import {
   Loader2,
   Shield,
   KeyRound,
+  Webhook,
+  Link2,
 } from "lucide-react"
 import {
   MOCK_MY_CONNECTION,
-  MOCK_TEAM_COVERAGE,
+  MOCK_RECENT_EMAILS,
+  MOCK_CALENDAR_EVENTS,
   type OutlookOwnConnection,
 } from "@/lib/mock/outlook-connections"
 
@@ -68,6 +67,8 @@ export function OutlookDashboard() {
   const [connection, setConnection] = useState<OutlookOwnConnection>(MOCK_MY_CONNECTION)
   const [disconnectOpen, setDisconnectOpen] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   const handleConnect = () => {
     window.location.href = "/api/outlook/oauth/connect"
@@ -96,22 +97,76 @@ export function OutlookDashboard() {
     }
   }
 
-  const connectedCount = MOCK_TEAM_COVERAGE.filter((m) => !!m.mailbox).length
+  const handleSubscribeWebhook = () => {
+    setConnection((prev) => ({ ...prev, webhookConfigured: true }))
+  }
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    await new Promise((r) => setTimeout(r, 500))
+    setRefreshing(false)
+  }
+
+  const handleSync = async () => {
+    setSyncing(true)
+    await new Promise((r) => setTimeout(r, 800))
+    setConnection((prev) => ({ ...prev, lastSyncAt: new Date().toISOString() }))
+    setSyncing(false)
+  }
 
   return (
     <PreviewFeature id="outlook-connection">
-      <div className="space-y-8">
-        <header className="flex flex-col gap-2">
-          <h1 className="text-3xl font-bold text-foreground">Outlook</h1>
-          <p className="text-sm text-muted-foreground">
-            Connect your Outlook mailbox so client emails appear in Triage and can
-            be attached to projects.
-          </p>
-        </header>
+      <div className="space-y-6">
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-foreground">Outlook</h1>
+            <p className="text-muted-foreground mt-1">
+              Connect your Outlook mailbox so client emails and events sync into
+              the Hub.
+            </p>
+          </div>
+          {connection.status === "connected" && (
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+                Refresh
+              </Button>
+              <Button
+                onClick={handleSync}
+                disabled={syncing}
+                className="text-white hover:opacity-90"
+                style={{ backgroundColor: DEEP_GREEN }}
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
+                {syncing ? "Syncing…" : "Sync now"}
+              </Button>
+            </div>
+          )}
+        </div>
 
-        {connection.status === "not_connected" && (
-          <NotConnectedCard onConnect={handleConnect} />
+        {connection.status === "connected" && !connection.webhookConfigured && (
+          <Card className="rounded-xl border shadow-sm" style={{ backgroundColor: "#E9EEE3", borderColor: PALE_GREEN }}>
+            <CardContent className="p-4">
+              <div className="flex items-start gap-3">
+                <Webhook className="mt-0.5 h-5 w-5 shrink-0" style={{ color: DARK_GREEN }} aria-hidden="true" />
+                <div className="flex-1">
+                  <h3 className="font-medium" style={{ color: DARK_GREEN }}>
+                    Webhooks not configured
+                  </h3>
+                  <p className="text-sm mt-1" style={{ color: MID_GREEN }}>
+                    Real-time notifications for new mail and calendar changes
+                    require an active webhook subscription.
+                  </p>
+                </div>
+                <Button size="sm" variant="outline" onClick={handleSubscribeWebhook}>
+                  Subscribe
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         )}
+
+        {connection.status === "not_connected" && <NotConnectedCard onConnect={handleConnect} />}
 
         {connection.status === "connected" && (
           <ConnectedCard connection={connection} onDisconnect={() => setDisconnectOpen(true)} />
@@ -121,7 +176,88 @@ export function OutlookDashboard() {
           <NeedsReconnectCard connection={connection} onReconnect={handleReconnect} />
         )}
 
-        <FirmCoverageSection connectedCount={connectedCount} total={MOCK_TEAM_COVERAGE.length} />
+        {connection.status === "connected" && (
+          <>
+            <div className="grid gap-4 md:grid-cols-3">
+              <StatCard icon={Mail} label="Emails synced" value={connection.emailsSynced.toLocaleString()} />
+              <StatCard
+                icon={Calendar}
+                label="Calendar events synced"
+                value={connection.calendarEventsSynced.toLocaleString()}
+              />
+              <StatCard
+                icon={RefreshCw}
+                label="Last sync"
+                value={
+                  connection.lastSyncAt
+                    ? `${formatDistanceToNow(new Date(connection.lastSyncAt))} ago`
+                    : "never"
+                }
+              />
+            </div>
+
+            <Tabs defaultValue="emails" className="space-y-4">
+              <TabsList>
+                <TabsTrigger value="emails">Recent Emails</TabsTrigger>
+                <TabsTrigger value="events">Calendar Events</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="emails" className="space-y-3">
+                {MOCK_RECENT_EMAILS.length === 0 ? (
+                  <EmptyState icon={Mail} title="No recent emails" description="Nothing has synced from this mailbox yet." />
+                ) : (
+                  MOCK_RECENT_EMAILS.map((email) => (
+                    <Card key={email.id} className="rounded-xl border-0 shadow-sm">
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-foreground truncate">{email.subject}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">{email.from}</p>
+                            <p className="text-sm text-muted-foreground mt-2 line-clamp-1">{email.preview}</p>
+                          </div>
+                          <p className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
+                            {formatDistanceToNow(new Date(email.receivedAt))} ago
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))
+                )}
+              </TabsContent>
+
+              <TabsContent value="events" className="space-y-3">
+                {MOCK_CALENDAR_EVENTS.length === 0 ? (
+                  <EmptyState icon={Calendar} title="No upcoming events" description="Your synced calendar has nothing coming up." />
+                ) : (
+                  MOCK_CALENDAR_EVENTS.map((event) => (
+                    <Card key={event.id} className="rounded-xl border-0 shadow-sm">
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-foreground truncate">{event.title}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {new Date(event.startsAt).toLocaleString("en-US", {
+                                weekday: "short",
+                                month: "short",
+                                day: "numeric",
+                                hour: "numeric",
+                                minute: "2-digit",
+                              })}
+                              {event.location ? ` · ${event.location}` : ""}
+                            </p>
+                          </div>
+                          <p className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
+                            {event.attendees} attendee{event.attendees === 1 ? "" : "s"}
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))
+                )}
+              </TabsContent>
+            </Tabs>
+          </>
+        )}
       </div>
 
       <AlertDialog open={disconnectOpen} onOpenChange={setDisconnectOpen}>
@@ -129,9 +265,9 @@ export function OutlookDashboard() {
           <AlertDialogHeader>
             <AlertDialogTitle>Disconnect Outlook?</AlertDialogTitle>
             <AlertDialogDescription>
-              New mail will stop appearing in Triage as soon as you disconnect.
-              Emails already synced stay where they are — nothing gets deleted.
-              You can reconnect anytime.
+              New mail will stop syncing as soon as you disconnect. Emails
+              already synced stay where they are — nothing gets deleted. You
+              can reconnect anytime.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -165,15 +301,15 @@ function NotConnectedCard({ onConnect }: { onConnect: () => void }) {
           className="flex h-12 w-12 items-center justify-center rounded-full"
           style={{ backgroundColor: `${PALE_GREEN}33` }}
         >
-          <Mail className="h-6 w-6" style={{ color: DARK_GREEN }} aria-hidden="true" />
+          <Link2 className="h-6 w-6" style={{ color: DARK_GREEN }} aria-hidden="true" />
         </div>
         <div className="max-w-md space-y-1.5">
           <h2 className="text-lg font-semibold text-foreground">
             Connect your Outlook mailbox
           </h2>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            Connect your Outlook mailbox so client emails appear in Triage and can
-            be attached to projects. We read your mail; we never send from your
+            Authorize the Hub to read your mail and calendar so client emails
+            and meetings sync in automatically. We never send from your
             account.
           </p>
         </div>
@@ -218,42 +354,36 @@ function ConnectedCard({
         year: "numeric",
       })
     : null
-  const lastSyncRelative = connection.lastSyncAt
-    ? `${formatDistanceToNow(new Date(connection.lastSyncAt))} ago`
-    : "never"
 
   return (
     <Card className="rounded-xl border-0 shadow-sm">
       <CardContent className="p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-start gap-3">
-            <CheckCircle2
-              className="mt-0.5 h-5 w-5 shrink-0"
-              style={{ color: DEEP_GREEN }}
-              aria-hidden="true"
-            />
-            <div>
-              <p className="text-base font-semibold text-foreground">
-                {connection.mailbox}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Connected on {connectedDate}
-              </p>
-            </div>
+        <div className="flex items-start justify-between flex-wrap gap-4">
+          <div>
+            <h2 className="text-2xl font-semibold text-foreground">{connection.mailbox}</h2>
+            <p className="text-muted-foreground flex items-center gap-2 mt-1">
+              <Mail className="h-4 w-4" aria-hidden="true" />
+              Connected on {connectedDate}
+            </p>
           </div>
-          <Button variant="outline" size="sm" onClick={onDisconnect}>
+          <Button variant="outline" onClick={onDisconnect}>
             Disconnect
           </Button>
         </div>
 
-        <div className="mt-5 grid gap-4 border-t pt-4 sm:grid-cols-3">
-          <Stat label="Emails synced" value={connection.emailsSynced.toLocaleString()} icon={Mail} />
-          <Stat label="Last sync" value={lastSyncRelative} icon={RefreshCw} />
-          <Stat
-            label="Calendar events synced"
-            value={connection.calendarEventsSynced.toLocaleString()}
-            icon={Calendar}
-          />
+        <div className="mt-4 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-3 w-3" style={{ color: DEEP_GREEN }} aria-hidden="true" />
+            Token OK
+          </div>
+          <div className="flex items-center gap-2">
+            <Webhook
+              className="h-3 w-3"
+              style={{ color: connection.webhookConfigured ? DEEP_GREEN : "#B45309" }}
+              aria-hidden="true"
+            />
+            Webhook {connection.webhookConfigured ? "active" : "not configured"}
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -320,86 +450,50 @@ function NeedsReconnectCard({
   )
 }
 
-function Stat({
+function StatCard({
+  icon: Icon,
   label,
   value,
-  icon: Icon,
 }: {
+  icon: typeof Mail
   label: string
   value: string
-  icon: typeof Mail
 }) {
   return (
-    <div className="flex items-center gap-2.5">
-      <Icon className="h-4 w-4 shrink-0" style={{ color: MID_GREEN }} aria-hidden="true" />
-      <div>
-        <p className="text-sm font-medium text-foreground">{value}</p>
-        <p className="text-xs text-muted-foreground">{label}</p>
-      </div>
-    </div>
+    <Card className="rounded-xl border-0 shadow-sm">
+      <CardContent className="p-6">
+        <div className="flex items-center gap-4">
+          <div className="p-3 rounded-lg" style={{ backgroundColor: `${PALE_GREEN}33` }}>
+            <Icon className="h-6 w-6" style={{ color: DARK_GREEN }} aria-hidden="true" />
+          </div>
+          <div>
+            <p className="text-sm text-muted-foreground">{label}</p>
+            <p className="text-2xl font-semibold text-foreground">{value}</p>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
-function FirmCoverageSection({
-  connectedCount,
-  total,
+function EmptyState({
+  icon: Icon,
+  title,
+  description,
 }: {
-  connectedCount: number
-  total: number
+  icon: typeof Mail
+  title: string
+  description: string
 }) {
   return (
-    <section className="space-y-3">
-      <div className="space-y-1">
-        <h2 className="text-lg font-semibold text-foreground">Firm coverage</h2>
-        <p className="text-sm text-muted-foreground">
-          {connectedCount} of {total} team members connected. Triage only covers
-          mailboxes that are connected.
-        </p>
-      </div>
-      <Card className="rounded-xl border-0 shadow-sm">
-        <CardContent className="divide-y p-0">
-          {MOCK_TEAM_COVERAGE.map((member) => (
-            <div
-              key={member.id}
-              className="flex items-center gap-3 px-4 py-3"
-            >
-              <Avatar className="h-8 w-8">
-                <AvatarFallback
-                  className="text-xs font-medium text-white"
-                  style={{ backgroundColor: member.mailbox ? DEEP_GREEN : MID_GREEN }}
-                >
-                  {initials(member.fullName)}
-                </AvatarFallback>
-              </Avatar>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-foreground">
-                  {member.fullName}
-                </p>
-                {member.mailbox ? (
-                  <p className="truncate text-xs text-muted-foreground">{member.mailbox}</p>
-                ) : (
-                  <p className="text-xs text-muted-foreground">Not connected</p>
-                )}
-              </div>
-              {member.mailbox && (
-                <CheckCircle2
-                  className="h-4 w-4 shrink-0"
-                  style={{ color: DEEP_GREEN }}
-                  aria-hidden="true"
-                />
-              )}
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-    </section>
+    <Card className="rounded-xl border-0 shadow-sm">
+      <CardContent className="p-12">
+        <div className="text-center">
+          <Icon className="h-12 w-12 text-muted-foreground mx-auto mb-4" aria-hidden="true" />
+          <h3 className="text-lg font-semibold mb-2 text-foreground">{title}</h3>
+          <p className="text-muted-foreground">{description}</p>
+        </div>
+      </CardContent>
+    </Card>
   )
-}
-
-function initials(fullName: string) {
-  const parts = fullName.trim().split(/\s+/)
-  return parts
-    .slice(0, 2)
-    .map((p) => p[0]?.toUpperCase() ?? "")
-    .join("")
 }
