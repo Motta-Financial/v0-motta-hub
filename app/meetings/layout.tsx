@@ -2,7 +2,7 @@
 
 import { usePathname } from "next/navigation"
 import Link from "next/link"
-import { Calendar, Video, MessageSquare, Briefcase, CalendarClock } from "lucide-react"
+import { Calendar, Video, MessageSquare, Briefcase, CalendarClock, Mail } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DashboardLayout } from "@/components/dashboard-layout"
 
@@ -59,6 +59,12 @@ export default function MeetingsLayout({
       href: "/meetings/zoom",
       icon: Video,
       activeFor: (p: string) => p.startsWith("/meetings/zoom"),
+    },
+    {
+      label: "Outlook",
+      href: "/meetings/outlook",
+      icon: Mail,
+      activeFor: (p: string) => p.startsWith("/meetings/outlook"),
     },
     {
       label: "Debriefs",
