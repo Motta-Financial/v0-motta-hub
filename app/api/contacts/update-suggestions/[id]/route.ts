@@ -20,6 +20,65 @@ export const dynamic = "force-dynamic"
 
 type RouteCtx = { params: Promise<{ id: string }> }
 
+/**
+ * The portal shows a mailing address as ONE editable line, built by joining
+ * line1 / city / state / zip with ", ". This parses that shape back into
+ * columns, and refuses anything it isn't confident about rather than
+ * guessing a client's address into the wrong fields.
+ *
+ * Accepted:
+ *   "123 Main St, Austin, TX, 78701"   -> four parts
+ *   "123 Main St, Austin, TX 78701"    -> three, state and zip together
+ * Anything else (extra commas, a missing city, a free-form rewrite) is
+ * rejected so a human applies it deliberately on the contact record.
+ */
+function parseMailingAddress(value: string):
+  | { ok: true; patch: Record<string, string> }
+  | { ok: false; reason: string } {
+  const parts = value
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)
+
+  let line1: string | undefined
+  let city: string | undefined
+  let state: string | undefined
+  let zip: string | undefined
+
+  if (parts.length === 4) {
+    ;[line1, city, state, zip] = parts
+  } else if (parts.length === 3) {
+    ;[line1, city] = parts
+    const tail = parts[2].split(/\s+/)
+    if (tail.length !== 2) {
+      return { ok: false, reason: "could not read a state and ZIP from the last part" }
+    }
+    ;[state, zip] = tail
+  } else {
+    return {
+      ok: false,
+      reason: `expected "street, city, state, ZIP" but got ${parts.length} comma-separated parts`,
+    }
+  }
+
+  if (!/^[A-Za-z]{2}$/.test(state)) {
+    return { ok: false, reason: `"${state}" is not a two-letter state code` }
+  }
+  if (!/^\d{5}(-\d{4})?$/.test(zip)) {
+    return { ok: false, reason: `"${zip}" is not a ZIP code` }
+  }
+
+  return {
+    ok: true,
+    patch: {
+      mailing_address_line1: line1,
+      mailing_city: city,
+      mailing_state: state.toUpperCase(),
+      mailing_zip_code: zip,
+    },
+  }
+}
+
 export async function POST(req: Request, { params }: RouteCtx) {
   const { id } = await params
   const supabase = await createClient()
@@ -73,6 +132,22 @@ export async function POST(req: Request, { params }: RouteCtx) {
           )
         }
         patch = { first_name: first, last_name: last }
+        break
+      }
+      case "address": {
+        const parsed = parseMailingAddress(suggestion.suggested_value)
+        if (!parsed.ok) {
+          // 422, not 500: the value is fine, we just won't split it for
+          // them. The reason is surfaced so the reviewer knows to edit the
+          // contact directly instead of clicking Approve again.
+          return NextResponse.json(
+            {
+              error: `Can't apply this address automatically -- ${parsed.reason}. Edit the contact directly.`,
+            },
+            { status: 422 },
+          )
+        }
+        patch = parsed.patch
         break
       }
       default:
