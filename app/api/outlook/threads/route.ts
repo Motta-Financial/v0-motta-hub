@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getAuthenticatedUser } from "@/lib/supabase/auth-helpers"
 import { fetchInboxThreads, GraphApiError, type OutlookConnectionRow } from "@/lib/outlook-api"
+import { enrichThreads } from "@/lib/outlook-thread-assignment"
 
 /**
  * GET → the signed-in user's real Outlook threads for the Triage feed's
@@ -45,7 +46,27 @@ export async function GET() {
     }
 
     const threads = await fetchInboxThreads(connection as OutlookConnectionRow, supabase)
-    return NextResponse.json({ status: "connected", threads })
+
+    // Graph knows addresses, not clients. Attach who each thread is with,
+    // that client's open work items, and any existing filing -- three
+    // queries for the whole page, not three per thread.
+    const enrichment = await enrichThreads(supabase, threads)
+
+    return NextResponse.json({
+      status: "connected",
+      threads: threads.map((t) => {
+        const extra = enrichment.get(t.id)
+        return {
+          ...t,
+          // null client means the address matched no contact or org: a
+          // vendor, a colleague, a newsletter. The UI shows no project
+          // control for those rather than an empty dropdown.
+          client: extra?.client ?? null,
+          availableProjects: extra?.availableProjects ?? [],
+          assignment: extra?.assignment ?? null,
+        }
+      }),
+    })
   } catch (err) {
     if (err instanceof GraphApiError && (err.status === 401 || err.status === 403)) {
       return NextResponse.json({ status: "needs_reconnect", threads: [] })

@@ -49,6 +49,13 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-context"
@@ -140,11 +147,33 @@ interface EmailReplyResult {
   error?: string
 }
 
+/**
+ * What GET /api/outlook/threads adds on top of the raw Graph thread:
+ * which Hub client the other party is (matched by email address), that
+ * client's open work items, and any existing filing.
+ *
+ * `client` is null for most threads — vendors, colleagues, newsletters.
+ * That is the normal case, not a failure, and those threads simply show
+ * no project control.
+ */
+interface TriageEmailThread extends OutlookThreadSummary {
+  client: { kind: "contact" | "organization"; id: string; name: string } | null
+  availableProjects: Array<{ id: string; title: string }>
+  assignment: {
+    workItemId: string
+    workItemTitle: string | null
+    assignedById: string | null
+    assignedAt: string
+  } | null
+}
+
 function threadToTriageItem(
-  thread: OutlookThreadSummary,
+  thread: TriageEmailThread,
   callbacks: {
     onReply: (messageId: string, text: string) => Promise<EmailReplyResult>
     onOpen: (conversationId: string) => void
+    onAssign: (conversationId: string, workItemId: string) => Promise<EmailReplyResult>
+    onUnassign: (conversationId: string) => Promise<EmailReplyResult>
   },
 ): TriageItem {
   return {
@@ -162,6 +191,8 @@ function threadToTriageItem(
       messageCount: thread.messageCount,
       onReply: (text: string) => callbacks.onReply(thread.latestMessageId, text),
       onOpen: () => callbacks.onOpen(thread.id),
+      onAssign: (workItemId: string) => callbacks.onAssign(thread.id, workItemId),
+      onUnassign: () => callbacks.onUnassign(thread.id),
     },
   }
 }
@@ -204,7 +235,7 @@ export function TriageFeed() {
     data: emailData,
     isLoading: emailsLoading,
     mutate: mutateEmails,
-  } = useSWR<{ status: "not_connected" | "needs_reconnect" | "connected"; threads: OutlookThreadSummary[] }>(
+  } = useSWR<{ status: "not_connected" | "needs_reconnect" | "connected"; threads: TriageEmailThread[] }>(
     filter === "client_email" ? "/api/outlook/threads" : null,
     swrFetcher,
     { revalidateOnFocus: true },
@@ -229,6 +260,36 @@ export function TriageFeed() {
     return { ok: true }
   }
 
+  async function assignEmailThread(
+    conversationId: string,
+    workItemId: string,
+  ): Promise<EmailReplyResult> {
+    const res = await fetch("/api/outlook/threads/assign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId, workItemId }),
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, error: json.error || "Couldn't file that email. Please try again." }
+    }
+    await mutateEmails()
+    return { ok: true }
+  }
+
+  async function unassignEmailThread(conversationId: string): Promise<EmailReplyResult> {
+    const res = await fetch(
+      `/api/outlook/threads/assign?conversationId=${encodeURIComponent(conversationId)}`,
+      { method: "DELETE" },
+    )
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, error: json.error || "Couldn't unfile that email." }
+    }
+    await mutateEmails()
+    return { ok: true }
+  }
+
   function openEmailThread(conversationId: string) {
     swrMutate(`/api/outlook/threads/detail?conversationId=${encodeURIComponent(conversationId)}`)
   }
@@ -241,7 +302,14 @@ export function TriageFeed() {
     () =>
       emailThreads
         .filter((t) => !dismissedEmailIds.has(t.id))
-        .map((t) => threadToTriageItem(t, { onReply: replyToEmailMessage, onOpen: openEmailThread }))
+        .map((t) =>
+          threadToTriageItem(t, {
+            onReply: replyToEmailMessage,
+            onOpen: openEmailThread,
+            onAssign: assignEmailThread,
+            onUnassign: unassignEmailThread,
+          }),
+        )
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [emailThreads, dismissedEmailIds],
@@ -252,11 +320,24 @@ export function TriageFeed() {
     [emailThreads, dismissedEmailIds],
   )
 
+  const unassignedEmailCount = useMemo(
+    () =>
+      emailItems.filter((it) => {
+        const thread = it.metadata!.thread as TriageEmailThread
+        return thread.client && !thread.assignment
+      }).length,
+    [emailItems],
+  )
+
   const visibleEmailItems = useMemo(() => {
     const query = emailSearch.trim().toLowerCase()
     return emailItems.filter((it) => {
-      const thread = it.metadata!.thread as OutlookThreadSummary
+      const thread = it.metadata!.thread as TriageEmailThread
       if (emailSubFilter === "unread" && !it.metadata!.unread) return false
+      // "Unassigned" means a client thread nobody has filed yet. Threads
+      // that match no client are excluded: they are not work waiting to be
+      // filed, they are a newsletter.
+      if (emailSubFilter === "unassigned" && (!thread.client || thread.assignment)) return false
       if (query) {
         const haystack = [thread.subject, thread.participantName, thread.participantEmail, thread.latestBodyPreview]
           .join(" ")
@@ -426,6 +507,7 @@ export function TriageFeed() {
             <div className="space-y-3">
               <EmailFilterBar
                 subFilter={emailSubFilter}
+                unassignedCount={unassignedEmailCount}
                 onSubFilterChange={setEmailSubFilter}
                 search={emailSearch}
                 onSearchChange={setEmailSearch}
@@ -463,8 +545,8 @@ export function TriageFeed() {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * EmailFilterBar — secondary toolbar shown only above the Emails tab's
- * list: All / Unread chips, plus a search box over sender, subject, and
- * body.
+ * list: All / Unread / Unassigned chips, plus a search box over sender,
+ * subject, and body.
  * ─────────────────────────────────────────────────────────────────────── */
 
 function EmailFilterBar({
@@ -473,16 +555,21 @@ function EmailFilterBar({
   search,
   onSearchChange,
   unreadCount,
+  unassignedCount,
 }: {
   subFilter: string
   onSubFilterChange: (v: string) => void
   search: string
   onSearchChange: (v: string) => void
   unreadCount: number
+  unassignedCount: number
 }) {
   const chips: Array<{ value: string; label: string; count?: number }> = [
     { value: "all", label: "All" },
     { value: "unread", label: "Unread", count: unreadCount },
+    // Client mail nobody has filed yet — the actual work queue. Counts
+    // only threads that matched a client, so vendors never inflate it.
+    { value: "unassigned", label: "Unassigned", count: unassignedCount },
   ]
 
   return (
@@ -1071,16 +1158,36 @@ function ProposalBody({ item }: { item: TriageItem }) {
  * the chevron-driven full-thread expand/collapse.
  */
 function EmailThreadBody({ item }: { item: TriageItem }) {
-  const thread = item.metadata!.thread as OutlookThreadSummary
+  const thread = item.metadata!.thread as TriageEmailThread
   const direction = item.metadata!.direction as "inbound" | "outbound"
   const unread = Boolean(item.metadata!.unread)
   const messageCount = item.metadata!.messageCount as number
   const onReply = item.metadata!.onReply as (text: string) => Promise<EmailReplyResult>
+  const onAssign = item.metadata!.onAssign as (workItemId: string) => Promise<EmailReplyResult>
+  const onUnassign = item.metadata!.onUnassign as () => Promise<EmailReplyResult>
 
+  const [assigning, setAssigning] = useState(false)
+  const [assignError, setAssignError] = useState<string | null>(null)
   const [replyOpen, setReplyOpen] = useState(false)
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+
+  async function fileUnder(workItemId: string) {
+    setAssigning(true)
+    setAssignError(null)
+    const result = await onAssign(workItemId)
+    if (!result.ok) setAssignError(result.error ?? "Couldn't file that email.")
+    setAssigning(false)
+  }
+
+  async function unfile() {
+    setAssigning(true)
+    setAssignError(null)
+    const result = await onUnassign()
+    if (!result.ok) setAssignError(result.error ?? "Couldn't unfile that email.")
+    setAssigning(false)
+  }
 
   async function sendReply() {
     const text = draft.trim()
@@ -1143,7 +1250,53 @@ function EmailThreadBody({ item }: { item: TriageItem }) {
           <Reply className="h-3 w-3" />
           Reply
         </Button>
+
+        {/* Filing a thread under a job is the part that replaces Karbon.
+            It only appears when the other party matched a Hub client --
+            there is no project to file a newsletter under. */}
+        {thread.client ? (
+          thread.assignment ? (
+            <Badge
+              variant="outline"
+              className="h-7 gap-1 pr-1 text-xs font-normal"
+              title={`Filed under ${thread.assignment.workItemTitle ?? "a project"}`}
+            >
+              <Briefcase className="h-3 w-3" />
+              {thread.assignment.workItemTitle ?? "Assigned"}
+              <button
+                type="button"
+                onClick={unfile}
+                disabled={assigning}
+                className="rounded-full p-0.5 hover:bg-black/10 disabled:opacity-50"
+                aria-label="Remove this project assignment"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          ) : thread.availableProjects.length > 0 ? (
+            <Select onValueChange={fileUnder} disabled={assigning}>
+              <SelectTrigger className="h-7 w-52 text-xs">
+                <SelectValue placeholder="Assign to project" />
+              </SelectTrigger>
+              <SelectContent>
+                {thread.availableProjects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            // Matched a client, but they have nothing open. Saying so beats
+            // an empty dropdown that looks broken.
+            <span className="text-xs text-gray-500">
+              No open projects for {thread.client.name}
+            </span>
+          )
+        ) : null}
       </div>
+
+      {assignError ? <p className="mt-1 text-xs text-red-600">{assignError}</p> : null}
 
       {replyOpen ? (
         <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
