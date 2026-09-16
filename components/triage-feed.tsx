@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import useSWR, { mutate as swrMutate } from "swr"
+import useSWRInfinite from "swr/infinite"
 import { formatDistanceToNow } from "date-fns"
 import {
   AlertTriangle,
@@ -49,6 +50,13 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-context"
@@ -140,11 +148,33 @@ interface EmailReplyResult {
   error?: string
 }
 
+/**
+ * What GET /api/outlook/threads adds on top of the raw Graph thread:
+ * which Hub client the other party is (matched by email address), that
+ * client's open work items, and any existing filing.
+ *
+ * `client` is null for most threads — vendors, colleagues, newsletters.
+ * That is the normal case, not a failure, and those threads simply show
+ * no project control.
+ */
+interface TriageEmailThread extends OutlookThreadSummary {
+  client: { kind: "contact" | "organization"; id: string; name: string } | null
+  availableProjects: Array<{ id: string; title: string }>
+  assignment: {
+    workItemId: string
+    workItemTitle: string | null
+    assignedById: string | null
+    assignedAt: string
+  } | null
+}
+
 function threadToTriageItem(
-  thread: OutlookThreadSummary,
+  thread: TriageEmailThread,
   callbacks: {
     onReply: (messageId: string, text: string) => Promise<EmailReplyResult>
     onOpen: (conversationId: string) => void
+    onAssign: (conversationId: string, workItemId: string) => Promise<EmailReplyResult>
+    onUnassign: (conversationId: string) => Promise<EmailReplyResult>
   },
 ): TriageItem {
   return {
@@ -162,6 +192,8 @@ function threadToTriageItem(
       messageCount: thread.messageCount,
       onReply: (text: string) => callbacks.onReply(thread.latestMessageId, text),
       onOpen: () => callbacks.onOpen(thread.id),
+      onAssign: (workItemId: string) => callbacks.onAssign(thread.id, workItemId),
+      onUnassign: () => callbacks.onUnassign(thread.id),
     },
   }
 }
@@ -200,17 +232,58 @@ export function TriageFeed() {
    * Cleared threads are hidden locally only (mirrors "Clear" elsewhere,
    * a per-user view state) — clearing never touches the real mailbox.
    */
+  interface EmailPage {
+    status: "not_connected" | "needs_reconnect" | "connected"
+    threads: TriageEmailThread[]
+    nextSkip: number | null
+  }
+
   const {
-    data: emailData,
+    data: emailPages,
     isLoading: emailsLoading,
+    isValidating: emailsValidating,
+    size: emailPageCount,
+    setSize: setEmailPageCount,
     mutate: mutateEmails,
-  } = useSWR<{ status: "not_connected" | "needs_reconnect" | "connected"; threads: OutlookThreadSummary[] }>(
-    filter === "client_email" ? "/api/outlook/threads" : null,
+  } = useSWRInfinite<EmailPage>(
+    (index, previous) => {
+      if (filter !== "client_email") return null
+      if (index === 0) return "/api/outlook/threads"
+      // Null nextSkip means the mailbox is exhausted — stop asking.
+      if (previous?.nextSkip == null) return null
+      return `/api/outlook/threads?skip=${previous.nextSkip}`
+    },
     swrFetcher,
-    { revalidateOnFocus: true },
+    {
+      revalidateOnFocus: true,
+      // Only the first page revalidates on focus. Re-fetching every loaded
+      // page would re-hit Graph once per page each time the tab regains
+      // focus, which is how you meet a throttling limit.
+      revalidateAll: false,
+    },
   )
-  const emailConnectionStatus = emailData?.status ?? "connected"
-  const emailThreads = emailData?.threads ?? []
+
+  const emailConnectionStatus = emailPages?.[0]?.status ?? "connected"
+
+  /**
+   * Flatten the pages, de-duplicating by thread id. Graph pages by message,
+   * so one conversation can appear in two pages — the later page's copy is
+   * built from older messages and has a lower count, so the FIRST
+   * occurrence (newest) wins.
+   */
+  const emailThreads = useMemo(() => {
+    const byId = new Map<string, TriageEmailThread>()
+    for (const page of emailPages ?? []) {
+      for (const thread of page.threads ?? []) {
+        if (!byId.has(thread.id)) byId.set(thread.id, thread)
+      }
+    }
+    return Array.from(byId.values())
+  }, [emailPages])
+
+  const lastEmailPage = emailPages?.[emailPages.length - 1]
+  const hasMoreEmails = Boolean(lastEmailPage && lastEmailPage.nextSkip != null)
+  const loadingMoreEmails = emailsValidating && (emailPages?.length ?? 0) < emailPageCount
   const [dismissedEmailIds, setDismissedEmailIds] = useState<Set<string>>(() => new Set())
   const [emailSubFilter, setEmailSubFilter] = useState<string>("all")
   const [emailSearch, setEmailSearch] = useState("")
@@ -229,6 +302,52 @@ export function TriageFeed() {
     return { ok: true }
   }
 
+  async function assignEmailThread(
+    conversationId: string,
+    workItemId: string,
+  ): Promise<EmailReplyResult> {
+    const res = await fetch("/api/outlook/threads/assign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId, workItemId }),
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, error: json.error || "Couldn't file that email. Please try again." }
+    }
+    await mutateEmails()
+    return { ok: true }
+  }
+
+  async function unassignEmailThread(conversationId: string): Promise<EmailReplyResult> {
+    const res = await fetch(
+      `/api/outlook/threads/assign?conversationId=${encodeURIComponent(conversationId)}`,
+      { method: "DELETE" },
+    )
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, error: json.error || "Couldn't unfile that email." }
+    }
+    await mutateEmails()
+    return { ok: true }
+  }
+
+  function loadMoreEmails() {
+    if (!hasMoreEmails || loadingMoreEmails) return
+    setEmailPageCount((n) => n + 1)
+  }
+
+  /**
+   * Auto-load as the box nears its end, the way a mail client does, with
+   * the button below as the deliberate fallback. The 200px margin fires
+   * the fetch before the user hits the floor so the list rarely stalls.
+   */
+  function onEmailListScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 200) return
+    loadMoreEmails()
+  }
+
   function openEmailThread(conversationId: string) {
     swrMutate(`/api/outlook/threads/detail?conversationId=${encodeURIComponent(conversationId)}`)
   }
@@ -241,7 +360,14 @@ export function TriageFeed() {
     () =>
       emailThreads
         .filter((t) => !dismissedEmailIds.has(t.id))
-        .map((t) => threadToTriageItem(t, { onReply: replyToEmailMessage, onOpen: openEmailThread }))
+        .map((t) =>
+          threadToTriageItem(t, {
+            onReply: replyToEmailMessage,
+            onOpen: openEmailThread,
+            onAssign: assignEmailThread,
+            onUnassign: unassignEmailThread,
+          }),
+        )
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [emailThreads, dismissedEmailIds],
@@ -252,11 +378,24 @@ export function TriageFeed() {
     [emailThreads, dismissedEmailIds],
   )
 
+  const unassignedEmailCount = useMemo(
+    () =>
+      emailItems.filter((it) => {
+        const thread = it.metadata!.thread as TriageEmailThread
+        return thread.client && !thread.assignment
+      }).length,
+    [emailItems],
+  )
+
   const visibleEmailItems = useMemo(() => {
     const query = emailSearch.trim().toLowerCase()
     return emailItems.filter((it) => {
-      const thread = it.metadata!.thread as OutlookThreadSummary
+      const thread = it.metadata!.thread as TriageEmailThread
       if (emailSubFilter === "unread" && !it.metadata!.unread) return false
+      // "Unassigned" means a client thread nobody has filed yet. Threads
+      // that match no client are excluded: they are not work waiting to be
+      // filed, they are a newsletter.
+      if (emailSubFilter === "unassigned" && (!thread.client || thread.assignment)) return false
       if (query) {
         const haystack = [thread.subject, thread.participantName, thread.participantEmail, thread.latestBodyPreview]
           .join(" ")
@@ -426,6 +565,7 @@ export function TriageFeed() {
             <div className="space-y-3">
               <EmailFilterBar
                 subFilter={emailSubFilter}
+                unassignedCount={unassignedEmailCount}
                 onSubFilterChange={setEmailSubFilter}
                 search={emailSearch}
                 onSearchChange={setEmailSearch}
@@ -434,11 +574,45 @@ export function TriageFeed() {
               {visibleEmailItems.length === 0 ? (
                 <EmptyState filter="client_email" />
               ) : (
-                <ul className="space-y-2">
-                  {visibleEmailItems.map((item) => (
-                    <FeedCard key={item.source_id} item={item} onDismiss={dismissEmailThread} />
-                  ))}
-                </ul>
+                /* The list scrolls inside its own box rather than growing the
+                   page, so the filter bar and tabs stay put the way a mail
+                   client's do. Capped against the viewport rather than a fixed
+                   pixel height so it still fills a large screen. */
+                <div
+                  onScroll={onEmailListScroll}
+                  className="max-h-[calc(100vh-24rem)] min-h-[20rem] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2"
+                >
+                  <ul className="space-y-2">
+                    {visibleEmailItems.map((item) => (
+                      <FeedCard key={item.source_id} item={item} onDismiss={dismissEmailThread} />
+                    ))}
+                  </ul>
+
+                  {hasMoreEmails ? (
+                    <div className="flex justify-center py-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={loadMoreEmails}
+                        disabled={loadingMoreEmails}
+                        className="gap-1.5 text-xs"
+                      >
+                        {loadingMoreEmails ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Loading older email…
+                          </>
+                        ) : (
+                          "Load older email"
+                        )}
+                      </Button>
+                    </div>
+                  ) : (
+                    <p className="py-3 text-center text-xs text-gray-400">
+                      That&apos;s the whole mailbox.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )
@@ -463,8 +637,8 @@ export function TriageFeed() {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * EmailFilterBar — secondary toolbar shown only above the Emails tab's
- * list: All / Unread chips, plus a search box over sender, subject, and
- * body.
+ * list: All / Unread / Unassigned chips, plus a search box over sender,
+ * subject, and body.
  * ─────────────────────────────────────────────────────────────────────── */
 
 function EmailFilterBar({
@@ -473,16 +647,21 @@ function EmailFilterBar({
   search,
   onSearchChange,
   unreadCount,
+  unassignedCount,
 }: {
   subFilter: string
   onSubFilterChange: (v: string) => void
   search: string
   onSearchChange: (v: string) => void
   unreadCount: number
+  unassignedCount: number
 }) {
   const chips: Array<{ value: string; label: string; count?: number }> = [
     { value: "all", label: "All" },
     { value: "unread", label: "Unread", count: unreadCount },
+    // Client mail nobody has filed yet — the actual work queue. Counts
+    // only threads that matched a client, so vendors never inflate it.
+    { value: "unassigned", label: "Unassigned", count: unassignedCount },
   ]
 
   return (
@@ -1071,16 +1250,36 @@ function ProposalBody({ item }: { item: TriageItem }) {
  * the chevron-driven full-thread expand/collapse.
  */
 function EmailThreadBody({ item }: { item: TriageItem }) {
-  const thread = item.metadata!.thread as OutlookThreadSummary
+  const thread = item.metadata!.thread as TriageEmailThread
   const direction = item.metadata!.direction as "inbound" | "outbound"
   const unread = Boolean(item.metadata!.unread)
   const messageCount = item.metadata!.messageCount as number
   const onReply = item.metadata!.onReply as (text: string) => Promise<EmailReplyResult>
+  const onAssign = item.metadata!.onAssign as (workItemId: string) => Promise<EmailReplyResult>
+  const onUnassign = item.metadata!.onUnassign as () => Promise<EmailReplyResult>
 
+  const [assigning, setAssigning] = useState(false)
+  const [assignError, setAssignError] = useState<string | null>(null)
   const [replyOpen, setReplyOpen] = useState(false)
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+
+  async function fileUnder(workItemId: string) {
+    setAssigning(true)
+    setAssignError(null)
+    const result = await onAssign(workItemId)
+    if (!result.ok) setAssignError(result.error ?? "Couldn't file that email.")
+    setAssigning(false)
+  }
+
+  async function unfile() {
+    setAssigning(true)
+    setAssignError(null)
+    const result = await onUnassign()
+    if (!result.ok) setAssignError(result.error ?? "Couldn't unfile that email.")
+    setAssigning(false)
+  }
 
   async function sendReply() {
     const text = draft.trim()
@@ -1143,7 +1342,53 @@ function EmailThreadBody({ item }: { item: TriageItem }) {
           <Reply className="h-3 w-3" />
           Reply
         </Button>
+
+        {/* Filing a thread under a job is the part that replaces Karbon.
+            It only appears when the other party matched a Hub client --
+            there is no project to file a newsletter under. */}
+        {thread.client ? (
+          thread.assignment ? (
+            <Badge
+              variant="outline"
+              className="h-7 gap-1 pr-1 text-xs font-normal"
+              title={`Filed under ${thread.assignment.workItemTitle ?? "a project"}`}
+            >
+              <Briefcase className="h-3 w-3" />
+              {thread.assignment.workItemTitle ?? "Assigned"}
+              <button
+                type="button"
+                onClick={unfile}
+                disabled={assigning}
+                className="rounded-full p-0.5 hover:bg-black/10 disabled:opacity-50"
+                aria-label="Remove this project assignment"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          ) : thread.availableProjects.length > 0 ? (
+            <Select onValueChange={fileUnder} disabled={assigning}>
+              <SelectTrigger className="h-7 w-52 text-xs">
+                <SelectValue placeholder="Assign to project" />
+              </SelectTrigger>
+              <SelectContent>
+                {thread.availableProjects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            // Matched a client, but they have nothing open. Saying so beats
+            // an empty dropdown that looks broken.
+            <span className="text-xs text-gray-500">
+              No open projects for {thread.client.name}
+            </span>
+          )
+        ) : null}
       </div>
+
+      {assignError ? <p className="mt-1 text-xs text-red-600">{assignError}</p> : null}
 
       {replyOpen ? (
         <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
