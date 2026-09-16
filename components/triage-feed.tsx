@@ -1854,7 +1854,16 @@ function EmailThreadExpanded({ item }: { item: TriageItem }) {
   }
 
   if (error || !data) {
-    return <p className="text-sm text-red-600">Couldn&apos;t load this thread. Please try again.</p>
+    // Show what actually failed. strictJsonFetcher already puts the route's
+    // message on the Error, and the route passes Graph's own wording
+    // through — discarding it here is what made this a dead end.
+    const reason = error instanceof Error ? error.message : null
+    return (
+      <div className="space-y-1">
+        <p className="text-sm text-red-600">Couldn&apos;t load this thread.</p>
+        {reason ? <p className="text-xs text-red-500">{reason}</p> : null}
+      </div>
+    )
   }
 
   return (

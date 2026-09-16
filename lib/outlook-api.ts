@@ -360,10 +360,36 @@ export interface GraphMessage {
   from: { emailAddress?: { name?: string | null; address?: string | null } } | null
 }
 
+/**
+ * Turn a Graph failure into something worth showing a person.
+ *
+ * GraphApiError carries the raw response body, which is a JSON envelope
+ * like {"error":{"code":"ErrorInefficientFilter","message":"The
+ * restriction or sort order is too complex to complete."}}. Rendering
+ * that verbatim in the UI is useless; swallowing it and saying "please
+ * try again" is worse, because the next person to hit it has nothing to
+ * go on. This pulls out the human sentence and keeps the code alongside.
+ */
+export function describeGraphError(err: unknown): string {
+  if (!(err instanceof GraphApiError)) {
+    return err instanceof Error ? err.message : "Something went wrong"
+  }
+  try {
+    const parsed = JSON.parse(err.body) as { error?: { code?: string; message?: string } }
+    const message = parsed.error?.message
+    const code = parsed.error?.code
+    if (message) return code ? `${message} (${code})` : message
+  } catch {
+    // Not JSON — fall through to the raw body, truncated.
+  }
+  return err.body ? err.body.slice(0, 200) : `Graph request failed (${err.status})`
+}
+
 export async function fetchRecentMessages(
   connection: OutlookConnectionRow,
   supabase: SupabaseClient,
   top = 10,
+  skip = 0,
 ): Promise<GraphMessage[]> {
   const result = await graphRequest<{ value: GraphMessage[] }>(
     connection,
@@ -372,6 +398,7 @@ export async function fetchRecentMessages(
     {
       query: {
         $top: top,
+        $skip: skip,
         $orderby: "receivedDateTime desc",
         $select: "id,subject,receivedDateTime,bodyPreview,from",
       },
@@ -561,13 +588,25 @@ export async function fetchThreadDetail(
   const result = await graphRequest<{ value: GraphMessageFull[] }>(connection, supabase, "/me/messages", {
     query: {
       $filter: `conversationId eq '${conversationId.replace(/'/g, "''")}'`,
-      $orderby: "receivedDateTime asc",
+      // NO $orderby. Graph has no combined index over conversationId +
+      // receivedDateTime on /me/messages, so asking it to filter on one and
+      // sort by the other returns 400 ErrorInefficientFilter ("The
+      // restriction or sort order is too complex to complete") — which
+      // surfaced as "Couldn't load this thread". A conversation is a
+      // handful of messages, so sorting below costs nothing.
+      $top: 50,
       $select: "id,conversationId,subject,receivedDateTime,isRead,bodyPreview,body,from,toRecipients",
     },
     headers: { Prefer: 'outlook.body-content-type="text"' },
   })
   const msgs = result?.value ?? []
   if (msgs.length === 0) return null
+
+  // Oldest first, the order a thread reads in. Done here because the query
+  // above deliberately cannot ask Graph for it.
+  msgs.sort(
+    (a, b) => new Date(a.receivedDateTime).getTime() - new Date(b.receivedDateTime).getTime(),
+  )
 
   const mailbox = connection.outlook_email
   const unreadIds = msgs.filter((m) => !m.isRead && messageDirection(m, mailbox) === "inbound").map((m) => m.id)
