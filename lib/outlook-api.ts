@@ -364,6 +364,7 @@ export async function fetchRecentMessages(
   connection: OutlookConnectionRow,
   supabase: SupabaseClient,
   top = 10,
+  skip = 0,
 ): Promise<GraphMessage[]> {
   const result = await graphRequest<{ value: GraphMessage[] }>(
     connection,
@@ -372,6 +373,7 @@ export async function fetchRecentMessages(
     {
       query: {
         $top: top,
+        $skip: skip,
         $orderby: "receivedDateTime desc",
         $select: "id,subject,receivedDateTime,bodyPreview,from",
       },
