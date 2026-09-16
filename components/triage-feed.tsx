@@ -1,9 +1,10 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
-import useSWR from "swr"
+import useSWR, { mutate as swrMutate } from "swr"
 import { formatDistanceToNow } from "date-fns"
 import {
+  AlertTriangle,
   ArrowDownLeft,
   ArrowUpRight,
   Bell,
@@ -16,6 +17,7 @@ import {
   FileText,
   ImageIcon,
   Inbox,
+  Link2,
   Loader2,
   Mail,
   Megaphone,
@@ -45,19 +47,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useUser, useDisplayName, useUserInitials } from "@/contexts/user-context"
-import { PreviewFeature } from "@/components/shared/preview-feature"
-import { createMockClientEmailThreads, type ClientEmailThread } from "@/lib/mock/client-emails"
+import type { OutlookThreadSummary, OutlookThreadMessage } from "@/lib/outlook-api"
 
 const COMMON_EMOJIS = ["👍", "❤️", "😊", "🎉", "🔥", "👏", "💯", "✨"]
 
@@ -94,6 +89,17 @@ interface FeedResponse {
 
 const swrFetcher = (url: string) => fetch(url).then((r) => r.json())
 
+// Unlike swrFetcher above (used for the always-200 triage/threads-list
+// endpoints), thread detail can legitimately 404/409/500 — those need to
+// surface as a thrown error so SWR's `error` is populated instead of
+// `data` silently holding an `{ error: "..." }` payload with no messages.
+const strictJsonFetcher = async (url: string) => {
+  const res = await fetch(url)
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(json.error || `Request failed: ${res.status}`)
+  return json
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Visual config per source type. Centralised so tabs, badges, and cards
  * all read from the same map.
@@ -124,46 +130,38 @@ const FILTERS = [
 ] as const
 
 /* ─────────────────────────────────────────────────────────────────────────
- * Client email helpers — the "Emails" tab is sample data (see
- * lib/mock/client-emails.ts), kept separate from the real feed items so it
- * never mixes into the "All" tab or its counts.
+ * Client email helpers — the "Emails" tab is backed by real Outlook
+ * threads (GET /api/outlook/threads), kept separate from the main feed
+ * items so it never mixes into the "All" tab or its counts.
  * ─────────────────────────────────────────────────────────────────────── */
 
-function latestEmailMessage(thread: ClientEmailThread) {
-  return thread.messages[thread.messages.length - 1]
+interface EmailReplyResult {
+  ok: boolean
+  error?: string
 }
 
-function isInboundUnread(thread: ClientEmailThread): boolean {
-  return latestEmailMessage(thread).direction === "inbound" && !thread.read
-}
-
-function emailThreadToTriageItem(
-  thread: ClientEmailThread,
+function threadToTriageItem(
+  thread: OutlookThreadSummary,
   callbacks: {
-    onReply: (threadId: string, text: string) => void
-    onAssignProject: (threadId: string, projectId: string) => void
-    onUnassignProject: (threadId: string) => void
-    onMarkRead: (threadId: string) => void
+    onReply: (messageId: string, text: string) => Promise<EmailReplyResult>
+    onOpen: (conversationId: string) => void
   },
 ): TriageItem {
-  const latest = latestEmailMessage(thread)
   return {
     id: thread.id,
     source_type: "client_email",
     source_id: thread.id,
-    timestamp: latest.sentAt,
-    actor_name: thread.clientName,
-    title: thread.clientName,
-    summary: latest.bodyText,
+    timestamp: thread.latestSentAt,
+    actor_name: thread.participantName,
+    title: thread.participantName,
+    summary: thread.latestBodyPreview,
     metadata: {
       thread,
-      direction: latest.direction,
-      unread: isInboundUnread(thread),
-      messageCount: thread.messages.length,
-      onReply: (text: string) => callbacks.onReply(thread.id, text),
-      onAssignProject: (projectId: string) => callbacks.onAssignProject(thread.id, projectId),
-      onUnassignProject: () => callbacks.onUnassignProject(thread.id),
-      onMarkRead: () => callbacks.onMarkRead(thread.id),
+      direction: thread.latestDirection,
+      unread: thread.unread,
+      messageCount: thread.messageCount,
+      onReply: (text: string) => callbacks.onReply(thread.latestMessageId, text),
+      onOpen: () => callbacks.onOpen(thread.id),
     },
   }
 }
@@ -175,7 +173,6 @@ function emailThreadToTriageItem(
 export function TriageFeed() {
   const { teamMember } = useUser()
   const teamMemberId = teamMember?.id ?? null
-  const displayName = useDisplayName()
   const [filter, setFilter] = useState<string>("all")
 
   // The feed endpoint always wants the team_member_id so it can anti-join
@@ -196,57 +193,44 @@ export function TriageFeed() {
     [items, filter],
   )
 
-  /* ── Client emails (mock, Emails tab only) ────────────────────────────
-   * Kept as separate local state rather than flowing through the SWR
-   * cache above — there's no backing table yet, so reply/assign/read are
-   * plain client-side mutations. Cleared threads are hidden locally
-   * (mirroring "Clear" elsewhere, which is also a per-user view state).
+  /* ── Client emails (real Outlook data, Emails tab only) ───────────────
+   * Backed by GET /api/outlook/threads, which returns the signed-in
+   * user's own mailbox grouped into conversations. `status` tells us
+   * whether to show a connect/reconnect prompt instead of the list.
+   * Cleared threads are hidden locally only (mirrors "Clear" elsewhere,
+   * a per-user view state) — clearing never touches the real mailbox.
    */
-  const [emailThreads, setEmailThreads] = useState<ClientEmailThread[]>(() =>
-    createMockClientEmailThreads(),
+  const {
+    data: emailData,
+    isLoading: emailsLoading,
+    mutate: mutateEmails,
+  } = useSWR<{ status: "not_connected" | "needs_reconnect" | "connected"; threads: OutlookThreadSummary[] }>(
+    filter === "client_email" ? "/api/outlook/threads" : null,
+    swrFetcher,
+    { revalidateOnFocus: true },
   )
+  const emailConnectionStatus = emailData?.status ?? "connected"
+  const emailThreads = emailData?.threads ?? []
   const [dismissedEmailIds, setDismissedEmailIds] = useState<Set<string>>(() => new Set())
   const [emailSubFilter, setEmailSubFilter] = useState<string>("all")
   const [emailSearch, setEmailSearch] = useState("")
 
-  function replyToEmailThread(threadId: string, text: string) {
-    setEmailThreads((prev) =>
-      prev.map((t) =>
-        t.id === threadId
-          ? {
-              ...t,
-              read: true,
-              messages: [
-                ...t.messages,
-                {
-                  id: `${threadId}-reply-${Date.now()}`,
-                  direction: "outbound" as const,
-                  senderName: displayName || "You",
-                  senderEmail: "team@mottafinancial.com",
-                  bodyText: text,
-                  sentAt: new Date().toISOString(),
-                },
-              ],
-            }
-          : t,
-      ),
-    )
+  async function replyToEmailMessage(messageId: string, text: string): Promise<EmailReplyResult> {
+    const res = await fetch("/api/outlook/threads/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId, text }),
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, error: json.error || "Couldn't send that reply. Please try again." }
+    }
+    await mutateEmails()
+    return { ok: true }
   }
 
-  function assignEmailProject(threadId: string, projectId: string) {
-    setEmailThreads((prev) =>
-      prev.map((t) => (t.id === threadId ? { ...t, assignedProjectId: projectId } : t)),
-    )
-  }
-
-  function unassignEmailProject(threadId: string) {
-    setEmailThreads((prev) =>
-      prev.map((t) => (t.id === threadId ? { ...t, assignedProjectId: null } : t)),
-    )
-  }
-
-  function markEmailThreadRead(threadId: string) {
-    setEmailThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, read: true } : t)))
+  function openEmailThread(conversationId: string) {
+    swrMutate(`/api/outlook/threads/detail?conversationId=${encodeURIComponent(conversationId)}`)
   }
 
   function dismissEmailThread(item: TriageItem) {
@@ -257,58 +241,24 @@ export function TriageFeed() {
     () =>
       emailThreads
         .filter((t) => !dismissedEmailIds.has(t.id))
-        .map((t) =>
-          emailThreadToTriageItem(t, {
-            onReply: replyToEmailThread,
-            onAssignProject: assignEmailProject,
-            onUnassignProject: unassignEmailProject,
-            onMarkRead: markEmailThreadRead,
-          }),
-        )
+        .map((t) => threadToTriageItem(t, { onReply: replyToEmailMessage, onOpen: openEmailThread }))
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [emailThreads, dismissedEmailIds, displayName],
-  )
-
-  const unreadEmailCount = useMemo(
-    () =>
-      emailThreads.filter((t) => !dismissedEmailIds.has(t.id) && isInboundUnread(t)).length,
     [emailThreads, dismissedEmailIds],
   )
 
-  // "By project" options in the Emails sub-filter bar — only projects
-  // currently assigned to at least one visible thread, so the list never
-  // shows a project nobody's email is actually sorted into.
-  const emailProjectFilterOptions = useMemo(() => {
-    const seen = new Map<string, string>()
-    for (const t of emailThreads) {
-      if (dismissedEmailIds.has(t.id) || !t.assignedProjectId) continue
-      const project = t.activeProjects.find((p) => p.id === t.assignedProjectId)
-      if (project) seen.set(project.id, project.name)
-    }
-    return Array.from(seen, ([id, name]) => ({ id, name }))
-  }, [emailThreads, dismissedEmailIds])
+  const unreadEmailCount = useMemo(
+    () => emailThreads.filter((t) => !dismissedEmailIds.has(t.id) && t.unread).length,
+    [emailThreads, dismissedEmailIds],
+  )
 
   const visibleEmailItems = useMemo(() => {
     const query = emailSearch.trim().toLowerCase()
     return emailItems.filter((it) => {
-      const thread = it.metadata!.thread as ClientEmailThread
+      const thread = it.metadata!.thread as OutlookThreadSummary
       if (emailSubFilter === "unread" && !it.metadata!.unread) return false
-      if (emailSubFilter === "unassigned" && thread.assignedProjectId) return false
-      if (
-        emailSubFilter !== "all" &&
-        emailSubFilter !== "unread" &&
-        emailSubFilter !== "unassigned" &&
-        thread.assignedProjectId !== emailSubFilter
-      ) {
-        return false
-      }
       if (query) {
-        const haystack = [
-          thread.subject,
-          thread.clientName,
-          ...thread.messages.flatMap((m) => [m.senderName, m.senderEmail, m.bodyText]),
-        ]
+        const haystack = [thread.subject, thread.participantName, thread.participantEmail, thread.latestBodyPreview]
           .join(" ")
           .toLowerCase()
         if (!haystack.includes(query)) return false
@@ -453,10 +403,26 @@ export function TriageFeed() {
 
         {/* Feed list. */}
         {filter === "client_email" ? (
-          <PreviewFeature
-            id="triage-client-emails"
-            message="Preview — mailbox sync isn't connected yet. These are sample threads for reviewing the layout, not real client emails."
-          >
+          emailConnectionStatus === "not_connected" ? (
+            <EmailConnectionPrompt
+              icon={Link2}
+              title="Connect your Outlook mailbox"
+              description="Connect Outlook to read, open, and reply to client emails right here in Triage."
+              ctaLabel="Connect Outlook"
+            />
+          ) : emailConnectionStatus === "needs_reconnect" ? (
+            <EmailConnectionPrompt
+              icon={AlertTriangle}
+              title="Outlook needs to be reconnected"
+              description="Your Outlook access expired or was revoked — reconnect to keep reading and replying to emails from here."
+              ctaLabel="Reconnect Outlook"
+            />
+          ) : emailsLoading ? (
+            <div className="flex items-center justify-center py-10 text-gray-500">
+              <Loader2 className="h-5 w-5 animate-spin mr-2" />
+              Loading your inbox…
+            </div>
+          ) : (
             <div className="space-y-3">
               <EmailFilterBar
                 subFilter={emailSubFilter}
@@ -464,11 +430,6 @@ export function TriageFeed() {
                 search={emailSearch}
                 onSearchChange={setEmailSearch}
                 unreadCount={unreadEmailCount}
-                unassignedCount={
-                  emailThreads.filter((t) => !dismissedEmailIds.has(t.id) && !t.assignedProjectId)
-                    .length
-                }
-                projectOptions={emailProjectFilterOptions}
               />
               {visibleEmailItems.length === 0 ? (
                 <EmptyState filter="client_email" />
@@ -480,7 +441,7 @@ export function TriageFeed() {
                 </ul>
               )}
             </div>
-          </PreviewFeature>
+          )
         ) : isLoading ? (
           <div className="flex items-center justify-center py-10 text-gray-500">
             <Loader2 className="h-5 w-5 animate-spin mr-2" />
@@ -502,8 +463,8 @@ export function TriageFeed() {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * EmailFilterBar — secondary toolbar shown only above the Emails tab's
- * list: All / Unread / Unassigned / by-project chips, plus a search box
- * over sender, subject, and body.
+ * list: All / Unread chips, plus a search box over sender, subject, and
+ * body.
  * ─────────────────────────────────────────────────────────────────────── */
 
 function EmailFilterBar({
@@ -512,22 +473,16 @@ function EmailFilterBar({
   search,
   onSearchChange,
   unreadCount,
-  unassignedCount,
-  projectOptions,
 }: {
   subFilter: string
   onSubFilterChange: (v: string) => void
   search: string
   onSearchChange: (v: string) => void
   unreadCount: number
-  unassignedCount: number
-  projectOptions: Array<{ id: string; name: string }>
 }) {
   const chips: Array<{ value: string; label: string; count?: number }> = [
     { value: "all", label: "All" },
     { value: "unread", label: "Unread", count: unreadCount },
-    { value: "unassigned", label: "Unassigned", count: unassignedCount },
-    ...projectOptions.map((p) => ({ value: p.id, label: p.name })),
   ]
 
   return (
@@ -566,6 +521,48 @@ function EmailFilterBar({
           className="h-8 pl-8 text-sm bg-white"
         />
       </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * EmailConnectionPrompt — shown in place of the Emails list when the
+ * signed-in user hasn't connected Outlook yet, or their connection
+ * needs re-authorizing. Sends straight to the OAuth flow used by
+ * /meetings/outlook, which redirects back there on completion.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+function EmailConnectionPrompt({
+  icon: Icon,
+  title,
+  description,
+  ctaLabel,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  title: string
+  description: string
+  ctaLabel: string
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 px-6 py-10 text-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-[#4A5240]">
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="max-w-sm space-y-1">
+        <p className="text-sm font-semibold text-gray-900">{title}</p>
+        <p className="text-sm text-gray-600">{description}</p>
+      </div>
+      <Button
+        size="sm"
+        className="mt-1 gap-1.5 text-white hover:opacity-90"
+        style={{ backgroundColor: "#4A5240" }}
+        onClick={() => {
+          window.location.href = "/api/outlook/oauth/authorize"
+        }}
+      >
+        <Mail className="h-3.5 w-3.5" />
+        {ctaLabel}
+      </Button>
     </div>
   )
 }
@@ -781,8 +778,8 @@ function FeedCard({
     // updater functions can run during React's render phase, and calling
     // another component's setState from there trips "Cannot update a
     // component while rendering a different component."
-    if (next && isUnreadEmail) {
-      ;(item.metadata?.onMarkRead as (() => void) | undefined)?.()
+    if (next && item.source_type === "client_email") {
+      ;(item.metadata?.onOpen as (() => void) | undefined)?.()
     }
   }
   const panelId = `triage-card-${item.source_type}-${item.source_id}-detail`
@@ -1074,24 +1071,28 @@ function ProposalBody({ item }: { item: TriageItem }) {
  * the chevron-driven full-thread expand/collapse.
  */
 function EmailThreadBody({ item }: { item: TriageItem }) {
-  const thread = item.metadata!.thread as ClientEmailThread
+  const thread = item.metadata!.thread as OutlookThreadSummary
   const direction = item.metadata!.direction as "inbound" | "outbound"
   const unread = Boolean(item.metadata!.unread)
   const messageCount = item.metadata!.messageCount as number
-  const onReply = item.metadata!.onReply as (text: string) => void
-  const onAssignProject = item.metadata!.onAssignProject as (projectId: string) => void
-  const onUnassignProject = item.metadata!.onUnassignProject as () => void
-
-  const latest = thread.messages[thread.messages.length - 1]
-  const assignedProject = thread.activeProjects.find((p) => p.id === thread.assignedProjectId)
+  const onReply = item.metadata!.onReply as (text: string) => Promise<EmailReplyResult>
 
   const [replyOpen, setReplyOpen] = useState(false)
   const [draft, setDraft] = useState("")
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
 
-  function sendReply() {
+  async function sendReply() {
     const text = draft.trim()
     if (!text) return
-    onReply(text)
+    setSending(true)
+    setSendError(null)
+    const result = await onReply(text)
+    setSending(false)
+    if (!result.ok) {
+      setSendError(result.error || "Couldn't send that reply. Please try again.")
+      return
+    }
     setDraft("")
     setReplyOpen(false)
   }
@@ -1106,15 +1107,9 @@ function EmailThreadBody({ item }: { item: TriageItem }) {
             aria-hidden="true"
           />
         ) : null}
-        <Link
-          href={`/clients/${thread.clientId}`}
-          onClick={(e) => e.stopPropagation()}
-          className={`text-sm font-semibold hover:underline ${
-            unread ? "text-gray-900" : "text-gray-700"
-          }`}
-        >
-          {thread.clientName}
-        </Link>
+        <span className={`text-sm font-semibold ${unread ? "text-gray-900" : "text-gray-700"}`}>
+          {thread.participantName}
+        </span>
         {messageCount > 1 ? (
           <span className="text-xs text-gray-500">{messageCount} messages</span>
         ) : null}
@@ -1128,52 +1123,22 @@ function EmailThreadBody({ item }: { item: TriageItem }) {
         ) : (
           <ArrowUpRight className="h-3 w-3 text-gray-400" />
         )}
-        {latest.senderName} &lt;{latest.senderEmail}&gt;
+        {thread.participantName} &lt;{thread.participantEmail}&gt;
       </p>
-      <p className="mt-1 text-sm text-gray-600 line-clamp-2">{latest.bodyText}</p>
+      <p className="mt-1 text-sm text-gray-600 line-clamp-2">{thread.latestBodyPreview}</p>
 
       <div
         className="mt-2 flex flex-wrap items-center gap-2"
         onClick={(e) => e.stopPropagation()}
       >
-        {assignedProject ? (
-          <Badge
-            variant="outline"
-            className="gap-1 border-[#B5BFA8] bg-[#EAE6E1] text-[#4A5240] text-[10px]"
-          >
-            <Briefcase className="h-3 w-3" />
-            {assignedProject.name}
-            <button
-              type="button"
-              onClick={onUnassignProject}
-              aria-label="Remove project assignment"
-              className="ml-0.5 rounded hover:bg-black/10"
-            >
-              <X className="h-2.5 w-2.5" />
-            </button>
-          </Badge>
-        ) : (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 gap-1 text-xs">
-                <Briefcase className="h-3 w-3" />
-                Assign to project
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              {thread.activeProjects.map((p) => (
-                <DropdownMenuItem key={p.id} onClick={() => onAssignProject(p.id)}>
-                  {p.name}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
         <Button
           variant="outline"
           size="sm"
           className="h-7 gap-1 text-xs"
-          onClick={() => setReplyOpen((v) => !v)}
+          onClick={() => {
+            setSendError(null)
+            setReplyOpen((v) => !v)
+          }}
         >
           <Reply className="h-3 w-3" />
           Reply
@@ -1186,16 +1151,17 @@ function EmailThreadBody({ item }: { item: TriageItem }) {
             autoFocus
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder={`Reply to ${thread.clientName}…`}
+            placeholder={`Reply to ${thread.participantName}…`}
             className="min-h-[70px] resize-none bg-white text-sm"
           />
+          {sendError ? <p className="text-xs text-red-600">{sendError}</p> : null}
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setReplyOpen(false)}>
+            <Button variant="ghost" size="sm" onClick={() => setReplyOpen(false)} disabled={sending}>
               Cancel
             </Button>
-            <Button size="sm" onClick={sendReply} disabled={!draft.trim()} className="gap-1.5">
-              <Send className="h-3.5 w-3.5" />
-              Send
+            <Button size="sm" onClick={sendReply} disabled={!draft.trim() || sending} className="gap-1.5">
+              {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              {sending ? "Sending…" : "Send"}
             </Button>
           </div>
         </div>
@@ -1614,17 +1580,45 @@ function ProposalExpanded({ item }: { item: TriageItem }) {
  * what the chevron reveals: the collapsed card only shows the message
  * count and latest snippet, this shows every message in order.
  */
+/**
+ * Fetches the full conversation (every message, full plain-text body)
+ * on demand — only mounted once a card is expanded, so opening a card
+ * is exactly what triggers /api/outlook/threads/detail, including its
+ * side effect of marking unread messages read on Outlook. Once that
+ * lands, we revalidate the list so the unread dot/count clears too.
+ */
 function EmailThreadExpanded({ item }: { item: TriageItem }) {
-  const thread = item.metadata!.thread as ClientEmailThread
+  const thread = item.metadata!.thread as OutlookThreadSummary
+  const { data, error, isLoading } = useSWR<{ id: string; subject: string; messages: OutlookThreadMessage[] }>(
+    `/api/outlook/threads/detail?conversationId=${encodeURIComponent(thread.id)}`,
+    strictJsonFetcher,
+  )
+
+  useEffect(() => {
+    if (data) swrMutate("/api/outlook/threads")
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-6 text-gray-500">
+        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+        Loading full thread…
+      </div>
+    )
+  }
+
+  if (error || !data) {
+    return <p className="text-sm text-red-600">Couldn&apos;t load this thread. Please try again.</p>
+  }
+
   return (
     <div className="space-y-2">
-      {thread.messages.map((m) => (
+      {data.messages.map((m) => (
         <div
           key={m.id}
           className={`rounded-md border p-2.5 text-sm ${
-            m.direction === "inbound"
-              ? "border-[#E9D28F] bg-white"
-              : "border-gray-200 bg-gray-50"
+            m.direction === "inbound" ? "border-[#E9D28F] bg-white" : "border-gray-200 bg-gray-50"
           }`}
         >
           <div className="flex items-center justify-between gap-2 mb-1">
@@ -1752,17 +1746,6 @@ function ItemLinkFooter({ item }: { item: TriageItem }) {
       links.push({ label: "View today on calendar", href: "/meetings/calendar", icon: Calendar })
       break
     }
-    case "client_email": {
-      const thread = md.thread as { clientId: string } | undefined
-      if (thread?.clientId) {
-        links.push({
-          label: "View client",
-          href: `/clients/${thread.clientId}`,
-          icon: User,
-        })
-      }
-      break
-    }
   }
 
   if (links.length === 0) return null
@@ -1844,7 +1827,7 @@ function EmptyState({ filter }: { filter: string }) {
         {filter === "all"
           ? "You're all caught up — no new activity to triage."
           : filter === "client_email"
-            ? "No client emails yet — mailbox sync isn't connected."
+            ? "No emails match here — try a different search or filter."
             : `No ${meta.label.toLowerCase()} in your feed right now.`}
       </p>
     </div>
