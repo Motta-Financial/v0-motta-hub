@@ -18,8 +18,9 @@
  * Graph fetch via POST /api/outlook/sync.
  */
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import useSWR from "swr"
+import useSWRInfinite from "swr/infinite"
 import { formatDistanceToNow } from "date-fns"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -136,7 +137,55 @@ export function OutlookDashboard() {
     isLoading,
     mutate,
   } = useSWR<OutlookOwnConnection>("/api/outlook/connections", fetcher)
-  const [emails, setEmails] = useState<OutlookRecentEmail[]>([])
+  /**
+   * The mail list is its own paged resource rather than whatever the last
+   * sync happened to return. POST /api/outlook/sync fetches 10 messages to
+   * refresh the counters; that is a status check, not a mailbox. This
+   * loads pages of 25 from GET /api/outlook/messages and keeps going as
+   * far as the mailbox does.
+   */
+  const {
+    data: emailPages,
+    size: emailPageCount,
+    setSize: setEmailPageCount,
+    isValidating: emailsValidating,
+    mutate: mutateEmails,
+  } = useSWRInfinite<{
+    status: string
+    emails: OutlookRecentEmail[]
+    nextSkip: number | null
+  }>((index, previous) => {
+    if (index === 0) return "/api/outlook/messages"
+    if (previous?.nextSkip == null) return null
+    return `/api/outlook/messages?skip=${previous.nextSkip}`
+  }, fetcher, { revalidateAll: false })
+
+  const emails = useMemo(() => {
+    const byId = new Map<string, OutlookRecentEmail>()
+    for (const page of emailPages ?? []) {
+      for (const email of page.emails ?? []) {
+        if (!byId.has(email.id)) byId.set(email.id, email)
+      }
+    }
+    return Array.from(byId.values())
+  }, [emailPages])
+
+  const lastEmailPage = emailPages?.[emailPages.length - 1]
+  const hasMoreEmails = Boolean(lastEmailPage && lastEmailPage.nextSkip != null)
+  const loadingMoreEmails = emailsValidating && (emailPages?.length ?? 0) < emailPageCount
+
+  function loadMoreEmails() {
+    if (!hasMoreEmails || loadingMoreEmails) return
+    setEmailPageCount((n) => n + 1)
+  }
+
+  /** Auto-load as the box nears its end, the way a mail client does. */
+  function onEmailScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 200) return
+    loadMoreEmails()
+  }
+
   const [events, setEvents] = useState<OutlookCalendarEvent[]>([])
   const [disconnectOpen, setDisconnectOpen] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
@@ -167,9 +216,10 @@ export function OutlookDashboard() {
     if (!res.ok) {
       throw new Error(json.error || "Sync failed")
     }
-    setEmails(json.recentEmails || [])
     setEvents(json.calendarEvents || [])
-    await mutate()
+    // The counters moved, so re-read the connection; the mail list is its
+    // own resource and refreshes itself.
+    await Promise.all([mutate(), mutateEmails()])
   }
 
   // Pull real mail/calendar content as soon as we know we're connected.
@@ -192,7 +242,7 @@ export function OutlookDashboard() {
     setDisconnecting(true)
     try {
       await fetch("/api/outlook/oauth/disconnect", { method: "POST" })
-      setEmails([])
+      await mutateEmails()
       setEvents([])
       await mutate()
     } finally {
@@ -387,7 +437,15 @@ export function OutlookDashboard() {
               {emails.length === 0 ? (
                 <EmptyState icon={Mail} title="No recent emails" description="Nothing has synced from this mailbox yet." />
               ) : (
-                emails.map((email) => (
+                /* Scrolls in its own box rather than running down the page,
+                   so the connection card and counters stay in view the way
+                   a mail client keeps its chrome fixed. Capped against the
+                   viewport so it still fills a large screen. */
+                <div
+                  onScroll={onEmailScroll}
+                  className="max-h-[calc(100vh-26rem)] min-h-[20rem] space-y-3 overflow-y-auto rounded-xl border border-border/60 bg-muted/20 p-3"
+                >
+                {emails.map((email) => (
                   <Card key={email.id} className="rounded-xl border-0 shadow-sm">
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between gap-4">
@@ -402,7 +460,33 @@ export function OutlookDashboard() {
                       </div>
                     </CardContent>
                   </Card>
-                ))
+                ))}
+
+                {hasMoreEmails ? (
+                  <div className="flex justify-center py-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={loadMoreEmails}
+                      disabled={loadingMoreEmails}
+                      className="gap-1.5 text-xs"
+                    >
+                      {loadingMoreEmails ? (
+                        <>
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                          Loading older email…
+                        </>
+                      ) : (
+                        "Load older email"
+                      )}
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="py-2 text-center text-xs text-muted-foreground">
+                    That&apos;s the whole mailbox.
+                  </p>
+                )}
+                </div>
               )}
             </TabsContent>
 
