@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import useSWR, { mutate as swrMutate } from "swr"
+import useSWRInfinite from "swr/infinite"
 import { formatDistanceToNow } from "date-fns"
 import {
   AlertTriangle,
@@ -231,17 +232,58 @@ export function TriageFeed() {
    * Cleared threads are hidden locally only (mirrors "Clear" elsewhere,
    * a per-user view state) — clearing never touches the real mailbox.
    */
+  interface EmailPage {
+    status: "not_connected" | "needs_reconnect" | "connected"
+    threads: TriageEmailThread[]
+    nextSkip: number | null
+  }
+
   const {
-    data: emailData,
+    data: emailPages,
     isLoading: emailsLoading,
+    isValidating: emailsValidating,
+    size: emailPageCount,
+    setSize: setEmailPageCount,
     mutate: mutateEmails,
-  } = useSWR<{ status: "not_connected" | "needs_reconnect" | "connected"; threads: TriageEmailThread[] }>(
-    filter === "client_email" ? "/api/outlook/threads" : null,
+  } = useSWRInfinite<EmailPage>(
+    (index, previous) => {
+      if (filter !== "client_email") return null
+      if (index === 0) return "/api/outlook/threads"
+      // Null nextSkip means the mailbox is exhausted — stop asking.
+      if (previous?.nextSkip == null) return null
+      return `/api/outlook/threads?skip=${previous.nextSkip}`
+    },
     swrFetcher,
-    { revalidateOnFocus: true },
+    {
+      revalidateOnFocus: true,
+      // Only the first page revalidates on focus. Re-fetching every loaded
+      // page would re-hit Graph once per page each time the tab regains
+      // focus, which is how you meet a throttling limit.
+      revalidateAll: false,
+    },
   )
-  const emailConnectionStatus = emailData?.status ?? "connected"
-  const emailThreads = emailData?.threads ?? []
+
+  const emailConnectionStatus = emailPages?.[0]?.status ?? "connected"
+
+  /**
+   * Flatten the pages, de-duplicating by thread id. Graph pages by message,
+   * so one conversation can appear in two pages — the later page's copy is
+   * built from older messages and has a lower count, so the FIRST
+   * occurrence (newest) wins.
+   */
+  const emailThreads = useMemo(() => {
+    const byId = new Map<string, TriageEmailThread>()
+    for (const page of emailPages ?? []) {
+      for (const thread of page.threads ?? []) {
+        if (!byId.has(thread.id)) byId.set(thread.id, thread)
+      }
+    }
+    return Array.from(byId.values())
+  }, [emailPages])
+
+  const lastEmailPage = emailPages?.[emailPages.length - 1]
+  const hasMoreEmails = Boolean(lastEmailPage && lastEmailPage.nextSkip != null)
+  const loadingMoreEmails = emailsValidating && (emailPages?.length ?? 0) < emailPageCount
   const [dismissedEmailIds, setDismissedEmailIds] = useState<Set<string>>(() => new Set())
   const [emailSubFilter, setEmailSubFilter] = useState<string>("all")
   const [emailSearch, setEmailSearch] = useState("")
@@ -288,6 +330,22 @@ export function TriageFeed() {
     }
     await mutateEmails()
     return { ok: true }
+  }
+
+  function loadMoreEmails() {
+    if (!hasMoreEmails || loadingMoreEmails) return
+    setEmailPageCount((n) => n + 1)
+  }
+
+  /**
+   * Auto-load as the box nears its end, the way a mail client does, with
+   * the button below as the deliberate fallback. The 200px margin fires
+   * the fetch before the user hits the floor so the list rarely stalls.
+   */
+  function onEmailListScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 200) return
+    loadMoreEmails()
   }
 
   function openEmailThread(conversationId: string) {
@@ -516,11 +574,45 @@ export function TriageFeed() {
               {visibleEmailItems.length === 0 ? (
                 <EmptyState filter="client_email" />
               ) : (
-                <ul className="space-y-2">
-                  {visibleEmailItems.map((item) => (
-                    <FeedCard key={item.source_id} item={item} onDismiss={dismissEmailThread} />
-                  ))}
-                </ul>
+                /* The list scrolls inside its own box rather than growing the
+                   page, so the filter bar and tabs stay put the way a mail
+                   client's do. Capped against the viewport rather than a fixed
+                   pixel height so it still fills a large screen. */
+                <div
+                  onScroll={onEmailListScroll}
+                  className="max-h-[calc(100vh-24rem)] min-h-[20rem] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2"
+                >
+                  <ul className="space-y-2">
+                    {visibleEmailItems.map((item) => (
+                      <FeedCard key={item.source_id} item={item} onDismiss={dismissEmailThread} />
+                    ))}
+                  </ul>
+
+                  {hasMoreEmails ? (
+                    <div className="flex justify-center py-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={loadMoreEmails}
+                        disabled={loadingMoreEmails}
+                        className="gap-1.5 text-xs"
+                      >
+                        {loadingMoreEmails ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Loading older email…
+                          </>
+                        ) : (
+                          "Load older email"
+                        )}
+                      </Button>
+                    </div>
+                  ) : (
+                    <p className="py-3 text-center text-xs text-gray-400">
+                      That&apos;s the whole mailbox.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )

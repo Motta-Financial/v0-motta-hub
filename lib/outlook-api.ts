@@ -472,20 +472,38 @@ function otherPartyName(msg: GraphMessageFull, mailbox: string | null): { name: 
   return { name: to?.name || to?.address || "Unknown recipient", email: to?.address || "" }
 }
 
+export interface InboxThreadPage {
+  threads: OutlookThreadSummary[]
+  /** Pass back as `skip` for the next page. Null when the mailbox is exhausted. */
+  nextSkip: number | null
+}
+
 /**
- * Fetches the most recent messages across the mailbox (inbox + sent, via
- * the unscoped /me/messages endpoint so a team member's own replies show
- * up in the thread too) and groups them by conversationId into threads,
+ * Fetches a page of messages across the mailbox (inbox + sent, via the
+ * unscoped /me/messages endpoint so a team member's own replies show up in
+ * the thread too) and groups them by conversationId into threads,
  * newest-first. Used by the Triage feed's "Emails" tab.
+ *
+ * Paged by MESSAGE, not by thread, because that is what Graph paginates.
+ * A conversation can therefore straddle two pages and appear in both with
+ * a different message count each time — the caller merges by thread id and
+ * keeps the newer entry. Grouping across the whole mailbox server-side to
+ * guarantee uniqueness would mean holding all of it in memory, which is
+ * the thing paging exists to avoid.
  */
 export async function fetchInboxThreads(
   connection: OutlookConnectionRow,
   supabase: SupabaseClient,
-  { messageLimit = 100, threadLimit = 40 }: { messageLimit?: number; threadLimit?: number } = {},
-): Promise<OutlookThreadSummary[]> {
+  {
+    messageLimit = 100,
+    threadLimit = 40,
+    skip = 0,
+  }: { messageLimit?: number; threadLimit?: number; skip?: number } = {},
+): Promise<InboxThreadPage> {
   const result = await graphRequest<{ value: GraphMessageFull[] }>(connection, supabase, "/me/messages", {
     query: {
       $top: messageLimit,
+      $skip: skip,
       $orderby: "receivedDateTime desc",
       $select: "id,conversationId,subject,receivedDateTime,isRead,bodyPreview,from,toRecipients",
     },
@@ -520,7 +538,13 @@ export async function fetchInboxThreads(
   }
 
   threads.sort((a, b) => new Date(b.latestSentAt).getTime() - new Date(a.latestSentAt).getTime())
-  return threads.slice(0, threadLimit)
+
+  // A short page means Graph has no more messages. A full one doesn't
+  // guarantee there are — the next fetch simply comes back empty, which
+  // ends the loop one request later rather than hiding mail.
+  const nextSkip = messages.length < messageLimit ? null : skip + messages.length
+
+  return { threads: threads.slice(0, threadLimit), nextSkip }
 }
 
 /**
