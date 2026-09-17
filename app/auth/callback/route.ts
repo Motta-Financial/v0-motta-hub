@@ -1,5 +1,5 @@
 import { type EmailOtpType } from "@supabase/supabase-js"
-import { createClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
 
 /**
@@ -16,6 +16,55 @@ import { NextResponse } from "next/server"
  * For password reset / invite flows, prefer pointing email links at
  * /auth/confirm directly (cleaner, no fallback paths).
  */
+/**
+ * Stamp auth_user_id onto a team_members row that only has an email.
+ *
+ * Signing in with Microsoft mints a NEW auth user — a different uuid from
+ * whatever a password account used — so a staff member whose row was never
+ * linked resolves only by the email fallback. That fallback works
+ * (middleware and getTeamMemberByAuthId both have it), but it is a fallback:
+ * it breaks the moment someone's work address changes, and it means every
+ * lookup pays for two queries instead of one.
+ *
+ * Measured against prod: 3 of 19 active team members had no auth_user_id.
+ *
+ * Deliberately narrow:
+ *  · matches on email only, and only a row that has NO auth_user_id yet, so
+ *    it can never repoint an already-linked colleague's row at a different
+ *    identity;
+ *  · runs through the admin client because team_members is is_staff()-gated
+ *    and the caller is, by definition, not yet resolvable as staff;
+ *  · failures are logged and swallowed. The email fallback still works, so
+ *    a failed backfill must not turn into a failed login.
+ */
+async function linkTeamMemberToAuthUser(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+): Promise<void> {
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user?.email) return
+
+    const admin = createAdminClient()
+
+    const { data: existing } = await admin
+      .from("team_members")
+      .select("id")
+      .eq("auth_user_id", user.id)
+      .maybeSingle()
+    if (existing) return
+
+    await admin
+      .from("team_members")
+      .update({ auth_user_id: user.id, updated_at: new Date().toISOString() })
+      .eq("email", user.email)
+      .is("auth_user_id", null)
+  } catch (err) {
+    console.error("[auth] could not link team member to auth user:", err)
+  }
+}
+
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get("code")
@@ -51,7 +100,8 @@ export async function GET(request: Request) {
     return NextResponse.redirect(target.toString())
   }
 
-  // 2) Legacy PKCE code-exchange flow
+  // 2) PKCE code-exchange flow — legacy email links AND Microsoft sign-in,
+  //    which returns here with ?code after Supabase's own callback.
   if (code) {
     const supabase = await createClient()
     const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
@@ -60,6 +110,9 @@ export async function GET(request: Request) {
         `${origin}/auth/auth-code-error?reason=${encodeURIComponent(exchangeError.message)}`,
       )
     }
+
+    await linkTeamMemberToAuthUser(supabase)
+
     const target = new URL(defaultNext, origin)
     if (type === "invite") target.searchParams.set("invited", "true")
     return NextResponse.redirect(target.toString())

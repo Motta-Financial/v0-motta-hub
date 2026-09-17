@@ -106,6 +106,7 @@ function LoginContent() {
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [microsoftLoading, setMicrosoftLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [showForgotPassword, setShowForgotPassword] = useState(false)
@@ -268,6 +269,47 @@ function LoginContent() {
       setMode("client")
     }
   }, [searchParams])
+
+  /**
+   * Hand sign-in to Microsoft.
+   *
+   * Deliberately thin. The Web Locks deadlock and stale-cookie problems
+   * documented on the password path below are specific to
+   * signInWithPassword holding a lock while it talks to GoTrue;
+   * signInWithOAuth only builds a URL and navigates away, so it neither
+   * takes that lock nor benefits from the purge. Adding the same
+   * scaffolding here would be cargo-culting a fix for a bug this path
+   * cannot have.
+   *
+   * We do NOT setMicrosoftLoading(false) on success: the browser is
+   * leaving for login.microsoftonline.com, and clearing the spinner first
+   * would flash the form back for a frame before the navigation commits.
+   */
+  const handleMicrosoftSignIn = async () => {
+    setError(null)
+    setMicrosoftLoading(true)
+    try {
+      const supabase = createClient()
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: "azure",
+        options: {
+          // openid/profile/email only — this is an identity login. Mail and
+          // calendar access is a separate consent on /settings/outlook, so
+          // signing in never asks anyone to hand over their inbox.
+          scopes: "openid profile email",
+          redirectTo: `${window.location.origin}/auth/callback?next=/`,
+        },
+      })
+      if (oauthError) throw oauthError
+    } catch (err) {
+      setMicrosoftLoading(false)
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Couldn't start Microsoft sign-in. Use your password below, or try again.",
+      )
+    }
+  }
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -802,6 +844,47 @@ function LoginContent() {
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
+            </div>
+
+            {/* Microsoft sign-in.
+                Primary path for staff: every team member has a
+                @mottafinancial.com account, and this keeps credentials with
+                Microsoft rather than in our auth table. Password sign-in
+                stays below it deliberately -- one active team member is not
+                on a mottafinancial.com address, and if the Entra client
+                secret ever lapses, SSO-only would lock everyone out with no
+                way in to fix it. */}
+            <Button
+              type="button"
+              onClick={handleMicrosoftSignIn}
+              disabled={isLoading || microsoftLoading}
+              className="w-full h-11 bg-white hover:bg-[#F5F5F5] text-[#3F4438] font-medium rounded-lg border border-[#D9D5CE] transition-all shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+            >
+              {microsoftLoading ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Opening Microsoft...
+                </span>
+              ) : (
+                <span className="flex items-center gap-2">
+                  {/* Microsoft's four-square mark, inline rather than a
+                      remote asset so it can't fail to load on the one
+                      screen a user cannot get past. */}
+                  <svg className="w-4 h-4" viewBox="0 0 16 16" aria-hidden="true">
+                    <rect x="0" y="0" width="7" height="7" fill="#F25022" />
+                    <rect x="9" y="0" width="7" height="7" fill="#7FBA00" />
+                    <rect x="0" y="9" width="7" height="7" fill="#00A4EF" />
+                    <rect x="9" y="9" width="7" height="7" fill="#FFB900" />
+                  </svg>
+                  Sign in with Microsoft
+                </span>
+              )}
+            </Button>
+
+            <div className="flex items-center gap-3 my-1">
+              <span className="h-px flex-1 bg-[#E5E2DC]" />
+              <span className="text-xs text-[#AAAAAA]">or use a password</span>
+              <span className="h-px flex-1 bg-[#E5E2DC]" />
             </div>
 
             {/* Flat solid-olive button -- the gradient-on-gradient stack
