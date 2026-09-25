@@ -2,7 +2,7 @@
 
 import type React from "react"
 import { useState } from "react"
-import { usePathname, useRouter } from "next/navigation"
+import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -141,13 +141,29 @@ function PortalHeader({
   mobileOpen: boolean
   setMobileOpen: (v: boolean) => void
 }) {
-  const router = useRouter()
-
   async function handleSignOut() {
-    const supabase = createClient()
     clearUserCache()
-    await supabase.auth.signOut()
-    router.push("/client-portal/login")
+    try {
+      // Sign out server-side (same /api/auth/logout the team Hub uses) rather
+      // than the browser client's auth.signOut(). This account may ALSO have
+      // a team_members row (e.g. a staff member who is also a client, tested
+      // with a dual-role account) — the browser client here runs with
+      // autoRefreshToken disabled (see lib/supabase/client.ts), so its local
+      // signOut() can race a concurrent token refresh elsewhere in the app
+      // and leave a still-valid cookie behind. Signing out through the
+      // server route reuses the single source of truth for session
+      // mutation and reliably clears the cookie before we navigate.
+      await fetch("/api/auth/logout", { method: "POST" })
+    } finally {
+      // Hard navigation, not router.push(). A client-side transition keeps
+      // this tab's JS context alive — the Supabase browser client instance,
+      // its in-memory auth state, and the UserProvider module cache all
+      // survive — so signing out and immediately signing back in as a
+      // different person (e.g. testing Jamie then Samprina in the same tab)
+      // could still read stale state and look "stuck". A full reload
+      // guarantees a clean slate for the next sign-in.
+      window.location.href = "/client-portal/login"
+    }
   }
 
   const initials = getInitials(portalUser.fullName ?? portalUser.email)
