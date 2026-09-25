@@ -1113,7 +1113,12 @@ function HeaderUserMenu() {
       // Clear the cached user data so the login page and any other pages
       // don't show stale profile info if the user logs back in.
       clearUserCache()
-      router.push("/login")
+      // Hard navigation, not router.push(). A soft client-side transition
+      // keeps this tab's JS context alive (Supabase browser client instance,
+      // UserProvider's module-level cache), which can leave a "signed out"
+      // page still reading stale session state — appearing stuck and
+      // blocking the next person from signing in cleanly in the same tab.
+      window.location.href = "/login"
     }
   }
 
