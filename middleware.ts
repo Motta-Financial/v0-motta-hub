@@ -118,7 +118,21 @@ export async function middleware(request: NextRequest) {
   // non-staff visitor, so the route's own graceful fallback never ran --
   // the client saw a raw 401 instead of the intended { user: null } shape.
   const isPublicAuthApi =
-    pathname.startsWith("/api/auth/forgot-password") || pathname === "/api/auth/user"
+    pathname.startsWith("/api/auth/forgot-password") ||
+    pathname === "/api/auth/user" ||
+    // /api/auth/logout must be reachable by EVERY authenticated user, not
+    // just staff. It previously fell through to the generic "/api/* requires
+    // a team_members row" gate below, so a portal client (a real Supabase
+    // session with no team_members row -- e.g. dat.le@mottafinancial.com's
+    // team login vs. dle82990@gmail.com's separate client-portal login) got
+    // a 401 from middleware before the route handler ever ran
+    // supabase.auth.signOut(). The client's fetch("/api/auth/logout") never
+    // checked response.ok, so it still hard-navigated to
+    // /client-portal/login looking successful, while the session cookie was
+    // never actually revoked server-side -- the next sign-in attempt in the
+    // same tab would still read the stale, still-valid session ("stuck"
+    // sign-out).
+    pathname === "/api/auth/logout"
   // /api/alfred/health is a deliberately unauthenticated status probe so
   // alfred.motta.cpa (and any external monitor) can verify the Hub is
   // reachable, the Supabase env is configured, and the ALFRED service
