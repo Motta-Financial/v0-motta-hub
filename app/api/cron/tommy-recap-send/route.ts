@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { buildTommyRecapHtml, sendCategoryEmail } from "@/lib/email"
 import { composeWeeklyRecap, type TopThreeEntry } from "@/lib/tommy-awards/weekly-recap"
+import { triggerStage } from "@/lib/tommy-awards/pipeline"
 import { isEasternHourAndWeekday, nowInEastern } from "@/lib/cron-eastern"
 import { firmConfigSync } from "@/lib/firm-settings"
 
@@ -11,12 +12,23 @@ import { firmConfigSync } from "@/lib/firm-settings"
 //
 // Crucially, this stage is triggered by its OWN noon-ET cron — NOT by the
 // prep chain. That makes it a safety net: the prep chain (PREPARE → IMAGE
-// → PDF) starts at 8:45 AM ET, so by noon the image + PDF are normally
-// ready and baked into the recap row. But even if a prep stage failed:
-//   - If the row has a story but no image/PDF, the email still ships
-//     (with whatever is present).
-//   - If PREPARE never ran at all, we compose the recap inline here so
-//     the firm is never left without a Friday email.
+// → PDF) starts at 11:00 AM ET, so by noon the image + PDF are normally
+// ready and baked into the recap row. But even if a prep stage failed or
+// never ran at all, SEND's own re-tally (below) composes everything it
+// needs from scratch, so the firm is never left without a Friday email.
+//
+// IMPORTANT — always re-tally right before sending. PREPARE's tally is a
+// snapshot from ~1 hour before send time, so a ballot cast in that window
+// used to be silently missing from the "final" email (wrong vote count,
+// possibly a wrong podium). To guarantee the email always reflects every
+// ballot cast up to send time, SEND unconditionally re-runs
+// `composeWeeklyRecap` for a fresh tally + summary right before building
+// the email — it does NOT just trust whatever PREPARE persisted earlier.
+// The pre-rendered podium image/PDF (which take minutes to generate) are
+// only reused if the fresh podium still matches who they depict; if a
+// late ballot changed the podium, we drop the now-inaccurate art rather
+// than mail out a picture of the wrong winners, and re-trigger the image
+// chain so the recap page picks up a corrected image afterward.
 //
 // Composing inline is fast (~10s); we only render the email + send, so a
 // tight ceiling is fine.
@@ -104,47 +116,76 @@ export async function GET(request: Request) {
       })
     }
 
-    // Fallback: PREPARE never produced a usable row → compose inline so
-    // the firm still gets an email at noon (without image/PDF).
-    if (!recap || !recap.ai_summary) {
+    // Always re-tally right before sending — never trust PREPARE's ~1hr-old
+    // snapshot verbatim. A ballot cast after PREPARE ran (but before noon)
+    // must still show up in the count/podium/summary that goes out.
+    const previousTopThree = (recap?.top_three ?? []) as TopThreeEntry[]
+
+    const composed = await composeWeeklyRecap(supabase)
+    if (composed.status === "skipped") {
+      return NextResponse.json({ success: true, skipped: true, message: composed.reason })
+    }
+    const c = composed.data
+
+    // Did the podium change since PREPARE rendered the image/PDF? Compare
+    // by name+rank, order-insensitively (ties can reorder within a rank).
+    const podiumKey = (entries: TopThreeEntry[]) =>
+      entries
+        .map((e) => `${e.rank}:${e.name}`)
+        .sort()
+        .join("|")
+    const podiumUnchanged =
+      recap !== null &&
+      Boolean(recap.podium_image_url) &&
+      podiumKey(previousTopThree) === podiumKey(c.topThree)
+
+    if (recap?.podium_image_url && !podiumUnchanged) {
       console.warn(
-        "[v0] tommy-recap-send: no prepared recap for week",
+        "[v0] tommy-recap-send: podium changed since PREPARE for week",
         weekId,
-        "— composing inline fallback (no image/PDF).",
+        "— dropping stale image/PDF from this email and re-triggering the image chain.",
       )
-      const composed = await composeWeeklyRecap(supabase)
-      if (composed.status === "skipped") {
-        return NextResponse.json({ success: true, skipped: true, message: composed.reason })
-      }
-      const c = composed.data
-      const { error: persistErr } = await supabase.from("tommy_weekly_recaps").upsert(
-        {
-          week_id: c.weekId,
-          week_date: c.weekDate,
-          week_label: c.weekLabel,
-          total_ballots: c.totalBallots,
-          ai_summary: c.aiSummary,
-          ai_model: c.aiModel,
-          top_three: c.topThree,
-          ytd_standings: c.ytdStandings,
-        },
-        { onConflict: "week_id" },
-      )
-      if (persistErr) {
-        console.error("[v0] tommy-recap-send: fallback persist failed:", persistErr)
-      }
-      recap = {
+    }
+
+    // Persist the fresh tally so the recap row (and any other reader,
+    // like the Weekly Tommy's tab) reflects reality. Only clear the
+    // image/PDF columns when the podium actually moved, and only after
+    // re-tallying — never clobber good art with a no-op re-run.
+    const { error: persistErr } = await supabase.from("tommy_weekly_recaps").upsert(
+      {
         week_id: c.weekId,
+        week_date: c.weekDate,
         week_label: c.weekLabel,
+        total_ballots: c.totalBallots,
         ai_summary: c.aiSummary,
         ai_model: c.aiModel,
         top_three: c.topThree,
-        total_ballots: c.totalBallots,
-        podium_image_url: null,
-        podium_pdf_url: null,
         ytd_standings: c.ytdStandings,
-        email_sent_at: null,
-      }
+        ...(recap?.podium_image_url && !podiumUnchanged
+          ? { podium_image_url: null, podium_pdf_url: null }
+          : {}),
+      },
+      { onConflict: "week_id" },
+    )
+    if (persistErr) {
+      console.error("[v0] tommy-recap-send: fresh-tally persist failed:", persistErr)
+    }
+
+    if (recap?.podium_image_url && !podiumUnchanged) {
+      triggerStage("tommy-podium-image", weekId)
+    }
+
+    recap = {
+      week_id: c.weekId,
+      week_label: c.weekLabel,
+      ai_summary: c.aiSummary,
+      ai_model: c.aiModel,
+      top_three: c.topThree,
+      total_ballots: c.totalBallots,
+      podium_image_url: podiumUnchanged ? (recap?.podium_image_url ?? null) : null,
+      podium_pdf_url: podiumUnchanged ? (recap?.podium_pdf_url ?? null) : null,
+      ytd_standings: c.ytdStandings,
+      email_sent_at: recap?.email_sent_at ?? null,
     }
 
     const weekLabel = recap.week_label as string
