@@ -33,6 +33,14 @@
       "schedule": "0 20 * * 4"
     },
     {
+      "path": "/api/cron/tommy-voting-closing-soon",
+      "schedule": "45 15 * * 5"
+    },
+    {
+      "path": "/api/cron/tommy-voting-closing-soon",
+      "schedule": "45 16 * * 5"
+    },
+    {
       "path": "/api/cron/meeting-summary",
       "schedule": "0 13 * * 1"
     },
