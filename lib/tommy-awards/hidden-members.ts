@@ -23,6 +23,10 @@ export const TOMMY_HIDDEN_MEMBERS = [
   // case-insensitive match below would catch either on its own).
   "ALFRED Ai",
   "ALFRED AI",
+  // No hero-profile artwork exists for this person yet, which breaks the
+  // weekly recap's podium image generation if they place. Hidden from the
+  // awards entirely until artwork is added — see generate-podium-image.ts.
+  "Troy Travassos",
 ]
 
 /**
