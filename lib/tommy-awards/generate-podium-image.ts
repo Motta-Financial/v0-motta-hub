@@ -139,8 +139,42 @@ export async function generatePodiumImage(opts: {
         // are filtered out below and fall through to the textual
         // `appearance` descriptor.
         imageUrl: hero?.imageUrl ?? null,
+        // Whether this winner resolved to ANY registry entry at all
+        // (by slug or by name/alias) — as opposed to resolving to an
+        // entry but lacking a vision-fetchable image. See the guard
+        // right below this block for why the distinction matters.
+        hasHeroProfile: hero !== null,
       }
     })
+
+    // ── Guard — refuse to render a stand-in for a winner we don't
+    //              recognize ─────────────────────────────────────
+    // If a winner has no entry in HERO_PROFILES at all (new teammate,
+    // or someone who hasn't been "comic-ified" yet), the model has
+    // NOTHING to ground on — no source art, no appearance text, no
+    // signature prop. It used to silently substitute the hard-coded
+    // generic filler ("Stylised heroic figure in black tactical
+    // suit...") for that person, which produces a podium that either
+    // doesn't look like anyone on the real team, or — worse — reads as
+    // showing the wrong person entirely. One past week even failed to
+    // render at all with no clear reason logged.
+    //
+    // Rather than ship a wrong-looking (or outright broken) image, we
+    // skip image generation entirely for weeks with an unrecognized
+    // winner. The recap email/PDF still go out on schedule — this
+    // helper resolving to `null` is the caller's documented "soft
+    // failure, ship without art" signal. Add the missing person to
+    // HERO_PROFILES (with real appearance details, ideally real
+    // artwork) to unlock their podium image.
+    const unresolvedWinners = heroDescriptors.filter((h) => !h.hasHeroProfile)
+    if (unresolvedWinners.length > 0) {
+      console.warn(
+        "[v0] tommy podium image: skipping render — no Hero Profile registry entry for:",
+        unresolvedWinners.map((h) => h.name).join(", "),
+        "— add them to lib/motta-alliance/hero-profiles.ts before a podium image can render safely for this week.",
+      )
+      return null
+    }
 
     // ── Step 2 — ask GPT-5 to LOOK AT each hero's profile image and
     //              author an image prompt grounded in what it sees ──
