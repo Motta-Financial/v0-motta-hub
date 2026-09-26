@@ -26,9 +26,16 @@ import { firmConfigSync } from "@/lib/firm-settings"
 // the email — it does NOT just trust whatever PREPARE persisted earlier.
 // The pre-rendered podium image/PDF (which take minutes to generate) are
 // only reused if the fresh podium still matches who they depict; if a
-// late ballot changed the podium, we drop the now-inaccurate art rather
-// than mail out a picture of the wrong winners, and re-trigger the image
-// chain so the recap page picks up a corrected image afterward.
+// late ballot changed the podium — or no image exists yet at all, e.g.
+// PREPARE never ran — we drop/omit the art rather than mail out a
+// picture of the wrong winners, and kick off the image chain so the
+// recap page picks up a (correct) image shortly after.
+//
+// This also means the email is NEVER held up waiting on art: voting
+// closes at noon, and composing + sending is fast (~10s), so the "the
+// awards are out" email always ships within moments of noon regardless
+// of whether the podium image is ready. Image generation is strictly a
+// post-send, fire-and-forget step.
 //
 // Composing inline is fast (~10s); we only render the email + send, so a
 // tight ceiling is fine.
@@ -139,6 +146,12 @@ export async function GET(request: Request) {
       Boolean(recap.podium_image_url) &&
       podiumKey(previousTopThree) === podiumKey(c.topThree)
 
+    // Whether we actually have art that matches the FINAL, post-noon
+    // tally. This is false both when PREPARE's art went stale (podium
+    // moved) AND when there was never any art to begin with (PREPARE
+    // never ran, or hadn't finished the image chain yet).
+    const hasValidPodiumImage = podiumUnchanged && Boolean(recap?.podium_image_url)
+
     if (recap?.podium_image_url && !podiumUnchanged) {
       console.warn(
         "[v0] tommy-recap-send: podium changed since PREPARE for week",
@@ -171,7 +184,13 @@ export async function GET(request: Request) {
       console.error("[v0] tommy-recap-send: fresh-tally persist failed:", persistErr)
     }
 
-    if (recap?.podium_image_url && !podiumUnchanged) {
+    // Guarantee the podium art always gets (re)generated off the FINAL
+    // tally — not just when a previous image went stale, but also when
+    // there was never any image at all (e.g. PREPARE never ran, or its
+    // image/PDF chain hadn't finished by noon). Voting is closed by now,
+    // so this run's tally is final; the image chain runs AFTER the email
+    // goes out and never blocks or delays the send.
+    if (!hasValidPodiumImage && c.topThree.length > 0) {
       triggerStage("tommy-podium-image", weekId)
     }
 
