@@ -1378,6 +1378,34 @@ export function buildTommyReminderHtml(opts: {
 }
 
 /**
+ * Tommy Awards "voting closes soon" nudge. Sent Friday at 11:45 AM Eastern —
+ * exactly 15 minutes before the 12:00 PM close — as a last call for anyone
+ * who hasn't submitted a ballot yet. Not everyone has to vote, but this
+ * makes sure nobody misses the window without knowing it's closing.
+ */
+export function buildTommyVotingClosingSoonHtml(opts: {
+  recipientName: string
+  weekLabel: string
+  ballotUrl: string
+}) {
+  const body = `<p style="margin:0 0 16px;">Hi ${opts.recipientName},</p>
+    <p style="margin:0 0 16px;">Quick heads up — Tommy Awards voting for this week closes in <strong>15 minutes</strong>. If you haven't cast your ballot yet, now's the time.</p>
+    <div style="background:#f9fafb;border-left:4px solid #c62828;padding:12px 16px;border-radius:4px;margin:0 0 20px;">
+      <strong>Voting for: ${opts.weekLabel}</strong>
+    </div>
+    <div style="text-align:center;">
+      <a href="${opts.ballotUrl}"
+         style="display:inline-block;background:#c62828;color:#fff;padding:14px 36px;border-radius:8px;text-decoration:none;font-size:15px;font-weight:600;">
+        Submit Your Ballot
+      </a>
+    </div>
+    <p style="margin:20px 0 0;color:${BRAND.textMuted};font-size:13px;text-align:center;">
+      Ballots close at 12:00 PM Eastern today — the winners go out shortly after.
+    </p>`
+  return baseEmailWrapper("Tommy Awards — Voting Closes in 15 Minutes", body)
+}
+
+/**
  * Tommy Awards weekly recap. Sent Friday at 12:00 PM Eastern Time.
  *
  * Uses the shared MOTTA HUB email wrapper (header/footer) so it matches the
