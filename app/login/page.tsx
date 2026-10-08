@@ -106,7 +106,7 @@ function LoginContent() {
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
-  const [microsoftLoading, setMicrosoftLoading] = useState(false)
+  const [oAuthLoading, setOAuthLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [showForgotPassword, setShowForgotPassword] = useState(false)
@@ -281,13 +281,13 @@ function LoginContent() {
    * scaffolding here would be cargo-culting a fix for a bug this path
    * cannot have.
    *
-   * We do NOT setMicrosoftLoading(false) on success: the browser is
+   * We do NOT setOAuthLoading(false) on success: the browser is
    * leaving for login.microsoftonline.com, and clearing the spinner first
    * would flash the form back for a frame before the navigation commits.
    */
   const handleMicrosoftSignIn = async () => {
     setError(null)
-    setMicrosoftLoading(true)
+    setOAuthLoading(true)
     try {
       const supabase = createClient()
       const { error: oauthError } = await supabase.auth.signInWithOAuth({
@@ -302,11 +302,39 @@ function LoginContent() {
       })
       if (oauthError) throw oauthError
     } catch (err) {
-      setMicrosoftLoading(false)
+      setOAuthLoading(false)
       setError(
         err instanceof Error
           ? err.message
           : "Couldn't start Microsoft sign-in. Use your password below, or try again.",
+      )
+    }
+  }
+
+  /**
+   * Hand a portal client's sign-in to Google. Same shape as the Microsoft
+   * handler above. next=/client-portal is what tells /auth/callback to run
+   * the portal_users check instead of the staff backfill, and to send a
+   * rejected sign-in back to the portal login with a plain-language error.
+   */
+  const handleGoogleSignIn = async () => {
+    setError(null)
+    setOAuthLoading(true)
+    try {
+      const supabase = createClient()
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback?next=/client-portal`,
+        },
+      })
+      if (oauthError) throw oauthError
+    } catch (err) {
+      setOAuthLoading(false)
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Couldn't start Google sign-in. Use your password below, or try again.",
       )
     }
   }
@@ -853,17 +881,30 @@ function LoginContent() {
                 stays below it deliberately -- one active team member is not
                 on a mottafinancial.com address, and if the Entra client
                 secret ever lapses, SSO-only would lock everyone out with no
-                way in to fix it. */}
+                way in to fix it.
+                The Client tab gets Google instead: clients aren't in our
+                Microsoft tenant, and many of them use Gmail. */}
             <Button
               type="button"
-              onClick={handleMicrosoftSignIn}
-              disabled={isLoading || microsoftLoading}
+              onClick={mode === "team" ? handleMicrosoftSignIn : handleGoogleSignIn}
+              disabled={isLoading || oAuthLoading}
               className="w-full h-11 bg-white hover:bg-[#F5F5F5] text-[#3F4438] font-medium rounded-lg border border-[#D9D5CE] transition-all shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed mt-2"
             >
-              {microsoftLoading ? (
+              {oAuthLoading ? (
                 <span className="flex items-center gap-2">
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  Opening Microsoft...
+                  {mode === "team" ? "Opening Microsoft..." : "Opening Google..."}
+                </span>
+              ) : mode === "client" ? (
+                <span className="flex items-center gap-2">
+                  {/* Google's "G", inline for the same reason as below. */}
+                  <svg className="w-4 h-4" viewBox="0 0 48 48" aria-hidden="true">
+                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+                  </svg>
+                  Continue with Google
                 </span>
               ) : (
                 <span className="flex items-center gap-2">
