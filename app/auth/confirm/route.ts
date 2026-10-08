@@ -1,5 +1,6 @@
 import { type EmailOtpType } from "@supabase/supabase-js"
 import { type NextRequest, NextResponse } from "next/server"
+import { safeNextPath } from "@/lib/auth/safe-next"
 import { createClient } from "@/lib/supabase/server"
 
 /**
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest) {
   // on the password update page so the user can set a credential.
   const defaultNext =
     type === "recovery" || type === "invite" ? "/auth/reset-password" : "/"
-  const next = explicitNext ?? defaultNext
+  const next = safeNextPath(explicitNext, defaultNext)
 
   if (!token_hash || !type) {
     return NextResponse.redirect(`${origin}/auth/auth-code-error?reason=missing_params`)

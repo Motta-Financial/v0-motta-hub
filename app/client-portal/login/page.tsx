@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
@@ -10,12 +10,27 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, AlertCircle } from "lucide-react"
 
+// Set by /auth/callback when a Google sign-in can't enter the portal.
+const CALLBACK_ERRORS: Record<string, string> = {
+  no_access:
+    "That Google account doesn't have client portal access. Sign in with the email your Motta Financial advisor invited, or contact them.",
+  deactivated: "Your portal access has been deactivated. Please contact your Motta Financial advisor.",
+  oauth_failed: "Google sign-in didn't complete. Please try again, or sign in with your password.",
+}
+
 export default function PortalLoginPage() {
   const router = useRouter()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Read from window rather than useSearchParams, which would force a
+  // Suspense boundary onto the whole page for one query param.
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get("error")
+    if (code) setError(CALLBACK_ERRORS[code] ?? CALLBACK_ERRORS.oauth_failed)
+  }, [])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()

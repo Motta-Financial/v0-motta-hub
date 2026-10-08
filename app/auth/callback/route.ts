@@ -1,6 +1,7 @@
 import { type EmailOtpType } from "@supabase/supabase-js"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
+import { safeNextPath } from "@/lib/auth/safe-next"
 
 /**
  * Legacy + compatibility auth callback.
@@ -65,6 +66,40 @@ async function linkTeamMemberToAuthUser(
   }
 }
 
+/**
+ * Decide whether a just-signed-in user may enter the client portal.
+ *
+ * Google sign-in reaches this route WITHOUT passing through the portal
+ * login page's own portal_users check, so the check has to live here.
+ * Supabase links a Google identity onto an existing auth user when the
+ * verified emails match, so an invited client keeps the auth_user_id their
+ * portal_users row already points at — which is what we look up by.
+ *
+ * Mirrors requirePortalAuth (active row + at least one granted entity) so
+ * a user who passes here can't immediately bounce off the portal layout.
+ * Uses the admin client because portal_users RLS is not what's being
+ * tested here; the caller's identity, already verified, is.
+ */
+async function portalAccessFailure(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+): Promise<"no_access" | "deactivated" | null> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return "no_access"
+
+  const { data: row } = await createAdminClient()
+    .from("portal_users")
+    .select("is_active, portal_user_access(contact_id)")
+    .eq("auth_user_id", user.id)
+    .maybeSingle()
+
+  if (!row) return "no_access"
+  if (!row.is_active) return "deactivated"
+  if (!row.portal_user_access?.length) return "no_access"
+  return null
+}
+
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get("code")
@@ -73,15 +108,23 @@ export async function GET(request: Request) {
   const error = searchParams.get("error")
   const errorDescription = searchParams.get("error_description")
 
-  // Surface upstream Supabase errors immediately
+  const isRecoveryLike = type === "recovery" || type === "invite"
+  const defaultNext = isRecoveryLike ? "/auth/reset-password" : safeNextPath(searchParams.get("next"))
+  const isPortal = defaultNext === "/client-portal" || defaultNext.startsWith("/client-portal/")
+
+  // Surface upstream Supabase errors immediately. A portal client goes back
+  // to the portal's own login screen, not the Hub's error page. With
+  // sign-ups disabled, a Google account we never invited arrives here as
+  // "Signups not allowed" — no auth user is created, so nothing to clean up.
+  if (error && isPortal) {
+    const reason = /signup/i.test(errorDescription ?? "") ? "no_access" : "oauth_failed"
+    return NextResponse.redirect(`${origin}/client-portal/login?error=${reason}`)
+  }
   if (error) {
     return NextResponse.redirect(
       `${origin}/auth/auth-code-error?reason=${encodeURIComponent(errorDescription || error)}`,
     )
   }
-
-  const isRecoveryLike = type === "recovery" || type === "invite"
-  const defaultNext = isRecoveryLike ? "/auth/reset-password" : (searchParams.get("next") ?? "/")
 
   // 1) Modern token-hash flow (what we send from our own Resend emails)
   if (tokenHash && type) {
@@ -100,8 +143,9 @@ export async function GET(request: Request) {
     return NextResponse.redirect(target.toString())
   }
 
-  // 2) PKCE code-exchange flow — legacy email links AND Microsoft sign-in,
-  //    which returns here with ?code after Supabase's own callback.
+  // 2) PKCE code-exchange flow — legacy email links, Microsoft sign-in
+  //    (staff) and Google sign-in (portal clients), which return here with
+  //    ?code after Supabase's own callback.
   if (code) {
     const supabase = await createClient()
     const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
@@ -111,7 +155,15 @@ export async function GET(request: Request) {
       )
     }
 
-    await linkTeamMemberToAuthUser(supabase)
+    if (isPortal) {
+      const failure = await portalAccessFailure(supabase)
+      if (failure) {
+        await supabase.auth.signOut()
+        return NextResponse.redirect(`${origin}/client-portal/login?error=${failure}`)
+      }
+    } else {
+      await linkTeamMemberToAuthUser(supabase)
+    }
 
     const target = new URL(defaultNext, origin)
     if (type === "invite") target.searchParams.set("invited", "true")
