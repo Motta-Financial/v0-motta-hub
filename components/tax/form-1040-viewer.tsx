@@ -733,8 +733,9 @@ export function Form1040Viewer({
                             onMask={maskLine}
                           />
                           {/* Anything in this section that is NOT part of the
-                              repeating grid (dep_odc, which has no ProConnect
-                              cell) still renders as an ordinary row. */}
+                              repeating grid still renders as an ordinary row.
+                              dep_odc is a grid column now that the
+                              estimator derives it per dependent. */}
                           <div className="divide-y divide-border/60">
                             {visibleLines
                               .filter((lv) => !lv.instances?.length)
@@ -861,6 +862,7 @@ const DEPENDENT_COLUMNS: Array<{ code: string; label: string }> = [
   { code: "dep_ssn", label: "SSN" },
   { code: "dep_rel", label: "Relationship" },
   { code: "dep_ctc", label: "CTC" },
+  { code: "dep_odc", label: "ODC" },
 ]
 
 function DependentsTable({

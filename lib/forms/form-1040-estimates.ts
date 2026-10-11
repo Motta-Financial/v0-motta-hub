@@ -17,6 +17,10 @@
  *         TY bracket tables
  *   19  — Child Tax Credit + credit for other dependents (nonrefundable,
  *         aggregate AGI phaseout, limited to tax)
+ *   25c — Form 8959 Part V Additional Medicare withheld, added to the
+ *         mapped W-2G withholding
+ *   31  — Schedule 3 line 11 excess social security withheld (per person,
+ *         per employer) — the only Schedule 3 Part II credit estimated
  *
  * Every line this module writes carries source: "estimated" so the viewer
  * can badge it. Estimates are NEVER composed into ProConnect imports (the
@@ -206,6 +210,31 @@ const DEPRECIATION_SERIES = "s61"
 
 /** W-2 social security wages — reduces the OASDI base for SE tax. */
 const W2_SS_WAGES_CELL = { seriesId: "s11", codeId: "c5" }
+
+/** Schedule 1 "other income" expansion grid: one row per suffix. */
+const OTHER_INCOME_GRID = { seriesId: "s200M", codeId: "c11" }
+
+/**
+ * W-2 screen (s11), one PREFIX per W-2. Codes c3-c8 are boxes 1-6 in order;
+ * c10xx are the prior-year mirrors and are never read. Measured 2026-10-11
+ * across the TY2025 book:
+ *   - c1 = 1 marks the SPOUSE's W-2; blank is the taxpayer's. Held on every
+ *     MFJ return checked (4 returns, 9 W-2s). c2 is NOT the
+ *     owner flag — it is 1 on both spouses' W-2s.
+ *   - c807 is the employer EIN, used to treat two W-2s from one employer as
+ *     one employer for the excess social security rule.
+ */
+const W2_SERIES = "s11"
+const W2_SPOUSE_CODE = "c1"
+const W2_SS_TAX_CODE = "c6" // box 4
+const W2_MEDICARE_WAGES_CODE = "c7" // box 5
+const W2_MEDICARE_TAX_CODE = "c8" // box 6
+const W2_EIN_CODE = "c807"
+/** IRC 3101(a) and 3101(b)(1): employee OASDI and regular Medicare rates. */
+const EMPLOYEE_SS_RATE = 0.062
+const EMPLOYEE_MEDICARE_RATE = 0.0145
+/** IRC 3102(f): the employer starts withholding Additional Medicare above this. */
+const ADDL_MEDICARE_WITHHOLDING_THRESHOLD = 200000
 
 const EDUCATOR_CELL = { seriesId: "s300", codeId: "c28", suffixId: "x1000" }
 const STUDENT_LOAN_CELL = { seriesId: "s300", codeId: "c23", suffixId: "x1000" }
@@ -812,9 +841,21 @@ export function estimateDeterministicLines(
   // with unemployment, alimony received, or gambling winnings render too
   // low, so sum every verified component and take the larger figure.
   // Still partial: prizes, jury duty, and hobby income are unlabeled.
+  //
+  // The mapped cell is ROW ONE of the s200M/c11 expansion grid; the grid's
+  // rows are enumerated by suffix (x1000, x1001, …) and PTO sums every row —
+  // including two rows with identical payer and amount. Settled 2026-10-11
+  // against a PTO-computed line 8 (scripts/398 named the candidates: sum of
+  // suffixes matched, dedupe-on-desc+val and x1000-only did not).
   {
     const mapped = num("8")
-    let rollup = mapped
+    let gridSum = 0
+    for (const c of cells) {
+      if (c.seriesId === OTHER_INCOME_GRID.seriesId && c.prefixId === "p0" && c.codeId === OTHER_INCOME_GRID.codeId) {
+        gridSum += toNum(c.val)
+      }
+    }
+    let rollup = Math.max(mapped, gridSum)
     for (const sel of LINE8_COMPONENTS) rollup += sumCells(cells, sel)
     if (rollup > mapped) setEstimate("8", rollup)
   }
@@ -1216,6 +1257,77 @@ export function estimateDeterministicLines(
     }
   }
 
+  // ── W-2 census (shared by stages 25c and 31) ─────────────────────────
+  const w2s = new Map<string, { spouse: boolean; ssTax: number; medicareWages: number; medicareTax: number; ein: string }>()
+  for (const c of cells) {
+    if (c.seriesId !== W2_SERIES || c.suffixId !== "x1000") continue
+    const w = w2s.get(c.prefixId) ?? { spouse: false, ssTax: 0, medicareWages: 0, medicareTax: 0, ein: "" }
+    if (c.codeId === W2_SPOUSE_CODE) w.spouse = toNum(c.val) === 1
+    if (c.codeId === W2_SS_TAX_CODE) w.ssTax = toNum(c.val)
+    if (c.codeId === W2_MEDICARE_WAGES_CODE) w.medicareWages = toNum(c.val)
+    if (c.codeId === W2_MEDICARE_TAX_CODE) w.medicareTax = toNum(c.val)
+    if (c.codeId === W2_EIN_CODE) w.ein = String(c.val ?? c.desc ?? "").replace(/\D/g, "")
+    w2s.set(c.prefixId, w)
+  }
+
+  // ── 25c: Additional Medicare Tax withheld (Form 8959 Part V) ─────────
+  // ProConnect computes this and the export does not carry it; the mapped
+  // 25c cell is W-2G withholding only, so the 8959 amount is ADDED to it.
+  // Line 24 of 8959 is box 6 less 1.45% of box 5. Only employers past the
+  // 200k withholding threshold are counted: below it the employer withheld
+  // no Additional Medicare, and box 6 being rounded to whole dollars would
+  // otherwise leave stray cents-to-a-dollar residues on ordinary W-2s. The
+  // threshold is per employer (IRC 3102(f)), so W-2s are grouped by person
+  // and EIN first — one employer splitting pay over two W-2s each under 200k
+  // can still have withheld it.
+  // Verified to the dollar against PTO on two reviewed returns.
+  // NOT handled: RRTA compensation (8959 lines 20-21 and box 14 "RRTA").
+  {
+    const byEmployer = new Map<string, { wages: number; tax: number }>()
+    for (const [prefix, w] of w2s) {
+      const key = `${w.spouse ? "S" : "T"}|${w.ein || prefix}`
+      const g = byEmployer.get(key) ?? { wages: 0, tax: 0 }
+      g.wages += w.medicareWages
+      g.tax += w.medicareTax
+      byEmployer.set(key, g)
+    }
+    let withheld = 0
+    for (const g of byEmployer.values()) {
+      if (g.wages > ADDL_MEDICARE_WITHHOLDING_THRESHOLD) {
+        withheld += g.tax - EMPLOYEE_MEDICARE_RATE * g.wages
+      }
+    }
+    if (Math.round(withheld) > 0) setEstimate("25c", num("25c") + withheld)
+  }
+
+  // ── 31: excess social security withheld (Schedule 3 line 11) ─────────
+  // Per PERSON, never per return: each spouse has their own wage base.
+  // Credit arises only from two or more employers; one employer withholding
+  // past the maximum must refund it itself, so each employer (by EIN) is
+  // capped at the maximum before summing. Verified to the dollar against
+  // PTO on a reviewed two-employer return.
+  // NOT handled: tier 1 RRTA, and every other Schedule 3 Part II refundable
+  // credit (net PTC, 2439, 4136) — invisible to the export, so 31 is a floor.
+  if (isEmpty("31")) {
+    const wageBase = constNum(constants, "se_ss_wage_base")
+    if (wageBase !== null) {
+      const maxTax = EMPLOYEE_SS_RATE * wageBase
+      let excess = 0
+      for (const spouse of [false, true]) {
+        const byEmployer = new Map<string, number>()
+        for (const [prefix, w] of w2s) {
+          if (w.spouse !== spouse) continue
+          const key = w.ein || prefix // no EIN: treat as its own employer
+          byEmployer.set(key, (byEmployer.get(key) ?? 0) + w.ssTax)
+        }
+        let total = 0
+        for (const t of byEmployer.values()) total += Math.min(t, maxTax)
+        excess += Math.max(0, total - maxTax)
+      }
+      if (Math.round(excess) > 0) setEstimate("31", excess)
+    }
+  }
+
   // ── Dependent census (shared by stages 19, 27, 28) ──────────────────
   // The credit flags are "1 = when applicable" preparer inputs, so
   // eligibility is derived here: Type + age gates per credit.
@@ -1247,9 +1359,10 @@ export function estimateDeterministicLines(
     }
     deps.set(c.prefixId, d)
   }
-  const ctcKids = [...deps.values()].filter(
-    (d) => d.ctcFlag === 1 && d.type !== undefined && CTC_ELIGIBLE_TYPES.has(d.type) && d.dob !== undefined && d.dob >= ctcDobFloor,
-  ).length
+  type Dep = { ctcFlag?: number; eicFlag?: number; type?: number; dob?: Date }
+  const isCtcChild = (d: Dep) =>
+    d.ctcFlag === 1 && d.type !== undefined && CTC_ELIGIBLE_TYPES.has(d.type) && d.dob !== undefined && d.dob >= ctcDobFloor
+  const ctcKids = [...deps.values()].filter(isCtcChild).length
   // EIC qualifying child: flag set, Type child (1/2) or EIC-only (5), and
   // under 19 at year-end. Full-time students 19-23 and disabled children
   // are invisible to us — undercounts those households (caveated).
@@ -1269,13 +1382,34 @@ export function estimateDeterministicLines(
   // We cannot test citizenship/residency or whether the dependent has an SSN
   // rather than an ITIN, so a nonresident or ITIN dependent is counted here
   // when the return may not actually be entitled to the $500.
-  const odcDeps = [...deps.values()].filter((dep) => {
+  const isOdcDependent = (dep: Dep) => {
     if (dep.type === undefined) return false
     if (dep.type === 3 || dep.type === 6) return true
     if (!CTC_ELIGIBLE_TYPES.has(dep.type)) return false
-    const countedForCtc = dep.ctcFlag === 1 && dep.dob !== undefined && dep.dob >= ctcDobFloor
-    return !countedForCtc
-  }).length
+    return !isCtcChild(dep)
+  }
+  const odcDeps = [...deps.values()].filter(isOdcDependent).length
+
+  // ── Dependents grid: CTC / ODC checkboxes ────────────────────────────
+  // c1000200014 is a "1 = when applicable" preparer input that PTO writes
+  // on EVERY dependent (see the census note above), so rendering it raw
+  // ticked the CTC box on adults — a Type 3 parent showed as a qualifying
+  // child. The 1040 boxes say which credit the dependent qualifies for, so
+  // both are driven from the census instead. The phaseout does not clear
+  // them: PTO keeps the box checked when the credit itself phases to zero.
+  {
+    const order = (d["dep_name"]?.instances ?? d["dep_last"]?.instances ?? []).map((i) => i.prefixId)
+    const prefixes = order.length
+      ? order.filter((p) => deps.has(p))
+      : [...deps.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    const real = prefixes.filter((p) => deps.get(p)!.type !== undefined && (deps.get(p)!.type === 3 || deps.get(p)!.type === 6 || CTC_ELIGIBLE_TYPES.has(deps.get(p)!.type!)))
+    for (const [lc, test] of [["dep_ctc", isCtcChild], ["dep_odc", isOdcDependent]] as const) {
+      const line = lineByCode.get(lc)
+      if (!line || real.length === 0) continue
+      const instances = real.map((p) => ({ prefixId: p, value: test(deps.get(p)!) }))
+      d[lc] = { ...d[lc], value: instances[0].value, instances, line, source: "estimated" }
+    }
+  }
 
   // ── 19: child tax credit + credit for other dependents ───────────────
   // Schedule 8812 Part I. The phaseout applies to the AGGREGATE of CTC and
