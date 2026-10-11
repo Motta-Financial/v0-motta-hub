@@ -357,9 +357,11 @@ async function syncClientYear(
         (eng.engagementId as string) ||
         `${clientId}-${year}`
 
-      // CRITICAL: Use the engagement's actual clientId from the API response,
-      // NOT the clientId we queried with. ProConnect returns engagements that
-      // may belong to different clients than the one we queried.
+      // Use the engagement's own clientId from the API response, not the one
+      // we queried with. Rows for other clients came back here only because
+      // fetchEngagements used to send the filter as `oiiClientId`, which
+      // Intuit silently ignores; trusting the row's clientId stays correct
+      // either way.
       const actualClientId = (eng.clientId as string) || clientId
 
       // Extract form type from raw API response
@@ -871,10 +873,11 @@ function pickLatestEfile(taxFiling: RawTaxFiling | null | undefined): EfileLates
  *
  * The four efile_* columns (`efile_status`, `efile_latest`, `efile_filings`,
  * `efile_synced_at`) are deliberately absent from the returned object, and
- * must stay absent: the list endpoint
- * carries no filings, so writing them here would null out whatever the
- * hydrator (hydrateEngagementEfile) last read from the single-engagement
- * GET — every night, silently. PostgREST only SETs the columns present in
+ * must stay absent: the list endpoint carries at most a flat `taxFilings[]`
+ * summary (no status enum, confirmation number or history — see
+ * fetchEngagement in ./client.ts), so writing them here would null or
+ * degrade whatever the hydrator (hydrateEngagementEfile) last read from the
+ * single-engagement GET — every night, silently. PostgREST only SETs the columns present in
  * the request body, so omitting the keys leaves those values alone.
  *
  * Omit them from EVERY row in a batch or none: PostgREST unions the keys
@@ -1754,8 +1757,8 @@ export async function refreshClientYearEngagements(
     return { success: false, count: 0, error: resp.error || "fetch failed" }
   }
 
-  // The engagement endpoint can return engagements belonging to other
-  // clients — trust each row's own clientId (mapEngagementRow does).
+  // Trust each row's own clientId (mapEngagementRow does) rather than the
+  // one we filtered on — the filter was silently dropped until 2026-10-11.
   const rows = resp.data
     .map((raw) => mapEngagementRow(raw, taxYear))
     .filter((r) => r.engagement_id && r.proconnect_client_id)

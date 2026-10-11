@@ -206,7 +206,13 @@ export async function fetchClient(
 
 /**
  * Fetch engagements for a client and tax year
- * GET /v2/engagements?source=ITO&period={year}&oiiClientId={clientId}&include-efiles=true
+ * GET /v2/engagements?source=ITO&period={year}&client={oiiClientId}&include-efiles=true
+ *
+ * The filter parameter is `client`, NOT `oiiClientId`. Intuit's V4 doc
+ * (§2.1) says `oiiClientId` "silently drops the filter", and it does: on
+ * 2026-10-11 `oiiClientId=` returned all 398 TY2025 engagements in the firm
+ * (367 clients) where `client=` returned that client's 4. Every caller of
+ * this function was upserting the whole firm-year before that fix.
  */
 export async function fetchEngagements(
   oiiClientId: string,
@@ -219,10 +225,8 @@ export async function fetchEngagements(
       params: {
         source: "ITO",
         period: taxYear.toString(),
-        oiiClientId,
-        // No-op on the list endpoints — see fetchEngagement below. Kept
-        // because it costs nothing and would start working if Intuit ever
-        // honours it here.
+        client: oiiClientId,
+        // Adds the flat `taxFilings[]` summary — see fetchEngagement below.
         "include-efiles": "true",
       },
     }
@@ -247,7 +251,7 @@ export async function fetchEngagements(
  * GET /v2/engagements?source=ITO&period={year}&include-efiles=true
  *
  * The engagement service returns every engagement for the firm's realm
- * when oiiClientId is omitted, which makes a full-firm sync ~1 request
+ * when `client` is omitted, which makes a full-firm sync ~1 request
  * per tax year instead of one request per (client, year) pair. This is
  * the same strategy as the proconnect-sync-engagements Edge Function.
  */
@@ -261,8 +265,8 @@ export async function fetchAllEngagementsForYear(
       params: {
         source: "ITO",
         period: taxYear.toString(),
-        // No-op here — see fetchEngagement below. Kept for the same reason
-        // as in fetchEngagements.
+        // Adds the flat `taxFilings[]` summary — see fetchEngagement below.
+        // Without it the list returns `taxFilings: []` on every engagement.
         "include-efiles": "true",
       },
     }
@@ -285,12 +289,21 @@ export async function fetchAllEngagementsForYear(
  * Fetch ONE engagement by id.
  * GET /v2/engagements/{engagementId}?source=ITO&include-efiles=true
  *
- * This is the only endpoint that returns e-file status. The bulk list
- * endpoints above emit `taxFiling` with an empty `filings` array on every
- * engagement — 908 of 908 in our realm — regardless of `include-efiles`.
- * The single GET returns the real per-jurisdiction `filings[]`, each with
- * its own `filingStatuses[]` history (confirmed against a live engagement
- * that reported 2 filings, 2026-07-28).
+ * This is the only endpoint that returns the FULL e-file record: nested
+ * per-jurisdiction `taxFiling.filings[]` (extensions under `children[]`),
+ * each with its `filingStatuses[]` history, raw status enum (ACK_SUCCEEDED
+ * etc.), confirmation number and reject `errorInfo`. The list endpoints
+ * above always emit `taxFiling.filings: []`.
+ *
+ * With `include-efiles=true` the list endpoints DO carry e-file data, in a
+ * different, flat shape: `taxFilings[]` of { filingId, instanceId,
+ * statusUpdateTimestamp, userMessage, filingLevel, filingType,
+ * jurisdiction } — latest status only, as display text ("Accepted" /
+ * "Rejected"), no confirmation number, no history. (The old note here,
+ * "908 of 908 empty", looked at `taxFiling.filings`, not `taxFilings`.)
+ * Verified 2026-10-11 across 727 TY2024/2025 engagements: the flat array
+ * agrees with the nested latest status and timestamp on every filing. It
+ * is NOT written to efile_* — see mapEngagementRow in ./sync.ts.
  *
  * The cost of that is one request per engagement instead of one per tax
  * year, against a ~4 req/s throttle. Callers must therefore scope what
