@@ -109,6 +109,8 @@ const LINES: Form1040Line[] = [
   mk("18", 2080, "tax_credits", "currency", { kind: "sum", operands: ["16", "17"] }),
   mk("19", 2090, "tax_credits"),
   mk("23", 2130, "tax_credits"),
+  mk("25c", 2220, "payments"),
+  mk("31", 2310, "payments"),
   mk("27", 2270, "payments"),
   mk("28", 2280, "payments"),
 ]
@@ -1162,6 +1164,64 @@ console.log("\nCTC / ODC (19) and ACTC (28)")
     val(run({ status: "single", deps: [child("2015-03-01")], lines: { "4b": 20000 } }), "28"),
     null,
   )
+}
+
+
+// ===========================================================================
+// 6. W-2 withholding ProConnect derives: 25c (Form 8959 Part V) and
+//    31 (Schedule 3 line 11, excess social security). Synthetic figures
+//    shaped like two reviewed returns that matched PTO to the dollar.
+// ===========================================================================
+console.log("\nW-2 withholding: Additional Medicare (25c), excess social security (31)")
+{
+  interface W2 { spouse?: boolean; ssTax?: number; medicareWages?: number; medicareTax?: number; ein?: string }
+  const w2Cells = (w2s: W2[]): FieldCell[] =>
+    w2s.flatMap((w, i) => {
+      const p = `p${i + 1}`
+      const out: FieldCell[] = []
+      if (w.spouse) out.push(cell("s11", p, "c1", "1"))
+      if (w.ssTax !== undefined) out.push(cell("s11", p, "c6", String(w.ssTax)))
+      if (w.medicareWages !== undefined) out.push(cell("s11", p, "c7", String(w.medicareWages)))
+      if (w.medicareTax !== undefined) out.push(cell("s11", p, "c8", String(w.medicareTax)))
+      if (w.ein) out.push({ ...cell("s11", p, "c807", ""), val: null, desc: w.ein } as FieldCell)
+      return out
+    })
+
+  // One W-2 over the threshold: 6,000 - 1.45% x 330,000 = 1,215.
+  const one = run({ status: "hoh", cells: w2Cells([{ ssTax: 10918, medicareWages: 330000, medicareTax: 6000, ein: "10-0000001" }]) })
+  check("one W-2: 8959 withholding on 25c", val(one, "25c"), 1215)
+  check("...badged estimated", src(one, "25c"), "estimated")
+  check("one employer at the max is no excess", val(one, "31"), null)
+
+  // Two employers; only the second is over the threshold.
+  // 25c: 3,800 - 1.45% x 240,000 = 320. 31: 900 + 10,918 - 10,918.20 = 900.
+  const two = run({ status: "single", cells: w2Cells([
+    { ssTax: 900, medicareWages: 15000, medicareTax: 218, ein: "10-0000002" },
+    { ssTax: 10918, medicareWages: 240000, medicareTax: 3800, ein: "10-0000003" },
+  ]) })
+  check("two employers: 8959 withholding on 25c", val(two, "25c"), 320)
+  check("two employers: excess social security on 31", val(two, "31"), 900)
+
+  // The W-2G withholding already on 25c is kept, not overwritten.
+  check("8959 amount ADDS to mapped W-2G withholding",
+    val(run({ status: "hoh", lines: { "25c": 500 }, cells: w2Cells([{ medicareWages: 330000, medicareTax: 6000 }]) }), "25c"), 1715)
+
+  // Ordinary W-2s: box 6 is whole dollars, so 1.45% never matches exactly.
+  check("no 25c under the 200k withholding threshold",
+    val(run({ status: "single", cells: w2Cells([{ medicareWages: 70000, medicareTax: 1015 }]) }), "25c"), null)
+
+  // Each spouse has their own wage base: two capped W-2s on one joint return
+  // (one per spouse) are NOT an excess.
+  check("REGRESSION spouses are not pooled for the wage base",
+    val(run({ status: "mfj", cells: w2Cells([{ ssTax: 10918, ein: "1" }, { spouse: true, ssTax: 10918, ein: "2" }]) }), "31"), null)
+  check("...but one spouse with two employers is",
+    val(run({ status: "mfj", cells: w2Cells([{ ssTax: 10918, ein: "1" }, { spouse: true, ssTax: 10918, ein: "2" }, { ssTax: 3000, ein: "3" }]) }), "31"), 3000)
+
+  // One employer that over-withheld must refund it; the return cannot claim it.
+  check("one employer over-withholding is not creditable",
+    val(run({ status: "single", cells: w2Cells([{ ssTax: 12000, ein: "1" }]) }), "31"), null)
+  check("two W-2s from ONE employer (same EIN) are one employer",
+    val(run({ status: "single", cells: w2Cells([{ ssTax: 8000, ein: "11-1111111" }, { ssTax: 5000, ein: "111111111" }]) }), "31"), null)
 }
 
 // ---------------------------------------------------------------------------

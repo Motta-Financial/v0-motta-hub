@@ -17,6 +17,10 @@
  *         TY bracket tables
  *   19  — Child Tax Credit + credit for other dependents (nonrefundable,
  *         aggregate AGI phaseout, limited to tax)
+ *   25c — Form 8959 Part V Additional Medicare withheld, added to the
+ *         mapped W-2G withholding
+ *   31  — Schedule 3 line 11 excess social security withheld (per person,
+ *         per employer) — the only Schedule 3 Part II credit estimated
  *
  * Every line this module writes carries source: "estimated" so the viewer
  * can badge it. Estimates are NEVER composed into ProConnect imports (the
@@ -206,6 +210,28 @@ const DEPRECIATION_SERIES = "s61"
 
 /** W-2 social security wages — reduces the OASDI base for SE tax. */
 const W2_SS_WAGES_CELL = { seriesId: "s11", codeId: "c5" }
+
+/**
+ * W-2 screen (s11), one PREFIX per W-2. Codes c3-c8 are boxes 1-6 in order;
+ * c10xx are the prior-year mirrors and are never read. Measured 2026-10-11
+ * across the TY2025 book:
+ *   - c1 = 1 marks the SPOUSE's W-2; blank is the taxpayer's. Held on every
+ *     MFJ return checked (4 returns, 9 W-2s). c2 is NOT the
+ *     owner flag — it is 1 on both spouses' W-2s.
+ *   - c807 is the employer EIN, used to treat two W-2s from one employer as
+ *     one employer for the excess social security rule.
+ */
+const W2_SERIES = "s11"
+const W2_SPOUSE_CODE = "c1"
+const W2_SS_TAX_CODE = "c6" // box 4
+const W2_MEDICARE_WAGES_CODE = "c7" // box 5
+const W2_MEDICARE_TAX_CODE = "c8" // box 6
+const W2_EIN_CODE = "c807"
+/** IRC 3101(a) and 3101(b)(1): employee OASDI and regular Medicare rates. */
+const EMPLOYEE_SS_RATE = 0.062
+const EMPLOYEE_MEDICARE_RATE = 0.0145
+/** IRC 3102(f): the employer starts withholding Additional Medicare above this. */
+const ADDL_MEDICARE_WITHHOLDING_THRESHOLD = 200000
 
 const EDUCATOR_CELL = { seriesId: "s300", codeId: "c28", suffixId: "x1000" }
 const STUDENT_LOAN_CELL = { seriesId: "s300", codeId: "c23", suffixId: "x1000" }
@@ -1213,6 +1239,66 @@ export function estimateDeterministicLines(
 
       const total = niit + addlMedicare + seTax
       if (total > 0) setEstimate("23", total)
+    }
+  }
+
+  // ── W-2 census (shared by stages 25c and 31) ─────────────────────────
+  const w2s = new Map<string, { spouse: boolean; ssTax: number; medicareWages: number; medicareTax: number; ein: string }>()
+  for (const c of cells) {
+    if (c.seriesId !== W2_SERIES || c.suffixId !== "x1000") continue
+    const w = w2s.get(c.prefixId) ?? { spouse: false, ssTax: 0, medicareWages: 0, medicareTax: 0, ein: "" }
+    if (c.codeId === W2_SPOUSE_CODE) w.spouse = toNum(c.val) === 1
+    if (c.codeId === W2_SS_TAX_CODE) w.ssTax = toNum(c.val)
+    if (c.codeId === W2_MEDICARE_WAGES_CODE) w.medicareWages = toNum(c.val)
+    if (c.codeId === W2_MEDICARE_TAX_CODE) w.medicareTax = toNum(c.val)
+    if (c.codeId === W2_EIN_CODE) w.ein = String(c.val ?? c.desc ?? "").replace(/\D/g, "")
+    w2s.set(c.prefixId, w)
+  }
+
+  // ── 25c: Additional Medicare Tax withheld (Form 8959 Part V) ─────────
+  // ProConnect computes this and the export does not carry it; the mapped
+  // 25c cell is W-2G withholding only, so the 8959 amount is ADDED to it.
+  // Line 24 of 8959 is box 6 less 1.45% of box 5. Only W-2s over the 200k
+  // withholding threshold are counted: below it the employer withheld no
+  // Additional Medicare, and box 6 being rounded to whole dollars would
+  // otherwise leave stray cents-to-a-dollar residues on ordinary W-2s.
+  // Verified to the dollar against PTO on two reviewed returns.
+  // NOT handled: RRTA compensation (8959 lines 20-21 and box 14 "RRTA").
+  {
+    let withheld = 0
+    for (const w of w2s.values()) {
+      if (w.medicareWages > ADDL_MEDICARE_WITHHOLDING_THRESHOLD) {
+        withheld += w.medicareTax - EMPLOYEE_MEDICARE_RATE * w.medicareWages
+      }
+    }
+    if (Math.round(withheld) > 0) setEstimate("25c", num("25c") + withheld)
+  }
+
+  // ── 31: excess social security withheld (Schedule 3 line 11) ─────────
+  // Per PERSON, never per return: each spouse has their own wage base.
+  // Credit arises only from two or more employers; one employer withholding
+  // past the maximum must refund it itself, so each employer (by EIN) is
+  // capped at the maximum before summing. Verified to the dollar against
+  // PTO on a reviewed two-employer return.
+  // NOT handled: tier 1 RRTA, and every other Schedule 3 Part II refundable
+  // credit (net PTC, 2439, 4136) — invisible to the export, so 31 is a floor.
+  if (isEmpty("31")) {
+    const wageBase = constNum(constants, "se_ss_wage_base")
+    if (wageBase !== null) {
+      const maxTax = EMPLOYEE_SS_RATE * wageBase
+      let excess = 0
+      for (const spouse of [false, true]) {
+        const byEmployer = new Map<string, number>()
+        for (const [prefix, w] of w2s) {
+          if (w.spouse !== spouse) continue
+          const key = w.ein || prefix // no EIN: treat as its own employer
+          byEmployer.set(key, (byEmployer.get(key) ?? 0) + w.ssTax)
+        }
+        let total = 0
+        for (const t of byEmployer.values()) total += Math.min(t, maxTax)
+        excess += Math.max(0, total - maxTax)
+      }
+      if (Math.round(excess) > 0) setEstimate("31", excess)
     }
   }
 
