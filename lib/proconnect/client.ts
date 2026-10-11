@@ -143,7 +143,13 @@ async function apiRequest<T>(
       }
     }
 
-    const data = await response.json()
+    // Create Tax Return answers 201 with an EMPTY body. Parsing that as JSON
+    // threw, and the catch below turned a created return into a "failed"
+    // status-0 result — so the prospects route reported a rejection and
+    // invited a retry, which creates a duplicate (no idempotency, no delete).
+    // Seen live 2026-10-11 creating a practice 1065.
+    const text = await response.text()
+    const data = (text ? JSON.parse(text) : null) as T
     return {
       ok: true,
       status: response.status,
