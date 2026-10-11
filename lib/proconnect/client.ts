@@ -47,13 +47,9 @@ const CREATE_RETURN_BASE_URL =
 /**
  * Return type codes → form type mapping.
  *
- * ⚠️ Per the authoritative Phase 1 v3 doc (§0, "Status"): "Phase 1 —
- * Individual 1040 (ind) module only. Additional modules (cor, sco, par,
- * fid, exm, gft) will follow." Only IND is confirmed live today — the rest
- * are documented as future work, not currently available. This map is kept
- * for reference/forward-compat, but callers should treat every non-IND
- * type as unsupported until Intuit confirms otherwise (see
- * SUPPORTED_RETURN_TYPES below, which create-tax-return/route.ts enforces).
+ * Intuit opened every module back to TY2022 in Oct 2026 (confirmed for PAR
+ * by scripts/429, 2026-10-11). Which ones the Hub may actually use is a
+ * setting — see getEnabledReturnTypes() in ./return-types.
  */
 export const RETURN_TYPE_MAP: Record<string, string> = {
   IND: "1040",
@@ -65,9 +61,6 @@ export const RETURN_TYPE_MAP: Record<string, string> = {
   GFT: "709",
 }
 
-/** Module codes actually confirmed live in Phase 1. Keep this in sync with
- * the Phase 1 v3 doc's "Status" line as new modules are announced. */
-export const SUPPORTED_RETURN_TYPES = ["IND"] as const
 
 interface ApiResponse<T> {
   ok: boolean

@@ -27,9 +27,10 @@ export {
   extractClientId,
   extractClientName,
   RETURN_TYPE_MAP,
-  SUPPORTED_RETURN_TYPES,
   type CreateTaxReturnPayload,
 } from "./client"
+
+export { getEnabledReturnTypes, isReturnTypeEnabled, toReturnModule, RETURN_MODULES } from "./return-types"
 
 // Sync
 export {

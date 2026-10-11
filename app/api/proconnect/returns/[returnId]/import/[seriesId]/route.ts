@@ -64,6 +64,7 @@ import {
 import { persistReturnSnapshot } from "@/lib/proconnect/snapshots"
 import { resolveReturnLock } from "@/lib/proconnect/efile-lock"
 import { isWriteAllowed } from "@/lib/proconnect/write-allowlist"
+import { getEnabledReturnTypes, isReturnTypeEnabled } from "@/lib/proconnect/return-types"
 
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_KEY = getServiceKey()!
@@ -138,6 +139,40 @@ export async function POST(
       },
       { status: 403 },
     )
+  }
+
+  // ------------------------------------------------------------------ return-type gate
+  // Business modules are switched on one at a time
+  // (PROCONNECT_ENABLED_RETURN_TYPES; unset = IND only). Until now nothing
+  // here checked the type, so the allowlist alone would have let a commit
+  // reach a 1065. Fails closed: a return whose type we can't determine is
+  // refused. Dry runs are exempt, like the allowlist.
+  if (!dryRun) {
+    const { data: eng } = await sb
+      .from("proconnect_engagements")
+      .select("return_type, form_type")
+      .eq("engagement_id", returnId)
+      .maybeSingle()
+    let returnType: string | null = eng?.form_type ?? eng?.return_type ?? null
+    if (!returnType) {
+      const { data: snap } = await sb
+        .from("proconnect_return_snapshots")
+        .select("return_type")
+        .eq("return_id", returnId)
+        .maybeSingle()
+      returnType = snap?.return_type ?? null
+    }
+    if (!isReturnTypeEnabled(returnType)) {
+      return NextResponse.json(
+        {
+          error: returnType
+            ? `Writes to ${returnType} returns aren't enabled yet (enabled: ${getEnabledReturnTypes().join(", ") || "none"}).`
+            : "Couldn't determine this return's type, so the write was refused.",
+          returnId,
+        },
+        { status: 403 },
+      )
+    }
   }
 
   // ------------------------------------------------------------------ post-e-file lock

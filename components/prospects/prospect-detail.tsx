@@ -13,10 +13,10 @@
  *   4. ProConnect tax return action — shows the read-only match preview
  *      (GET /proconnect-match) and, only once a single ProConnect client
  *      is matched, lets a lead re-confirm module/year/name and POST
- *      /create-tax-return. Module is hard-limited to IND (1040) in the
- *      UI to match the server-side SUPPORTED_RETURN_TYPES gate — other
- *      modules are documented as "will follow" and are shown disabled
- *      rather than hidden, so it's clear they exist but aren't live yet.
+ *      /create-tax-return. Only the modules the server has enabled
+ *      (PROCONNECT_ENABLED_RETURN_TYPES, read via GET /create-tax-return)
+ *      are selectable; the rest are shown disabled rather than hidden, so
+ *      it's clear they exist but aren't switched on yet.
  *   5. Captured detail — service focus, services, business,
  *      attachments, meeting context.
  *
@@ -156,10 +156,10 @@ const RETURN_TYPE_LABELS: Record<string, string> = {
   GFT: "Gift (709)",
 }
 
-// Only IND is confirmed live in ProConnect's Phase 1 Open API — see
-// lib/proconnect/client.ts SUPPORTED_RETURN_TYPES. Keep this list in sync;
-// the server enforces the same restriction and will reject anything else.
-const SUPPORTED_RETURN_TYPES_UI = ["IND"] as const
+// Which modules may be created comes from the server
+// (GET /api/prospects/[id]/create-tax-return → PROCONNECT_ENABLED_RETURN_TYPES),
+// so the menu and the server can't drift. Until it loads, only IND.
+const DEFAULT_ENABLED_RETURN_TYPES = ["IND"]
 
 interface TeamMember {
   id: string
@@ -238,6 +238,13 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
     fetcher,
     { revalidateOnFocus: false },
   )
+
+  const { data: enabledTypesData } = useSWR<{ enabledReturnTypes?: string[] }>(
+    prospect ? `/api/prospects/${prospectId}/create-tax-return` : null,
+    fetcher,
+    { revalidateOnFocus: false },
+  )
+  const enabledReturnTypes: readonly string[] = enabledTypesData?.enabledReturnTypes ?? DEFAULT_ENABLED_RETURN_TYPES
 
   useEffect(() => {
     if (matchData?.suggestedName) {
@@ -685,10 +692,10 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
                         <SelectItem
                           key={code}
                           value={code}
-                          disabled={!(SUPPORTED_RETURN_TYPES_UI as readonly string[]).includes(code)}
+                          disabled={!enabledReturnTypes.includes(code)}
                         >
                           {label}
-                          {!(SUPPORTED_RETURN_TYPES_UI as readonly string[]).includes(code) &&
+                          {!enabledReturnTypes.includes(code) &&
                             " (not yet available)"}
                         </SelectItem>
                       ))}
@@ -745,7 +752,7 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
                   creatingTaxReturn ||
                   !returnNameDraft.trim() ||
                   !returnYearDraft.trim() ||
-                  !(SUPPORTED_RETURN_TYPES_UI as readonly string[]).includes(returnTypeDraft)
+                  !enabledReturnTypes.includes(returnTypeDraft)
                 }
                 onClick={createTaxReturnHandler}
               >

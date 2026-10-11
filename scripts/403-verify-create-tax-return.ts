@@ -44,7 +44,7 @@
  * problem, with a pointer to the Export precedent.
  *
  * This script does not modify lib/proconnect/client.ts, the
- * create-tax-return route, the UI, or SUPPORTED_RETURN_TYPES — it only
+ * create-tax-return route, the UI, or the enabled return types — it only
  * imports them to mirror the same validation the route enforces.
  *
  * Usage (repo root; needs .env.local — `vercel env pull .env.local` — for
@@ -184,16 +184,16 @@ function buildPayload(opts: Record<string, string | boolean>): Payload {
 }
 
 async function validatePayload(payload: Payload) {
-  const { RETURN_TYPE_MAP, SUPPORTED_RETURN_TYPES } = await import("../lib/proconnect/client")
+  const { RETURN_TYPE_MAP } = await import("../lib/proconnect/client")
+  const { getEnabledReturnTypes, isReturnTypeEnabled } = await import("../lib/proconnect/return-types")
   if (!(payload.type in RETURN_TYPE_MAP)) {
     console.error(`--type must be one of: ${Object.keys(RETURN_TYPE_MAP).join(", ")}`)
     process.exit(1)
   }
-  if (!(SUPPORTED_RETURN_TYPES as readonly string[]).includes(payload.type)) {
+  if (!isReturnTypeEnabled(payload.type)) {
     console.error(
-      `--type "${payload.type}" is documented as "will follow", not yet live. ` +
-        `The route rejects this too (SUPPORTED_RETURN_TYPES = ${SUPPORTED_RETURN_TYPES.join(", ")}). ` +
-        `Pass --type IND, or if you are deliberately testing the rejection path, that IS the route's real behavior.`,
+      `--type "${payload.type}" isn't enabled (PROCONNECT_ENABLED_RETURN_TYPES = ${getEnabledReturnTypes().join(", ") || "none"}). ` +
+        `The route rejects it too.`,
     )
     process.exit(1)
   }
