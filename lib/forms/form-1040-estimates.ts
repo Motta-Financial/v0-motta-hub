@@ -495,7 +495,8 @@ const SCH_A_CELLS = {
   medReimbursement: [["s400", "c8"]],
   /** Out-of-pocket + other + BOTH spouses' Medicare premiums off the SSA-1099. */
   medOther: [["s400", "c9"], ["s400", "c10"], ["s400", "c40"], ["s200M", "c13"], ["s200M", "c63"]],
-  taxStateIncome: [["s400", "c11"], ["s400", "c13"], ["s400", "c96"]],
+  /** 1/25 estimate, extension, with-return, prior-years/other-state payments, use tax. */
+  taxStateIncome: [["s400", "c11"], ["s400", "c12"], ["s400", "c13"], ["s400", "c14"], ["s400", "c96"]],
   taxRealestateResidence: [["s400", "c15"]],
   taxPersonalProperty: [["s400", "c18"]],
   intMortgage1098: [["s400", "c21"]],
@@ -505,6 +506,70 @@ const SCH_A_CELLS = {
   charityCash: [["s400", "c32"], ["s400", "c41"]],
   charityNoncash50: [["s8284", "c7"]],
 } as const satisfies Record<string, ReadonlyArray<readonly [string, string]>>
+
+/**
+ * State and LOCAL income tax WITHHELD during the year, off every information
+ * return that carries it. Schedule A line 5a counts withholding as tax paid,
+ * and ProConnect pulls it in automatically — the s400 screen holds only the
+ * payments made directly. Before 2026-10-11 none of these were read, so a
+ * W-2 earner's box 17 never reached Schedule A.
+ * Override cells ([Override] variants of box 17/19 and 1099-R 14/17) are not
+ * read; none is populated in the book.
+ */
+const STATE_TAX_WITHHELD_CELLS: ReadonlyArray<readonly [string, string]> = [
+  ["s11", "c14"], ["s11", "c18"], // W-2 box 17 state, box 19 local (suffix per state)
+  ["s12", "c15"], // 1099-INT
+  ["s13", "c11"], // 1099-DIV
+  ["s14", "c9"], ["s14", "c11"], // 1099-R box 14 state, box 17 local
+  ["s15", "c11"], // 1099-G
+  ["s19", "c9"], ["s19", "c152"], // W-2G box 15 state, box 17 local
+  ["s52", "c170"], // 1099-B
+]
+
+/**
+ * General sales tax inputs on the Schedule A screen. ProConnect computes the
+ * OPTIONAL TABLE amount itself and does not export it; the table is seeded as
+ * the `sales_tax_table` constant (scripts/431).
+ */
+const SALES_TAX = {
+  election: "c89", // 1 = force income tax, 2 = force sales tax, blank = optimize
+  actual: "c91", // actual receipts, replaces the table amount
+  specialItems: "c93", // boats, aircraft, … (worksheet line 7)
+  autos: "c349", // autos not included above (worksheet line 7)
+  localRate: "c503", // decimal, .xxxxxx
+  localRateOverride: "c501",
+} as const
+const RESIDENCE_STATE_CELL = { seriesId: "s1", prefixId: "p0", codeId: "c1000100016", suffixId: "x1000" }
+
+interface SalesTaxTable {
+  bands: number[]
+  states: Record<string, { rate: number; local: "ratio" | "ratio_over_table_rate" | "local_table" | "none"; amounts: number[][] }>
+}
+
+/**
+ * State and Local General Sales Tax Deduction Worksheet, lines 1-6, from the
+ * optional table. Returns null when the answer cannot be determined.
+ *
+ * Local tax is added ONLY when a local rate is entered — the same thing
+ * ProConnect does (verified: a Nevada return with no rate on file took the
+ * bare state table amount). And only for "ratio" states, where the worksheet
+ * is unambiguous (table x local rate / state rate). CA/NV need the rate in
+ * excess of a uniform local rate already inside the table, and the 16
+ * local-table states need a locality-keyed table that is not seeded; with a
+ * rate entered in either case the amount is indeterminate, so null.
+ */
+function salesTaxFromTable(table: SalesTaxTable, state: string, income: number, familySize: number, localRate: number): number | null {
+  const entry = table.states[state]
+  if (!entry) return 0 // AK, DE, MT, NH, OR: no state general sales tax
+  let band = 0
+  for (let i = 0; i < table.bands.length; i++) if (income >= table.bands[i]) band = i
+  const base = entry.amounts[band][Math.min(Math.max(familySize, 1), 6) - 1]
+  if (localRate <= 0 || entry.local === "none") return base
+  if (entry.local !== "ratio") return null
+  // The local rate cell is a decimal fraction (.015 = 1.5%); the table's
+  // state rate is in percent.
+  return base + base * ((localRate * 100) / entry.rate)
+}
 
 /** Medical MILES driven (s400/c52) — miles, not dollars. */
 const MED_MILES_CELL = { seriesId: "s400", codeId: "c52" } as const
@@ -748,6 +813,8 @@ function scheduleAFromCells(
   constants: Form1040Constant[],
   fs: StatusKey,
   agi: number,
+  /** Sales tax table lookup inputs: table income (line 11 + nontaxable items) and family size. */
+  salesTaxBasis: { income: number; familySize: number } = { income: agi, familySize: 1 },
 ): ScheduleAResult | null {
   let sawAny = false
   const input = {} as Record<string, number | null>
@@ -777,6 +844,41 @@ function scheduleAFromCells(
   }
 
   if (!sawAny) return null
+
+  // Withholding joins the screen's direct payments. Gated on the return
+  // already carrying Schedule A inputs: a W-2 earner with no s400 screen is
+  // not itemizing in ProConnect, and box 17 alone must not start a Schedule A.
+  let withheld = 0
+  let sawWithholding = false
+  for (const [seriesId, codeId] of STATE_TAX_WITHHELD_CELLS) {
+    if (cells.some((x) => x.seriesId === seriesId && x.codeId === codeId)) sawWithholding = true
+    withheld += sumAnySuffix(cells, seriesId, codeId)
+  }
+  if (sawWithholding) input.taxStateIncome = (input.taxStateIncome ?? 0) + withheld
+
+  // General sales tax (§164(b)(5)): actual receipts when entered, otherwise
+  // the optional table; plus tax on specified items (worksheet line 7).
+  // computeScheduleA takes the larger of this and income tax — ProConnect's
+  // "optimize" default — unless the preparer forced one side.
+  {
+    const s400 = (code: string) => sumAnySuffix(cells, "s400", code)
+    const has = (code: string) => cells.some((x) => x.seriesId === "s400" && x.codeId === code)
+    const election = has(SALES_TAX.election) ? s400(SALES_TAX.election) : 0
+    const table = constJson<SalesTaxTable>(constants, "sales_tax_table")
+    const stateCell = findCell(cells, RESIDENCE_STATE_CELL)
+    const state = String(stateCell?.desc ?? stateCell?.val ?? "").trim().toUpperCase()
+    const localRate = has(SALES_TAX.localRateOverride) ? s400(SALES_TAX.localRateOverride) : s400(SALES_TAX.localRate)
+    let general: number | null = null
+    if (has(SALES_TAX.actual)) general = s400(SALES_TAX.actual)
+    else if (table && /^[A-Z]{2}$/.test(state)) {
+      general = salesTaxFromTable(table, state, salesTaxBasis.income, salesTaxBasis.familySize, localRate)
+    }
+    if (general !== null) {
+      const sales = general + s400(SALES_TAX.specialItems) + s400(SALES_TAX.autos)
+      if (election !== 1 && sales > 0) input.taxSales = sales
+      if (election === 2) input.taxStateIncome = null
+    }
+  }
 
   // computeScheduleA reads only the Schedule A slice of Form1040Constants.
   const c = {
@@ -1090,7 +1192,22 @@ export function estimateDeterministicLines(
       // carrying Schedule A data rendered the STANDARD deduction while all
       // 18 genuinely itemized. Computing it is the only real fix; the bound
       // survives below purely for the case where there is nothing to compute.
-      const schA = scheduleAFromCells(cells, constants, fs, num("11"))
+      // Sales tax table basis. Income is line 11 plus nontaxable items; the
+      // only one the export can see reliably is untaxed Social Security
+      // (tax-exempt interest on 2a too). Nontaxable IRA/pension amounts are
+      // left out because rollovers — which the worksheet excludes — are not
+      // distinguishable from them. Family size is the filer, a joint spouse,
+      // and every dependent listed (Types 1/2/3/6; 4 and 5 are not dependents).
+      let dependents = 0
+      const depTypes = new Map<string, number>()
+      for (const c of cells) {
+        if (c.seriesId === "s2" && c.codeId === DEP_TYPE_CODE && c.suffixId === "x1000") depTypes.set(c.prefixId, toNum(c.val))
+      }
+      for (const t of depTypes.values()) if (t === 1 || t === 2 || t === 3 || t === 6) dependents++
+      const schA = scheduleAFromCells(cells, constants, fs, num("11"), {
+        income: num("11") + Math.max(0, num("2a")) + Math.max(0, num("6a") - num("6b")),
+        familySize: 1 + (isMfj ? 1 : 0) + dependents,
+      })
 
       // An explicit [Override] on the itemized total displaces the
       // computation entirely.
