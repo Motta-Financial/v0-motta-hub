@@ -144,6 +144,10 @@ const navigation = [
         icon: Users,
         children: [
           { name: "Intake", href: "/sales/intake", icon: Inbox },
+          // Prospects captured by a teammate (Forms → Prospect Form). Until
+          // this list existed, a prospect could only be reached from its
+          // notification or right after submitting the form.
+          { name: "Prospects", href: "/prospects", icon: UserPlus },
           { name: "Feedback", href: "/sales/feedback", icon: MessageSquareHeart },
           { name: "Change Requests", href: "/clients/change-requests", icon: GitCompareArrows },
         ],
