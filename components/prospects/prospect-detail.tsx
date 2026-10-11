@@ -161,6 +161,12 @@ const RETURN_TYPE_LABELS: Record<string, string> = {
 // so the menu and the server can't drift. Until it loads, only IND.
 const DEFAULT_ENABLED_RETURN_TYPES = ["IND"]
 
+// The return being prepared is for last year: in 2026 we work 2025 returns,
+// and the next year's ProConnect software isn't out until about December.
+// Defaulting to the calendar year invited a wrong-year return, which can't be
+// deleted through the API. Staff can still type another year.
+const defaultReturnTaxYear = () => String(new Date().getFullYear() - 1)
+
 interface TeamMember {
   id: string
   full_name: string | null
@@ -205,9 +211,7 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
   const [workItemError, setWorkItemError] = useState<string | null>(null)
 
   const [returnTypeDraft, setReturnTypeDraft] = useState<string>("IND")
-  const [returnYearDraft, setReturnYearDraft] = useState(
-    () => String(new Date().getUTCFullYear()),
-  )
+  const [returnYearDraft, setReturnYearDraft] = useState(defaultReturnTaxYear)
   const [returnNameDraft, setReturnNameDraft] = useState("")
   const [creatingTaxReturn, setCreatingTaxReturn] = useState(false)
   const [taxReturnError, setTaxReturnError] = useState<string | null>(null)
@@ -223,7 +227,7 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
       setWorkItemError(null)
       setCreatingWorkItem(false)
       setFiscalYearDraft(String(new Date().getUTCFullYear()))
-      setReturnYearDraft(String(new Date().getUTCFullYear()))
+      setReturnYearDraft(defaultReturnTaxYear())
       setTaxReturnError(null)
       setTaxReturnResult(null)
     }
