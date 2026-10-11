@@ -657,6 +657,8 @@ interface RawEngagement {
   createdDate?: string
   modifiedDate?: string
   taxFiling?: RawTaxFiling
+  /** LIST endpoint only, with include-efiles=true — see listEfileSignature. */
+  taxFilings?: RawListTaxFiling[]
   /** Populated on the single GET only — see pickLatestEsignature. */
   esignature?: { envelopes?: RawEnvelope[] }
 }
@@ -691,6 +693,24 @@ export interface RawFiling {
 export interface RawTaxFiling {
   filings?: RawFiling[]
   derivedStatus?: string | null
+}
+
+/**
+ * One entry of the flat e-file summary the LIST endpoint returns with
+ * `include-efiles=true`: one row per filing that has a status (extensions
+ * are their own rows, e.g. `ind.us.ext`), carrying only the LATEST status,
+ * and only as display text — no status enum, confirmation number, reject
+ * codes or history. Good enough to tell THAT a filing changed, not what it
+ * changed to; see listEfileSignature.
+ */
+export interface RawListTaxFiling {
+  filingId?: string
+  instanceId?: string
+  statusUpdateTimestamp?: string
+  userMessage?: string
+  filingLevel?: string
+  filingType?: string
+  jurisdiction?: string
 }
 
 /** The chosen status, flattened with the context needed to render it. */
@@ -756,6 +776,74 @@ export function latestStatusOf(f: RawFiling): RawFilingStatus | null {
     }
   }
   return latest
+}
+
+/**
+ * E-file change detection without a per-engagement call.
+ *
+ * Both sides reduce to the same string — every filing that has a status,
+ * as `filingId#instance@latestStatusEpochMs`, sorted — so the list sync can
+ * record what ProConnect says NOW (`list_efile_signature`) and the hydrator
+ * can record what it last READ (`efile_signature`). When they differ, the
+ * hydrated efile_* columns are known to be out of date, and the stale view
+ * (scripts/428) puts that engagement at the front of the hydration queue.
+ *
+ * Verified 2026-10-11 against 727 hydrated TY2024/2025 engagements: the flat
+ * list entries match the nested filings with a status one-for-one, by
+ * filingId and latest timestamp, on every filing.
+ *
+ * The flat shape is ONLY a trigger. It never feeds efile_* — it has no
+ * status enum, so it cannot say ACK_SUCCEEDED, and only "Accepted" /
+ * "Rejected" have been observed (in-flight states unseen as of October).
+ */
+function efileSignature(
+  entries: Array<{ id?: string; instance?: string; at?: string }>
+): string {
+  return entries
+    .map(({ id, instance, at }) => {
+      const t = at ? new Date(at).getTime() : Number.NaN
+      return `${id ?? ""}#${instance ?? ""}@${Number.isNaN(t) ? "" : t}`
+    })
+    .sort()
+    .join(";")
+}
+
+/**
+ * Signature of the list endpoint's flat `taxFilings[]`. NULL when the key
+ * is absent (include-efiles not honoured) — "unknown", which never flags a
+ * row — as opposed to "" for a list that positively reports no filings.
+ */
+export function listEfileSignature(
+  taxFilings: RawListTaxFiling[] | undefined
+): string | null {
+  if (!Array.isArray(taxFilings)) return null
+  return efileSignature(
+    taxFilings.map((t) => ({
+      id: t.filingId,
+      instance: t.instanceId,
+      at: t.statusUpdateTimestamp,
+    }))
+  )
+}
+
+/** Signature of the nested `taxFiling` from GET /v2/engagements/{id}. */
+export function hydratedEfileSignature(
+  taxFiling: RawTaxFiling | null | undefined
+): string {
+  return efileSignature(
+    flattenFilings(taxFiling?.filings).flatMap((f) => {
+      const latest = latestStatusOf(f)
+      return latest
+        ? [
+            {
+              id: f.filingKey?.filingId,
+              instance: f.filingKey?.instance,
+              at: latest.statusUpdateTimestamp,
+            },
+          ]
+        : []
+    })
+  )
 }
 
 /**
@@ -884,6 +972,11 @@ function pickLatestEfile(taxFiling: RawTaxFiling | null | undefined): EfileLates
  * across a batch and null-fills the rows that lack them, so a conditional
  * "include it only when non-null" would clobber exactly the rows it was
  * trying to protect.
+ *
+ * `list_efile_signature` is the one e-file-derived value this path DOES own:
+ * a change-detection fingerprint of the list's flat `taxFilings[]`, compared
+ * against the hydrator's `efile_signature` to decide what to re-hydrate. It
+ * is deliberately not named efile_* — it is not e-file status.
  */
 function mapEngagementRow(raw: unknown, fallbackYear: number) {
   const eng = raw as RawEngagement
@@ -906,6 +999,7 @@ function mapEngagementRow(raw: unknown, fallbackYear: number) {
     modified_by_profile_id: eng.modifiedBy?.profileId ?? null,
     proconnect_created_at: eng.createdDate ?? null,
     proconnect_modified_at: eng.modifiedDate ?? null,
+    list_efile_signature: listEfileSignature(eng.taxFilings),
     raw_json: raw,
     synced_at: now,
     updated_at: now,
@@ -1023,6 +1117,9 @@ export async function hydrateEngagementEfile(
       efile_latest: latest,
       efile_filings: taxFiling,
       efile_synced_at: now,
+      // What we read, in the shape the list sync can compare against — see
+      // hydratedEfileSignature.
+      efile_signature: hydratedEfileSignature(taxFiling),
       // Free: the envelopes ride in on the SAME fetchEngagement() response
       // the e-file status came from. No extra call, no extra rate-limit
       // pressure. See scripts/405.
@@ -1094,9 +1191,14 @@ export async function hydrateStaleEfileStatuses(
   const startedAt = Date.now()
   const errors: string[] = []
 
+  // Rows the list sync has positively seen change (efile_list_changed) go
+  // first: their efile_* columns are known to be wrong. The rest are
+  // "might have changed" — modified in PTO since we looked, which also keeps
+  // the e-signature columns fresh (the list never carries envelopes).
   const { data: stale, error: staleErr, count } = await sb
     .from("proconnect_engagements_efile_stale")
     .select("engagement_id", { count: "exact" })
+    .order("efile_list_changed", { ascending: false })
     .order("tax_year", { ascending: false })
     .order("proconnect_modified_at", { ascending: false, nullsFirst: false })
     .limit(limit)
@@ -1342,8 +1444,11 @@ export async function runBulkSync(
 
     // ── 4. E-file status, one call per stale engagement ────────────────
     // Steps 1–3 are ~8 calls total. This step is one call per engagement,
-    // because the list endpoint doesn't carry filings — so it runs last,
-    // capped, on whatever budget is left. Webhooks handle the in-season hot
+    // because the list endpoint carries only a flat summary of filings (no
+    // status enum, confirmation number or e-signature) — so it runs last,
+    // capped, on whatever budget is left. Step 2 recorded that summary's
+    // signature, so engagements whose filings visibly changed are hydrated
+    // first (see listEfileSignature). Webhooks handle the in-season hot
     // path (see processTaxReturnEvent); this catches missed events and drains
     // the never-hydrated backlog a few hundred engagements per night.
     const efileResult = await hydrateStaleEfileStatuses(supabase, {
