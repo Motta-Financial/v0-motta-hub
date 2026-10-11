@@ -2,8 +2,19 @@
 /**
  * Load Intuit's IVCS/FRF field catalog into proconnect_field_catalog.
  *
- *   node scripts/358-load-proconnect-catalog.mjs <csv-path> [--tax-year 2025] \
- *        [--return-type IND] [--dry-run]
+ *   node scripts/358-load-proconnect-catalog.mjs <csv-or-xlsx-path> [--tax-year 2025] \
+ *        [--return-type IND] [--sheet <name>] [--dry-run] [--diff] [--allow-unknown]
+ *
+ * Accepts the original CSV extract or an .xlsx in Intuit's "Series Code
+ * Mappings V2" layout (Series Type, Agency, Series, Code, Description,
+ * ScreenTitle, Type, Char Limit, tsj, constraints). Header names are matched
+ * loosely. A file without the agency/type columns — e.g. the Oct 2026
+ * all-modules workbook — is refused: the table is keyed on agency, and that
+ * layout repeats (series, code) pairs with no way to tell them apart.
+ *
+ * --diff compares the file against what is already loaded for that tax year
+ * and return type (read-only), so a reload can be reviewed before it runs.
+ * Unrecognized constraint tokens block a real load unless --allow-unknown.
  *
  * The CSV is partner-confidential and THIS REPO IS PUBLIC, so the file is
  * never committed — pass its path at runtime. Requires
@@ -15,8 +26,9 @@
  * Expected CSV header:
  *   agency,series,code,description,screenTitle,type,charLimit,tsj,constraints
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { createClient } from "@supabase/supabase-js"
+import { readXlsx } from "./lib/read-xlsx.mjs"
 
 const CHUNK = 1000
 
@@ -60,18 +72,64 @@ function parseCsv(text) {
  * Split on ';' at bracket depth 0 only. `minOr=[0, -1]` contains a comma
  * inside a bracketed list; a naive split on both separators corrupts it.
  */
-function splitClauses(s) {
+function splitClauses(s, sep = ";") {
   const out = []
   let depth = 0
   let cur = ""
   for (const ch of s) {
-    if (ch === "[") depth++
-    else if (ch === "]") depth--
-    if (ch === ";" && depth === 0) { out.push(cur.trim()); cur = "" }
+    // Brackets, parens and braces all nest: regex rules carry groups and
+    // quantifiers like {1,3}, and oneOf lists carry commas inside [].
+    if ("[({".includes(ch)) depth++
+    else if ("])}".includes(ch)) depth = Math.max(0, depth - 1)
+    if (ch === sep && depth === 0) { out.push(cur.trim()); cur = "" }
     else cur += ch
   }
   if (cur.trim()) out.push(cur.trim())
   return out.filter(Boolean)
+}
+
+const SUB_FIELDS = ["amt", "desc", "src", "source", "tsj", "cityAbbrev"]
+
+/**
+ * Apply one documented rule (Intuit's rule-types-reference sheet) to a rule
+ * target. Returns false when the rule name isn't one we know, so the caller
+ * can record it as unknown instead of dropping it.
+ *
+ * oneOf: an inline list `[a,b]` is split; a table reference `$ref:tN` is kept
+ * as written, with the table's raw text when the workbook supplies it. Those
+ * tables are comma-joined and some entries contain commas themselves
+ * ("Korea, North"), so splitting them would invent values.
+ */
+function applyRule(target, clause, oneOfTables) {
+  const eq = clause.indexOf("=")
+  const name = (eq === -1 ? clause : clause.slice(0, eq)).trim()
+  const v = eq === -1 ? null : clause.slice(eq + 1).trim()
+  switch (name) {
+    case "formattedNumber": target.formattedNumber = true; return true
+    case "integer": target.integer = true; return true
+    case "date": target.isDate = true; return true
+    case "phone": target.phone = true; return true
+    case "proTaxID": target.proTaxID = true; return true
+    case "min": target.min = num(v); return true
+    case "max": target.max = num(v); return true
+    case "maxLength": target.maxLength = num(v); return true
+    case "onOrAfter": target.onOrAfter = v; return true
+    case "onOrBefore": target.onOrBefore = v; return true
+    case "regex": target.regex = v; return true
+    case "minOr":
+      target.minOr = (v || "").replace(/[[\]]/g, "").split(",").map((x) => num(x.trim())).filter((x) => x !== null)
+      return true
+    case "oneOf":
+      if (v?.startsWith("$ref:")) {
+        const ref = v.slice(5)
+        target.oneOf = { ref, ...(oneOfTables?.has(ref) ? { raw: oneOfTables.get(ref) } : {}) }
+      } else {
+        target.oneOf = (v || "").replace(/^\[|\]$/g, "").split(",").map((x) => x.trim()).filter(Boolean)
+      }
+      return true
+    default:
+      return false
+  }
 }
 
 /**
@@ -104,7 +162,7 @@ function num(v) {
  * captures anything a future extract adds so it surfaces loudly instead
  * of being silently dropped.
  */
-export function parseConstraints(raw, valueType, charLimit, tsjColumn) {
+export function parseConstraints(raw, valueType, charLimit, tsjColumn, oneOfTables) {
   const rules = {
     allowedSubFields: [],
     val: {},
@@ -162,8 +220,23 @@ export function parseConstraints(raw, valueType, charLimit, tsjColumn) {
         rules.cityAbbrev.kind = "STRING"; rules.allowedSubFields.push("cityAbbrev"); break
       case "amt:NUMBER":
         rules.amt.kind = "NUMBER"; rules.allowedSubFields.push("amt"); break
-      default:
-        rules.unknown.push(clause)
+      default: {
+        // Later extracts use rule types the 2025 IND CSV never had, written
+        // either bare (`integer`, `oneOf=$ref:t0`, `maxLength=2,oneOf=…`) or
+        // prefixed with a sub-field (`desc:proTaxID`, `amt:date,onOrAfter=…`).
+        // A bare rule applies to `val`. `amt:` stays the separate `amt`
+        // sub-field, as in the original CSV: the Oct 2026 workbook appears to
+        // use it for the main value, but nothing documents that, so we don't
+        // guess.
+        const m = clause.match(/^([A-Za-z]+):(.*)$/s)
+        const sub = m && SUB_FIELDS.includes(m[1]) ? m[1] : null
+        const target = sub ? (rules[sub] ??= {}) : rules.val
+        const parts = splitClauses(sub ? m[2] : clause, ",")
+        for (const part of parts) {
+          if (!applyRule(target, part, oneOfTables)) rules.unknown.push(sub ? `${sub}:${part}` : part)
+        }
+        if (sub) rules.allowedSubFields.push(sub)
+      }
     }
   }
 
@@ -198,38 +271,171 @@ function isSensitive(valueType, description) {
 }
 
 // ── main ─────────────────────────────────────────────────────────────
+/**
+ * Read-only comparison of a parsed file against the rows already loaded for
+ * (tax_year, return_type). Upserts never delete, so rows only in the
+ * database would survive a reload as stale entries — they're listed here.
+ */
+async function printDiff(sb, records, taxYear, returnType) {
+  const loaded = new Map()
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb
+      .from("proconnect_field_catalog")
+      .select("agency, series_id, code_id, description, screen_title, value_type, char_limit, tsj_allowed, constraints_raw")
+      .eq("tax_year", taxYear)
+      .eq("return_type", returnType)
+      .order("agency").order("series_id").order("code_id")
+      .range(from, from + 999)
+    if (error) { console.error(`✗ ${error.message}`); process.exit(1) }
+    for (const r of data) loaded.set(`${r.agency}|${r.series_id}|${r.code_id}`, r)
+    if (data.length < 1000) break
+  }
+  const fields = ["description", "screen_title", "value_type", "char_limit", "tsj_allowed", "constraints_raw"]
+  const added = []
+  const changed = new Map(fields.map((f) => [f, 0]))
+  const samples = []
+  let whitespaceOnly = 0
+  const ws = (x) => (typeof x === "string" ? x.replace(/\s+/g, " ").trim() : x)
+  const fileKeys = new Set()
+  for (const r of records) {
+    const k = `${r.agency}|${r.series_id}|${r.code_id}`
+    fileKeys.add(k)
+    const old = loaded.get(k)
+    if (!old) { added.push(k); continue }
+    for (const f of fields) {
+      if ((old[f] ?? null) !== (r[f] ?? null)) {
+        changed.set(f, changed.get(f) + 1)
+        if (ws(old[f] ?? null) === ws(r[f] ?? null)) { whitespaceOnly++; continue }
+        if (samples.length < 8) samples.push(`${k} ${f}: ${JSON.stringify(old[f])} → ${JSON.stringify(r[f])}`)
+      }
+    }
+  }
+  const removed = [...loaded.keys()].filter((k) => !fileKeys.has(k))
+  const seriesOf = (keys) => new Set(keys.map((k) => k.split("|")[1])).size
+  console.log(`\ndiff vs loaded ${returnType} ${taxYear} (${loaded.size} rows loaded, ${records.length} in file):`)
+  console.log(`  new rows:           ${added.length} across ${seriesOf(added)} series (M-series: ${added.filter((k) => /M\|/.test(k)).length})`)
+  console.log(`  only in database:   ${removed.length} across ${seriesOf(removed)} series — would remain as stale rows`)
+  for (const [f, n] of changed) if (n) console.log(`  changed ${f.padEnd(15)} ${n}`)
+  if (whitespaceOnly) console.log(`    (${whitespaceOnly} of those changes are whitespace only)`)
+  for (const s of samples) console.log(`    e.g. ${s}`)
+  if (removed.length) console.log(`  stale e.g. ${removed.slice(0, 5).join(", ")}`)
+}
+
+function loadEnv() {
+  const path = `${process.cwd()}/.env.local`
+  if (!existsSync(path)) return
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const eq = line.indexOf("=")
+    if (eq < 1 || line.startsWith("#")) continue
+    const key = line.slice(0, eq)
+    let v = line.slice(eq + 1)
+    if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1)
+    if (!(key in process.env)) process.env[key] = v
+  }
+}
+
+// Header names differ between Intuit's extracts ("screenTitle" in the CSV,
+// "ScreenTitle" in V2, "Char Limit" vs "charLimit"); compare them with case,
+// spaces and punctuation stripped.
+const squash = (h) => String(h ?? "").toLowerCase().replace(/[^a-z0-9]/g, "")
+const HEADER_ALIASES = {
+  agency: ["agency"],
+  series: ["series"],
+  code: ["code"],
+  description: ["description"],
+  screenTitle: ["screentitle"],
+  type: ["type"],
+  charLimit: ["charlimit"],
+  tsj: ["tsj"],
+  constraints: ["constraints", "validation"],
+}
+// Exact match only, so "Series Type" never stands in for "Series". The one
+// exception is the validations column, whose header in the Oct 2026 workbook
+// runs on ("Validations ( include subfields as desc, amt, src, tsj etc. )").
+const headerMatches = (col, h) =>
+  HEADER_ALIASES[col].some((a) => h === a || (col === "constraints" && h.startsWith(a)))
+
+/** Read rows from a CSV or an .xlsx; for .xlsx also return its oneOf tables. */
+function readInput(path, sheetName) {
+  if (!/\.xlsx$/i.test(path)) return { rows: parseCsv(readFileSync(path, "utf8")), oneOfTables: null, sheet: null }
+  const sheets = readXlsx(path)
+  const looksLikeCatalog = (rows) => rows[0]?.some((h) => squash(h) === "series") && rows[0]?.some((h) => squash(h) === "code")
+  const name = sheetName ?? [...sheets.keys()].find((n) => looksLikeCatalog(sheets.get(n)))
+  if (!name || !sheets.has(name)) {
+    console.error(`no catalog sheet${sheetName ? ` named "${sheetName}"` : ""} in ${path}; sheets: ${[...sheets.keys()].join(", ")}`)
+    process.exit(1)
+  }
+  // The all-modules workbook pairs each "<MOD>-2025-all-series-…" sheet with
+  // a "<MOD>-2025-oneof-tables" sheet; values may overflow into extra columns.
+  const prefix = name.split("-")[0].toLowerCase()
+  const tableSheet = [...sheets.keys()].find((n) => /oneof/i.test(n) && n.split("-")[0].toLowerCase() === prefix)
+  let oneOfTables = null
+  if (tableSheet) {
+    oneOfTables = new Map()
+    for (const r of sheets.get(tableSheet).slice(1)) {
+      const ref = String(r[0] ?? "").replace(/^\$ref:/, "")
+      if (ref) oneOfTables.set(ref, r.slice(1).filter((x) => x != null).join(", "))
+    }
+  }
+  const rows = sheets.get(name).map((r) => r.map((c) => (c == null ? "" : String(c))))
+  return { rows, oneOfTables, sheet: name }
+}
+
 async function main() {
+  loadEnv()
   const args = process.argv.slice(2)
-  const csvPath = args.find((a) => !a.startsWith("--"))
-  const taxYear = Number(args[args.indexOf("--tax-year") + 1]) || 2025
-  const returnType = args.includes("--return-type") ? args[args.indexOf("--return-type") + 1] : "IND"
+  const flag = (f) => (args.includes(f) ? args[args.indexOf(f) + 1] : undefined)
+  const valueFlags = new Set(["--tax-year", "--return-type", "--sheet"])
+  const inputPath = args.find((a, i) => !a.startsWith("--") && !valueFlags.has(args[i - 1]))
+  const taxYear = Number(flag("--tax-year")) || 2025
+  const returnType = flag("--return-type") ?? "IND"
   const dryRun = args.includes("--dry-run")
+  const diffOnly = args.includes("--diff")
+  const allowUnknown = args.includes("--allow-unknown")
 
-  if (!csvPath) {
-    console.error("usage: node scripts/358-load-proconnect-catalog.mjs <csv-path> [--tax-year 2025] [--return-type IND] [--dry-run]")
+  if (!inputPath) {
+    console.error("usage: node scripts/358-load-proconnect-catalog.mjs <csv-or-xlsx-path> [--tax-year 2025] [--return-type IND] [--sheet <name>] [--dry-run] [--diff] [--allow-unknown]")
     process.exit(1)
   }
 
-  const rows = parseCsv(readFileSync(csvPath, "utf8"))
-  const header = rows[0].map((h) => h.trim())
-  const want = ["agency", "series", "code", "description", "screenTitle", "type", "charLimit", "tsj", "constraints"]
-  const missing = want.filter((w) => !header.includes(w))
+  const { rows, oneOfTables, sheet } = readInput(inputPath, flag("--sheet"))
+  if (sheet) console.log(`reading sheet "${sheet}"${oneOfTables ? ` (+ ${oneOfTables.size} oneOf tables)` : ""}`)
+  const header = rows[0].map(squash)
+  const want = Object.keys(HEADER_ALIASES)
+  const idx = {}
+  for (const w of want) {
+    idx[w] = header.findIndex((h) => headerMatches(w, h))
+  }
+  const missing = want.filter((w) => idx[w] === -1)
   if (missing.length) {
-    console.error(`CSV header missing columns: ${missing.join(", ")}\n  got: ${header.join(", ")}`)
+    console.error(`header missing columns: ${missing.join(", ")}\n  got: ${rows[0].join(", ")}`)
+    if (missing.includes("agency") || missing.includes("type")) {
+      console.error("  This looks like the thin layout without agency/type. Ask Intuit for the\n" +
+        "  same layout as the IND 2025 Series Code Mappings V2 file.")
+    }
     process.exit(1)
   }
-  const idx = Object.fromEntries(want.map((w) => [w, header.indexOf(w)]))
+  // A Module column, when present, must agree with --return-type.
+  const moduleIdx = header.indexOf("module")
+  if (moduleIdx !== -1) {
+    const mods = new Set(rows.slice(1).map((r) => String(r[moduleIdx] ?? "").toUpperCase()).filter(Boolean))
+    if (mods.size && !(mods.size === 1 && mods.has(returnType))) {
+      console.error(`Module column says ${[...mods].join(", ")} but --return-type is ${returnType}`)
+      process.exit(1)
+    }
+  }
 
   const records = []
   const unknownTokens = new Map()
   for (const r of rows.slice(1)) {
+    if (!r.some((c) => c !== "")) continue
     const valueType = (r[idx.type] || "").trim() || null
     const description = (r[idx.description] || "").trim()
     const charLimitRaw = (r[idx.charLimit] || "").trim()
     const charLimit = charLimitRaw === "" ? null : Number(charLimitRaw)
     const constraintsRaw = (r[idx.constraints] || "").trim() || null
     const tsjColumn = (r[idx.tsj] || "").trim()
-    const rules = parseConstraints(constraintsRaw, valueType, charLimit, tsjColumn)
+    const rules = parseConstraints(constraintsRaw, valueType, charLimit, tsjColumn, oneOfTables)
     if (rules.unknown) {
       for (const u of rules.unknown) unknownTokens.set(u, (unknownTokens.get(u) || 0) + 1)
     }
@@ -247,16 +453,23 @@ async function main() {
       constraints_raw: constraintsRaw,
       rules,
       is_sensitive: isSensitive(valueType, description),
-      source_file: csvPath.split("/").pop(),
+      source_file: inputPath.split("/").pop(),
     })
   }
 
   const sensitive = records.filter((r) => r.is_sensitive).length
+  // U+FFFD means the extract itself lost characters (Intuit's V2 IND file has
+  // "facility���s" for "facility’s"). Report it so a reload doesn't quietly
+  // replace a good description with a damaged one.
+  const damaged = records.filter((r) => /\uFFFD/.test(`${r.description}${r.screen_title ?? ""}`))
   console.log(`parsed ${records.length} rows for ${returnType} ${taxYear}`)
   console.log(`  agencies:      ${new Set(records.map((r) => r.agency)).size}`)
   console.log(`  series:        ${new Set(records.map((r) => r.series_id)).size}`)
   console.log(`  codes:         ${new Set(records.map((r) => r.code_id)).size}`)
   console.log(`  sensitive:     ${sensitive}`)
+  if (damaged.length) {
+    console.warn(`  ⚠ ${damaged.length} rows have damaged text (U+FFFD) in the file, e.g. ${damaged.slice(0, 3).map((r) => `${r.agency}|${r.series_id}|${r.code_id}`).join(", ")}`)
+  }
   if (unknownTokens.size) {
     console.warn(`  ⚠ UNRECOGNIZED constraint tokens (${unknownTokens.size}) — parser needs updating:`)
     for (const [t, n] of unknownTokens) console.warn(`      ${t}  ×${n}`)
@@ -278,19 +491,34 @@ async function main() {
     process.exit(1)
   }
 
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
+  // Legacy service_role keys are disabled; prefer the current secret key.
+  const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
+  const connect = () => {
+    if (!url || !key) {
+      console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SECRET_KEY must be set (pull .env.local from the mottahub project)")
+      process.exit(1)
+    }
+    return createClient(url, key, { auth: { persistSession: false } })
+  }
+
+  if (diffOnly) {
+    await printDiff(connect(), records, taxYear, returnType)
+    return
+  }
+
+  if (unknownTokens.size && !dryRun && !allowUnknown) {
+    console.error("✗ refusing to load with unrecognized constraint tokens (pass --allow-unknown to override)")
+    process.exit(1)
+  }
+
   if (dryRun) {
     console.log("\n--dry-run: nothing written. Sample record:")
     console.log(JSON.stringify(records.find((r) => r.constraints_raw?.includes("minOr")) ?? records[0], null, 2))
     return
   }
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!url || !key) {
-    console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
-    process.exit(1)
-  }
-  const sb = createClient(url, key, { auth: { persistSession: false } })
+  const sb = connect()
 
   let written = 0
   for (let i = 0; i < records.length; i += CHUNK) {

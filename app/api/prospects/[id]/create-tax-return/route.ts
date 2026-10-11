@@ -40,7 +40,8 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { requireLeadership } from "@/lib/auth/require-leadership"
 import { refreshClientYearEngagements } from "@/lib/proconnect/sync"
-import { createTaxReturn, RETURN_TYPE_MAP, SUPPORTED_RETURN_TYPES } from "@/lib/proconnect/client"
+import { createTaxReturn, RETURN_TYPE_MAP } from "@/lib/proconnect/client"
+import { getEnabledReturnTypes, isReturnTypeEnabled } from "@/lib/proconnect/return-types"
 
 function isUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
@@ -52,6 +53,13 @@ type RequestBody = {
   type?: string
   year?: number
   source?: string
+}
+
+/** Which return types the create form may offer — the same setting POST enforces. */
+export async function GET() {
+  const auth = await requireLeadership()
+  if (!auth.ok) return auth.response
+  return NextResponse.json({ enabledReturnTypes: getEnabledReturnTypes() })
 }
 
 export async function POST(
@@ -87,16 +95,13 @@ export async function POST(
         { status: 400 },
       )
     }
-    // Per the authoritative Phase 1 v3 doc, only the IND (1040) module is
-    // confirmed live — COR/PAR/SCO/FID/EXM/GFT are documented as "will
-    // follow" and are not yet available. Reject them here rather than
-    // sending an unsupported request to ProConnect and logging a confusing
-    // failure.
-    if (!(SUPPORTED_RETURN_TYPES as readonly string[]).includes(type)) {
+    // Every module is available from Intuit, but the firm turns them on one
+    // at a time (PROCONNECT_ENABLED_RETURN_TYPES; unset = IND only).
+    if (!isReturnTypeEnabled(type)) {
       return NextResponse.json(
         {
-          error: `type "${type}" is not yet supported by ProConnect's Open API (Phase 1 covers ${SUPPORTED_RETURN_TYPES.join(", ")} only; other modules are documented as "will follow").`,
-          code: "module_not_supported",
+          error: `Return type "${type}" isn't enabled in the Hub yet (enabled: ${getEnabledReturnTypes().join(", ") || "none"}).`,
+          code: "module_not_enabled",
         },
         { status: 422 },
       )
