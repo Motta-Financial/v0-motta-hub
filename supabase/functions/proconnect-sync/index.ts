@@ -236,7 +236,9 @@ async function fetchClients(accessToken: string) {
 }
 
 async function fetchEngagements(accessToken: string, oiiClientId: string, taxYear: number) {
-  const url = `${ENGAGEMENT_SERVICE_URL}/v2/engagements?source=ITO&period=${taxYear}&oiiClientId=${oiiClientId}`
+  // The filter param is `client`; `oiiClientId` is silently ignored and
+  // returns the whole firm-year (see fetchEngagements in lib/proconnect/client.ts).
+  const url = `${ENGAGEMENT_SERVICE_URL}/v2/engagements?source=ITO&period=${taxYear}&client=${encodeURIComponent(oiiClientId)}`
   const result = await pcFetch(accessToken, url)
   if (!result.ok || !result.data) return result
   const engagements = result.data.engagements || result.data
