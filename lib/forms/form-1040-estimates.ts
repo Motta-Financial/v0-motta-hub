@@ -1273,17 +1273,28 @@ export function estimateDeterministicLines(
   // ── 25c: Additional Medicare Tax withheld (Form 8959 Part V) ─────────
   // ProConnect computes this and the export does not carry it; the mapped
   // 25c cell is W-2G withholding only, so the 8959 amount is ADDED to it.
-  // Line 24 of 8959 is box 6 less 1.45% of box 5. Only W-2s over the 200k
-  // withholding threshold are counted: below it the employer withheld no
-  // Additional Medicare, and box 6 being rounded to whole dollars would
-  // otherwise leave stray cents-to-a-dollar residues on ordinary W-2s.
+  // Line 24 of 8959 is box 6 less 1.45% of box 5. Only employers past the
+  // 200k withholding threshold are counted: below it the employer withheld
+  // no Additional Medicare, and box 6 being rounded to whole dollars would
+  // otherwise leave stray cents-to-a-dollar residues on ordinary W-2s. The
+  // threshold is per employer (IRC 3102(f)), so W-2s are grouped by person
+  // and EIN first — one employer splitting pay over two W-2s each under 200k
+  // can still have withheld it.
   // Verified to the dollar against PTO on two reviewed returns.
   // NOT handled: RRTA compensation (8959 lines 20-21 and box 14 "RRTA").
   {
+    const byEmployer = new Map<string, { wages: number; tax: number }>()
+    for (const [prefix, w] of w2s) {
+      const key = `${w.spouse ? "S" : "T"}|${w.ein || prefix}`
+      const g = byEmployer.get(key) ?? { wages: 0, tax: 0 }
+      g.wages += w.medicareWages
+      g.tax += w.medicareTax
+      byEmployer.set(key, g)
+    }
     let withheld = 0
-    for (const w of w2s.values()) {
-      if (w.medicareWages > ADDL_MEDICARE_WITHHOLDING_THRESHOLD) {
-        withheld += w.medicareTax - EMPLOYEE_MEDICARE_RATE * w.medicareWages
+    for (const g of byEmployer.values()) {
+      if (g.wages > ADDL_MEDICARE_WITHHOLDING_THRESHOLD) {
+        withheld += g.tax - EMPLOYEE_MEDICARE_RATE * g.wages
       }
     }
     if (Math.round(withheld) > 0) setEstimate("25c", num("25c") + withheld)

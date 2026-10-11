@@ -1208,6 +1208,15 @@ console.log("\nW-2 withholding: Additional Medicare (25c), excess social securit
   check("8959 amount ADDS to mapped W-2G withholding",
     val(run({ status: "hoh", lines: { "25c": 500 }, cells: w2Cells([{ medicareWages: 330000, medicareTax: 6000 }]) }), "25c"), 1715)
 
+  // IRC 3102(f) is per employer: two W-2s under one EIN, each under 200k,
+  // still carry Additional Medicare once combined pay passes it.
+  // (2,175 + 1,900) - 1.45% x 250,000 = 450.
+  check("REGRESSION 25c threshold is per employer, not per W-2",
+    val(run({ status: "single", cells: w2Cells([
+      { medicareWages: 150000, medicareTax: 2175, ein: "10-0000004" },
+      { medicareWages: 100000, medicareTax: 1900, ein: "10-0000004" },
+    ]) }), "25c"), 450)
+
   // Ordinary W-2s: box 6 is whole dollars, so 1.45% never matches exactly.
   check("no 25c under the 200k withholding threshold",
     val(run({ status: "single", cells: w2Cells([{ medicareWages: 70000, medicareTax: 1015 }]) }), "25c"), null)
