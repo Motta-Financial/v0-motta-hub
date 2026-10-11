@@ -211,6 +211,9 @@ const DEPRECIATION_SERIES = "s61"
 /** W-2 social security wages — reduces the OASDI base for SE tax. */
 const W2_SS_WAGES_CELL = { seriesId: "s11", codeId: "c5" }
 
+/** Schedule 1 "other income" expansion grid: one row per suffix. */
+const OTHER_INCOME_GRID = { seriesId: "s200M", codeId: "c11" }
+
 /**
  * W-2 screen (s11), one PREFIX per W-2. Codes c3-c8 are boxes 1-6 in order;
  * c10xx are the prior-year mirrors and are never read. Measured 2026-10-11
@@ -838,9 +841,21 @@ export function estimateDeterministicLines(
   // with unemployment, alimony received, or gambling winnings render too
   // low, so sum every verified component and take the larger figure.
   // Still partial: prizes, jury duty, and hobby income are unlabeled.
+  //
+  // The mapped cell is ROW ONE of the s200M/c11 expansion grid; the grid's
+  // rows are enumerated by suffix (x1000, x1001, …) and PTO sums every row —
+  // including two rows with identical payer and amount. Settled 2026-10-11
+  // against a PTO-computed line 8 (scripts/398 named the candidates: sum of
+  // suffixes matched, dedupe-on-desc+val and x1000-only did not).
   {
     const mapped = num("8")
-    let rollup = mapped
+    let gridSum = 0
+    for (const c of cells) {
+      if (c.seriesId === OTHER_INCOME_GRID.seriesId && c.prefixId === "p0" && c.codeId === OTHER_INCOME_GRID.codeId) {
+        gridSum += toNum(c.val)
+      }
+    }
+    let rollup = Math.max(mapped, gridSum)
     for (const sel of LINE8_COMPONENTS) rollup += sumCells(cells, sel)
     if (rollup > mapped) setEstimate("8", rollup)
   }
@@ -1333,9 +1348,10 @@ export function estimateDeterministicLines(
     }
     deps.set(c.prefixId, d)
   }
-  const ctcKids = [...deps.values()].filter(
-    (d) => d.ctcFlag === 1 && d.type !== undefined && CTC_ELIGIBLE_TYPES.has(d.type) && d.dob !== undefined && d.dob >= ctcDobFloor,
-  ).length
+  type Dep = { ctcFlag?: number; eicFlag?: number; type?: number; dob?: Date }
+  const isCtcChild = (d: Dep) =>
+    d.ctcFlag === 1 && d.type !== undefined && CTC_ELIGIBLE_TYPES.has(d.type) && d.dob !== undefined && d.dob >= ctcDobFloor
+  const ctcKids = [...deps.values()].filter(isCtcChild).length
   // EIC qualifying child: flag set, Type child (1/2) or EIC-only (5), and
   // under 19 at year-end. Full-time students 19-23 and disabled children
   // are invisible to us — undercounts those households (caveated).
@@ -1355,13 +1371,34 @@ export function estimateDeterministicLines(
   // We cannot test citizenship/residency or whether the dependent has an SSN
   // rather than an ITIN, so a nonresident or ITIN dependent is counted here
   // when the return may not actually be entitled to the $500.
-  const odcDeps = [...deps.values()].filter((dep) => {
+  const isOdcDependent = (dep: Dep) => {
     if (dep.type === undefined) return false
     if (dep.type === 3 || dep.type === 6) return true
     if (!CTC_ELIGIBLE_TYPES.has(dep.type)) return false
-    const countedForCtc = dep.ctcFlag === 1 && dep.dob !== undefined && dep.dob >= ctcDobFloor
-    return !countedForCtc
-  }).length
+    return !isCtcChild(dep)
+  }
+  const odcDeps = [...deps.values()].filter(isOdcDependent).length
+
+  // ── Dependents grid: CTC / ODC checkboxes ────────────────────────────
+  // c1000200014 is a "1 = when applicable" preparer input that PTO writes
+  // on EVERY dependent (see the census note above), so rendering it raw
+  // ticked the CTC box on adults — a Type 3 parent showed as a qualifying
+  // child. The 1040 boxes say which credit the dependent qualifies for, so
+  // both are driven from the census instead. The phaseout does not clear
+  // them: PTO keeps the box checked when the credit itself phases to zero.
+  {
+    const order = (d["dep_name"]?.instances ?? d["dep_last"]?.instances ?? []).map((i) => i.prefixId)
+    const prefixes = order.length
+      ? order.filter((p) => deps.has(p))
+      : [...deps.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    const real = prefixes.filter((p) => deps.get(p)!.type !== undefined && (deps.get(p)!.type === 3 || deps.get(p)!.type === 6 || CTC_ELIGIBLE_TYPES.has(deps.get(p)!.type!)))
+    for (const [lc, test] of [["dep_ctc", isCtcChild], ["dep_odc", isOdcDependent]] as const) {
+      const line = lineByCode.get(lc)
+      if (!line || real.length === 0) continue
+      const instances = real.map((p) => ({ prefixId: p, value: test(deps.get(p)!) }))
+      d[lc] = { ...d[lc], value: instances[0].value, instances, line, source: "estimated" }
+    }
+  }
 
   // ── 19: child tax credit + credit for other dependents ───────────────
   // Schedule 8812 Part I. The phaseout applies to the AGGREGATE of CTC and

@@ -109,6 +109,8 @@ const LINES: Form1040Line[] = [
   mk("18", 2080, "tax_credits", "currency", { kind: "sum", operands: ["16", "17"] }),
   mk("19", 2090, "tax_credits"),
   mk("23", 2130, "tax_credits"),
+  mk("dep_ctc", 900, "dependents", "boolean"),
+  mk("dep_odc", 901, "dependents", "boolean"),
   mk("25c", 2220, "payments"),
   mk("31", 2310, "payments"),
   mk("27", 2270, "payments"),
@@ -1222,6 +1224,39 @@ console.log("\nW-2 withholding: Additional Medicare (25c), excess social securit
     val(run({ status: "single", cells: w2Cells([{ ssTax: 12000, ein: "1" }]) }), "31"), null)
   check("two W-2s from ONE employer (same EIN) are one employer",
     val(run({ status: "single", cells: w2Cells([{ ssTax: 8000, ein: "11-1111111" }, { ssTax: 5000, ein: "111111111" }]) }), "31"), null)
+}
+
+// ===========================================================================
+// 7. Line 8 reads EVERY row of the s200M/c11 other-income grid (scripts/398)
+// ===========================================================================
+console.log("\nLine 8 other-income grid")
+{
+  const grid = (...rows: number[]): FieldCell[] =>
+    rows.map((v, i) => ({ seriesId: "s200M", prefixId: "p0", codeId: "c11", suffixId: `x${1000 + i}`, val: String(v), desc: "PAYER - other income" }))
+  check("REGRESSION two distinct rows are summed", val(run({ status: "single", lines: { "8": 1400 }, cells: grid(1400, 150) }), "8"), 1550)
+  check("REGRESSION identical rows are both counted (PTO does)", val(run({ status: "single", lines: { "8": 8 }, cells: grid(8, 8) }), "8"), 16)
+  check("a single row is unchanged", val(run({ status: "single", lines: { "8": 500 }, cells: grid(500) }), "8"), 500)
+  check("grid rows add to the other Schedule 1 components",
+    val(run({ status: "single", lines: { "8": 100 }, cells: [...grid(100, 50), cell("s15", "p1", "c2", "1000")] }), "8"), 1150)
+}
+
+// ===========================================================================
+// 8. Dependents grid checkboxes follow eligibility, not the raw CTC flag
+// ===========================================================================
+console.log("\nDependent CTC / ODC checkboxes")
+{
+  const boxes = (data: Form1040Data, lc: string) => (data[lc]?.instances ?? []).map((i) => `${i.prefixId}:${i.value}`)
+  // PTO writes ctcFlag=1 on every dependent, adults included.
+  const adult = run({ status: "hoh", lines: { "1z": 300000 }, deps: [{ type: 3, dob: "1960-02-02", ctcFlag: 1 }] })
+  check("REGRESSION adult other-dependent: CTC box clear", boxes(adult, "dep_ctc"), ["p1:false"])
+  check("...ODC box checked", boxes(adult, "dep_odc"), ["p1:true"])
+  const mixed = run({ status: "mfj", lines: { "1z": 80000 }, deps: [
+    { type: 1, dob: "2015-03-01", ctcFlag: 1 },
+    { type: 1, dob: "2005-03-01", ctcFlag: 1 }, // 20: too old for CTC -> ODC
+    { type: 4, dob: "1950-01-01" },              // HOH qualifying person only
+  ] })
+  check("young child: CTC; older child: ODC", boxes(mixed, "dep_ctc"), ["p1:true", "p2:false"])
+  check("...and the reverse on ODC; non-dependents get no row", boxes(mixed, "dep_odc"), ["p1:false", "p2:true"])
 }
 
 // ---------------------------------------------------------------------------
