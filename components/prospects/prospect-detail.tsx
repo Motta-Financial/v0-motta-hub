@@ -65,7 +65,7 @@ import { cn } from "@/lib/utils"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
-const STATUS_OPTIONS = [
+export const STATUS_OPTIONS = [
   { value: "new", label: "New", className: "bg-amber-50 text-amber-700 border-amber-200" },
   { value: "contacted", label: "Contacted", className: "bg-sky-50 text-sky-700 border-sky-200" },
   { value: "qualified", label: "Qualified", className: "bg-indigo-50 text-indigo-700 border-indigo-200" },

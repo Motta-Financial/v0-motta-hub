@@ -173,6 +173,48 @@ function mapHubMethodToLinkMethod(method: string | null | undefined): string | n
   }
 }
 
+/**
+ * GET /api/prospects — the list behind the /prospects page, newest first.
+ * Only the columns the table shows, plus the creator/assignee names. Like
+ * GET /api/prospects/[id], it relies on the middleware's /api/* staff gate,
+ * which already turns away client-portal sessions.
+ */
+export async function GET() {
+  const supabase = createAdminClient()
+  const { data: rows, error } = await supabase
+    .from("prospect_submissions")
+    .select(
+      "id, created_at, submitter_full_name, submitter_first_name, submitter_last_name, submitter_email, " +
+        "business_name, service_focus, services_requested, lead_status, created_by_id, assigned_to_id, " +
+        "karbon_work_item_key, contact_id, organization_id",
+    )
+    .order("created_at", { ascending: false })
+    .limit(500)
+  if (error) {
+    console.error("[v0] GET /api/prospects error:", error)
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  const prospects = (rows ?? []) as unknown as Array<Record<string, unknown> & {
+    created_by_id: string | null
+    assigned_to_id: string | null
+  }>
+  const teamIds = [...new Set(prospects.flatMap((p) => [p.created_by_id, p.assigned_to_id]).filter((v): v is string => !!v))]
+  const names = new Map<string, string | null>()
+  if (teamIds.length) {
+    const { data: members } = await supabase.from("team_members").select("id, full_name").in("id", teamIds)
+    for (const m of members ?? []) names.set(m.id, m.full_name)
+  }
+
+  return NextResponse.json({
+    prospects: prospects.map((p) => ({
+      ...p,
+      created_by_name: p.created_by_id ? names.get(p.created_by_id) ?? null : null,
+      assigned_to_name: p.assigned_to_id ? names.get(p.assigned_to_id) ?? null : null,
+    })),
+  })
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as CreateProspectBody
