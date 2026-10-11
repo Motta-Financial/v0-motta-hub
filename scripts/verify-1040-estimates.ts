@@ -20,6 +20,7 @@
  * against the previous implementation.
  */
 
+import { readFileSync } from "node:fs"
 import {
   evaluateComputedLines,
   type FieldCell,
@@ -1266,6 +1267,69 @@ console.log("\nDependent CTC / ODC checkboxes")
   ] })
   check("young child: CTC; older child: ODC", boxes(mixed, "dep_ctc"), ["p1:true", "p2:false"])
   check("...and the reverse on ODC; non-dependents get no row", boxes(mixed, "dep_odc"), ["p1:false", "p2:true"])
+}
+
+// ===========================================================================
+// 9. Schedule A taxes: state withholding and the optional sales tax table
+//    (scripts/431). The table is read from the migration itself, so these
+//    cases cannot drift from what was seeded.
+// ===========================================================================
+console.log("\nSchedule A: state withholding, sales tax table")
+{
+  const sql = readFileSync(new URL("./431_form_1040_ty2025_sales_tax_table.sql", import.meta.url), "utf8")
+  const table = JSON.parse(sql.split("$json$")[1])
+  CONSTANTS.push(K("sales_tax_table", table), K("salt_cap", 40000), K("salt_phaseout_start", 500000),
+    K("salt_phaseout_rate", 0.3), K("salt_phaseout_floor", 10000), K("medical_agi_floor_pct", 0.075))
+  const a = (code: string, v: number) => cell("s400", "p0", code, String(v))
+  const home = (st: string): FieldCell => ({ ...cell("s1", "p0", "c1000100016", ""), val: null, desc: st } as FieldCell)
+
+  // Nevada HOH, one adult dependent, income over 300k: table row "300,000 or
+  // more", family size 2 = 1,786. No state income tax, so sales tax wins.
+  // Medical 30,000 - 7.5% x 320,000 = 6,000; taxes 1,786 + 5,000; mortgage
+  // 40,000; charity 10,000. (Same shape as a reviewed return that matched
+  // PTO's Schedule A to the dollar.)
+  const nv = run({ status: "hoh", lines: { "1z": 300000, "5b": 20000 },
+    deps: [{ type: 3, dob: "1960-02-02", ctcFlag: 1 }],
+    cells: [home("NV"), a("c5", 30000), a("c15", 5000), a("c21", 40000), a("c32", 10000)] })
+  check("NV: sales tax table reaches 12a", val(nv, "12a"), 6000 + 1786 + 5000 + 40000 + 10000)
+
+  // California MFJ + 1 dependent, 275-300k band, family 3 = 1,715 beats
+  // 70 of state income tax paid with the prior-year return.
+  const ca = run({ status: "mfj", lines: { "1z": 285000 }, deps: [{ type: 1, dob: "2010-01-01", ctcFlag: 1 }],
+    cells: [home("CA"), a("c13", 50), a("c96", 20), a("c15", 15000), a("c21", 35000)] })
+  check("CA: larger of income tax and table sales tax", val(ca, "12a"), 1715 + 15000 + 35000)
+
+  // Forcing the income tax election discards the table.
+  check("forced income-tax election ignores the table",
+    val(run({ status: "hoh", lines: { "1z": 320000 }, deps: [{ type: 3, dob: "1960-02-02" }],
+      cells: [home("NV"), a("c89", 1), a("c15", 5000), a("c21", 40000), a("c32", 10000)] }), "12a"),
+    5000 + 40000 + 10000)
+
+  // Ratio-method state with a local rate: table x (1 + local / state rate).
+  // Texas single, 300k+, family 1 = 1,595; 2% local over 6.25% state.
+  check("TX: local rate added by the ratio method",
+    val(run({ status: "single", lines: { "1z": 400000 },
+      cells: [home("TX"), a("c503", 0.02), a("c21", 40000)] }), "12a"),
+    Math.round(1595 * (1 + 2 / 6.25)) + 40000)
+
+  // A Nevada local rate needs the excess over the table's uniform rate —
+  // indeterminate from the export, so no table amount is asserted.
+  check("NV with a local rate: table declined, not guessed",
+    val(run({ status: "hoh", lines: { "1z": 320000 }, cells: [home("NV"), a("c503", 0.015), a("c21", 40000)] }), "12a"),
+    40000)
+
+  // W-2 box 17 is tax paid. Before 2026-10-11 it never reached Schedule A.
+  check("REGRESSION W-2 state withholding counts on Schedule A",
+    val(run({ status: "single", lines: { "1z": 200000 },
+      cells: [home("MA"), cell("s11", "p1", "c14", "9000"), a("c15", 5000), a("c21", 30000)] }), "12a"),
+    44000)
+  check("...summed across a W-2's per-state rows",
+    val(run({ status: "single", lines: { "1z": 200000 },
+      cells: [home("MA"), cell("s11", "p1", "c14", "500"), { ...cell("s11", "p1", "c14", "10000"), suffixId: "x1001" }, a("c15", 5000), a("c21", 30000)] }), "12a"),
+    500 + 10000 + 35000)
+  check("...but box 17 alone does not start a Schedule A",
+    val(run({ status: "single", lines: { "1z": 200000 }, cells: [home("MA"), cell("s11", "p1", "c14", "20000")] }), "12a"),
+    15750)
 }
 
 // ---------------------------------------------------------------------------
