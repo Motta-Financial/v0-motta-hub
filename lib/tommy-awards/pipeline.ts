@@ -11,6 +11,7 @@
  * a noon-ET cron rather than by the chain, so the firm always receives
  * an email even if an upstream prep stage failed.
  */
+import { waitUntil } from "@vercel/functions"
 import { firmConfigSync } from "@/lib/firm-settings"
 
 /** Stage route segments under /api/cron, in pipeline order. */
@@ -25,7 +26,7 @@ export type PipelineStage = "tommy-podium-image" | "tommy-recap-pdf"
 export function triggerStage(stage: PipelineStage, weekId: string): void {
   const appUrl = firmConfigSync().hubUrl
   const triggerUrl = `${appUrl}/api/cron/${stage}`
-  void fetch(triggerUrl, {
+  const dispatch = fetch(triggerUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -34,7 +35,15 @@ export function triggerStage(stage: PipelineStage, weekId: string): void {
     body: JSON.stringify({ weekId }),
     signal: AbortSignal.timeout(5_000),
   }).catch((err) => {
+    // An AbortError here is expected: the downstream stage runs for minutes
+    // and we only need the request to have been delivered.
+    if ((err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError") return
     console.error(`[v0] tommy-pipeline: failed to trigger stage ${stage} for week`, weekId, err)
   })
+  // A detached fetch is silently dropped when the calling cron returns its
+  // response first and Vercel freezes the function — which is why the
+  // 11 AM PREPARE stage never actually started the image render. waitUntil
+  // keeps the invocation alive just long enough to deliver the request.
+  waitUntil(dispatch)
   console.log(`[v0] tommy-pipeline: dispatched stage ${stage} for week`, weekId)
 }
