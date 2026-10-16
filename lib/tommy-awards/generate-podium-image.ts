@@ -53,6 +53,36 @@ export interface PodiumImageWinner {
   rank: number
   /** Optional hero profile slug from team_members.hero_profile_slug. */
   heroSlug?: string | null
+  /**
+   * Real photo headshot (typically team_members.avatar_url). Used as a
+   * likeness reference so the comic character resembles the person.
+   * Comic-art URLs are ignored — see `isUsableHeadshotUrl`.
+   */
+  headshotUrl?: string | null
+}
+
+/**
+ * Some `avatar_url` values point at the teammate's comic hero artwork
+ * (e.g. Julian's) instead of a photo. Those must not be treated as a
+ * headshot or the model would "match" the cartoon to itself.
+ */
+export function isUsableHeadshotUrl(url?: string | null): url is string {
+  if (!url || !/^https?:\/\//i.test(url)) return false
+  return !/\/motta-alliance\/heroes\//i.test(url) && !/\/MA_/i.test(url)
+}
+
+/** Downloads a headshot for use as an image-model reference. Soft-fails to null. */
+async function fetchHeadshotBytes(url: string): Promise<Uint8Array | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+    if (!res.ok) return null
+    const type = res.headers.get("content-type") ?? ""
+    if (!type.startsWith("image/")) return null
+    return new Uint8Array(await res.arrayBuffer())
+  } catch (err) {
+    console.warn("[v0] tommy podium image: headshot fetch failed:", url, err)
+    return null
+  }
 }
 
 export interface PodiumImageResult {
@@ -139,6 +169,13 @@ export async function generatePodiumImage(opts: {
         // are filtered out below and fall through to the textual
         // `appearance` descriptor.
         imageUrl: hero?.imageUrl ?? null,
+        // Real photo used purely as a FACE likeness reference. Registry
+        // override wins over the DB avatar.
+        headshotUrl: isUsableHeadshotUrl(hero?.headshotUrl)
+          ? hero?.headshotUrl
+          : isUsableHeadshotUrl(w.headshotUrl)
+            ? w.headshotUrl
+            : null,
         // Whether this winner resolved to ANY registry entry at all
         // (by slug or by name/alias) — as opposed to resolving to an
         // entry but lacking a vision-fetchable image. See the guard
@@ -246,7 +283,7 @@ Mandatory visual direction (do not deviate):
 - ${tieClause}
 - Comic-book rendering matching the Motta Alliance series: dark background, dramatic moody lighting, faint city skyline at night, olive-green and gold accents, white lotus emblem on each hero's chest, halftone shading, bold inked outlines.
 - An F1-style three-tier podium centre-frame: tallest centre (1st), shorter left (2nd), shortest right (3rd). Each tier has the rank number in large stencil typography. If a tier has co-winners (a tie), both/all of them stand on that ONE tier together — never invent additional tiers or side platforms to fit them.
-- Heroes are stylised, not real-likeness portraits — but every hero's apparent gender, hair, costume accents and signature props MUST match the source artwork you just studied. If a winner is a woman in the source art, she MUST be drawn as a woman in the podium scene.
+- Each hero is a comic-book rendering of a REAL teammate. COSTUME, emblem, colours and signature props come from the hero profile artwork. The FACE must come from the real PHOTO HEADSHOT when one is provided: match face shape, skin tone, apparent age, hairstyle and hair colour, facial hair, glasses, eyebrows, and smile so the teammate is instantly recognizable, drawn in the inked comic style (do not make a photo-collage or photorealistic render). If no headshot is provided for a winner, follow the hero artwork for their face. Apparent gender must always match. If a winner is a woman, she MUST be drawn as a woman in the podium scene.
 - Each hero holds a champagne bottle spraying olive-tinted "Motta Mist".
 - Banner across the top reads exactly: MOTTA ALLIANCE — TOMMY AWARDS, with the week label "${opts.weekLabel}" immediately below it. Both lines must fit fully inside the canvas with at least 8% margin on the left and right edges — do NOT crop the banner.
 - TEXT POLICY: The ONLY text in the image is the banner + week label + the three rank numerals (1, 2, 3) on the podium tiers. Do NOT bake hero names, role taglines, quotes, or any other captions into the artwork — those are rendered separately in the dashboard UI underneath the image.
@@ -263,6 +300,13 @@ Winners this week (images follow below, in podium order):`,
         text: `\n${ordinal(h.rank)} place — ${h.alias ? `${h.alias} (${h.name})` : h.name}${h.role ? `, role: ${h.role}` : ""}. The canonical hero profile artwork is shown below — study it and ensure your prompt preserves the apparent gender, hair, costume design, and any signature props or holographic motifs visible in this image.`,
       })
       userContent.push({ type: "image", image: h.imageUrl as string })
+      if (h.headshotUrl) {
+        userContent.push({
+          type: "text",
+          text: `Real PHOTO HEADSHOT of ${h.name} (the person above) — use this for the hero's FACE. In your prompt, give a precise facial description drawn from this photo (face shape, skin tone, age, hairstyle/colour, facial hair, glasses, distinguishing features):`,
+        })
+        userContent.push({ type: "image", image: h.headshotUrl })
+      }
     }
 
     if (textOnlyHeroes.length > 0) {
@@ -279,7 +323,7 @@ Winners this week (images follow below, in podium order):`,
 
     userContent.push({
       type: "text",
-      text: `\nReturn ONLY the final image prompt as a single paragraph of ≤ 280 words. No preamble. No markdown. The prompt must explicitly mention each winner by alias and place on the podium, must lock in their apparent gender + a signature prop drawn directly from the source artwork you studied above, must restate the exact cast count (${totalWinnerCount} total, no extras) somewhere in the prompt, and — if any ranks are tied — must explicitly instruct that the tied winners share ONE tier together.`,
+      text: `\nReturn ONLY the final image prompt as a single paragraph of ≤ 280 words. No preamble. No markdown. The prompt must explicitly mention each winner by alias and place on the podium, must lock in their apparent gender + a signature prop drawn directly from the source artwork you studied above, must include a specific facial-likeness description for every winner who has a photo headshot, must restate the exact cast count (${totalWinnerCount} total, no extras) somewhere in the prompt, and — if any ranks are tied — must explicitly instruct that the tied winners share ONE tier together.`,
     })
 
     // gpt-5.5-pro is a deep-reasoning model — it spends a large share
@@ -321,7 +365,35 @@ Winners this week (images follow below, in podium order):`,
     console.log("[v0] tommy podium image: prompt drafted, generating image…")
 
     // ── Step 3 — render the image at HIGH ("extended pro") quality ──
-    const image = await renderPodiumImageWithRetry(cleanedPrompt)
+    // Headshots in podium order, so the appended note below can refer to
+    // "reference photo N" unambiguously.
+    const headshotWinners = [...heroDescriptors]
+      .sort((a, b) => a.rank - b.rank)
+      .filter((h) => h.headshotUrl)
+    const fetched = await Promise.all(
+      headshotWinners.map((h) => fetchHeadshotBytes(h.headshotUrl as string)),
+    )
+    const referenceHeadshots: Uint8Array[] = []
+    const referenceNotes: string[] = []
+    fetched.forEach((bytes, i) => {
+      if (!bytes) return
+      referenceHeadshots.push(bytes)
+      const h = headshotWinners[i]
+      referenceNotes.push(
+        `Reference photo ${referenceHeadshots.length} is ${h.name}${h.alias ? ` (${h.alias})` : ""}, ${ordinal(h.rank)} place`,
+      )
+    })
+
+    const renderPrompt =
+      referenceHeadshots.length > 0
+        ? `${cleanedPrompt}\n\nLIKENESS REFERENCES: ${referenceNotes.join(". ")}. Draw each of these heroes' faces so they clearly resemble the person in their reference photo (face shape, skin tone, hair, facial hair, glasses, expression), rendered in inked comic-book style with the costume described above. Do not copy the photo backgrounds or clothing, and do not add anyone beyond the listed winners.`
+        : cleanedPrompt
+
+    console.log(
+      `[v0] tommy podium image: ${referenceHeadshots.length} headshot reference(s) of ${headshotWinners.length} available`,
+    )
+
+    const image = await renderPodiumImageWithRetry(renderPrompt, referenceHeadshots)
     if (!image) {
       throw new Error("image generation returned no image after retries")
     }
@@ -356,8 +428,29 @@ Winners this week (images follow below, in podium order):`,
  */
 async function renderPodiumImageWithRetry(
   prompt: string,
+  referenceHeadshots: Uint8Array[] = [],
 ): Promise<Awaited<ReturnType<typeof generateImage>>["image"] | null> {
-  const MAX_IMAGE_ATTEMPTS = 4
+  // Headshots go to the image model as likeness references. This path is
+  // new, so it gets a short retry budget and falls back to the proven
+  // text-only render rather than risking another week with no image.
+  if (referenceHeadshots.length > 0) {
+    const withRefs = await renderAttempts(
+      { images: referenceHeadshots, text: prompt },
+      2,
+    )
+    if (withRefs) return withRefs
+    console.warn(
+      "[v0] tommy podium image: reference-image render failed, falling back to text-only prompt",
+    )
+  }
+  return renderAttempts(prompt, 4)
+}
+
+async function renderAttempts(
+  prompt: Parameters<typeof generateImage>[0]["prompt"],
+  maxAttempts: number,
+): Promise<Awaited<ReturnType<typeof generateImage>>["image"] | null> {
+  const MAX_IMAGE_ATTEMPTS = maxAttempts
   for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
     try {
       const res = await generateImage({

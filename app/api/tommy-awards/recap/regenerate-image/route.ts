@@ -111,10 +111,13 @@ export async function POST(request: Request) {
       .filter((n) => n && n !== "P24")
     const { data: heroSlugRows } = await supabase
       .from("team_members")
-      .select("full_name, hero_profile_slug")
+      .select("full_name, hero_profile_slug, avatar_url")
       .in("full_name", namesForLookup)
     const heroSlugByName = new Map(
       (heroSlugRows ?? []).map((r) => [r.full_name, r.hero_profile_slug as string | null]),
+    )
+    const headshotByName = new Map(
+      (heroSlugRows ?? []).map((r) => [r.full_name, r.avatar_url as string | null]),
     )
 
     console.log(
@@ -130,6 +133,7 @@ export async function POST(request: Request) {
           t.name === "P24"
             ? "p24-shadow-task-force"
             : heroSlugByName.get(t.name) ?? null,
+        headshotUrl: headshotByName.get(t.name) ?? null,
       })),
       customPrompt,
     })

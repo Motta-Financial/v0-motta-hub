@@ -44,10 +44,13 @@ async function main() {
     const names = topThree.map((t) => t.name).filter((n) => n && n !== "P24")
     const { data: rows } = await s
       .from("team_members")
-      .select("full_name, hero_profile_slug")
+      .select("full_name, hero_profile_slug, avatar_url")
       .in("full_name", names)
     const slugBy = new Map(
       (rows ?? []).map((r) => [r.full_name, r.hero_profile_slug as string | null]),
+    )
+    const headshotBy = new Map(
+      (rows ?? []).map((r) => [r.full_name, r.avatar_url as string | null]),
     )
 
     console.log(`[v0] generating image for ${recap.week_label}…`)
@@ -60,6 +63,7 @@ async function main() {
           t.name === "P24"
             ? "p24-shadow-task-force"
             : slugBy.get(t.name) ?? null,
+        headshotUrl: headshotBy.get(t.name) ?? null,
       })),
     })
 

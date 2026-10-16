@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
   // Thameem alias — hard-coded because team_members stores individuals.
   const { data: heroSlugRows } = await supabase
     .from("team_members")
-    .select("full_name, hero_profile_slug")
+    .select("full_name, hero_profile_slug, avatar_url")
     .in(
       "full_name",
       topThree.filter((t) => t.name !== "P24").map((t) => t.name),
@@ -95,6 +95,9 @@ export async function POST(req: NextRequest) {
 
   const heroSlugByName = new Map(
     (heroSlugRows ?? []).map((r) => [r.full_name, r.hero_profile_slug as string | null]),
+  )
+  const headshotByName = new Map(
+    (heroSlugRows ?? []).map((r) => [r.full_name, r.avatar_url as string | null]),
   )
 
   console.log("[v0] tommy-image-async: rendering image for week", weekId)
@@ -109,6 +112,7 @@ export async function POST(req: NextRequest) {
         t.name === "P24"
           ? "p24-shadow-task-force"
           : heroSlugByName.get(t.name) ?? null,
+      headshotUrl: headshotByName.get(t.name) ?? null,
     })),
   })
 

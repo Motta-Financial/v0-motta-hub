@@ -38,6 +38,13 @@ export interface HeroProfile {
   /** Public Blob URL of the full profile PNG. */
   imageUrl: string
   /**
+   * Optional real photo headshot of the teammate. When present, the
+   * Tommy Awards podium generator uses it as a likeness reference so
+   * the comic character's face resembles the actual person. Takes
+   * precedence over `team_members.avatar_url`.
+   */
+  headshotUrl?: string
+  /**
    * Visual descriptor used by the Tommy Awards weekly podium image
    * generator (`lib/tommy-awards/generate-podium-image.ts`) to keep
    * the AI-rendered podium characters consistent with each hero's
