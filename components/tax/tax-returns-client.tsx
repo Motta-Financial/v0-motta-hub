@@ -4,6 +4,7 @@ import { useMemo, useState, useEffect } from "react"
 import useSWR from "swr"
 import Link from "next/link"
 import { ReturnRelationshipChip } from "@/components/tax/return-relationship-chip"
+import { returnViewLink } from "@/lib/forms/form-views"
 import {
   FileText,
   CheckCircle2,
@@ -56,6 +57,8 @@ type UnifiedReturn = {
   client_name: string | null
   tax_year: number | null
   form: string
+  /** ProConnect module code (IND, PAR, SCO…) — picks the viewer. */
+  return_type: string | null
   efile_status: string | null
   efile_latest: EfileLatestBadge | null
   preparer: string | null
@@ -476,16 +479,21 @@ export function TaxReturnsClient() {
                           : "—"}
                       </TableCell>
                       <TableCell>
-                        {r.form === "1040" ? (
-                          <Link
-                            href={`/tax/returns/${r.id}/1040${r.proconnect_client_id ? `?clientId=${r.proconnect_client_id}` : ""}`}
-                            className="text-xs font-medium text-[#9CA757] hover:underline whitespace-nowrap"
-                          >
-                            View 1040
-                          </Link>
-                        ) : (
-                          <span className="text-xs text-muted-foreground/40">—</span>
-                        )}
+                        {(() => {
+                          // Formatted view where the Hub has one (1040, 1065);
+                          // every other return opens in the field viewer.
+                          const link = returnViewLink(r.id, r.return_type, r.proconnect_client_id)
+                          const form = link.form ?? (r.form !== "Unknown" ? r.form : null)
+                          return (
+                            <Link
+                              href={link.href}
+                              title={link.formatted ? undefined : "Opens the field viewer — no formatted view for this form yet"}
+                              className={`text-xs font-medium hover:underline whitespace-nowrap ${link.formatted ? "text-[#9CA757]" : "text-muted-foreground"}`}
+                            >
+                              {form ? `View ${form}` : "View return"}
+                            </Link>
+                          )
+                        })()}
                       </TableCell>
                     </TableRow>
                   ))}

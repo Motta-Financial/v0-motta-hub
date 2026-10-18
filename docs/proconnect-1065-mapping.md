@@ -61,9 +61,19 @@ The two self-check misses are a client with two TY2024 returns and an amended TY
 
 Our 39 TY2025 1065s with partner data carry 108 partners, with percentages. The Hub's `tax_client_relationships` covers 7 of 38 partnership clients, none confirmed, none with an ownership %. So for existing partnerships ProConnect is the source of truth: partners roll forward when a return is created from the prior year's (Create Return with `source` = prior engagement id), and the Hub only needs to write changes. New partnerships have no partner data in the Hub today, so that has to come from intake.
 
-## Still needed before building
+## Field catalog (loaded 2026-10-17)
 
-- Intuit: the business modules in the IND V2 layout (agency, type, char limit, tsj, constraints) so the catalog can be loaded (`scripts/358 --diff` first), and catalogs for 2022–2024.
+Intuit confirmed the thin all-modules workbook (Oct 2026) is the latest and that no full-layout business files are coming. `scripts/358-load-proconnect-catalog.mjs --layout thin` derives the missing columns (agency Federal; `amt:` = the main value; type from the rules; repeated rows collapsed) — the conversions were measured by rebuilding the IND catalog from the thin sheet and comparing it with the IND V2 file. Loaded for PAR, SCO, COR, FID, EXM and GFT for TY2025, and for TY2022–2024 as copies of 2025 stamped `rules.assumedFromTaxYear = 2025` (Intuit: prior years "should be very similar"). IND is untouched.
+
+Thin rows carry `rules.subFieldsUnderDeclared`: the thin sheet omits `src`/`source` on most fields that accept them, so the Hub's pre-check warns rather than blocks on those. Intuit's dry run remains the real check.
+
+## Viewing a 1065 in the Hub
+
+`/tax/returns/[returnId]/1065` lays out partners and percentages, income, deductions, Schedule L and M-2 (`lib/forms/form-1065.ts`), with catalog labels. Totals are sums of the entries using the rules above and say what they leave out (depreciation, COGS); the prior-year card shows ProConnect's own figures from s6100. Run against all 86 exported 1065s, the builder reproduces the scripts/430 results.
+
+## Still needed
+
 - Which partnerships keep books in a QuickBooks file the Hub can reach. That decides which ones page 1 and Schedule L can be filled for.
 - Which partnerships use special allocations.
 - A proforma (roll-forward) test for a 1065, to confirm partners and prior-year data carry over.
+- Mapping for COGS (s300), depreciation (s61), rental real estate (s53) and partner basis (s1800).

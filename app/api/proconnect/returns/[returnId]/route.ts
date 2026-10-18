@@ -140,6 +140,10 @@ async function loadNonEditableCells(sb: SupabaseClient, taxYear: number, returnT
 
 async function loadFieldMappings(sb: SupabaseClient, taxYear: number, returnType: string) {
   const mappings = new Map<string, CatalogEntry>()
+  // Screen titles per series, counted so a series that spans several screens
+  // (PAR s2 is "Partner Information" and a CA K-1 table) is named by the one
+  // most of its codes sit on.
+  const screenCounts = new Map<string, Map<string, number>>()
 
   // proconnect_field_catalog holds 60k+ rows even filtered to one
   // tax_year/return_type — PostgREST silently caps a single response at
@@ -158,6 +162,30 @@ async function loadFieldMappings(sb: SupabaseClient, taxYear: number, returnType
       description: row.description,
       screenTitle: row.screen_title,
     })
+    if (row.screen_title) {
+      const counts = screenCounts.get(row.series_id.toLowerCase()) ?? new Map<string, number>()
+      counts.set(row.screen_title, (counts.get(row.screen_title) ?? 0) + 1)
+      screenCounts.set(row.series_id.toLowerCase(), counts)
+    }
+  }
+  const seriesTitles = new Map<string, string>()
+  for (const [series, counts] of screenCounts) {
+    seriesTitles.set(series, [...counts].sort((a, b) => b[1] - a[1])[0][0])
+  }
+
+  // Business-module catalogs for 2022–2024 are copies of 2025 (Intuit sent
+  // no others); scripts/358 stamps them. One row answers for the whole year.
+  const { data: stampRow } = await sb
+    .from("proconnect_field_catalog")
+    .select("rules")
+    .eq("tax_year", taxYear)
+    .eq("return_type", returnType)
+    .limit(1)
+    .maybeSingle()
+  const catalog = {
+    loaded: catalogRows.length > 0,
+    assumedFromTaxYear:
+      ((stampRow?.rules as { assumedFromTaxYear?: number } | null)?.assumedFromTaxYear ?? null) as number | null,
   }
 
   // Hand-verified overrides take precedence — applied after the bulk
@@ -184,7 +212,7 @@ async function loadFieldMappings(sb: SupabaseClient, taxYear: number, returnType
     })
   }
 
-  return mappings
+  return { mappings, seriesTitles, catalog }
 }
 
 export async function GET(
@@ -275,9 +303,9 @@ export async function GET(
         .order("code_id"),
     )
 
-    const fieldMappings = snapshot?.tax_year
+    const { mappings: fieldMappings, seriesTitles, catalog } = snapshot?.tax_year
       ? await loadFieldMappings(sb, Number(snapshot.tax_year), (snapshot.return_type ?? "IND").toUpperCase())
-      : new Map<string, CatalogEntry>()
+      : { mappings: new Map<string, CatalogEntry>(), seriesTitles: new Map<string, string>(), catalog: null }
 
     const nonEditableCells = snapshot?.tax_year
       ? await loadNonEditableCells(sb, Number(snapshot.tax_year), (snapshot.return_type ?? "IND").toUpperCase())
@@ -321,6 +349,15 @@ export async function GET(
       cellCount: cells.length,
       seriesCount: Object.keys(bySeries).length,
       cellsBySeries: bySeries,
+      // Screen title per series, for the series headings. Same padded-id
+      // fallback as the cell labels above.
+      seriesTitles: Object.fromEntries(
+        Object.keys(bySeries).map((s) => [
+          s,
+          seriesTitles.get(s.toLowerCase()) ?? seriesTitles.get(`${s.toLowerCase()}00`) ?? null,
+        ]),
+      ),
+      catalog,
     })
   } catch (err) {
     return NextResponse.json(
