@@ -3,14 +3,42 @@
  * Load Intuit's IVCS/FRF field catalog into proconnect_field_catalog.
  *
  *   node scripts/358-load-proconnect-catalog.mjs <csv-or-xlsx-path> [--tax-year 2025] \
- *        [--return-type IND] [--sheet <name>] [--dry-run] [--diff] [--allow-unknown]
+ *        [--return-type IND] [--sheet <name>] [--layout thin] [--as-tax-year 2024] \
+ *        [--dry-run] [--diff] [--allow-unknown]
  *
- * Accepts the original CSV extract or an .xlsx in Intuit's "Series Code
- * Mappings V2" layout (Series Type, Agency, Series, Code, Description,
- * ScreenTitle, Type, Char Limit, tsj, constraints). Header names are matched
- * loosely. A file without the agency/type columns — e.g. the Oct 2026
- * all-modules workbook — is refused: the table is keyed on agency, and that
- * layout repeats (series, code) pairs with no way to tell them apart.
+ * Two layouts:
+ *
+ *  • Full (default): the original CSV extract or an .xlsx in Intuit's
+ *    "Series Code Mappings V2" layout (Series Type, Agency, Series, Code,
+ *    Description, ScreenTitle, Type, Char Limit, tsj, constraints). Header
+ *    names are matched loosely.
+ *
+ *  • Thin (--layout thin, required explicitly): the Oct 2026 all-modules
+ *    workbook — Module, Series, Code, Description, Screen Title, Validations,
+ *    one sheet per module. Intuit confirmed (2026-10-17) that no full-layout
+ *    business files are coming, so the missing columns are DERIVED, using
+ *    conversions measured by rebuilding IND from the thin sheet and comparing
+ *    it with the V2 file:
+ *      agency   'Federal' (every V2 pair has a Federal row; state rows are
+ *               near-identical copies)
+ *      val      `amt:` rules; `desc:` rules when the field has no `amt:` (a
+ *               text field — V2 puts the same maxLength on val)
+ *      type     proTaxID → SSN, date / date regex → DATE, numeric rules →
+ *               NUMBER, desc-only → STRING
+ *      tsj      a `tsj:` rule is present
+ *      repeats  the same (series, code) under several screens collapses to one
+ *               row: first non-blank description, first screen title. Rows
+ *               whose rules disagree stop the load.
+ *    The thin layout under-declares sub-fields (V2 IND allows src/source on
+ *    ~27k fields the thin sheet doesn't mention), so thin rows carry
+ *    rules.subFieldsUnderDeclared and the Hub's pre-check does not block
+ *    src/source on them. Intuit's dry run stays the real check.
+ *
+ * --as-tax-year writes the file's rows under another tax year, stamped with
+ * rules.assumedFromTaxYear = --tax-year (and a source_file suffix). Intuit
+ * sent 2025 only and says prior years "should be very similar"; the stamp
+ * keeps that an assumption the Hub can show and warn on, not a fact. Refused
+ * for IND: scripts/387 treats a loaded IND year as evidence for 1040 writes.
  *
  * --diff compares the file against what is already loaded for that tax year
  * and return type (read-only), so a reload can be reviewed before it runs.
@@ -256,6 +284,78 @@ export function parseConstraints(raw, valueType, charLimit, tsjColumn, oneOfTabl
 }
 
 /**
+ * Parse one thin-layout Validations string (see the header) into the same
+ * `rules` shape parseConstraints produces, plus the derived value type.
+ *
+ * Every clause is `<subField>:<rule>,<rule>…` or a bare rule list. `amt:` is
+ * the main value; `desc:` is too when the field has no `amt:`, and otherwise
+ * the separate description sub-field (270 IND fields carry both).
+ */
+export function parseThinConstraints(raw, oneOfTables) {
+  const rules = { allowedSubFields: ["val"], val: {}, unknown: [], subFieldsUnderDeclared: true }
+  const clauses = splitClauses(raw || "").map((clause) => {
+    const m = clause.match(/^([A-Za-z]+):(.*)$/s)
+    return m && SUB_FIELDS.includes(m[1]) ? { sub: m[1], body: m[2] } : { sub: null, body: clause }
+  })
+  const hasAmt = clauses.some((c) => c.sub === "amt")
+  let valueSource = null
+  for (const { sub, body } of clauses) {
+    const toVal = sub === null || sub === "amt" || (sub === "desc" && !hasAmt)
+    if (toVal && sub) valueSource ??= sub
+    const target = toVal ? rules.val : (rules[sub] ??= {})
+    if (!toVal) rules.allowedSubFields.push(sub)
+    for (const part of splitClauses(body, ",")) {
+      // `src:STRING`-style kinds from the original CSV still appear.
+      if (/^(STRING|ENUM|NUMBER)$/.test(part)) { target.kind = part; continue }
+      if (!applyRule(target, part, oneOfTables)) rules.unknown.push(sub ? `${sub}:${part}` : part)
+    }
+  }
+
+  const v = rules.val
+  // A date regex is an MM/DD/YYYY pattern: it always spells out months 01–12.
+  const dateRegex = typeof v.regex === "string" && v.regex.includes("0[1-9]|1[0-2]")
+  let valueType = null
+  if (v.proTaxID) valueType = "SSN"
+  else if (v.isDate || dateRegex) valueType = "DATE"
+  else if (valueSource === "amt" && (v.formattedNumber || v.integer || v.min != null || v.max != null || v.oneOf)) valueType = "NUMBER"
+  else if (valueSource === "desc") valueType = "STRING"
+  if (valueType) v.type = valueType
+  if (valueType === "DATE") v.isDate = true
+
+  rules.allowedSubFields = [...new Set(rules.allowedSubFields)].sort()
+  for (const k of [...SUB_FIELDS, "val"]) {
+    if (rules[k] && Object.keys(rules[k]).length === 0) delete rules[k]
+  }
+  if (rules.unknown.length === 0) delete rules.unknown
+  return { rules, valueType, tsjAllowed: rules.allowedSubFields.includes("tsj") }
+}
+
+/**
+ * Collapse a thin sheet's repeated (series, code) rows. Returns the merged
+ * rows and any keys whose Validations disagree, which the caller refuses.
+ */
+function collapseThinRows(rows, idx) {
+  const byKey = new Map()
+  const conflicts = []
+  for (const r of rows) {
+    const series = (r[idx.series] || "").trim()
+    const code = (r[idx.code] || "").trim()
+    if (!series || !code) continue
+    const key = `${series}|${code}`
+    const constraints = (r[idx.constraints] || "").trim()
+    const description = (r[idx.description] || "").trim()
+    const screen = (r[idx.screenTitle] || "").trim()
+    const prev = byKey.get(key)
+    if (!prev) { byKey.set(key, { series, code, constraints, description, screen, repeats: 1 }); continue }
+    prev.repeats++
+    if (prev.constraints !== constraints) conflicts.push(key)
+    if (!prev.description && description) prev.description = description
+    if (!prev.screen && screen) prev.screen = screen
+  }
+  return { merged: [...byKey.values()], conflicts }
+}
+
+/**
  * Sensitive-field detection. value_type='SSN' is definitive (963 codes).
  * The description scan additionally catches taxpayer identifiers and bank
  * details that Intuit types as STRING/NUMBER but which are plainly PII.
@@ -356,11 +456,16 @@ const headerMatches = (col, h) =>
   HEADER_ALIASES[col].some((a) => h === a || (col === "constraints" && h.startsWith(a)))
 
 /** Read rows from a CSV or an .xlsx; for .xlsx also return its oneOf tables. */
-function readInput(path, sheetName) {
+function readInput(path, sheetName, returnType) {
   if (!/\.xlsx$/i.test(path)) return { rows: parseCsv(readFileSync(path, "utf8")), oneOfTables: null, sheet: null }
   const sheets = readXlsx(path)
   const looksLikeCatalog = (rows) => rows[0]?.some((h) => squash(h) === "series") && rows[0]?.some((h) => squash(h) === "code")
-  const name = sheetName ?? [...sheets.keys()].find((n) => looksLikeCatalog(sheets.get(n)))
+  // The all-modules workbook has one catalog sheet per module, named
+  // "<mod>-2025-all-series-…" in either case; pick the one for this module.
+  const name =
+    sheetName ??
+    [...sheets.keys()].find((n) => n.toLowerCase().startsWith(`${returnType.toLowerCase()}-`) && /all-series/i.test(n) && looksLikeCatalog(sheets.get(n))) ??
+    [...sheets.keys()].find((n) => looksLikeCatalog(sheets.get(n)) && !/^[a-z]{3}-\d{4}-all-series/i.test(n))
   if (!name || !sheets.has(name)) {
     console.error(`no catalog sheet${sheetName ? ` named "${sheetName}"` : ""} in ${path}; sheets: ${[...sheets.keys()].join(", ")}`)
     process.exit(1)
@@ -385,23 +490,44 @@ async function main() {
   loadEnv()
   const args = process.argv.slice(2)
   const flag = (f) => (args.includes(f) ? args[args.indexOf(f) + 1] : undefined)
-  const valueFlags = new Set(["--tax-year", "--return-type", "--sheet"])
+  const valueFlags = new Set(["--tax-year", "--return-type", "--sheet", "--layout", "--as-tax-year"])
   const inputPath = args.find((a, i) => !a.startsWith("--") && !valueFlags.has(args[i - 1]))
   const taxYear = Number(flag("--tax-year")) || 2025
   const returnType = flag("--return-type") ?? "IND"
   const dryRun = args.includes("--dry-run")
   const diffOnly = args.includes("--diff")
   const allowUnknown = args.includes("--allow-unknown")
+  const layout = flag("--layout") ?? "full"
+  if (!["full", "thin"].includes(layout)) {
+    console.error(`--layout must be "full" or "thin", got "${layout}"`)
+    process.exit(1)
+  }
+  // Rows land under --as-tax-year, stamped as assumed from the file's year.
+  const asTaxYear = flag("--as-tax-year") ? Number(flag("--as-tax-year")) : null
+  if (asTaxYear !== null && (!Number.isInteger(asTaxYear) || asTaxYear === taxYear)) {
+    console.error("--as-tax-year must be a different tax year than --tax-year")
+    process.exit(1)
+  }
+  if (asTaxYear !== null && returnType === "IND") {
+    // scripts/387 treats a loaded catalog year as evidence for 1040 writes;
+    // an assumed IND year would quietly make inherited 1040 cells editable.
+    console.error("--as-tax-year is refused for IND: scripts/387 gates 1040 writes on the catalog year")
+    process.exit(1)
+  }
+  const targetYear = asTaxYear ?? taxYear
 
   if (!inputPath) {
-    console.error("usage: node scripts/358-load-proconnect-catalog.mjs <csv-or-xlsx-path> [--tax-year 2025] [--return-type IND] [--sheet <name>] [--dry-run] [--diff] [--allow-unknown]")
+    console.error("usage: node scripts/358-load-proconnect-catalog.mjs <csv-or-xlsx-path> [--tax-year 2025] [--return-type IND] [--sheet <name>] [--layout thin] [--as-tax-year 2024] [--dry-run] [--diff] [--allow-unknown]")
     process.exit(1)
   }
 
-  const { rows, oneOfTables, sheet } = readInput(inputPath, flag("--sheet"))
+  const { rows, oneOfTables, sheet } = readInput(inputPath, flag("--sheet"), returnType)
   if (sheet) console.log(`reading sheet "${sheet}"${oneOfTables ? ` (+ ${oneOfTables.size} oneOf tables)` : ""}`)
   const header = rows[0].map(squash)
-  const want = Object.keys(HEADER_ALIASES)
+  // The thin layout has no agency/type/charLimit/tsj columns; they're derived.
+  const want = layout === "thin"
+    ? ["series", "code", "description", "screenTitle", "constraints"]
+    : Object.keys(HEADER_ALIASES)
   const idx = {}
   for (const w of want) {
     idx[w] = header.findIndex((h) => headerMatches(w, h))
@@ -409,13 +535,17 @@ async function main() {
   const missing = want.filter((w) => idx[w] === -1)
   if (missing.length) {
     console.error(`header missing columns: ${missing.join(", ")}\n  got: ${rows[0].join(", ")}`)
-    if (missing.includes("agency") || missing.includes("type")) {
-      console.error("  This looks like the thin layout without agency/type. Ask Intuit for the\n" +
-        "  same layout as the IND 2025 Series Code Mappings V2 file.")
+    if (layout === "full" && (missing.includes("agency") || missing.includes("type"))) {
+      console.error("  This looks like the thin all-modules layout. Pass --layout thin to derive\n" +
+        "  agency/type/tsj from the Validations column (see the header of this script).")
     }
     process.exit(1)
   }
   // A Module column, when present, must agree with --return-type.
+  if (layout === "thin" && header.indexOf("module") === -1) {
+    console.error("--layout thin expects a Module column; this sheet has none")
+    process.exit(1)
+  }
   const moduleIdx = header.indexOf("module")
   if (moduleIdx !== -1) {
     const mods = new Set(rows.slice(1).map((r) => String(r[moduleIdx] ?? "").toUpperCase()).filter(Boolean))
@@ -427,7 +557,40 @@ async function main() {
 
   const records = []
   const unknownTokens = new Map()
-  for (const r of rows.slice(1)) {
+  const sourceFile = inputPath.split("/").pop() + (asTaxYear !== null ? ` (assumed from ${taxYear})` : "")
+  const stamp = (rules) => (asTaxYear !== null ? { ...rules, assumedFromTaxYear: taxYear } : rules)
+  if (layout === "thin") {
+    const { merged, conflicts } = collapseThinRows(rows.slice(1), idx)
+    const repeated = merged.filter((m) => m.repeats > 1).length
+    console.log(`  thin layout: ${rows.length - 1} rows → ${merged.length} fields (${repeated} repeated across screens)`)
+    if (conflicts.length) {
+      console.error(`✗ ${conflicts.length} repeated (series, code) rows disagree on Validations, e.g. ${conflicts.slice(0, 5).join(", ")}`)
+      process.exit(1)
+    }
+    for (const m of merged) {
+      const { rules, valueType, tsjAllowed } = parseThinConstraints(m.constraints, oneOfTables)
+      if (rules.unknown) for (const u of rules.unknown) unknownTokens.set(u, (unknownTokens.get(u) || 0) + 1)
+      records.push({
+        tax_year: targetYear,
+        return_type: returnType,
+        agency: "Federal",
+        series_id: m.series,
+        code_id: m.code,
+        // NOT NULL in the table; ~4% of thin fields have no label (the Hub
+        // falls back to the screen title, then the raw path).
+        description: m.description,
+        screen_title: m.screen || null,
+        value_type: valueType,
+        char_limit: valueType === "STRING" && rules.val?.maxLength != null ? rules.val.maxLength : null,
+        tsj_allowed: tsjAllowed,
+        constraints_raw: m.constraints || null,
+        rules: stamp(rules),
+        is_sensitive: isSensitive(valueType, m.description),
+        source_file: sourceFile,
+      })
+    }
+  }
+  for (const r of layout === "thin" ? [] : rows.slice(1)) {
     if (!r.some((c) => c !== "")) continue
     const valueType = (r[idx.type] || "").trim() || null
     const description = (r[idx.description] || "").trim()
@@ -440,7 +603,7 @@ async function main() {
       for (const u of rules.unknown) unknownTokens.set(u, (unknownTokens.get(u) || 0) + 1)
     }
     records.push({
-      tax_year: taxYear,
+      tax_year: targetYear,
       return_type: returnType,
       agency: (r[idx.agency] || "").trim(),
       series_id: (r[idx.series] || "").trim(),
@@ -451,9 +614,9 @@ async function main() {
       char_limit: Number.isFinite(charLimit) ? charLimit : null,
       tsj_allowed: tsjColumn === "Y",
       constraints_raw: constraintsRaw,
-      rules,
+      rules: stamp(rules),
       is_sensitive: isSensitive(valueType, description),
-      source_file: inputPath.split("/").pop(),
+      source_file: sourceFile,
     })
   }
 
@@ -462,7 +625,7 @@ async function main() {
   // "facility���s" for "facility’s"). Report it so a reload doesn't quietly
   // replace a good description with a damaged one.
   const damaged = records.filter((r) => /\uFFFD/.test(`${r.description}${r.screen_title ?? ""}`))
-  console.log(`parsed ${records.length} rows for ${returnType} ${taxYear}`)
+  console.log(`parsed ${records.length} rows for ${returnType} ${targetYear}${asTaxYear !== null ? ` (assumed from ${taxYear})` : ""}`)
   console.log(`  agencies:      ${new Set(records.map((r) => r.agency)).size}`)
   console.log(`  series:        ${new Set(records.map((r) => r.series_id)).size}`)
   console.log(`  codes:         ${new Set(records.map((r) => r.code_id)).size}`)
@@ -503,7 +666,7 @@ async function main() {
   }
 
   if (diffOnly) {
-    await printDiff(connect(), records, taxYear, returnType)
+    await printDiff(connect(), records, targetYear, returnType)
     return
   }
 
@@ -543,4 +706,4 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   main().catch((e) => { console.error(e); process.exit(1) })
 }
 
-export { parseCsv, splitClauses, isSensitive }
+export { parseCsv, splitClauses, isSensitive, collapseThinRows }

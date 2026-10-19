@@ -40,6 +40,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
 import { FieldEditSheet, type EditTarget } from "@/components/tax/field-edit-sheet"
+import { formViewFor } from "@/lib/forms/form-views"
 
 type Cell = {
   series_id: string
@@ -120,6 +121,13 @@ type ReturnDetail = {
   cellCount: number
   seriesCount: number
   cellsBySeries: Record<string, Cell[]>
+  /** ProConnect screen title per series, from the field catalog. */
+  seriesTitles?: Record<string, string | null>
+  /**
+   * Which catalog labelled the cells. `assumedFromTaxYear` is set when Intuit
+   * sent no catalog for the return's year and that year's labels were copied.
+   */
+  catalog?: { loaded: boolean; assumedFromTaxYear: number | null } | null
 }
 
 const fetcher = async (url: string) => {
@@ -304,7 +312,8 @@ export default function ReturnDataPage({
     "Tax return"
   const clientName =
     data?.snapshot?.client_name ?? (eng.client_display_name as string) ?? null
-  const is1040 = (data?.snapshot?.return_type ?? eng.return_type) === "IND"
+  const returnType = (data?.snapshot?.return_type ?? eng.return_type) as string | undefined
+  const formView = formViewFor(returnType)
   // Cosmetic gate. The server refuses a locked write regardless of what this
   // says; the point of hiding the pencil is that a preparer shouldn't have
   // to be told no after typing. Defaults to locked while the verdict is
@@ -321,11 +330,11 @@ export default function ReturnDataPage({
           </Link>
         </Button>
         <div className="flex gap-2">
-          {is1040 && clientId && (
+          {formView && (
             <Button asChild variant="outline" size="sm">
-              <Link href={`/tax/returns/${returnId}/1040?clientId=${clientId}`}>
+              <Link href={`/tax/returns/${returnId}/${formView.path}${clientId ? `?clientId=${clientId}` : ""}`}>
                 <FileText className="mr-1 size-4" />
-                Form 1040 view
+                Form {formView.form} view
               </Link>
             </Button>
           )}
@@ -424,10 +433,24 @@ export default function ReturnDataPage({
                   Field data by series
                 </CardTitle>
                 <CardDescription>
-                  Raw ProConnect series/prefix/code/suffix cells from the latest export.
+                  ProConnect series/prefix/code/suffix cells from the latest export, labelled
+                  from Intuit&apos;s field catalog where it has the code.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                {data.catalog && !data.catalog.loaded && (
+                  <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                    No field catalog is loaded for {data.snapshot?.return_type} TY{data.snapshot?.tax_year}, so
+                    cells show their raw path only.
+                  </p>
+                )}
+                {data.catalog?.assumedFromTaxYear && (
+                  <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
+                    Labels come from Intuit&apos;s TY{data.catalog.assumedFromTaxYear} catalog. Intuit sent none for
+                    TY{data.snapshot?.tax_year} and says earlier years are very similar, but a field
+                    ProConnect renamed or renumbered since then could be mislabelled.
+                  </p>
+                )}
                 {locked && data.lock && <LockBanner lock={data.lock} />}
                 {Object.entries(data.cellsBySeries).map(([seriesId, cells]) => {
                   // Find the version stamp for this series from the snapshot
@@ -438,7 +461,8 @@ export default function ReturnDataPage({
                   return (
                     <details key={seriesId} className="rounded-md border" open={data.seriesCount <= 3}>
                       <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">
-                        Series <code className="rounded bg-muted px-1">{seriesId}</code>{" "}
+                        {data.seriesTitles?.[seriesId] && <span className="mr-2">{data.seriesTitles[seriesId]}</span>}
+                        <code className="rounded bg-muted px-1 text-xs">{seriesId}</code>{" "}
                         <span className="text-muted-foreground">({cells.length} cells)</span>
                       </summary>
                       <div className="overflow-x-auto">

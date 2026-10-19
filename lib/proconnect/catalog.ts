@@ -55,6 +55,17 @@ export interface CatalogRules {
   amt?: { kind?: "NUMBER" }
   /** Constraint clauses the parser did not recognise — treated as unknown. */
   unknown?: string[]
+  /**
+   * Loaded from Intuit's thin all-modules workbook, which lists fewer
+   * sub-fields than the API accepts (src/source especially). An undeclared
+   * src/source is then a warning, not a block — Intuit's dry run decides.
+   */
+  subFieldsUnderDeclared?: boolean
+  /**
+   * The row is a copy of this tax year's definition: Intuit supplied no
+   * catalog for the row's own year. Labels and rules are assumed.
+   */
+  assumedFromTaxYear?: number
 }
 
 export interface CatalogCode {
@@ -234,6 +245,14 @@ export function validateEntry(
 
   const allowed = new Set(code.rules?.allowedSubFields ?? ["val"])
   for (const sf of presentSubFields(entry)) {
+    if (!allowed.has(sf) && code.rules?.subFieldsUnderDeclared && (sf === "src" || sf === "source")) {
+      problems.push({
+        ...at(sf),
+        severity: "warning",
+        message: `Sub-field "${sf}" is not listed for ${seriesId}/${entry.codeId}, but this catalog row comes from a layout that omits it on most fields. Intuit's dry run will decide.`,
+      })
+      continue
+    }
     if (!allowed.has(sf)) {
       problems.push({
         ...at(sf),
@@ -424,6 +443,21 @@ export async function validateBatches(
 
   const keys = batches.flatMap((b) => b.entries.map((e) => ({ seriesId: b.seriesId, codeId: e.codeId })))
   const codes = await lookupCodes(sb, opts.taxYear, returnType, keys)
+
+  // One warning, not one per entry: the whole year is borrowed or it isn't.
+  const assumedFrom = [...codes.values()].find((c) => c.rules?.assumedFromTaxYear)?.rules.assumedFromTaxYear
+  if (assumedFrom) {
+    problems.push({
+      severity: "warning",
+      seriesId: "-",
+      prefixId: "-",
+      codeId: "-",
+      subField: null,
+      message:
+        `Intuit supplied no ${returnType} catalog for ${opts.taxYear}; these fields were checked against the ` +
+        `${assumedFrom} definitions, assumed to carry over.`,
+    })
+  }
 
   for (const batch of batches) {
     if (!present.has(batch.seriesId)) continue // already reported
