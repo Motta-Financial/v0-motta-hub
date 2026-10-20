@@ -32,6 +32,9 @@
 import { NextResponse } from "next/server"
 import { receiveZoomWebhook } from "@/lib/zoom/webhook-receiver"
 
+// Handlers run after the ack via `after()`, which shares this budget.
+export const maxDuration = 60
+
 const S2S_SECRET = process.env.ZOOM_S2S_WEBHOOK_SECRET_TOKEN
 const OAUTH_SECRET = process.env.ZOOM_WEBHOOK_SECRET_TOKEN
 

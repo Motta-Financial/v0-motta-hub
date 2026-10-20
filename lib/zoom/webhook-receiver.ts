@@ -27,7 +27,7 @@
  *   https://developers.zoom.us/docs/api/rest/webhook-reference/
  */
 
-import { NextResponse } from "next/server"
+import { NextResponse, after } from "next/server"
 import {
   buildUrlValidationResponse,
   markWebhookEvent,
@@ -122,8 +122,11 @@ export async function receiveZoomWebhook(
     console.log(
       `[v0] [Zoom Webhook:${opts.source}] url_validation handshake responded (secret=${matchedSecret.label})`,
     )
-    const id = await persistWebhookEvent({ payload, rawBody, headers, signatureValid: true })
-    if (id) await markWebhookEvent(id, "succeeded")
+    // Audit row is written after the response: Zoom times the handshake too.
+    after(async () => {
+      const id = await persistWebhookEvent({ payload, rawBody, headers, signatureValid: true })
+      if (id) await markWebhookEvent(id, "succeeded")
+    })
     return NextResponse.json(response)
   }
 
@@ -143,12 +146,24 @@ export async function receiveZoomWebhook(
     return NextResponse.json({ error: "invalid_signature" }, { status: 401 })
   }
 
-  // ─── Dispatch ──────────────────────────────────────────────────────
-  // Handlers run synchronously: Vercel functions are single-shot, so we
-  // can't background them without losing observability. Most events
-  // finish well under a second; the redrive worker handles outliers.
-  // We return 200 even on handler failure so WE own retry semantics
-  // (the row is stored + replayable) instead of Zoom hammering us.
+  // ─── Dispatch (after the response) ─────────────────────────────────
+  // Zoom requires a 2xx within 3 seconds and flags the endpoint as "not
+  // responsive" otherwise (then retries, so slow-but-successful deliveries
+  // also get re-sent). Handlers like transcript_completed download files
+  // from Zoom, which can blow that budget on a cold start, so we ack as
+  // soon as the event is verified + persisted and run the handler via
+  // `after()`. Outcome still lands on the audit row (succeeded/failed).
+  // We always ack 200 so WE own retry semantics (the row is stored +
+  // replayable) instead of Zoom hammering us.
+  after(() => dispatchEvent(payload, eventId, opts.source))
+  return NextResponse.json({ ok: true, event: payload.event, queued: true })
+}
+
+async function dispatchEvent(
+  payload: ZoomWebhookPayload,
+  eventId: string | null,
+  source: string,
+): Promise<void> {
   try {
     const result = await handleZoomEvent(payload)
     if (eventId) {
@@ -159,16 +174,12 @@ export async function receiveZoomWebhook(
       )
     }
     if (!result.ok) {
-      console.error(
-        `[v0] [Zoom Webhook:${opts.source}] Handler failed for ${payload.event}: ${result.error}`,
-      )
+      console.error(`[v0] [Zoom Webhook:${source}] Handler failed for ${payload.event}: ${result.error}`)
     }
-    return NextResponse.json({ ok: result.ok, event: payload.event, action: result.action })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    console.error(`[v0] [Zoom Webhook:${opts.source}] Unhandled exception:`, err)
+    console.error(`[v0] [Zoom Webhook:${source}] Unhandled exception:`, err)
     if (eventId) await markWebhookEvent(eventId, "failed", message)
-    return NextResponse.json({ ok: false, error: "handler_exception" })
   }
 }
 
