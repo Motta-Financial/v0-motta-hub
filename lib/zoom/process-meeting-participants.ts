@@ -30,6 +30,7 @@ import { zoomFetch, type ZoomConnection } from "@/lib/zoom-auth"
 import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
 import { bridgeZoomToCalendly } from "@/lib/zoom/bridge-to-calendly"
 import { runAlfredZoomTriage } from "@/lib/alfred/zoom-triage"
+import { encodeZoomUuid } from "@/lib/zoom/meeting-occurrence"
 
 interface ZoomParticipant {
   id?: string
@@ -82,16 +83,6 @@ export interface ProcessResult {
 }
 
 /**
- * Zoom meeting UUIDs may contain `/` or start with `/`. Per the API
- * docs, those characters require **double** URL encoding when used in
- * a path segment — single encoding gets stripped by Zoom's gateway and
- * the request 404s.
- */
-function encodeMeetingUuid(uuid: string): string {
-  return encodeURIComponent(encodeURIComponent(uuid))
-}
-
-/**
  * Pulls the participant list for a single Zoom meeting and returns
  * them. Returns `null` when Zoom returns 404 (instant meeting that was
  * never recorded, or a meeting older than Zoom's reporting window) so
@@ -110,7 +101,7 @@ async function fetchParticipants(
   zoomGet: ZoomApiFetcher,
   meetingUuid: string,
 ): Promise<ZoomParticipant[] | null> {
-  const url = `https://api.zoom.us/v2/past_meetings/${encodeMeetingUuid(
+  const url = `https://api.zoom.us/v2/past_meetings/${encodeZoomUuid(
     meetingUuid,
   )}/participants?page_size=300`
   const res = await zoomGet(url)
@@ -136,7 +127,7 @@ async function fetchPastMeetingDetails(
   meetingUuid: string,
 ): Promise<ZoomPastMeetingDetails | null> {
   const res = await zoomGet(
-    `https://api.zoom.us/v2/past_meetings/${encodeMeetingUuid(meetingUuid)}`,
+    `https://api.zoom.us/v2/past_meetings/${encodeZoomUuid(meetingUuid)}`,
   )
   if (!res.ok) return null
   return (await res.json()) as ZoomPastMeetingDetails

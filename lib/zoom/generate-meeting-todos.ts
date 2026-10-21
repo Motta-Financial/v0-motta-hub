@@ -13,9 +13,11 @@
  *
  * Dedup contract
  * ──────────────
- * The `tasks_unique_zoom_meeting_per_assignee` partial unique index
- * (assignee_id, zoom_meeting_id) guarantees idempotency: running the
- * sweep N times produces the same rows. We rely on Postgres `ON
+ * The `tasks_unique_zoom_session_per_assignee` unique index
+ * (assignee_id, zoom_meeting_uuid) guarantees idempotency: running the
+ * sweep N times produces the same rows. It is per SESSION (migration 432):
+ * a Personal Meeting Room / recurring meeting reuses its number for every
+ * session, and each session is its own meeting to tag. We rely on Postgres `ON
  * CONFLICT DO NOTHING` rather than checking-then-inserting so concurrent
  * runs (cron + manual button) never race.
  *
@@ -74,6 +76,7 @@ export interface GenerateZoomMeetingTodosResult {
 interface CandidateRow {
   id: string // internal uuid
   zoom_meeting_id: number | string | null
+  zoom_uuid: string | null
   team_member_id: string | null
   topic: string | null
   start_time: string | null
@@ -93,13 +96,14 @@ export async function generateZoomMeetingTodos(
   let query = supabase
     .from("zoom_meetings_with_tag_counts")
     .select(
-      "id, zoom_meeting_id, team_member_id, topic, start_time, host_email, needs_tagging",
+      "id, zoom_meeting_id, zoom_uuid, team_member_id, topic, start_time, host_email, needs_tagging",
     )
     .eq("needs_tagging", true)
     // We require a known assignee — meetings whose host hasn't been
     // matched to a team_member yet can't go to anyone's todo list.
     .not("team_member_id", "is", null)
     .not("zoom_meeting_id", "is", null)
+    .not("zoom_uuid", "is", null)
     .gte("start_time", sinceIso)
     // Only sweep meetings that actually happened. Future meetings are
     // not "untagged" in any meaningful sense yet.
@@ -183,26 +187,26 @@ export async function generateZoomMeetingTodos(
       sort_order: baseSortOrder,
       source_type: "zoom_meeting" as const,
       zoom_meeting_id: r.zoom_meeting_id,
+      zoom_meeting_uuid: r.zoom_uuid,
       // We deep-link back into the Zoom dashboard with the meeting
       // pre-selected so clicking the task takes the user straight to
-      // the tag dialog. The dashboard reads `?meetingId=` and opens
-      // the dialog (see zoom-dashboard.tsx changes in this commit).
-      source_url: `/meetings/zoom?meetingId=${r.zoom_meeting_id}`,
+      // the tag dialog. The dashboard reads `?meetingId=` (+ `uuid`, the
+      // session) and opens the dialog.
+      source_url: `/meetings/zoom?meetingId=${r.zoom_meeting_id}&uuid=${encodeURIComponent(r.zoom_uuid ?? "")}`,
     }
   })
 
   // ── 4. Upsert with the unique index doing the dedup ────────────────
-  // `tasks_unique_zoom_meeting_per_assignee` is a FULL unique index on
-  // (assignee_id, zoom_meeting_id) — migration 349. It must stay
+  // `tasks_unique_zoom_session_per_assignee` is a FULL unique index on
+  // (assignee_id, zoom_meeting_uuid) — migration 432. It must stay
   // non-partial: Postgres can only match PostgREST's plain-column
-  // ON CONFLICT arbiter against a complete index, and the original
-  // partial version (WHERE zoom_meeting_id IS NOT NULL) made every
-  // sweep run error out. Normal tasks (NULL zoom_meeting_id) never
+  // ON CONFLICT arbiter against a complete index (migration 349 learned
+  // this the hard way). Normal tasks (NULL zoom_meeting_uuid) never
   // conflict because NULLs are distinct in unique indexes.
   const { data: inserted, error: insErr } = await supabase
     .from("tasks")
     .upsert(insertRows, {
-      onConflict: "assignee_id,zoom_meeting_id",
+      onConflict: "assignee_id,zoom_meeting_uuid",
       ignoreDuplicates: true,
     })
     .select("id, assignee_id, zoom_meeting_id")

@@ -66,6 +66,9 @@ import { cn } from "@/lib/utils"
 // passthrough of Zoom's REST API which has changed shape over the years.
 export interface ZoomMeetingForTagging {
   id: number | string
+  /** Zoom meeting UUID — the one SESSION being tagged. A Personal Meeting
+   *  Room / recurring meeting reuses `id` for every session. */
+  uuid?: string | null
   topic?: string | null
   start_time?: string | null
   duration?: number | null
@@ -298,10 +301,26 @@ export function ZoomMeetingTagDialog({
 
   // The Zoom id is a bigint server-side; the URL just takes its string form.
   const meetingIdParam = String(meeting.id)
+  // The number alone doesn't name a meeting (PMIs / recurring meetings reuse
+  // it), so every call also says which session: its uuid, else its start.
+  const sessionQuery = (() => {
+    const p = new URLSearchParams()
+    if (meeting.uuid) p.set("uuid", String(meeting.uuid))
+    if (meeting.start_time) p.set("start", meeting.start_time)
+    return p.toString()
+  })()
+  const tagsUrl = (extra?: Record<string, string>) => {
+    const p = new URLSearchParams(sessionQuery)
+    for (const [k, v] of Object.entries(extra ?? {})) p.set(k, v)
+    const q = p.toString()
+    return `/api/zoom/meetings/${meetingIdParam}/tags${q ? `?${q}` : ""}`
+  }
+  const [ambiguous, setAmbiguous] = useState(false)
 
   // Body shape we forward to POST so the route can lazy-upsert the parent
   // zoom_meetings row when the master sync hasn't run yet for this meeting.
   const meetingMeta = {
+    uuid: meeting.uuid ?? null,
     topic: meeting.topic ?? null,
     start_time: meeting.start_time ?? null,
     duration: meeting.duration ?? null,
@@ -316,9 +335,10 @@ export function ZoomMeetingTagDialog({
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`/api/zoom/meetings/${meetingIdParam}/tags`)
+      const res = await fetch(tagsUrl())
       if (!res.ok) throw new Error("Failed to load tags")
       const json = await res.json()
+      setAmbiguous(json.ambiguous === true)
       setClients(json.clients || [])
       setWorkItems(json.workItems || [])
       setDeals(json.deals || [])
@@ -338,7 +358,8 @@ export function ZoomMeetingTagDialog({
     } finally {
       setLoading(false)
     }
-  }, [meetingIdParam, onTagsChanged, toast])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingIdParam, sessionQuery, onTagsChanged, toast])
 
   // Only fetch when the dialog opens. Closing-then-reopening will re-fetch
   // so the user sees the canonical server state, not a stale cache.
@@ -553,7 +574,7 @@ export function ZoomMeetingTagDialog({
   async function addClient(result: RawClientResult) {
     setSaving(true)
     try {
-      const res = await fetch(`/api/zoom/meetings/${meetingIdParam}/tags`, {
+      const res = await fetch(tagsUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -596,7 +617,7 @@ export function ZoomMeetingTagDialog({
   async function addWorkItem(result: RawWorkItemResult) {
     setSaving(true)
     try {
-      const res = await fetch(`/api/zoom/meetings/${meetingIdParam}/tags`, {
+      const res = await fetch(tagsUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -636,7 +657,7 @@ export function ZoomMeetingTagDialog({
   async function addDeal(result: RawDealResult) {
     setSaving(true)
     try {
-      const res = await fetch(`/api/zoom/meetings/${meetingIdParam}/tags`, {
+      const res = await fetch(tagsUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -676,7 +697,7 @@ export function ZoomMeetingTagDialog({
   async function addProject(result: RawProjectResult) {
     setSaving(true)
     try {
-      const res = await fetch(`/api/zoom/meetings/${meetingIdParam}/tags`, {
+      const res = await fetch(tagsUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -720,7 +741,7 @@ export function ZoomMeetingTagDialog({
     setSaving(true)
     try {
       const res = await fetch(
-        `/api/zoom/meetings/${meetingIdParam}/tags?kind=${kind}&id=${junctionId}`,
+        tagsUrl({ kind, id: junctionId }),
         { method: "DELETE" },
       )
       if (!res.ok) {
@@ -789,7 +810,20 @@ export function ZoomMeetingTagDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {!isComplete && !loading && (
+        {ambiguous && !loading && (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/40 dark:text-amber-100"
+          >
+            <span>
+              This meeting number is shared by several sessions (a Personal Meeting
+              Room or recurring meeting), and this one couldn&apos;t be told apart.
+              Tag it from its recording or calendar entry instead.
+            </span>
+          </div>
+        )}
+
+        {!isComplete && !loading && !ambiguous && (
           <div
             role="alert"
             className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/40 dark:text-amber-100"

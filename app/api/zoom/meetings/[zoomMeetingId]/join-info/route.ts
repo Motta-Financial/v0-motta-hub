@@ -43,6 +43,10 @@ export async function GET(
     .from("zoom_meetings")
     .select("zoom_meeting_id, topic, password")
     .eq("zoom_meeting_id", numericId)
+    // Several rows per number since migration 433 (one per session); the
+    // passcode is the number's, so any row will do — take the newest.
+    .order("start_time", { ascending: false, nullsFirst: false })
+    .limit(1)
     .maybeSingle()
 
   if (error) {
