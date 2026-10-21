@@ -64,6 +64,10 @@ export async function GET(req: NextRequest) {
   const admin = createAdminClient()
 
   // ── 0. Optional pre-filter: meeting ids that have a parsed transcript ──
+  // Filters by meeting NUMBER, so a shared number (Personal Meeting Room) lets
+  // its transcript-less sessions through too; each card's has_transcript below
+  // is per session, so those just show no transcript. Filtering by session
+  // uuid instead overflows the request URL (~1000 base64 uuids → 400).
   let transcriptIds: number[] | null = null
   if (hasTranscript) {
     const { data: tRows } = await admin
@@ -130,45 +134,64 @@ export async function GET(req: NextRequest) {
     new Set(rows.map((r) => r.zoom_meeting_id).filter((v): v is number => v != null)),
   )
 
+  // Transcripts and summaries are per SESSION (uuid). zoom_meetings — and the
+  // client tags + participant count hanging off it — is one row per NUMBER,
+  // describing whichever session synced last; on a number shared by several
+  // sessions (Personal Meeting Room, recurring meeting) it is only attached to
+  // the card of that same session, never to its siblings.
+  const sessionUuids = rows.map((r) => r.zoom_uuid).filter((v): v is string => !!v)
   const meetingUuidByNumeric = new Map<number, string>()
+  const meetingSessionByNumeric = new Map<number, string | null>()
   const participantsCountByNumeric = new Map<number, number>()
-  const transcriptByNumeric = new Map<number, boolean>()
-  const summaryByNumeric = new Map<number, boolean>()
+  const sessionsByNumeric = new Map<number, Set<string>>()
+  const transcriptBySession = new Set<string>()
+  const summaryBySession = new Set<string>()
 
   if (numericIds.length > 0) {
-    const [meetingsRes, transcriptsRes, summariesRes] = await Promise.all([
+    const [meetingsRes, transcriptsRes, summariesRes, siblingsRes] = await Promise.all([
       admin
         .from("zoom_meetings")
-        .select("id, zoom_meeting_id, participants_count")
+        .select("id, zoom_uuid, zoom_meeting_id, participants_count")
         .in("zoom_meeting_id", numericIds),
       admin
         .from("zoom_transcripts")
         // Only the id — filtering on status/text_content server-side means
         // row presence == "has a parsed transcript", without pulling the
         // full transcript bodies over the wire just to compute a boolean.
-        .select("zoom_meeting_id")
+        .select("zoom_meeting_uuid")
         .eq("status", "parsed")
         .not("text_content", "is", null)
         .neq("text_content", "")
-        .in("zoom_meeting_id", numericIds),
+        .in("zoom_meeting_uuid", sessionUuids),
       admin
         .from("zoom_meeting_summaries")
-        .select("zoom_meeting_numeric_id")
-        .in("zoom_meeting_numeric_id", numericIds),
+        .select("zoom_meeting_uuid")
+        .in("zoom_meeting_uuid", sessionUuids),
+      admin
+        .from("zoom_recordings")
+        .select("zoom_meeting_id, zoom_uuid")
+        .in("zoom_meeting_id", numericIds),
     ])
 
     for (const m of meetingsRes.data ?? []) {
       if (m.zoom_meeting_id == null || !m.id) continue
       meetingUuidByNumeric.set(m.zoom_meeting_id, m.id)
+      meetingSessionByNumeric.set(m.zoom_meeting_id, m.zoom_uuid ?? null)
       if (m.participants_count != null) {
         participantsCountByNumeric.set(m.zoom_meeting_id, m.participants_count)
       }
     }
     for (const t of transcriptsRes.data ?? []) {
-      if (t.zoom_meeting_id != null) transcriptByNumeric.set(t.zoom_meeting_id, true)
+      if (t.zoom_meeting_uuid) transcriptBySession.add(t.zoom_meeting_uuid)
     }
     for (const s of summariesRes.data ?? []) {
-      if (s.zoom_meeting_numeric_id != null) summaryByNumeric.set(s.zoom_meeting_numeric_id, true)
+      if (s.zoom_meeting_uuid) summaryBySession.add(s.zoom_meeting_uuid)
+    }
+    for (const r of siblingsRes.data ?? []) {
+      if (r.zoom_meeting_id == null || !r.zoom_uuid) continue
+      const set = sessionsByNumeric.get(r.zoom_meeting_id) ?? new Set<string>()
+      set.add(r.zoom_uuid)
+      sessionsByNumeric.set(r.zoom_meeting_id, set)
     }
   }
 
@@ -199,7 +222,12 @@ export async function GET(req: NextRequest) {
 
   // ── 4. Shape the response (strip raw download URLs) ────────────────────
   const recordings = rows.map((r) => {
-    const meetingUuid = r.zoom_meeting_id != null ? meetingUuidByNumeric.get(r.zoom_meeting_id) : undefined
+    const shared = r.zoom_meeting_id != null && (sessionsByNumeric.get(r.zoom_meeting_id)?.size ?? 0) > 1
+    const meetingIsThisSession =
+      r.zoom_meeting_id != null &&
+      (!shared || meetingSessionByNumeric.get(r.zoom_meeting_id) === r.zoom_uuid)
+    const meetingUuid =
+      meetingIsThisSession && r.zoom_meeting_id != null ? meetingUuidByNumeric.get(r.zoom_meeting_id) : undefined
     const files = Array.isArray(r.recording_files) ? (r.recording_files as ZoomFile[]) : []
     const tm = (r as { team_members?: { id?: string; full_name?: string } | null }).team_members
     return {
@@ -227,12 +255,12 @@ export async function GET(req: NextRequest) {
         playable: Boolean(f.blob_pathname || f.download_url),
       })),
       clients: meetingUuid ? clientsByMeetingUuid.get(meetingUuid) ?? [] : [],
-      has_transcript:
-        r.zoom_meeting_id != null ? transcriptByNumeric.get(r.zoom_meeting_id) === true : false,
-      has_summary:
-        r.zoom_meeting_id != null ? summaryByNumeric.get(r.zoom_meeting_id) === true : false,
+      has_transcript: r.zoom_uuid ? transcriptBySession.has(r.zoom_uuid) : false,
+      has_summary: r.zoom_uuid ? summaryBySession.has(r.zoom_uuid) : false,
       participants_count:
-        r.zoom_meeting_id != null ? participantsCountByNumeric.get(r.zoom_meeting_id) ?? null : null,
+        meetingIsThisSession && r.zoom_meeting_id != null
+          ? participantsCountByNumeric.get(r.zoom_meeting_id) ?? null
+          : null,
     }
   })
 

@@ -28,6 +28,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { generateObject } from "ai"
 import { z } from "zod"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
+import { isSharedMeetingNumber } from "@/lib/zoom/meeting-occurrence"
 
 const MAX_TRANSCRIPT_CHARS = 120_000 // ~30k tokens; Sonnet handles this easily
 const MAX_ATTEMPTS = 3
@@ -176,6 +177,19 @@ export async function summarizeTranscript(
       return { status: "skipped", reason: "transcript not linked to a zoom meeting" }
     }
 
+    // Client links live on zoom_meetings, which has ONE row per meeting
+    // NUMBER. A Personal Meeting Room / recurring meeting reuses its number for
+    // every session, so that row's client belongs to whichever session was
+    // tagged — filing this transcript's summary against it put other clients'
+    // meeting notes on the wrong client record. Until clients are linked per
+    // session, never auto-file a note for a shared number. Distinct status so
+    // the client-link requeue trigger (scripts/336, which only touches
+    // 'skipped_no_client') doesn't flip it back to pending.
+    if (await isSharedMeetingNumber(admin, transcript.zoom_meeting_id)) {
+      await markTerminal(admin, transcript.id, "skipped_shared_number")
+      return { status: "skipped", reason: "meeting number shared by several sessions" }
+    }
+
     const { contactId, meetingTopic, startTime } = await resolveContactId(
       admin,
       transcript.zoom_meeting_id,
@@ -300,7 +314,7 @@ export async function summarizeTranscript(
 async function markTerminal(
   admin: SupabaseClient,
   id: string,
-  status: "skipped" | "skipped_no_client" | "done",
+  status: "skipped" | "skipped_no_client" | "skipped_shared_number" | "done",
 ) {
   await admin.from("zoom_transcripts").update({ summary_status: status }).eq("id", id)
 }

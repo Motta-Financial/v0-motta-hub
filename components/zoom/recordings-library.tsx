@@ -389,7 +389,12 @@ function RecordingCard({
     if (detail || detailLoading || rec.zoom_meeting_id == null) return
     setDetailLoading(true)
     try {
-      const res = await fetch(`/api/zoom/meetings/${rec.zoom_meeting_id}/recordings`)
+      // Pass the session uuid: one meeting number can hold many sessions.
+      const res = await fetch(
+        `/api/zoom/meetings/${rec.zoom_meeting_id}/recordings${
+          rec.zoom_uuid ? `?uuid=${encodeURIComponent(rec.zoom_uuid)}` : ""
+        }`,
+      )
       const json = res.ok ? await res.json() : null
       setDetail({
         transcript: json?.transcript ?? null,
@@ -401,7 +406,7 @@ function RecordingCard({
     } finally {
       setDetailLoading(false)
     }
-  }, [detail, detailLoading, rec.zoom_meeting_id])
+  }, [detail, detailLoading, rec.zoom_meeting_id, rec.zoom_uuid])
 
   function handleLoadedMetadata() {
     if (pendingSeekRef.current != null && mediaRef.current) {
@@ -551,7 +556,9 @@ function RecordingCard({
           )}
           {rec.has_transcript && rec.zoom_meeting_id != null && (
             <a
-              href={`/api/zoom/meetings/${rec.zoom_meeting_id}/transcript?format=md`}
+              href={`/api/zoom/meetings/${rec.zoom_meeting_id}/transcript?format=md${
+                rec.zoom_uuid ? `&uuid=${encodeURIComponent(rec.zoom_uuid)}` : ""
+              }`}
               className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs hover:bg-muted/70"
               title="Download the transcript as a Markdown file"
             >

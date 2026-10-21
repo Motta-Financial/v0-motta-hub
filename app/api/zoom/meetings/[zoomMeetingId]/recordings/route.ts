@@ -2,9 +2,11 @@
  * GET /api/zoom/meetings/[zoomMeetingId]/recordings
  *
  * Returns the cloud recordings + parsed transcript + participants + Zoom AI
- * Companion summary for a single Zoom meeting, keyed by the numeric Zoom
- * meeting id. Used by the meeting detail dialog's "Recording & Transcript"
- * section and the Recordings library's expanded card.
+ * Companion summary for a single Zoom meeting SESSION. The path carries the
+ * numeric Zoom meeting id; `?uuid=` (or `?start=` ISO time) picks the session,
+ * since one number can hold many (see lib/zoom/meeting-occurrence.ts). Used
+ * by the meeting detail dialog's "Recording & Transcript" section and the
+ * Recordings library's expanded card.
  *
  * Auth: any signed-in team member (the calendar already shows them the
  * meeting). We verify a session, then read with the admin client because
@@ -13,12 +15,13 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient, createAdminClient } from "@/lib/supabase/server"
+import { resolveOccurrence } from "@/lib/zoom/meeting-occurrence"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ zoomMeetingId: string }> },
 ) {
   const { zoomMeetingId } = await params
@@ -37,32 +40,62 @@ export async function GET(
 
   const admin = createAdminClient()
 
+  // A meeting NUMBER can hold many sessions (Personal Meeting Rooms,
+  // recurring meetings). Resolve the one session the caller means and read
+  // everything by its UUID — reading by number returns other sessions'
+  // transcripts and summaries (other clients' meetings).
+  const occurrence = await resolveOccurrence(admin, numericId, {
+    uuid: req.nextUrl.searchParams.get("uuid"),
+    start: req.nextUrl.searchParams.get("start"),
+  })
+  if (occurrence.ambiguous) {
+    return NextResponse.json({
+      recordings: [],
+      transcript: null,
+      participants: [],
+      summary: null,
+      meeting: null,
+      ambiguous: true,
+    })
+  }
+  const uuid = occurrence.uuid
+
+  let recordingsQuery = admin
+    .from("zoom_recordings")
+    .select("id, zoom_uuid, topic, start_time, duration, total_size, recording_count, share_url, recording_files")
+    .eq("zoom_meeting_id", numericId)
+  if (uuid) recordingsQuery = recordingsQuery.eq("zoom_uuid", uuid)
+
+  let transcriptsQuery = admin
+    .from("zoom_transcripts")
+    .select("id, zoom_meeting_uuid, file_type, status, text_content, segments, blob_pathname, parsed_at, error")
+    .eq("zoom_meeting_id", numericId)
+  if (uuid) transcriptsQuery = transcriptsQuery.eq("zoom_meeting_uuid", uuid)
+
+  let summaryQuery = admin
+    .from("zoom_meeting_summaries")
+    .select(
+      "id, summary_title, summary_overview, summary_details, next_steps, summary_start_time, summary_last_modified_time",
+    )
+  summaryQuery = uuid
+    ? summaryQuery.eq("zoom_meeting_uuid", uuid)
+    : summaryQuery.eq("zoom_meeting_numeric_id", numericId)
+
   const [recordingsRes, transcriptsRes, meetingRes, summaryRes] = await Promise.all([
-    admin
-      .from("zoom_recordings")
-      .select("id, zoom_uuid, topic, start_time, duration, total_size, recording_count, share_url, recording_files")
-      .eq("zoom_meeting_id", numericId)
-      .order("start_time", { ascending: false }),
-    admin
-      .from("zoom_transcripts")
-      .select("id, zoom_meeting_uuid, file_type, status, text_content, segments, blob_pathname, parsed_at, error")
-      .eq("zoom_meeting_id", numericId)
-      .order("updated_at", { ascending: false }),
+    recordingsQuery.order("start_time", { ascending: false }),
+    transcriptsQuery.order("updated_at", { ascending: false }),
     admin
       .from("zoom_meetings")
-      .select("id, host_name, host_email, participants_count, total_minutes, timezone")
+      .select("id, zoom_uuid, host_name, host_email, participants_count, total_minutes, timezone")
       .eq("zoom_meeting_id", numericId)
       .maybeSingle(),
-    admin
-      .from("zoom_meeting_summaries")
-      .select(
-        "id, summary_title, summary_overview, summary_details, next_steps, summary_start_time, summary_last_modified_time",
-      )
-      .eq("zoom_meeting_numeric_id", numericId)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+    summaryQuery.order("updated_at", { ascending: false }).limit(1).maybeSingle(),
   ])
+
+  // zoom_meetings holds ONE row per number, describing whichever session
+  // synced last. Its participants belong to that session only.
+  const meetingIsThisSession =
+    !occurrence.shared || (meetingRes.data?.zoom_uuid != null && meetingRes.data.zoom_uuid === uuid)
 
   if (recordingsRes.error) {
     return NextResponse.json({ error: recordingsRes.error.message }, { status: 500 })
@@ -80,7 +113,7 @@ export async function GET(
     contact_id: string | null
     contact_name: string | null
   }> = []
-  if (meetingRes.data?.id) {
+  if (meetingRes.data?.id && meetingIsThisSession) {
     const { data: partRows } = await admin
       .from("zoom_meeting_participants")
       .select("name, email, duration, join_time, leave_time, internal_user, contact_id, contacts:contact_id(full_name)")
@@ -138,12 +171,13 @@ export async function GET(
     transcript,
     participants,
     summary: summaryRes.data ?? null,
+    ambiguous: false,
     meeting: meetingRes.data
       ? {
           host_name: meetingRes.data.host_name,
           host_email: meetingRes.data.host_email,
-          participants_count: meetingRes.data.participants_count,
-          total_minutes: meetingRes.data.total_minutes,
+          participants_count: meetingIsThisSession ? meetingRes.data.participants_count : null,
+          total_minutes: meetingIsThisSession ? meetingRes.data.total_minutes : null,
           timezone: meetingRes.data.timezone,
         }
       : null,

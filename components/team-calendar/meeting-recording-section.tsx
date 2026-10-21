@@ -62,6 +62,12 @@ interface Recording {
 
 interface Props {
   zoomMeetingId: number | string
+  /**
+   * When this session started. One meeting number can hold many sessions
+   * (Personal Meeting Room, recurring meetings); the API uses this to pick the
+   * right one and shows nothing rather than another session's transcript.
+   */
+  startTime?: string | null
 }
 
 function formatBytes(bytes?: number | null): string {
@@ -92,7 +98,7 @@ function pickPlayable(rec: Recording): { file: RecordingFile; kind: "video" | "a
   return null
 }
 
-export function MeetingRecordingSection({ zoomMeetingId }: Props) {
+export function MeetingRecordingSection({ zoomMeetingId, startTime }: Props) {
   const [loading, setLoading] = useState(true)
   const [recordings, setRecordings] = useState<Recording[]>([])
   const [transcript, setTranscript] = useState<TranscriptData | null>(null)
@@ -109,7 +115,11 @@ export function MeetingRecordingSection({ zoomMeetingId }: Props) {
     let cancelled = false
     setLoading(true)
     setActiveRecordingId(null)
-    fetch(`/api/zoom/meetings/${zoomMeetingId}/recordings`)
+    fetch(
+      `/api/zoom/meetings/${zoomMeetingId}/recordings${
+        startTime ? `?start=${encodeURIComponent(startTime)}` : ""
+      }`,
+    )
       .then((r) => (r.ok ? r.json() : { recordings: [], transcript: null }))
       .then((json) => {
         if (cancelled) return
@@ -128,7 +138,7 @@ export function MeetingRecordingSection({ zoomMeetingId }: Props) {
     return () => {
       cancelled = true
     }
-  }, [zoomMeetingId])
+  }, [zoomMeetingId, startTime])
 
   function applySeek(seconds: number) {
     const el = mediaRef.current
