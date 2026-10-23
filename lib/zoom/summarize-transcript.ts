@@ -28,7 +28,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { generateObject } from "ai"
 import { z } from "zod"
 import { getAIConfig, logAIUsage } from "@/lib/ai/config"
-import { isSharedMeetingNumber } from "@/lib/zoom/meeting-occurrence"
+import { isSessionOfSharedNumber, pickSessionContact } from "@/lib/zoom/meeting-occurrence"
 
 const MAX_TRANSCRIPT_CHARS = 120_000 // ~30k tokens; Sonnet handles this easily
 const MAX_ATTEMPTS = 3
@@ -74,6 +74,7 @@ export interface SummarizeResult {
 interface TranscriptRow {
   id: string
   zoom_meeting_id: number | string | null
+  zoom_meeting_uuid: string | null
   text_content: string | null
   summary_status: string
   summary_note_id: string | null
@@ -81,24 +82,44 @@ interface TranscriptRow {
 }
 
 /**
- * Resolve the best client contact for a transcript's meeting.
- * Prefers the highest-confidence, non-needs_review link.
+ * Resolve the client for the SESSION a transcript belongs to.
+ *
+ * zoom_meetings has one row per session (migrations 432/433), keyed by the
+ * transcript's own meeting uuid. Never fall back to the meeting number: a
+ * Personal Meeting Room / recurring meeting reuses its number for every
+ * session, so a by-number lookup returns another session's client.
+ *
+ * On a shared number only a confident link from this session's own evidence
+ * counts (see pickSessionContact). `shared` tells the caller to use the
+ * distinct terminal status when there is none.
  */
 async function resolveContactId(
   admin: SupabaseClient,
-  zoomNumericId: number | string,
-): Promise<{ contactId: string | null; meetingTopic: string | null; startTime: string | null }> {
-  // Internal zoom_meetings PK + topic for context. NOTE: zoom_meeting_clients
-  // keys on the INTERNAL zoom_meetings.id (uuid), not the numeric Zoom id —
-  // so we resolve the uuid here first and link tags off that.
+  transcript: Pick<TranscriptRow, "zoom_meeting_id" | "zoom_meeting_uuid">,
+): Promise<{
+  contactId: string | null
+  meetingTopic: string | null
+  startTime: string | null
+  shared: boolean
+}> {
+  const none = { contactId: null, meetingTopic: null, startTime: null }
+  if (!transcript.zoom_meeting_uuid) {
+    return { ...none, shared: true }
+  }
+
+  // NOTE: zoom_meeting_clients keys on the INTERNAL zoom_meetings.id (uuid).
   const { data: zm } = await admin
     .from("zoom_meetings")
-    .select("id, topic, start_time")
-    .eq("zoom_meeting_id", zoomNumericId)
+    .select("id, topic, start_time, zoom_meeting_id, meeting_type")
+    .eq("zoom_uuid", transcript.zoom_meeting_uuid)
     .maybeSingle()
 
+  const shared = await isSessionOfSharedNumber(admin, {
+    zoom_meeting_id: zm?.zoom_meeting_id ?? transcript.zoom_meeting_id,
+    meeting_type: zm?.meeting_type ?? null,
+  })
   if (!zm?.id) {
-    return { contactId: null, meetingTopic: null, startTime: null }
+    return { ...none, shared }
   }
 
   const { data: links } = await admin
@@ -107,20 +128,11 @@ async function resolveContactId(
     .eq("zoom_meeting_id", zm.id)
     .not("contact_id", "is", null)
 
-  if (!links || links.length === 0) {
-    return { contactId: null, meetingTopic: zm?.topic ?? null, startTime: zm?.start_time ?? null }
-  }
-
-  // Prefer confirmed links (not needs_review), then highest confidence.
-  const sorted = [...links].sort((a, b) => {
-    if (!!a.needs_review !== !!b.needs_review) return a.needs_review ? 1 : -1
-    return (b.confidence ?? 0) - (a.confidence ?? 0)
-  })
-
   return {
-    contactId: sorted[0]?.contact_id ?? null,
-    meetingTopic: zm?.topic ?? null,
-    startTime: zm?.start_time ?? null,
+    contactId: pickSessionContact(links ?? [], shared),
+    meetingTopic: zm.topic ?? null,
+    startTime: zm.start_time ?? null,
+    shared,
   }
 }
 
@@ -177,23 +189,7 @@ export async function summarizeTranscript(
       return { status: "skipped", reason: "transcript not linked to a zoom meeting" }
     }
 
-    // Client links live on zoom_meetings, which has ONE row per meeting
-    // NUMBER. A Personal Meeting Room / recurring meeting reuses its number for
-    // every session, so that row's client belongs to whichever session was
-    // tagged — filing this transcript's summary against it put other clients'
-    // meeting notes on the wrong client record. Until clients are linked per
-    // session, never auto-file a note for a shared number. Distinct status so
-    // the client-link requeue trigger (scripts/336, which only touches
-    // 'skipped_no_client') doesn't flip it back to pending.
-    if (await isSharedMeetingNumber(admin, transcript.zoom_meeting_id)) {
-      await markTerminal(admin, transcript.id, "skipped_shared_number")
-      return { status: "skipped", reason: "meeting number shared by several sessions" }
-    }
-
-    const { contactId, meetingTopic, startTime } = await resolveContactId(
-      admin,
-      transcript.zoom_meeting_id,
-    )
+    const { contactId, meetingTopic, startTime, shared } = await resolveContactId(admin, transcript)
 
     if (!contactId) {
       // No client linked yet — use a RECOVERABLE status. The linkage layers
@@ -202,8 +198,16 @@ export async function summarizeTranscript(
       // row back to 'pending' so the next cron run summarizes it. We do NOT
       // use plain 'skipped' (that's reserved for permanently un-summarizable
       // transcripts: empty text or no zoom meeting at all).
+      //
+      // On a shared number (Personal Meeting Room / recurring meeting) this
+      // also covers "a client is linked, but not by this session's own
+      // participants, booking or a teammate's tag" — the trigger re-queues
+      // the transcript once such a link lands on THIS session's row.
       await markTerminal(admin, transcript.id, "skipped_no_client")
-      return { status: "skipped_no_client", reason: "no client linked to meeting" }
+      return {
+        status: "skipped_no_client",
+        reason: shared ? "no confident client linked to this session" : "no client linked to meeting",
+      }
     }
 
     const config = await getAIConfig("meeting_summary")
@@ -335,7 +339,7 @@ export async function summarizePendingTranscripts(
 }> {
   const { data: rows, error } = await admin
     .from("zoom_transcripts")
-    .select("id, zoom_meeting_id, text_content, summary_status, summary_note_id, summary_attempts")
+    .select("id, zoom_meeting_id, zoom_meeting_uuid, text_content, summary_status, summary_note_id, summary_attempts")
     .eq("summary_status", "pending")
     .not("text_content", "is", null)
     .lt("summary_attempts", MAX_ATTEMPTS)

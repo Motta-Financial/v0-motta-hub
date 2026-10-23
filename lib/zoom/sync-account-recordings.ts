@@ -23,6 +23,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { getS2SAccessToken, listAllZoomUsers, s2sFetch, isS2SConfigured } from "./s2s-auth"
 import { ingestRecordingFiles, mergeBlobLinks, type ZoomRecordingFile } from "./ingest-recording-files"
 import { processOneMeeting, type ProcessResult } from "./process-meeting-participants"
+import { ensureSessionRow } from "@/lib/zoom/meeting-occurrence"
 
 export interface AccountSyncOptions {
   supabase: SupabaseClient
@@ -282,8 +283,24 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
             // resolvable (the summarizer requires a zoom_meetings row) and so
             // the client-link layers + Hub Meetings dashboard can see this
             // account-wide meeting. Mirrors the recording→meeting upsert in
-            // sync-recent-meetings.ts. onConflict zoom_meeting_id; we only set
-            // the columns we know so a richer prior row isn't clobbered.
+            // sync-recent-meetings.ts. One row per SESSION (onConflict
+            // zoom_uuid, migration 433): a Personal Meeting Room / recurring
+            // meeting records many sessions under one rec.id. ensureSessionRow
+            // first, so a new session adopts the number's scheduled
+            // placeholder or gets a row of its own. We only set the columns
+            // we know so a richer prior row isn't clobbered.
+            try {
+              if (rec.id != null) {
+                await ensureSessionRow(supabase, {
+                  numericId: Number(rec.id),
+                  uuid: rec.uuid,
+                  startTime: rec.start_time ?? null,
+                  meetingType: typeof rec.type === "number" ? rec.type : null,
+                })
+              }
+            } catch (err) {
+              result.errors.push(`session row ${rec.uuid}: ${err instanceof Error ? err.message : String(err)}`)
+            }
             const { data: zmRow, error: zmErr } = await supabase
               .from("zoom_meetings")
               .upsert(
@@ -301,9 +318,9 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
                   raw_data: rec,
                   synced_at: new Date().toISOString(),
                 },
-                { onConflict: "zoom_meeting_id" },
+                { onConflict: "zoom_uuid" },
               )
-              .select("id, participants_processed_at")
+              .select("id, participants_processed_at, alfred_triage_at")
               .maybeSingle()
             if (zmErr) {
               result.errors.push(`meeting upsert ${rec.id}: ${zmErr.message}`)
@@ -344,6 +361,10 @@ export async function syncAccountWideRecordings(opts: AccountSyncOptions): Promi
                     duration: typeof rec.duration === "number" ? rec.duration : null,
                     host_email: user.email ?? null,
                     team_member_id: attribution.teamMemberId,
+                    // Respect the triage watermark (433 stamps it on old
+                    // backfilled sessions) so a participant fetch that keeps
+                    // failing doesn't re-run ALFRED on every pass.
+                    alfred_triage_at: zmRow.alfred_triage_at ?? null,
                   },
                   tagResult,
                 )

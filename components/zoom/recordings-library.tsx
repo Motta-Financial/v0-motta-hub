@@ -347,8 +347,12 @@ function isTagged(
   rec: LibraryRecording,
   tagCounts: Props["tagCounts"],
 ): boolean {
-  if (rec.zoom_meeting_id == null || !tagCounts) return false
-  const c = tagCounts[String(rec.zoom_meeting_id)]
+  if (!tagCounts) return false
+  // Tag counts are keyed by session uuid (a shared meeting number's
+  // sessions are tagged separately), falling back to the bigint id.
+  const c =
+    (rec.zoom_uuid ? tagCounts[rec.zoom_uuid] : undefined) ??
+    (rec.zoom_meeting_id != null ? tagCounts[String(rec.zoom_meeting_id)] : undefined)
   if (!c) return false
   return c.clients > 0 || c.workItems > 0 || c.deals > 0 || c.projects > 0
 }

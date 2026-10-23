@@ -84,16 +84,22 @@ export async function GET(
   const [recordingsRes, transcriptsRes, meetingRes, summaryRes] = await Promise.all([
     recordingsQuery.order("start_time", { ascending: false }),
     transcriptsQuery.order("updated_at", { ascending: false }),
-    admin
-      .from("zoom_meetings")
-      .select("id, zoom_uuid, host_name, host_email, participants_count, total_minutes, timezone")
-      .eq("zoom_meeting_id", numericId)
-      .maybeSingle(),
+    // This session's own row (one per uuid since migration 433); with no
+    // uuid, the number's newest row.
+    (uuid
+      ? admin.from("zoom_meetings").select("id, zoom_uuid, host_name, host_email, participants_count, total_minutes, timezone").eq("zoom_uuid", uuid)
+      : admin
+          .from("zoom_meetings")
+          .select("id, zoom_uuid, host_name, host_email, participants_count, total_minutes, timezone")
+          .eq("zoom_meeting_id", numericId)
+          .order("start_time", { ascending: false, nullsFirst: false })
+          .limit(1)
+    ).maybeSingle(),
     summaryQuery.order("updated_at", { ascending: false }).limit(1).maybeSingle(),
   ])
 
-  // zoom_meetings holds ONE row per number, describing whichever session
-  // synced last. Its participants belong to that session only.
+  // A session with no row of its own yet (pre-433 data) must not borrow the
+  // number's row: its participants belong to that other session only.
   const meetingIsThisSession =
     !occurrence.shared || (meetingRes.data?.zoom_uuid != null && meetingRes.data.zoom_uuid === uuid)
 

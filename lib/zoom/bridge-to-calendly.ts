@@ -19,11 +19,15 @@
  * That work is wasted today if the user has to retag the SAME meeting
  * on the Zoom side. This module closes the loop:
  *
- *   • Match a `zoom_meetings` row to its source `calendly_events` row
- *     by the numeric Zoom meeting ID embedded in both `join_url`
- *     fields. Calendly URL: `https://us02web.zoom.us/j/87654321?pwd=…`
- *     Zoom URL:             `https://us02web.zoom.us/j/87654321?pwd=…`
- *     The `<id>` is `zoom_meetings.zoom_meeting_id` (BIGINT, unique).
+ *   • Match a `zoom_meetings` row (one SESSION) to its source
+ *     `calendly_events` row by the numeric Zoom meeting ID embedded in
+ *     both `join_url` fields AND the booking's start time — a Personal
+ *     Meeting Room / recurring meeting reuses one number for every
+ *     booking, so the number alone matches all of them.
+ *     Calendly URL: `https://us02web.zoom.us/j/87654321?pwd=…`
+ *     Zoom URL:     `https://us02web.zoom.us/j/87654321?pwd=…`
+ *     The `<id>` is `zoom_meetings.zoom_meeting_id` (BIGINT, NOT unique:
+ *     one row per session since migration 433).
  *
  *   • Persist the bridge on `zoom_meetings.calendly_event_id` so the
  *     UI can show "From Calendly booking" and so subsequent
@@ -42,6 +46,15 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { isSessionOfSharedNumber } from "@/lib/zoom/meeting-occurrence"
+
+/**
+ * How far a booking's start may sit from the Zoom session's start. On a
+ * shared number (Personal Meeting Room, recurring meeting) every booking
+ * carries the same `/j/<number>` link, so the start time is the ONLY thing
+ * that says which booking a session was.
+ */
+const BOOKING_MATCH_WINDOW_MS = 30 * 60 * 1000
 
 // ─── Public surface ──────────────────────────────────────────────────
 
@@ -94,7 +107,7 @@ export async function bridgeZoomToCalendly(
   // 1. Pick the candidate meetings.
   let query = supabase
     .from("zoom_meetings")
-    .select("id, zoom_meeting_id, join_url, calendly_event_id, start_time")
+    .select("id, zoom_meeting_id, join_url, calendly_event_id, start_time, meeting_type")
     .not("zoom_meeting_id", "is", null)
     .gte("start_time", sinceIso)
     .order("start_time", { ascending: false })
@@ -103,7 +116,7 @@ export async function bridgeZoomToCalendly(
   if (opts.zoomMeetingId) {
     query = supabase
       .from("zoom_meetings")
-      .select("id, zoom_meeting_id, join_url, calendly_event_id, start_time")
+      .select("id, zoom_meeting_id, join_url, calendly_event_id, start_time, meeting_type")
       .eq("id", opts.zoomMeetingId)
   } else if (!forceRebridge) {
     query = query.is("calendly_event_id", null)
@@ -149,6 +162,8 @@ async function bridgeOne(
     zoom_meeting_id: string | number
     join_url: string | null
     calendly_event_id: string | null
+    start_time: string | null
+    meeting_type: number | null
   },
 ): Promise<BridgeOneResult> {
   const out: BridgeOneResult = {
@@ -177,24 +192,66 @@ async function bridgeOne(
 
   // Fast index-friendly match: ilike on the substring `/j/<id>`. The
   // Zoom URL family (`us02web`, `zoom.us`, `us05web`, etc.) varies so
-  // we don't try to match the host — only the slug is reliable.
+  // we don't try to match the host — only the slug is reliable. The
+  // regex then drops longer numbers that merely start with these digits.
   const pattern = `%/j/${zid}%`
-  const { data: candidates, error: candErr } = await supabase
+  const slug = new RegExp(`/j/${zid}(?![0-9])`)
+  const startMs = meeting.start_time ? Date.parse(meeting.start_time) : NaN
+  const shared = await isSessionOfSharedNumber(supabase, meeting)
+
+  let candQuery = supabase
     .from("calendly_events")
-    .select("id, join_url, status, start_time")
+    .select("id, join_url, status, start_time, canceled_at")
     .ilike("join_url", pattern)
+  if (Number.isFinite(startMs)) {
+    candQuery = candQuery
+      .gte("start_time", new Date(startMs - BOOKING_MATCH_WINDOW_MS).toISOString())
+      .lte("start_time", new Date(startMs + BOOKING_MATCH_WINDOW_MS).toISOString())
+  } else if (shared) {
+    // No session start → nothing ties this session to one booking.
+    return out
+  }
+  const { data: rawCandidates, error: candErr } = await candQuery
     .order("start_time", { ascending: false })
-    .limit(5)
+    .limit(20)
 
   if (candErr) throw new Error(`calendly_events lookup: ${candErr.message}`)
-  if (!candidates || candidates.length === 0) return out
+  let candidates = (rawCandidates ?? []).filter(
+    (c) => slug.test(c.join_url ?? "") && !/cancel/i.test(c.status ?? "") && !c.canceled_at,
+  )
 
-  // If multiple candidates (e.g. a recurring meeting reused across
-  // bookings), prefer the one whose start_time is closest to the Zoom
-  // meeting's. We don't have meeting.start_time in the picked columns
-  // here, but the descending order above already biases toward most
-  // recent — good enough for the carryover use case.
-  const calendlyEvent = candidates[0]
+  if (candidates.length > 0 && shared) {
+    // A booking belongs to one session: skip bookings another session of
+    // this number already took.
+    const { data: taken } = await supabase
+      .from("zoom_meetings")
+      .select("calendly_event_id")
+      .in("calendly_event_id", candidates.map((c) => c.id))
+      .neq("id", meeting.id)
+    const takenIds = new Set((taken ?? []).map((t) => t.calendly_event_id as string))
+    candidates = candidates.filter((c) => !takenIds.has(c.id))
+  }
+
+  if (candidates.length === 0 && !shared && Number.isFinite(startMs)) {
+    // A number that has only ever held this one session: a booking with its
+    // link is this meeting even when rescheduled outside the window. Most
+    // recent first, as before.
+    const { data: anyTime } = await supabase
+      .from("calendly_events")
+      .select("id, join_url, status, start_time, canceled_at")
+      .ilike("join_url", pattern)
+      .order("start_time", { ascending: false })
+      .limit(5)
+    candidates = (anyTime ?? []).filter((c) => slug.test(c.join_url ?? ""))
+  }
+  if (candidates.length === 0) return out
+
+  // Closest booking to the session's actual start.
+  const calendlyEvent = Number.isFinite(startMs)
+    ? candidates.reduce((a, b) =>
+        Math.abs(Date.parse(b.start_time) - startMs) < Math.abs(Date.parse(a.start_time) - startMs) ? b : a,
+      )
+    : candidates[0]
 
   // 2. Persist the bridge.
   await supabase
