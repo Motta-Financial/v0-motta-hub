@@ -43,6 +43,10 @@ async function listOccurrences(admin: SupabaseClient, numericId: number): Promis
     admin.from("zoom_recordings").select("zoom_uuid, start_time, duration").eq("zoom_meeting_id", numericId),
     admin.from("zoom_transcripts").select("zoom_meeting_uuid").eq("zoom_meeting_id", numericId),
   ])
+  // Fail closed: a failed read must not look like "one session", or a shared
+  // number is read by number and shows (or files) another client's meeting.
+  if (recRes.error) throw new Error(`zoom_recordings sessions: ${recRes.error.message}`)
+  if (trRes.error) throw new Error(`zoom_transcripts sessions: ${trRes.error.message}`)
   const byUuid = new Map<string, Occurrence>()
   for (const r of recRes.data ?? []) {
     if (!r.zoom_uuid) continue
