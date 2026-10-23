@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
-import { ensureSessionRow, resolveMeetingRow } from "@/lib/zoom/meeting-occurrence"
+import { ensureSessionRow, findRowByUuid, resolveMeetingRow } from "@/lib/zoom/meeting-occurrence"
 
 /**
  * Per-meeting tags for Zoom meetings — clients (org or contact) and work items.
@@ -69,8 +69,10 @@ async function resolveOrUpsertMeeting(
   // — never the number's other row, which is some other session.
   let ambiguous = false
   if (uuid) {
-    const { data: exact } = await supabase.from("zoom_meetings").select("id").eq("zoom_uuid", uuid).maybeSingle()
-    if (exact?.id) return { supabase, internalId: exact.id as string, ambiguous: false }
+    // Also matches a row re-keyed from this (scheduled) uuid, so an older
+    // todo deep link still opens its meeting.
+    const exact = await findRowByUuid<{ id: string }>(supabase, uuid, "id")
+    if (exact?.id) return { supabase, internalId: exact.id, ambiguous: false }
   } else {
     const resolved = await resolveMeetingRow(supabase, numericId, { start })
     if (resolved.row?.id) return { supabase, internalId: resolved.row.id, ambiguous: false }
@@ -235,6 +237,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ zoomMeetin
     createdBy,
   )
   if (ambiguous) return NextResponse.json({ error: AMBIGUOUS_ERROR }, { status: 409 })
+  // Which occurrence the teammate was looking at. On a recurring series row
+  // (upcoming occurrences share the series uuid) this is what carries the
+  // tag onto that session's own row when it runs — see ensureSessionRow.
+  const startHint = sessionHint(req).start ?? meta?.start_time ?? null
+  const occurrenceStart = startHint && Number.isFinite(Date.parse(startHint)) ? new Date(startHint).toISOString() : null
   if (!internalId) {
     return NextResponse.json(
       {
@@ -265,6 +272,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ zoomMeetin
         organization_id: organizationId,
         link_source: "manual",
         created_by_team_member_id: createdBy,
+        occurrence_start: occurrenceStart,
       })
       .select(
         `id, link_source, match_method, confidence, alfred_reason, needs_review, contact:contacts ( id, full_name, primary_email ), organization:organizations ( id, name )`,
@@ -291,6 +299,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ zoomMeetin
         work_item_id: workItemId,
         link_source: "manual",
         created_by_team_member_id: createdBy,
+        occurrence_start: occurrenceStart,
       })
       .select(
         `id, link_source, match_method, confidence, alfred_reason, needs_review, work_item:work_items ( id, title, client_name, status, due_date )`,

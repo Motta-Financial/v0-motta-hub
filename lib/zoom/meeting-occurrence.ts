@@ -166,6 +166,32 @@ export interface MeetingRow {
 
 const MEETING_ROW_COLUMNS = "id, zoom_uuid, zoom_meeting_id, start_time, duration, meeting_type, status"
 
+/**
+ * The row for a meeting uuid: its own session uuid, or the SCHEDULED uuid a
+ * one-off meeting's row was adopted from (scheduled_uuid). Zoom's meeting
+ * lists keep returning the scheduled uuid after the session ran under
+ * another one, so every by-uuid lookup must check both.
+ */
+export async function findRowByUuid<T = MeetingRow>(
+  admin: SupabaseClient,
+  uuid: string,
+  columns: string = MEETING_ROW_COLUMNS,
+): Promise<T | null> {
+  const { data, error } = await admin.from("zoom_meetings").select(columns).eq("zoom_uuid", uuid).maybeSingle()
+  if (error) throw new Error(`zoom_meetings by uuid: ${error.message}`)
+  if (data) return data as T
+  const { data: alias, error: aliasErr } = await admin
+    .from("zoom_meetings")
+    .select(columns)
+    .eq("scheduled_uuid", uuid)
+    .maybeSingle()
+  if (aliasErr) throw new Error(`zoom_meetings by scheduled uuid: ${aliasErr.message}`)
+  return (alias as T | null) ?? null
+}
+
+/** The uuid as it appears in a todo deep link (generate-meeting-todos). */
+const uuidParam = (uuid: string) => `uuid=${encodeURIComponent(uuid)}`
+
 async function meetingRowsForNumber(admin: SupabaseClient, numericId: number): Promise<MeetingRow[]> {
   const { data } = await admin
     .from("zoom_meetings")
@@ -213,11 +239,7 @@ export async function resolveMeetingRow(
   opts: { uuid?: string | null; start?: string | null } = {},
 ): Promise<{ row: MeetingRow | null; shared: boolean; ambiguous: boolean }> {
   if (opts.uuid) {
-    const { data } = await admin
-      .from("zoom_meetings")
-      .select(MEETING_ROW_COLUMNS)
-      .eq("zoom_uuid", opts.uuid)
-      .maybeSingle()
+    const data = await findRowByUuid(admin, opts.uuid)
     if (data) {
       const shared = await isSharedMeetingNumber(admin, numericId)
       return { row: data as MeetingRow, shared, ambiguous: false }
@@ -275,12 +297,8 @@ export async function ensureSessionRow(
   s: SessionInput,
   opts: { requireExisting?: boolean } = {},
 ): Promise<{ id: string; created: boolean } | null> {
-  const { data: existing } = await admin
-    .from("zoom_meetings")
-    .select("id")
-    .eq("zoom_uuid", s.uuid)
-    .maybeSingle()
-  if (existing?.id) return { id: existing.id as string, created: false }
+  const existing = await findRowByUuid<{ id: string }>(admin, s.uuid, "id")
+  if (existing?.id) return { id: existing.id, created: false }
 
   const rows = await meetingRowsForNumber(admin, s.numericId)
   if (rows.length === 0 && opts.requireExisting) return null
@@ -304,14 +322,23 @@ export async function ensureSessionRow(
           )
     if (near.length === 1 && rows.every((r) => r === near[0] || !(r.zoom_uuid && known.has(r.zoom_uuid)))) {
       const target = near[0]
+      // Keep the scheduled uuid as an alias: Zoom's lists keep returning
+      // it, and a sync that can't find it would insert a twin row.
+      const { data: current } = await admin
+        .from("zoom_meetings")
+        .select("scheduled_uuid")
+        .eq("id", target.id)
+        .maybeSingle()
       const { error } = await admin
         .from("zoom_meetings")
-        .update({ zoom_uuid: s.uuid, updated_at: new Date().toISOString() })
+        .update({
+          zoom_uuid: s.uuid,
+          scheduled_uuid: current?.scheduled_uuid ?? target.zoom_uuid ?? null,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", target.id)
       if (!error) {
-        if (target.zoom_uuid) {
-          await admin.from("tasks").update({ zoom_meeting_uuid: s.uuid }).eq("zoom_meeting_uuid", target.zoom_uuid)
-        }
+        await afterRekey(admin, target.id, target.zoom_uuid, s.uuid)
         return { id: target.id, created: false }
       }
     }
@@ -355,7 +382,120 @@ export async function ensureSessionRow(
   if (insErr) throw new Error(`zoom_meetings session insert: ${insErr.message}`)
 
   const { data: row } = await admin.from("zoom_meetings").select("id").eq("zoom_uuid", s.uuid).maybeSingle()
-  return row?.id ? { id: row.id as string, created: true } : null
+  if (!row?.id) return null
+  if (s.startTime) {
+    await carrySeriesOccurrenceTags(admin, s.numericId, row.id as string, s.startTime)
+  }
+  return { id: row.id as string, created: true }
+}
+
+/**
+ * A row was re-keyed from `oldUuid` (its scheduled uuid) to `newUuid` (the
+ * session that ran). Point its todos at the new uuid — id AND deep link —
+ * and re-queue its transcripts that were skipped for want of a client while
+ * no row carried this session's uuid: no client link is inserted by a
+ * re-key, so the client-link trigger would never re-queue them.
+ */
+async function afterRekey(admin: SupabaseClient, rowId: string, oldUuid: string | null, newUuid: string) {
+  if (oldUuid) {
+    const { data: tasks } = await admin
+      .from("tasks")
+      .select("id, source_url")
+      .eq("zoom_meeting_uuid", oldUuid)
+    for (const t of tasks ?? []) {
+      await admin
+        .from("tasks")
+        .update({
+          zoom_meeting_uuid: newUuid,
+          source_url: typeof t.source_url === "string"
+            ? t.source_url.replace(uuidParam(oldUuid), uuidParam(newUuid))
+            : t.source_url,
+        })
+        .eq("id", t.id)
+    }
+  }
+  const { count } = await admin
+    .from("zoom_meeting_clients")
+    .select("id", { count: "exact", head: true })
+    .eq("zoom_meeting_id", rowId)
+    .not("contact_id", "is", null)
+  if ((count ?? 0) > 0) {
+    await admin
+      .from("zoom_transcripts")
+      .update({ summary_status: "pending" })
+      .eq("zoom_meeting_uuid", newUuid)
+      .eq("summary_status", "skipped_no_client")
+      .not("text_content", "is", null)
+  }
+}
+
+/**
+ * A teammate who tags an upcoming occurrence of a recurring meeting tags the
+ * SERIES row (Zoom lists every occurrence under the series uuid); the tag
+ * records which occurrence via occurrence_start. When that occurrence runs
+ * and gets its own session row, copy those tags onto it as the teammate's
+ * own (manual) tags, so the session counts as tagged and its notes file.
+ * Only tags aimed at THIS occurrence move — a series tag with no occurrence
+ * says nothing about which session it was for.
+ */
+async function carrySeriesOccurrenceTags(
+  admin: SupabaseClient,
+  numericId: number,
+  sessionRowId: string,
+  sessionStart: string,
+) {
+  const startMs = Date.parse(sessionStart)
+  if (!Number.isFinite(startMs)) return
+  const from = new Date(startMs - START_MATCH_WINDOW_MS).toISOString()
+  const to = new Date(startMs + START_MATCH_WINDOW_MS).toISOString()
+
+  const { data: others } = await admin
+    .from("zoom_meetings")
+    .select("id")
+    .eq("zoom_meeting_id", numericId)
+    .neq("id", sessionRowId)
+  const otherIds = (others ?? []).map((o) => o.id as string)
+  if (otherIds.length === 0) return
+
+  const [clients, workItems] = await Promise.all([
+    admin
+      .from("zoom_meeting_clients")
+      .select("contact_id, organization_id, created_by_team_member_id, occurrence_start")
+      .in("zoom_meeting_id", otherIds)
+      .eq("link_source", "manual")
+      .gte("occurrence_start", from)
+      .lte("occurrence_start", to),
+    admin
+      .from("zoom_meeting_work_items")
+      .select("work_item_id, created_by_team_member_id, occurrence_start")
+      .in("zoom_meeting_id", otherIds)
+      .eq("link_source", "manual")
+      .gte("occurrence_start", from)
+      .lte("occurrence_start", to),
+  ])
+  // Inserts one by one: a duplicate (23505 on the partial unique indexes)
+  // just means it's already there.
+  for (const c of clients.data ?? []) {
+    await admin.from("zoom_meeting_clients").insert({
+      zoom_meeting_id: sessionRowId,
+      contact_id: c.contact_id,
+      organization_id: c.organization_id,
+      link_source: "manual",
+      match_method: "series_occurrence_tag",
+      created_by_team_member_id: c.created_by_team_member_id,
+      occurrence_start: c.occurrence_start,
+    })
+  }
+  for (const w of workItems.data ?? []) {
+    await admin.from("zoom_meeting_work_items").insert({
+      zoom_meeting_id: sessionRowId,
+      work_item_id: w.work_item_id,
+      link_source: "manual",
+      match_method: "series_occurrence_tag",
+      created_by_team_member_id: w.created_by_team_member_id,
+      occurrence_start: w.occurrence_start,
+    })
+  }
 }
 
 /**

@@ -25,6 +25,15 @@
 --      index, backfilled from the meeting row each task was made for
 --   3. the client-link → re-summarize trigger (336) and the tag → close-todo
 --      trigger match on the SESSION, not the number
+--   4. zoom_meetings.scheduled_uuid — when a one-off meeting's scheduled row
+--      turns out to BE a session that ran under another uuid, the row is
+--      re-keyed to the session uuid and keeps the scheduled one here, so
+--      Zoom's meeting lists (which keep returning the scheduled uuid) still
+--      find it instead of inserting a twin
+--   5. occurrence_start on client / work-item tags — a tag put on an
+--      upcoming occurrence of a recurring meeting sits on the series row;
+--      this records which occurrence it was meant for, so it is copied onto
+--      that session's own row when the session runs
 --
 -- ORDER: apply 432 BEFORE deploying the per-session code (it upserts with
 -- onConflict zoom_uuid / assignee_id,zoom_meeting_uuid, which needs these
@@ -39,6 +48,23 @@ begin;
 -- ── 1. zoom_meetings: unique per session ─────────────────────────────────
 create unique index if not exists zoom_meetings_zoom_uuid_key
   on public.zoom_meetings (zoom_uuid);
+
+alter table public.zoom_meetings
+  add column if not exists scheduled_uuid text;
+comment on column public.zoom_meetings.scheduled_uuid is
+  'The scheduled meeting uuid this session row was adopted from (Zoom lists keep returning it). Look rows up by zoom_uuid OR scheduled_uuid.';
+create unique index if not exists zoom_meetings_scheduled_uuid_key
+  on public.zoom_meetings (scheduled_uuid) where scheduled_uuid is not null;
+
+-- ── 1b. Which occurrence a tag on a series row was meant for ─────────────
+alter table public.zoom_meeting_clients
+  add column if not exists occurrence_start timestamptz;
+alter table public.zoom_meeting_work_items
+  add column if not exists occurrence_start timestamptz;
+comment on column public.zoom_meeting_clients.occurrence_start is
+  'Start time of the meeting occurrence the tagger was looking at. On a recurring series row this says which session the tag belongs to; it is copied onto that session''s row when the session runs.';
+comment on column public.zoom_meeting_work_items.occurrence_start is
+  'See zoom_meeting_clients.occurrence_start.';
 
 -- ── 2. tasks: "tag this meeting" todos are per session ───────────────────
 alter table public.tasks
@@ -80,7 +106,9 @@ begin
   where zm.id = new.zoom_meeting_id
     and zm.zoom_uuid is not null
     and zt.zoom_meeting_uuid = zm.zoom_uuid
-    and zt.summary_status = 'skipped_no_client'
+    -- skipped_shared_number: the blanket guard from #407, superseded by
+    -- per-session links (433 converts those rows; this covers stragglers).
+    and zt.summary_status in ('skipped_no_client', 'skipped_shared_number')
     and zt.text_content is not null;
 
   return new;
