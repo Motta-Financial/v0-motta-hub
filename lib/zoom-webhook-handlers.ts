@@ -30,6 +30,7 @@ import { createAdminClient } from "@/lib/supabase/server"
 import { ingestRecordingFiles, mergeBlobLinks, type ZoomRecordingFile } from "@/lib/zoom/ingest-recording-files"
 import { upsertZoomMeetingSummary, type ZoomMeetingSummary } from "@/lib/zoom/ingest-ai-summary"
 import type { ZoomWebhookPayload } from "@/lib/zoom-webhook"
+import { ensureSessionRow } from "@/lib/zoom/meeting-occurrence"
 
 export type HandlerResult =
   | { ok: true; action: string; details?: Record<string, unknown> }
@@ -205,8 +206,10 @@ async function handleTranscriptCompleted(payload: ZoomWebhookPayload): Promise<H
  *
  * Stamp the lifecycle columns on the matching `zoom_meetings` row so
  * the dashboard can show "live now" and "ended X minutes ago" without
- * polling Zoom. We match on `zoom_meeting_id` (numeric), falling back
- * to `zoom_uuid` when present.
+ * polling Zoom. We match on the SESSION (`zoom_uuid`): a Personal Meeting
+ * Room / recurring meeting reuses its numeric id for every session, and
+ * matching on the number stamped every past session as live. A new session
+ * of a number we already know gets its own row here (ensureSessionRow).
  * ───────────────────────────────────────────────────────────────────── */
 async function handleMeetingLifecycle(
   payload: ZoomWebhookPayload,
@@ -228,21 +231,33 @@ async function handleMeetingLifecycle(
   if (kind === "started") update.started_at = now
   if (kind === "ended") update.ended_at = now
 
-  // Try numeric id first (the field used by sync), then the uuid.
   let data: { id: string }[] | null = null
   let lastError: { message: string } | null = null
 
-  if (meetingIdNumeric !== null) {
-    const res = await admin
-      .from("zoom_meetings")
-      .update(update)
-      .eq("zoom_meeting_id", meetingIdNumeric)
-      .select("id")
-    data = (res.data as { id: string }[] | null) ?? null
-    lastError = res.error ?? null
+  if (obj.uuid && meetingIdNumeric !== null) {
+    try {
+      await ensureSessionRow(
+        admin,
+        {
+          numericId: meetingIdNumeric,
+          uuid: obj.uuid,
+          startTime: obj.start_time ? new Date(obj.start_time).toISOString() : kind === "started" ? now : null,
+          duration: obj.duration ?? null,
+          topic: obj.topic ?? null,
+          hostEmail: obj.host_email ?? null,
+          zoomHostId: obj.host_id ?? null,
+          meetingType: obj.type ?? null,
+          timezone: obj.timezone ?? null,
+          status: kind === "started" ? "started" : "ended",
+        },
+        { requireExisting: true },
+      )
+    } catch (err) {
+      console.warn(`[v0] [Zoom Webhook] meeting.${kind} session row failed (non-fatal):`, err)
+    }
   }
 
-  if ((!data || data.length === 0) && obj.uuid) {
+  if (obj.uuid) {
     const res = await admin
       .from("zoom_meetings")
       .update(update)
@@ -250,6 +265,18 @@ async function handleMeetingLifecycle(
       .select("id")
     data = (res.data as { id: string }[] | null) ?? null
     lastError = res.error ?? null
+  } else if (meetingIdNumeric !== null) {
+    // No uuid on the event: only safe when the number has a single row.
+    const { data: rows } = await admin
+      .from("zoom_meetings")
+      .select("id")
+      .eq("zoom_meeting_id", meetingIdNumeric)
+      .limit(2)
+    if (rows && rows.length === 1) {
+      const res = await admin.from("zoom_meetings").update(update).eq("id", rows[0].id).select("id")
+      data = (res.data as { id: string }[] | null) ?? null
+      lastError = res.error ?? null
+    }
   }
 
   if (lastError) {
@@ -302,20 +329,32 @@ async function handleSummaryCompleted(payload: ZoomWebhookPayload): Promise<Hand
   // Read existing raw_data, merge summary in, write back. A single
   // RPC would be nicer but this matches the rest of the codebase's
   // pattern.
+  // By SESSION uuid — a Personal Meeting Room / recurring meeting reuses its
+  // numeric id, so a by-number lookup merged this summary into another
+  // session's row (or errored once the number held several rows).
   type MeetingRow = { id: string; raw_data: Record<string, unknown> | null }
   let row: MeetingRow | null = null
   if (meetingIdNumeric !== null) {
+    try {
+      await ensureSessionRow(
+        admin,
+        {
+          numericId: meetingIdNumeric,
+          uuid: summaryUuid,
+          topic: (raw as { meeting_topic?: string } | undefined)?.meeting_topic ?? obj.topic ?? null,
+          hostEmail: (raw as { meeting_host_email?: string } | undefined)?.meeting_host_email ?? obj.host_email ?? null,
+        },
+        { requireExisting: true },
+      )
+    } catch (err) {
+      console.warn("[v0] [Zoom Webhook] summary session row failed (non-fatal):", err)
+    }
+  }
+  {
     const res = await admin
       .from("zoom_meetings")
       .select("id, raw_data")
-      .eq("zoom_meeting_id", meetingIdNumeric)
-      .maybeSingle()
-    row = (res.data as MeetingRow | null) ?? null
-  } else if (obj.uuid) {
-    const res = await admin
-      .from("zoom_meetings")
-      .select("id, raw_data")
-      .eq("zoom_uuid", obj.uuid)
+      .eq("zoom_uuid", summaryUuid)
       .maybeSingle()
     row = (res.data as MeetingRow | null) ?? null
   }

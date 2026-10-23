@@ -2,14 +2,15 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 
 /**
- * Bulk tag-count lookup keyed on Zoom's bigint meeting id.
+ * Bulk tag-count lookup keyed on the Zoom meeting UUID (one session) or,
+ * for a number that has only ever held one session, its bigint id.
  *
  * The dashboard renders 50+ meeting cards at a time; pinging
  * /api/zoom/meetings/[id]/tags once per card would be 50 round trips.
  * Instead we accept a comma-separated list of Zoom meeting ids and return
  * a single object keyed by that id.
  *
- *   GET /api/zoom/meetings/tag-counts?ids=12345,67890
+ *   GET /api/zoom/meetings/tag-counts?ids=<uuid>,12345   (URL-encoded)
  *   →   { counts: { "12345": { clients: 2, workItems: 1, dealId: "uuid" }, ... } }
  *
  * `dealId` (migration 337) is the opportunity the Zoom meeting rolls up
@@ -32,22 +33,43 @@ export async function GET(req: NextRequest) {
 
   const supabase = createAdminClient()
 
-  // First, resolve the Zoom bigint ids → internal UUIDs via a single
-  // IN-list lookup. Bigints are passed as strings; pg coerces.
-  const { data: parents, error: parentErr } = await supabase
-    .from("zoom_meetings")
-    .select("id, zoom_meeting_id")
-    .in("zoom_meeting_id", ids)
-  // The internal-uuid string of the zoom_meetings parent rows, used to
-  // resolve the Deal each meeting rolls up into.
-  if (parentErr) {
-    console.error("[v0] [Zoom Tag Counts] parent lookup failed:", parentErr.message)
+  // Resolve each requested key to ONE zoom_meetings row (one session).
+  //   • A Zoom meeting UUID → that session's row.
+  //   • A bigint meeting id → its row, but only when the number has exactly
+  //     one: a Personal Meeting Room / recurring meeting reuses its number
+  //     for every session (one row each since migration 433), and summing
+  //     their tags would show one session's client on all of them.
+  const numericKeys = ids.filter((k) => /^\d+$/.test(k))
+  const uuidKeys = ids.filter((k) => !/^\d+$/.test(k))
+
+  const internalIdToZoomId = new Map<string, string>()
+  const parentErrors: string[] = []
+  for (let i = 0; i < uuidKeys.length; i += 100) {
+    const { data, error } = await supabase
+      .from("zoom_meetings")
+      .select("id, zoom_uuid")
+      .in("zoom_uuid", uuidKeys.slice(i, i + 100))
+    if (error) parentErrors.push(error.message)
+    for (const p of data || []) internalIdToZoomId.set(p.id as string, p.zoom_uuid as string)
+  }
+  for (let i = 0; i < numericKeys.length; i += 200) {
+    const { data, error } = await supabase
+      .from("zoom_meetings")
+      .select("id, zoom_meeting_id")
+      .in("zoom_meeting_id", numericKeys.slice(i, i + 200))
+    if (error) parentErrors.push(error.message)
+    const byNumber = new Map<string, string[]>()
+    for (const p of data || []) {
+      const k = String(p.zoom_meeting_id)
+      byNumber.set(k, [...(byNumber.get(k) ?? []), p.id as string])
+    }
+    for (const [k, rowIds] of byNumber) if (rowIds.length === 1) internalIdToZoomId.set(rowIds[0], k)
+  }
+  if (parentErrors.length > 0) {
+    console.error("[v0] [Zoom Tag Counts] parent lookup failed:", parentErrors[0])
     return NextResponse.json({ counts: {} }, { status: 500 })
   }
 
-  const internalIdToZoomId = new Map<string, string>(
-    (parents || []).map((p) => [p.id as string, String(p.zoom_meeting_id)]),
-  )
   const internalIds = Array.from(internalIdToZoomId.keys())
 
   if (internalIds.length === 0) return NextResponse.json({ counts: {} })

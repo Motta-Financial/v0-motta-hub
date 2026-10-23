@@ -105,6 +105,7 @@ async function loadZoomArtifacts(
   zoomRowId: string,
   numericMeetingId: number | string | null,
   meetingStart: string | null,
+  sessionUuid: string | null = null,
 ): Promise<MeetingArtifacts> {
   const empty: MeetingArtifacts = {
     recordingUrl: null,
@@ -139,7 +140,7 @@ async function loadZoomArtifacts(
   const recordingsPromise = numericMeetingId
     ? supabase
         .from("zoom_recordings")
-        .select("id, share_url, start_time")
+        .select("id, zoom_uuid, share_url, start_time")
         .eq("zoom_meeting_id", numericMeetingId)
         .not("share_url", "is", null)
         .order("start_time", { ascending: false })
@@ -148,11 +149,14 @@ async function loadZoomArtifacts(
 
   const [summaryRes, recordingsRes] = await Promise.all([summaryPromise, recordingsPromise])
 
-  const recordings: Array<{ id: string; share_url: string; start_time: string | null }> =
+  const recordings: Array<{ id: string; zoom_uuid: string | null; share_url: string; start_time: string | null }> =
     recordingsRes.data ?? []
 
-  let recording = recordings[0] ?? null
-  if (meetingStart && recordings.length > 1) {
+  // The meeting row is one session (migration 433): its own uuid names the
+  // recording exactly. Closest start time is the fallback.
+  const exact = sessionUuid ? recordings.find((r) => r.zoom_uuid === sessionUuid) : undefined
+  let recording = exact ?? recordings[0] ?? null
+  if (!exact && meetingStart && recordings.length > 1) {
     const target = new Date(meetingStart).getTime()
     recording = recordings.reduce((best, r) => {
       if (!r.start_time) return best
@@ -240,7 +244,7 @@ export async function loadDebriefMeetingContext(
     const { data: zm } = await supabase
       .from("zoom_meetings")
       .select(
-        `id, zoom_meeting_id, topic, start_time, calendly_event_id, meeting_id,
+        `id, zoom_meeting_id, zoom_uuid, topic, start_time, calendly_event_id, meeting_id,
          zoom_meeting_clients ( contact_id, organization_id, contact:contacts ( full_name ), organization:organizations ( name ) )`,
       )
       .eq("id", meetingRowId)
@@ -253,6 +257,7 @@ export async function loadDebriefMeetingContext(
       zm.id,
       zm.zoom_meeting_id,
       (zm.start_time as string) ?? null,
+      (zm.zoom_uuid as string | null) ?? null,
     )
     const hubMeetingDealId = await hubMeetingDeal(supabase, zm.meeting_id)
 
@@ -286,7 +291,7 @@ export async function loadDebriefMeetingContext(
   // Walk the bridge to the Zoom side — that's where the recording lives.
   const { data: zm } = await supabase
     .from("zoom_meetings")
-    .select("id, zoom_meeting_id, meeting_id, start_time")
+    .select("id, zoom_meeting_id, zoom_uuid, meeting_id, start_time")
     .eq("calendly_event_id", ce.id)
     .limit(1)
     .maybeSingle()
@@ -299,6 +304,7 @@ export async function loadDebriefMeetingContext(
         zm.id,
         zm.zoom_meeting_id,
         (zm.start_time as string) ?? (ce.start_time as string) ?? null,
+        (zm.zoom_uuid as string | null) ?? null,
       )
     : { recordingUrl: null, transcriptUrl: null, hasTranscript: false, summary: null }
 

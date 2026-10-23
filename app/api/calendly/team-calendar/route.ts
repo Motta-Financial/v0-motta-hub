@@ -161,7 +161,7 @@ export async function GET(request: NextRequest) {
         console.error("[team-calendar] zoom query failed:", zoomErr)
         zoomEvents = []
       } else {
-        zoomEvents = (zoomRows || []).map((m: any) => {
+        zoomEvents = dropScheduledTwins(zoomRows || []).map((m: any) => {
           // Zoom stores duration in minutes; the calendar grid wants a
           // concrete end_time so it can lay the chip out in the day
           // column. Default to 30 minutes if duration is missing so
@@ -277,4 +277,30 @@ export async function GET(request: NextRequest) {
     console.error("[team-calendar] error:", err)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
+}
+
+/**
+ * zoom_meetings has one row per SESSION (migration 433), plus — for a
+ * recurring meeting or Personal Meeting Room — the scheduled series row the
+ * calendar shows before the meeting happens. Once that occurrence has run,
+ * the session row and the series row (still at that start until the next
+ * sync moves it on) would both render. Drop a not-yet-ended row of a number
+ * when one of its ended sessions starts within 2 hours of it.
+ */
+function dropScheduledTwins<
+  T extends { zoom_meeting_id: number | string | null; start_time: string | null; status: string | null; ended_at?: string | null },
+>(rows: T[]): T[] {
+  const TWIN_WINDOW_MS = 2 * 60 * 60 * 1000
+  const ended = (r: T) => r.status === "ended" || r.status === "finished" || !!r.ended_at
+  const endedStartsByNumber = new Map<string, number[]>()
+  for (const r of rows) {
+    if (r.zoom_meeting_id == null || !r.start_time || !ended(r)) continue
+    const k = String(r.zoom_meeting_id)
+    endedStartsByNumber.set(k, [...(endedStartsByNumber.get(k) ?? []), Date.parse(r.start_time)])
+  }
+  return rows.filter((r) => {
+    if (ended(r) || r.zoom_meeting_id == null || !r.start_time) return true
+    const t = Date.parse(r.start_time)
+    return !(endedStartsByNumber.get(String(r.zoom_meeting_id)) ?? []).some((e) => Math.abs(e - t) <= TWIN_WINDOW_MS)
+  })
 }

@@ -133,6 +133,17 @@ function StatCard({
   )
 }
 
+
+/**
+ * Key for a meeting's tag counts: its session uuid when known, else its
+ * bigint Zoom id. A Personal Meeting Room / recurring meeting reuses the id
+ * for every session, so keying on the id alone shows one session's tags on
+ * all of them.
+ */
+function tagKey(m: { id?: number | string | null; uuid?: string | null }): string {
+  return String(m.uuid || m.id || "")
+}
+
 export function ZoomDashboard() {
   const { teamMember } = useUser()
   const [meetings, setMeetings] = useState<MasterMeeting[]>([])
@@ -215,18 +226,22 @@ export function ZoomDashboard() {
       // after a navigation away/back even though the link was saved.
       // Recordings share Zoom's bigint id with their parent meeting, so a
       // single id set covers both lists.
+      //
+      // Keyed by SESSION uuid where we have one (see tagKey): a Personal
+      // Meeting Room / recurring meeting reuses its bigint id for every
+      // session, and each session is tagged on its own.
       const idSet = new Set<string>()
       for (const m of meetingList) {
-        const id = String(m.id ?? "")
+        const id = tagKey(m)
         if (id) idSet.add(id)
       }
       for (const r of recordingList) {
-        const id = String(r.id ?? r.zoom_meeting_id ?? r.uuid ?? "")
+        const id = tagKey({ id: r.id ?? r.zoom_meeting_id, uuid: r.uuid ?? r.zoom_uuid })
         if (id) idSet.add(id)
       }
       if (idSet.size > 0) {
         const ids = Array.from(idSet)
-        fetch(`/api/zoom/meetings/tag-counts?ids=${ids.join(",")}`)
+        fetch(`/api/zoom/meetings/tag-counts?ids=${encodeURIComponent(ids.join(","))}`)
           .then((r) => (r.ok ? r.json() : { counts: {} }))
           .then((j) => setTagCounts(j.counts || {}))
           .catch(() => setTagCounts({}))
@@ -408,8 +423,8 @@ export function ZoomDashboard() {
   // track the count specifically of past meetings (the canonical case
   // where missing tags hurts client billing/reporting) so we can surface
   // a top-of-page warning.
-  const isMeetingTagged = (meetingId: number | string) => {
-    const c = tagCounts[String(meetingId)]
+  const isMeetingTagged = (m: { id?: number | string | null; uuid?: string | null }) => {
+    const c = tagCounts[tagKey(m)]
     if (!c) return false
     return c.clients > 0 || c.workItems > 0 || c.deals > 0 || c.projects > 0
   }
@@ -420,9 +435,9 @@ export function ZoomDashboard() {
     return end < Date.now()
   }
   const untaggedPastMeetings = filteredMeetings.filter(
-    (m) => isMeetingPast(m) && !isMeetingTagged(m.id),
+    (m) => isMeetingPast(m) && !isMeetingTagged(m),
   )
-  const untaggedMeetings = filteredMeetings.filter((m) => !isMeetingTagged(m.id))
+  const untaggedMeetings = filteredMeetings.filter((m) => !isMeetingTagged(m))
   const untaggedTotal = untaggedMeetings.length
 
   // Open the tag dialog for a given meeting. We only feed in the fields
@@ -431,6 +446,7 @@ export function ZoomDashboard() {
   const openTagDialog = (m: MasterMeeting) => {
     setTagDialogMeeting({
       id: m.id,
+      uuid: m.uuid ?? null,
       topic: m.topic,
       start_time: m.start_time,
       duration: m.duration,
@@ -452,7 +468,8 @@ export function ZoomDashboard() {
    */
   const openTagFromRecording = (r: any) => {
     setTagDialogMeeting({
-      id: r.id ?? r.zoom_meeting_id ?? r.uuid,
+      id: r.id ?? r.zoom_meeting_id,
+      uuid: r.uuid ?? r.zoom_uuid ?? null,
       topic: r.topic ?? null,
       start_time: r.start_time ?? null,
       duration: r.duration ?? null,
@@ -516,7 +533,18 @@ export function ZoomDashboard() {
    */
   useEffect(() => {
     const target = searchParams?.get("meetingId")
-    if (!target || meetings.length === 0 || tagDialogMeeting) return
+    const targetUuid = searchParams?.get("uuid")
+    if (!target || tagDialogMeeting) return
+    // Session-scoped link (todos since migration 432): the session is
+    // usually past, so it isn't in the upcoming list — open it directly;
+    // the tags route resolves the session row by uuid.
+    if (targetUuid) {
+      const match = meetings.find((m) => m.uuid === targetUuid)
+      if (match) openTagDialog(match)
+      else setTagDialogMeeting({ id: target, uuid: targetUuid })
+      return
+    }
+    if (meetings.length === 0) return
     const match = meetings.find((m) => String(m.id) === target)
     if (match) {
       openTagDialog(match)
@@ -590,7 +618,7 @@ export function ZoomDashboard() {
     return [...list]
       .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())
       .map((m) => {
-        const tc = tagCounts[String(m.id)]
+        const tc = tagCounts[tagKey(m)]
         const tagged = !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
         return (
           <div key={m.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
@@ -983,7 +1011,7 @@ export function ZoomDashboard() {
                 // Per-meeting derived state for the tagging UX. We intentionally
                 // compute these inline (cheap O(1) lookups) so the parent
                 // doesn't need a separate memoized map.
-                  const tc = tagCounts[String(meeting.id)]
+                  const tc = tagCounts[tagKey(meeting)]
                   const tagged =
                     !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
                   const past = isMeetingPast(meeting)
@@ -1128,7 +1156,7 @@ export function ZoomDashboard() {
                   </div>
                   <div className="grid gap-2 pl-11">
                     {hostData.meetings.map((meeting) => {
-                    const tc = tagCounts[String(meeting.id)]
+                    const tc = tagCounts[tagKey(meeting)]
                     const tagged =
                       !!tc && (tc.clients > 0 || tc.workItems > 0 || tc.deals > 0 || tc.projects > 0)
                     const past = isMeetingPast(meeting)
@@ -1245,6 +1273,7 @@ export function ZoomDashboard() {
             onTag={(rec) =>
               openTagFromRecording({
                 id: rec.zoom_meeting_id,
+                uuid: rec.zoom_uuid,
                 topic: rec.topic,
                 start_time: rec.start_time,
                 duration: rec.duration,
@@ -1343,7 +1372,7 @@ export function ZoomDashboard() {
           }}
           onTagsChanged={(next) => {
             setTagCounts((prev) => {
-              const key = String(tagDialogMeeting.id)
+              const key = tagKey(tagDialogMeeting)
               const dealId =
                 next.deals.find((d) => d.deal?.id)?.deal?.id ?? prev[key]?.dealId ?? null
               return {
