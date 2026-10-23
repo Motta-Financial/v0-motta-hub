@@ -82,7 +82,17 @@ interface CandidateRow {
   start_time: string | null
   host_email: string | null
   needs_tagging: boolean | null
+  created_at: string | null
 }
+
+/**
+ * A todo asks the host to remember who a meeting was with. Only ask about
+ * meetings the Hub learned of while they were fresh: a row created more
+ * than this long after the meeting started was backfilled (e.g. migration
+ * 433 giving each past Personal Meeting Room session its own row), and
+ * nobody can recall a weeks-old call. Those rely on automatic linking only.
+ */
+const MAX_DISCOVERY_LAG_MS = 3 * 24 * 60 * 60 * 1000
 
 export async function generateZoomMeetingTodos(
   opts: GenerateZoomMeetingTodosOptions,
@@ -96,7 +106,7 @@ export async function generateZoomMeetingTodos(
   let query = supabase
     .from("zoom_meetings_with_tag_counts")
     .select(
-      "id, zoom_meeting_id, zoom_uuid, team_member_id, topic, start_time, host_email, needs_tagging",
+      "id, zoom_meeting_id, zoom_uuid, team_member_id, topic, start_time, host_email, needs_tagging, created_at",
     )
     .eq("needs_tagging", true)
     // We require a known assignee — meetings whose host hasn't been
@@ -127,7 +137,26 @@ export async function generateZoomMeetingTodos(
 
   if (candErr) throw new Error(`zoom todo sweep query failed: ${candErr.message}`)
 
-  const rows: CandidateRow[] = candidates ?? []
+  const fresh = (candidates ?? []).filter(
+    (r) =>
+      !r.created_at ||
+      !r.start_time ||
+      Date.parse(r.created_at) - Date.parse(r.start_time) <= MAX_DISCOVERY_LAG_MS,
+  )
+
+  // Let automatic linking (participants, Calendly booking, ALFRED) try
+  // first — a todo is only for what it couldn't work out. The tag-counts
+  // view predates these watermark columns, so read them from the table.
+  const attempted = new Set<string>()
+  for (let i = 0; i < fresh.length; i += 100) {
+    const { data } = await supabase
+      .from("zoom_meetings")
+      .select("id")
+      .in("id", fresh.slice(i, i + 100).map((r) => r.id))
+      .or("participants_processed_at.not.is.null,alfred_triage_at.not.is.null")
+    for (const m of data ?? []) attempted.add(m.id as string)
+  }
+  const rows: CandidateRow[] = fresh.filter((r) => attempted.has(r.id))
 
   if (rows.length === 0) {
     return { candidates: 0, created: 0, perAssignee: [] }
