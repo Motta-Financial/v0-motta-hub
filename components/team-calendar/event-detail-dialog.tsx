@@ -502,7 +502,7 @@ export function EventDetailDialog({ event, open, onOpenChange, timeZone, current
                 play/download links plus a collapsible speaker-attributed
                 transcript. */}
             {isZoom && event.zoom_meeting_id != null && (
-              <MeetingRecordingSection zoomMeetingId={event.zoom_meeting_id} />
+              <MeetingRecordingSection zoomMeetingId={event.zoom_meeting_id} startTime={event.start_time} />
             )}
 
             {/* Debrief — start a prefilled debrief for this meeting, or link
