@@ -175,9 +175,12 @@ export async function POST() {
         const meetings = (data.meetings ?? []) as any[]
 
         for (const meeting of meetings) {
-          // Upsert the meeting into Supabase. The unique key is the
-          // Zoom-assigned numeric meeting ID. raw_data captures the
-          // entire payload for any future fields we haven't mapped.
+          // Upsert the meeting into Supabase. The unique key is the Zoom
+          // meeting UUID — one row per session/series (migration 433); the
+          // numeric id is shared by every session of a Personal Meeting
+          // Room / recurring meeting. raw_data captures the entire payload
+          // for any future fields we haven't mapped.
+          if (!meeting.uuid) continue
           const { error } = await supabaseAdmin.from("zoom_meetings").upsert(
             {
               zoom_meeting_id: meeting.id,
@@ -196,7 +199,7 @@ export async function POST() {
               raw_data: meeting,
               synced_at: new Date().toISOString(),
             },
-            { onConflict: "zoom_meeting_id" },
+            { onConflict: "zoom_uuid" },
           )
 
           if (!error) {

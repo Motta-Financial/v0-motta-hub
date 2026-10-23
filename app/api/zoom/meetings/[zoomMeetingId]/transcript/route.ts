@@ -65,11 +65,17 @@ export async function GET(
   // round of parallel reads. Prefer the parsed transcript row.
   const [transcriptsRes, meetingRes, recordingRes] = await Promise.all([
     transcriptsQuery.order("updated_at", { ascending: false }),
-    admin
-      .from("zoom_meetings")
-      .select("id, zoom_uuid, topic, start_time, timezone, duration, host_email, host_name")
-      .eq("zoom_meeting_id", numericId)
-      .maybeSingle(),
+    // This session's own row (one per uuid since migration 433); with no
+    // uuid, the number's newest row.
+    (uuid
+      ? admin.from("zoom_meetings").select("id, zoom_uuid, topic, start_time, timezone, duration, host_email, host_name").eq("zoom_uuid", uuid)
+      : admin
+          .from("zoom_meetings")
+          .select("id, zoom_uuid, topic, start_time, timezone, duration, host_email, host_name")
+          .eq("zoom_meeting_id", numericId)
+          .order("start_time", { ascending: false, nullsFirst: false })
+          .limit(1)
+    ).maybeSingle(),
     uuid
       ? admin
           .from("zoom_recordings")
@@ -87,9 +93,9 @@ export async function GET(
     return NextResponse.json({ error: "transcript_not_found" }, { status: 404 })
   }
 
-  // zoom_meetings holds ONE row per number (whichever session synced last), so
-  // on a shared number its topic/date/clients/participants describe another
-  // session. Take topic/date from this session's recording and leave the
+  // Before migration 433 zoom_meetings held ONE row per number (whichever
+  // session synced last), so on a shared number a session may still have no
+  // row of its own, and the number's row describes another session. Take topic/date from this session's recording and leave the
   // per-meeting client + participant lists off rather than mislabel the file.
   const meetingRow = meetingRes.data ?? null
   const meetingIsThisSession =

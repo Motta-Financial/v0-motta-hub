@@ -30,6 +30,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { ZoomApiFetcher } from "./process-meeting-participants"
+import { encodeZoomUuid, isSessionOfSharedNumber, pickSessionContact } from "./meeting-occurrence"
 
 // ─── Zoom summary shape (same for webhook payload + REST response) ───
 
@@ -57,12 +58,6 @@ export interface AiSummaryIngestResult {
   errors: Array<{ meeting_id: string; error: string }>
 }
 
-function encodeMeetingUuid(uuid: string): string {
-  // Per Zoom docs, UUIDs containing `/` or starting with `/` must be
-  // double URL-encoded in the path.
-  return encodeURIComponent(encodeURIComponent(uuid))
-}
-
 /** Pull the AI Companion summary for one meeting via the REST API. */
 async function fetchZoomAiSummary(
   zoomGet: ZoomApiFetcher,
@@ -78,10 +73,12 @@ async function fetchZoomAiSummary(
     return (await res.json()) as ZoomMeetingSummary
   }
 
-  // Prefer the UUID (unique per occurrence); fall back to the numeric id.
+  // By UUID (one session). Never fall back to the numeric id when we have
+  // one: for a Personal Meeting Room / recurring meeting, /meetings/{number}
+  // answers with whichever session ran last — another client's summary,
+  // which would then be stored under THIS session's uuid.
   if (meeting.zoom_uuid) {
-    const byUuid = await tryOne(encodeMeetingUuid(meeting.zoom_uuid))
-    if (byUuid) return byUuid
+    return tryOne(encodeZoomUuid(meeting.zoom_uuid))
   }
   if (meeting.zoom_meeting_id != null) {
     return tryOne(String(meeting.zoom_meeting_id))
@@ -255,23 +252,23 @@ function renderAiNote(summary: ZoomMeetingSummary, startTime: string | null): st
   return lines.join("\n").trim()
 }
 
-/** Resolve the best client contact for a meeting (confirmed > confidence). */
+/**
+ * Resolve the best client contact for one session's row (confirmed >
+ * confidence). On a shared number only this session's own evidence counts —
+ * see pickSessionContact.
+ */
 async function resolveContactId(
   admin: SupabaseClient,
-  zoomMeetingId: string,
+  meeting: { id: string; zoom_meeting_id: string | number | null; meeting_type: number | null },
 ): Promise<string | null> {
   const { data: links } = await admin
     .from("zoom_meeting_clients")
-    .select("contact_id, confidence, needs_review")
-    .eq("zoom_meeting_id", zoomMeetingId)
+    .select("contact_id, confidence, needs_review, link_source")
+    .eq("zoom_meeting_id", meeting.id)
     .not("contact_id", "is", null)
 
   if (!links || links.length === 0) return null
-  const sorted = [...links].sort((a, b) => {
-    if (!!a.needs_review !== !!b.needs_review) return a.needs_review ? 1 : -1
-    return (b.confidence ?? 0) - (a.confidence ?? 0)
-  })
-  return sorted[0]?.contact_id ?? null
+  return pickSessionContact(links, await isSessionOfSharedNumber(admin, meeting))
 }
 
 /**
@@ -303,7 +300,7 @@ export async function ingestPendingZoomAiSummaries(
   // or already summarized).
   const { data: meetings, error } = await admin
     .from("zoom_meetings")
-    .select("id, zoom_uuid, zoom_meeting_id, topic, start_time, raw_data")
+    .select("id, zoom_uuid, zoom_meeting_id, meeting_type, topic, start_time, raw_data")
     .gte("start_time", sinceIso)
     .order("start_time", { ascending: false })
     .limit(limit * 6)
@@ -320,12 +317,14 @@ export async function ingestPendingZoomAiSummaries(
     const raw = (m.raw_data as Record<string, unknown> | null) ?? {}
 
     try {
-      // 1. Skip if a transcript with text already exists — that path wins.
-      if (m.zoom_meeting_id != null) {
+      // 1. Skip if this session has a transcript with text — that path wins.
+      //    By session uuid: another session of a shared number having a
+      //    transcript says nothing about this one.
+      if (m.zoom_uuid != null) {
         const { data: t } = await admin
           .from("zoom_transcripts")
           .select("id")
-          .eq("zoom_meeting_id", m.zoom_meeting_id)
+          .eq("zoom_meeting_uuid", m.zoom_uuid)
           .not("text_content", "is", null)
           .limit(1)
           .maybeSingle()
@@ -336,7 +335,11 @@ export async function ingestPendingZoomAiSummaries(
       }
 
       // 2. Must be client-linked.
-      const contactId = await resolveContactId(admin, meetingId)
+      const contactId = await resolveContactId(admin, {
+        id: meetingId,
+        zoom_meeting_id: (m.zoom_meeting_id as string | number | null) ?? null,
+        meeting_type: (m.meeting_type as number | null) ?? null,
+      })
       if (!contactId) {
         result.skippedNoClient += 1
         continue

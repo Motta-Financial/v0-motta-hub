@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/auth/require-admin"
 import { summarizeTranscript } from "@/lib/zoom/summarize-transcript"
+import { resolveOccurrence } from "@/lib/zoom/meeting-occurrence"
 
 /**
  * Manual "(re)generate summary" trigger for a single Zoom meeting's
@@ -28,11 +29,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ zoo
 
   const admin = createAdminClient()
 
-  // Find the best transcript for this meeting (prefer one with text).
-  const { data: transcript, error } = await admin
+  // A meeting number can hold many sessions (Personal Meeting Room, recurring
+  // meeting): summarize the one session the caller means (?uuid= or ?start=),
+  // never the newest transcript under the number — that's another client's.
+  const occurrence = await resolveOccurrence(admin, numericId, {
+    uuid: req.nextUrl.searchParams.get("uuid"),
+    start: req.nextUrl.searchParams.get("start"),
+  })
+  if (occurrence.ambiguous) {
+    return NextResponse.json(
+      { error: "This meeting number holds several sessions; pass ?uuid= or ?start= to pick one" },
+      { status: 409 },
+    )
+  }
+
+  // Find the best transcript for this session (prefer one with text).
+  let transcriptQuery = admin
     .from("zoom_transcripts")
-    .select("id, zoom_meeting_id, text_content, summary_status, summary_note_id, summary_attempts")
+    .select("id, zoom_meeting_id, zoom_meeting_uuid, text_content, summary_status, summary_note_id, summary_attempts")
     .eq("zoom_meeting_id", numericId)
+  if (occurrence.uuid) transcriptQuery = transcriptQuery.eq("zoom_meeting_uuid", occurrence.uuid)
+  const { data: transcript, error } = await transcriptQuery
     .not("text_content", "is", null)
     .order("created_at", { ascending: false })
     .limit(1)

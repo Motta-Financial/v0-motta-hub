@@ -35,6 +35,7 @@ import {
 } from "@/lib/zoom-auth"
 import { processRecentZoomParticipants } from "@/lib/zoom/process-meeting-participants"
 import { mergeBlobLinks, type ZoomRecordingFile } from "@/lib/zoom/ingest-recording-files"
+import { ensureSessionRow } from "@/lib/zoom/meeting-occurrence"
 
 export interface SyncRecentZoomDataOptions {
   supabase: SupabaseClient
@@ -84,30 +85,57 @@ function toZoomDateParam(d: Date): string {
 }
 
 /**
- * Collapse rows that share a `zoom_meeting_id`, keeping the most recent
- * occurrence by `start_time`. Recurring meetings come back from Zoom's
- * list endpoints as one entry PER OCCURRENCE with the same meeting id,
- * and `zoom_meetings` is keyed on `zoom_meeting_id` — feeding duplicates
- * into a single upsert batch fails with Postgres's "ON CONFLICT DO
- * UPDATE command cannot affect row a second time" (this broke the
- * hourly sweep for every host with recurring meetings from May 12 to
- * July 10, 2026).
+ * Collapse rows that share a `zoom_uuid`, keeping the most recent by
+ * `start_time`, and drop rows with no uuid. `zoom_meetings` is keyed on the
+ * uuid — one row per SESSION (migration 433); a Personal Meeting Room /
+ * recurring meeting reuses its numeric id for every session, so keying on
+ * the id collapsed every session into one row. A recurring series can still
+ * come back once per upcoming occurrence under one series uuid, and feeding
+ * duplicates into a single upsert batch fails with Postgres's "ON CONFLICT
+ * DO UPDATE command cannot affect row a second time" (this broke the hourly
+ * sweep for every host with recurring meetings from May 12 to July 10, 2026).
  */
-function dedupeByMeetingId<
-  T extends { zoom_meeting_id: unknown; start_time?: string | null },
->(rows: T[]): T[] {
-  const byId = new Map<string, T>()
+function dedupeByUuid<T extends { zoom_uuid?: string | null; start_time?: string | null }>(
+  rows: T[],
+): T[] {
+  const byUuid = new Map<string, T>()
   for (const row of rows) {
-    const key = String(row.zoom_meeting_id)
-    const existing = byId.get(key)
-    if (
-      !existing ||
-      (row.start_time ?? "") >= (existing.start_time ?? "")
-    ) {
-      byId.set(key, row)
+    if (!row.zoom_uuid) continue
+    const existing = byUuid.get(row.zoom_uuid)
+    if (!existing || (row.start_time ?? "") >= (existing.start_time ?? "")) {
+      byUuid.set(row.zoom_uuid, row)
     }
   }
-  return Array.from(byId.values())
+  return Array.from(byUuid.values())
+}
+
+/**
+ * Make sure every session in `rows` has its own zoom_meetings row before a
+ * batch upsert, so a new session of a known number either adopts the
+ * number's scheduled placeholder or gets a row of its own (see
+ * ensureSessionRow) instead of the upsert inserting a bare duplicate.
+ */
+async function ensureSessionRows(
+  supabase: SupabaseClient,
+  rows: Array<{ zoom_meeting_id: number; zoom_uuid: string; start_time?: string | null; meeting_type?: number | null }>,
+): Promise<void> {
+  const known = new Set<string>()
+  for (let i = 0; i < rows.length; i += 100) {
+    const { data } = await supabase
+      .from("zoom_meetings")
+      .select("zoom_uuid")
+      .in("zoom_uuid", rows.slice(i, i + 100).map((r) => r.zoom_uuid))
+    for (const r of data ?? []) known.add(r.zoom_uuid as string)
+  }
+  for (const r of rows) {
+    if (known.has(r.zoom_uuid)) continue
+    await ensureSessionRow(supabase, {
+      numericId: Number(r.zoom_meeting_id),
+      uuid: r.zoom_uuid,
+      startTime: r.start_time ?? null,
+      meetingType: r.meeting_type ?? null,
+    })
+  }
 }
 
 export async function syncRecentZoomData(
@@ -188,7 +216,7 @@ export async function syncRecentZoomData(
           }
           const meetings = data.meetings ?? []
           if (meetings.length > 0) {
-            const rows = dedupeByMeetingId(meetings.map((m) => ({
+            const rows = dedupeByUuid(meetings.map((m) => ({
               zoom_meeting_id: m.id,
               zoom_uuid: m.uuid,
               zoom_host_id: m.host_id,
@@ -218,9 +246,10 @@ export async function syncRecentZoomData(
               raw_data: m,
               synced_at: new Date().toISOString(),
             })))
+            await ensureSessionRows(supabase, rows)
             const { error } = await supabase
               .from("zoom_meetings")
-              .upsert(rows, { onConflict: "zoom_meeting_id" })
+              .upsert(rows, { onConflict: "zoom_uuid" })
             if (error) throw new Error(`zoom_meetings upsert: ${error.message}`)
             meetingsUpserted += rows.length
           }
@@ -306,9 +335,10 @@ export async function syncRecentZoomData(
             // the tag-counts view + the todo sweep can see it even
             // when Zoom's `meetings?type=previous_meetings` somehow
             // missed it (instant meetings, breakout rooms, etc).
-            // Recurring meetings appear once per recorded occurrence
-            // with the same rec.id — dedupe before the keyed upsert.
-            const meetingRows = dedupeByMeetingId(recs.map((rec) => ({
+            // Each recording is one SESSION (its own uuid) — a Personal
+            // Meeting Room / recurring meeting records many sessions under
+            // one rec.id, and each gets its own row.
+            const meetingRows = dedupeByUuid(recs.map((rec) => ({
               zoom_meeting_id: rec.id,
               zoom_uuid: rec.uuid,
               topic: rec.topic,
@@ -322,10 +352,11 @@ export async function syncRecentZoomData(
               raw_data: rec,
               synced_at: new Date().toISOString(),
             })))
+            await ensureSessionRows(supabase, meetingRows)
             await supabase
               .from("zoom_meetings")
               .upsert(meetingRows, {
-                onConflict: "zoom_meeting_id",
+                onConflict: "zoom_uuid",
                 // Don't overwrite richer data with the recording
                 // payload if a `meetings` upsert already populated
                 // it. `ignoreDuplicates: true` would skip too much,
