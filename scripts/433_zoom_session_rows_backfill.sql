@@ -11,7 +11,9 @@
 --   2. Adopts a scheduled placeholder: when a number has exactly one real
 --      session and one zoom_meetings row whose uuid is the SCHEDULED uuid
 --      (never seen in recordings, transcripts or participants), that row IS
---      the session — re-key it rather than adding a duplicate.
+--      the session — re-key it rather than adding a duplicate. The scheduled
+--      uuid is kept in scheduled_uuid (Zoom's lists keep returning it, and a
+--      sync must not insert a twin), and its todos' deep links are rewritten.
 --   3. Creates a row for every other recorded/transcribed session, copying
 --      series-level fields (host, connection, join url, passcode) from the
 --      number's existing row. Never copies raw_data: it carries the other
@@ -98,14 +100,26 @@ placeholder as (
     and not exists (select 1 from public.zoom_meetings z where z.zoom_uuid = s.u)
 ),
 retask as (
-  update public.tasks t set zoom_meeting_uuid = p.u
+  update public.tasks t
+  set zoom_meeting_uuid = p.u,
+      source_url = replace(t.source_url, 'uuid=' || replace(replace(replace(zm.zoom_uuid, '+', '%2B'), '/', '%2F'), '=', '%3D'),
+                                         'uuid=' || replace(replace(replace(p.u, '+', '%2B'), '/', '%2F'), '=', '%3D'))
   from placeholder p join public.zoom_meetings zm on zm.id = p.id
   where t.zoom_meeting_uuid = zm.zoom_uuid
 )
 update public.zoom_meetings zm
-set zoom_uuid = p.u, updated_at = now()
+set scheduled_uuid = coalesce(zm.scheduled_uuid, zm.zoom_uuid), zoom_uuid = p.u, updated_at = now()
 from placeholder p
 where zm.id = p.id;
+
+-- ── 2b. Retire #407's blanket status ─────────────────────────────────────
+-- 'skipped_shared_number' meant "a shared number, so no client is safe".
+-- Per-session links replace that; as 'skipped_no_client' these transcripts
+-- re-queue (432's trigger) once THEIR session gets a confident client.
+-- Status only — nothing is summarized or filed here.
+update public.zoom_transcripts
+set summary_status = 'skipped_no_client'
+where summary_status = 'skipped_shared_number';
 
 -- ── 3. A row for every other session ─────────────────────────────────────
 insert into public.zoom_meetings (

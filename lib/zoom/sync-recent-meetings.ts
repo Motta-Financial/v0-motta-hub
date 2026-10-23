@@ -114,21 +114,30 @@ function dedupeByUuid<T extends { zoom_uuid?: string | null; start_time?: string
  * batch upsert, so a new session of a known number either adopts the
  * number's scheduled placeholder or gets a row of its own (see
  * ensureSessionRow) instead of the upsert inserting a bare duplicate.
+ *
+ * Returns the rows safe to upsert by zoom_uuid: a uuid that is some row's
+ * scheduled_uuid (a one-off meeting whose row was re-keyed to the session
+ * that ran) is dropped — Zoom's lists keep returning it, and upserting it
+ * would insert a twin of that session.
  */
-async function ensureSessionRows(
-  supabase: SupabaseClient,
-  rows: Array<{ zoom_meeting_id: number; zoom_uuid: string; start_time?: string | null; meeting_type?: number | null }>,
-): Promise<void> {
+async function ensureSessionRows<
+  T extends { zoom_meeting_id: number; zoom_uuid: string; start_time?: string | null; meeting_type?: number | null },
+>(supabase: SupabaseClient, rows: T[]): Promise<T[]> {
   const known = new Set<string>()
+  const aliased = new Set<string>()
   for (let i = 0; i < rows.length; i += 100) {
-    const { data } = await supabase
-      .from("zoom_meetings")
-      .select("zoom_uuid")
-      .in("zoom_uuid", rows.slice(i, i + 100).map((r) => r.zoom_uuid))
-    for (const r of data ?? []) known.add(r.zoom_uuid as string)
+    const batch = rows.slice(i, i + 100).map((r) => r.zoom_uuid)
+    const [byUuid, byAlias] = await Promise.all([
+      supabase.from("zoom_meetings").select("zoom_uuid").in("zoom_uuid", batch),
+      supabase.from("zoom_meetings").select("scheduled_uuid").in("scheduled_uuid", batch),
+    ])
+    if (byUuid.error) throw new Error(`zoom_meetings by uuid: ${byUuid.error.message}`)
+    if (byAlias.error) throw new Error(`zoom_meetings by scheduled uuid: ${byAlias.error.message}`)
+    for (const r of byUuid.data ?? []) known.add(r.zoom_uuid as string)
+    for (const r of byAlias.data ?? []) aliased.add(r.scheduled_uuid as string)
   }
   for (const r of rows) {
-    if (known.has(r.zoom_uuid)) continue
+    if (known.has(r.zoom_uuid) || aliased.has(r.zoom_uuid)) continue
     await ensureSessionRow(supabase, {
       numericId: Number(r.zoom_meeting_id),
       uuid: r.zoom_uuid,
@@ -136,6 +145,7 @@ async function ensureSessionRows(
       meetingType: r.meeting_type ?? null,
     })
   }
+  return rows.filter((r) => !aliased.has(r.zoom_uuid))
 }
 
 export async function syncRecentZoomData(
@@ -246,10 +256,10 @@ export async function syncRecentZoomData(
               raw_data: m,
               synced_at: new Date().toISOString(),
             })))
-            await ensureSessionRows(supabase, rows)
+            const upsertRows = await ensureSessionRows(supabase, rows)
             const { error } = await supabase
               .from("zoom_meetings")
-              .upsert(rows, { onConflict: "zoom_uuid" })
+              .upsert(upsertRows, { onConflict: "zoom_uuid" })
             if (error) throw new Error(`zoom_meetings upsert: ${error.message}`)
             meetingsUpserted += rows.length
           }
@@ -352,10 +362,10 @@ export async function syncRecentZoomData(
               raw_data: rec,
               synced_at: new Date().toISOString(),
             })))
-            await ensureSessionRows(supabase, meetingRows)
+            const upsertMeetingRows = await ensureSessionRows(supabase, meetingRows)
             await supabase
               .from("zoom_meetings")
-              .upsert(meetingRows, {
+              .upsert(upsertMeetingRows, {
                 onConflict: "zoom_uuid",
                 // Don't overwrite richer data with the recording
                 // payload if a `meetings` upsert already populated

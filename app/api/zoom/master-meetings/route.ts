@@ -181,6 +181,15 @@ export async function POST() {
           // Room / recurring meeting. raw_data captures the entire payload
           // for any future fields we haven't mapped.
           if (!meeting.uuid) continue
+          // A one-off meeting whose row was re-keyed to the session that ran
+          // keeps this (scheduled) uuid as an alias — upserting it by
+          // zoom_uuid would insert a twin of that session.
+          const { data: aliasRow } = await supabaseAdmin
+            .from("zoom_meetings")
+            .select("id")
+            .eq("scheduled_uuid", meeting.uuid)
+            .maybeSingle()
+          if (aliasRow) continue
           const { error } = await supabaseAdmin.from("zoom_meetings").upsert(
             {
               zoom_meeting_id: meeting.id,

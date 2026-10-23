@@ -20,7 +20,10 @@
  *
  * Also checks the structure 433 promises: every recorded/transcribed session
  * has its own row, participant rows sit on their own session, no booking is
- * bridged to two sessions, no bridge is more than 30 min from its session.
+ * bridged to two sessions, no bridge is more than 30 min from its session,
+ * no row duplicates an adopted row's scheduled uuid, no todo still links to
+ * a re-keyed row's old uuid, and no transcript keeps #407's
+ * skipped_shared_number status.
  *
  * Prints counts and row ids only — never names, emails or meeting topics.
  * Exits 1 when any check fails.
@@ -91,6 +94,11 @@ export async function runChecks(db: Client, opts: { verbose?: boolean } = {}): P
       (select count(*) from zoom_meetings zm join calendly_events ce on ce.id = zm.calendly_event_id
          where zm.zoom_meeting_id in (select n from shared)
            and (zm.start_time is null or abs(extract(epoch from (ce.start_time - zm.start_time))) > 1800))::int as bridges_off_session,
+      (select count(*) from zoom_meetings a join zoom_meetings b
+         on b.scheduled_uuid = a.zoom_uuid and b.id <> a.id)::int as twins_of_adopted_rows,
+      (select count(*) from tasks t join zoom_meetings zm on zm.scheduled_uuid is not null
+         and position('uuid=' || replace(replace(replace(zm.scheduled_uuid, '+', '%2B'), '/', '%2F'), '=', '%3D') in t.source_url) > 0)::int as todo_links_to_old_uuid,
+      (select count(*) from zoom_transcripts where summary_status = 'skipped_shared_number')::int as old_shared_number_status,
       (select count(*) from (select zoom_meeting_id from zoom_meetings group by 1 having count(*) > 1) x)::int as numbers_with_several_rows,
       exists (select 1 from pg_indexes where indexname = 'zoom_meetings_zoom_uuid_key')::int as has_uuid_key,
       exists (select 1 from pg_constraint where conname = 'zoom_meetings_zoom_meeting_id_key')::int as has_number_key
@@ -104,6 +112,9 @@ export async function runChecks(db: Client, opts: { verbose?: boolean } = {}): P
   check("participant rows sitting on another session's row", structure.participants_on_other_session, structure.participants_on_other_session === 0)
   check("Calendly bookings bridged to two sessions of one number", structure.bookings_on_two_sessions, structure.bookings_on_two_sessions === 0)
   check("bridges more than 30 min from their session (shared numbers)", structure.bridges_off_session, structure.bridges_off_session === 0)
+  check("rows duplicating an adopted row's scheduled uuid", structure.twins_of_adopted_rows, structure.twins_of_adopted_rows === 0)
+  check("todo deep links still on a re-keyed row's old uuid", structure.todo_links_to_old_uuid, structure.todo_links_to_old_uuid === 0)
+  check("transcripts still on #407's skipped_shared_number status", structure.old_shared_number_status, structure.old_shared_number_status === 0)
 
   const { rows: links } = await db.query<LinkRow>(`
     with shared as (${shared})
