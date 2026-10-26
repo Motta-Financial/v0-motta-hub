@@ -508,13 +508,30 @@ async function carrySeriesOccurrenceTags(
  * every link that predates per-session linking and that the session itself
  * doesn't corroborate).
  */
+type ContactEmails = { primary_email: string | null; secondary_email: string | null }
+const hasEmail = (c: ContactEmails | ContactEmails[] | null | undefined) => {
+  const one = Array.isArray(c) ? c[0] : c
+  return !!(one?.primary_email || one?.secondary_email)
+}
+
 export function pickSessionContact(
-  links: Array<{ contact_id: string | null; confidence: number | null; needs_review: boolean | null; link_source: string | null }>,
+  links: Array<{
+    contact_id: string | null
+    confidence: number | null
+    needs_review: boolean | null
+    link_source: string | null
+    /** The linked contact's emails (contacts embed), when selected. */
+    contact?: ContactEmails | ContactEmails[] | null
+  }>,
   shared: boolean,
 ): string | null {
   const usable = links.filter(
     (l) =>
       l.contact_id &&
+      // A participant-made ('auto') link to a contact with no email came from
+      // a name alone — a guest, a device or a notetaker bot, auto-created
+      // anew on each session. Never file meeting notes on one.
+      !(l.link_source === "auto" && l.contact !== undefined && !hasEmail(l.contact)) &&
       (!shared || (l.needs_review !== true && ["auto", "calendly_bridge", "manual"].includes(l.link_source ?? ""))),
   )
   // Prefer confirmed links (not needs_review), then highest confidence.
