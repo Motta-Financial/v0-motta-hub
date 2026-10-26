@@ -138,6 +138,10 @@ export function TaxReturnsClient() {
 
   const availableYears = data?.availableYears ?? []
 
+  // A viewer only makes sense for one specific form — with "All forms" the
+  // rows are a mix, so a single "View <form>" action would be misleading.
+  const showViewColumn = form !== "all"
+
   // Form mix for pie chart — naturally respects the active year filter
   // because byForm comes from the API response which already applies
   // both the form and taxYear params. No extra client-side calculation.
@@ -422,7 +426,7 @@ export function TaxReturnsClient() {
                     <TableHead className="w-[120px]">Preparer</TableHead>
                     <TableHead className="w-[110px]">Related</TableHead>
                     <TableHead className="w-[140px]">Modified</TableHead>
-                    <TableHead className="w-[80px]">View</TableHead>
+                    {showViewColumn && <TableHead className="w-[100px]">View</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -478,23 +482,25 @@ export function TaxReturnsClient() {
                           ? new Date(r.proconnect_modified_at).toLocaleDateString()
                           : "—"}
                       </TableCell>
-                      <TableCell>
-                        {(() => {
-                          // Formatted view where the Hub has one (1040, 1065);
-                          // every other return opens in the field viewer.
-                          const link = returnViewLink(r.id, r.return_type, r.proconnect_client_id)
-                          const form = link.form ?? (r.form !== "Unknown" ? r.form : null)
-                          return (
-                            <Link
-                              href={link.href}
-                              title={link.formatted ? undefined : "Opens the field viewer — no formatted view for this form yet"}
-                              className={`text-xs font-medium hover:underline whitespace-nowrap ${link.formatted ? "text-[#9CA757]" : "text-muted-foreground"}`}
-                            >
-                              {form ? `View ${form}` : "View return"}
-                            </Link>
-                          )
-                        })()}
-                      </TableCell>
+                      {showViewColumn && (
+                        <TableCell>
+                          {(() => {
+                            // Formatted view where the Hub has one (see
+                            // lib/forms/form-views.ts); otherwise the field viewer.
+                            const link = returnViewLink(r.id, r.return_type, r.proconnect_client_id)
+                            const viewForm = link.form ?? (r.form !== "Unknown" ? r.form : null)
+                            return (
+                              <Link
+                                href={link.href}
+                                title={link.formatted ? undefined : "Opens the field viewer — no formatted view for this form yet"}
+                                className={`text-xs font-medium hover:underline whitespace-nowrap ${link.formatted ? "text-[#9CA757]" : "text-muted-foreground"}`}
+                              >
+                                {viewForm ? `View ${viewForm}` : "View return"}
+                              </Link>
+                            )
+                          })()}
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>
