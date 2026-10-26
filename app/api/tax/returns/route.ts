@@ -10,6 +10,51 @@ const NONPROFIT_FORMS = ["990"]
 
 const PAGE_SIZE = 50
 
+// Engagement titles follow loose conventions such as
+// "1065_Wealthline LLC_2025", "2025_On The Spot Compost LLC_1065" and
+// "Cisse Contracting Services%2Cllc %28Form 1065%29". Strip the form type,
+// tax year and "COPY" markers to leave just the client name.
+function clientNameFromEngagementName(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  let text = raw
+  try {
+    text = decodeURIComponent(raw)
+  } catch {
+    // Malformed escape sequence: use the raw title.
+  }
+  const cleaned = text
+    .replace(/\(\s*form\s+[0-9a-z]+\s*\)/gi, " ")
+    .replace(/\s+COPY\s*$/i, "")
+    .split("_")
+    .map((part) => part.trim())
+    .filter((part) => part && !/^(19|20)\d{2}$/.test(part) && !/^(1040|1041|1065|1120S?|990|709)$/i.test(part))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+  return cleaned || null
+}
+
+// Entities (partnerships, corps) often have no display_name in ProConnect,
+// only a business_name; some clients have neither and only the engagement title.
+function resolveClientName(eng: {
+  client_display_name?: string | null
+  client_business_name?: string | null
+  client_first_name?: string | null
+  client_last_name?: string | null
+  engagement_name?: string | null
+}): string | null {
+  const personal = [eng.client_first_name, eng.client_last_name]
+    .map((part) => part?.trim())
+    .filter(Boolean)
+    .join(" ")
+  return (
+    eng.client_display_name?.trim() ||
+    eng.client_business_name?.trim() ||
+    personal ||
+    clientNameFromEngagementName(eng.engagement_name)
+  )
+}
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url)
@@ -106,7 +151,7 @@ export async function GET(req: Request) {
     // Apply search filter if provided
     if (search) {
       dataQuery = dataQuery.or(
-        `client_display_name.ilike.%${search}%,proconnect_client_id.ilike.%${search}%,preparer_name.ilike.%${search}%`,
+        `client_display_name.ilike.%${search}%,client_business_name.ilike.%${search}%,client_first_name.ilike.%${search}%,client_last_name.ilike.%${search}%,engagement_name.ilike.%${search}%,proconnect_client_id.ilike.%${search}%,preparer_name.ilike.%${search}%`,
       )
     }
 
@@ -123,7 +168,7 @@ export async function GET(req: Request) {
         id: eng.engagement_id,
         engagement_id: eng.engagement_id,
         proconnect_client_id: eng.proconnect_client_id,
-        client_name: eng.client_display_name || null,
+        client_name: resolveClientName(eng),
         tax_year: eng.tax_year,
         form: formType,
         return_type: eng.return_type,
