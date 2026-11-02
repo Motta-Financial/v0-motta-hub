@@ -23,6 +23,7 @@
  */
 
 import { useRef, useState, useEffect } from "react"
+import { upload } from "@vercel/blob/client"
 import {
   AlertCircle,
   CheckCircle2,
@@ -143,19 +144,24 @@ export function IssueNewEditionDialog({
       return
     }
 
+    if (file.size > 25 * 1024 * 1024) {
+      setUploadError("File too large — max 25 MB per issue.")
+      return
+    }
+
     setUploading(true)
     try {
-      const fd = new FormData()
-      fd.append("file", file)
-      const res = await fetch("/api/motta-alliance/upload", {
-        method: "POST",
-        body: fd,
+      const blob = await upload(`motta-alliance/pending/${file.name}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/motta-alliance/upload-token",
+        contentType: "application/pdf",
       })
-      const json = await res.json()
-      if (!res.ok) {
-        throw new Error(json?.error || `Upload failed (${res.status})`)
-      }
-      setPdf(json.attachment)
+      setPdf({
+        url: blob.url,
+        pathname: blob.pathname,
+        name: file.name,
+        size_bytes: file.size,
+      })
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed")
     } finally {
