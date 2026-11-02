@@ -124,7 +124,7 @@ async function resolveContactId(
 
   const { data: links } = await admin
     .from("zoom_meeting_clients")
-    .select("contact_id, confidence, needs_review, link_source")
+    .select("contact_id, confidence, needs_review, link_source, contact:contacts(primary_email, secondary_email)")
     .eq("zoom_meeting_id", zm.id)
     .not("contact_id", "is", null)
 
