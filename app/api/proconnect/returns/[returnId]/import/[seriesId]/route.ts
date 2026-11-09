@@ -42,7 +42,8 @@
  * Post-write verification:
  *   A commit re-exports the return and checks that each entry actually
  *   landed, because Intuit reports entries it did not apply as applied
- *   (open defect, confirmed 2026-08-07 — see verifyEntriesLanded). A job
+ *   (defect 3, confirmed 2026-08-07; Intuit shipped a fix 2026-11 — we
+ *   still verify, see verifyEntriesLanded). A job
  *   with unlanded entries is recorded as "partial", never "succeeded",
  *   and the per-entry addresses come back on `verification.unlanded`.
  *   That same Export doubles as the snapshot refresh.
@@ -57,6 +58,7 @@ import {
   exportReturnData,
   verifyEntriesLanded,
   MAX_ENTRIES_PER_IMPORT,
+  IMPORT_SUB_FIELDS,
   type ImportEntry,
   type ImportRequest,
   type ImportVerification,
@@ -117,12 +119,33 @@ export async function POST(
     return NextResponse.json({ error: "version must be string or null" }, { status: 400 })
   }
 
+  // Intuit treats a whitespace-only sub-field as "leave unchanged", not a
+  // delete — so " " would return 200 and change nothing, and verification
+  // (which also reads it as unchanged) would call that a success. Refuse it:
+  // send "" to delete, or omit the key to leave the field alone.
+  const blank = body.entries.flatMap((e) =>
+    IMPORT_SUB_FIELDS.filter((k) => {
+      const v = (e as Record<string, unknown>)[k]
+      return typeof v === "string" && v !== "" && v.trim() === ""
+    }).map((k) => `${e.prefixId}/${e.codeId}/${e.suffixId}.${k}`),
+  )
+  if (blank.length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          'Whitespace-only values are ignored by ProConnect. Send "" to clear a field, or omit it to leave it unchanged.',
+        fields: blank,
+      },
+      { status: 400 },
+    )
+  }
+
   const dryRun = Boolean(body.dryRun)
 
   // ------------------------------------------------------------------ write allowlist
-  // Intuit has no delete/clear in the Import API, so a wrong returnId is
-  // not recoverable through the API — the only fix is deleting the whole
-  // return in the PTO UI. Commits are therefore restricted to returns
+  // A wrong write can now be cleared (Intuit added "" deletes 2026-11), but
+  // the overwritten value is gone for good, so a wrong returnId still means
+  // lost data on a real client's return. Commits are therefore restricted to returns
   // explicitly designated for testing. Fails CLOSED: an unset env var
   // means no return may be committed to.
   //
@@ -306,19 +329,46 @@ export async function POST(
       })
       .eq("id", jobId)
 
+    // Intuit answers a read-only return with 409 ReturnReadOnly. This route
+    // already uses 409 for "stale dry run", so a lock always goes out as 423
+    // — the status callers treat as locked. The audit row keeps Intuit's 409.
+    if (result.error.kind === "locked") {
+      const reason = "This return is read-only in ProConnect."
+      return NextResponse.json(
+        {
+          jobId,
+          error: reason,
+          upstream: result.error,
+          lock: { locked: true, code: "proconnect_read_only", reason },
+          intuitTid: result.intuitTid,
+        },
+        { status: 423 },
+      )
+    }
+    // Any other upstream 409 (e.g. a version conflict) must not reach the
+    // caller as 409 — callers read this route's 409 as "stale dry run".
+    // `error` is always a string — both editors render it as text. The
+    // structured upstream error rides along on `upstream`.
+    const outStatus = result.error.status === 409 ? 502 : result.error.status || 500
     return NextResponse.json(
-      { jobId, error: result.error, lock, intuitTid: result.intuitTid },
-      { status: result.error.status || 500 },
+      {
+        jobId,
+        error: `ProConnect rejected the import (HTTP ${result.error.status || "network"}, ${result.error.kind}).`,
+        upstream: result.error,
+        lock,
+        intuitTid: result.intuitTid,
+      },
+      { status: outStatus },
     )
   }
 
   const seriesResult = result.data.results?.[0] ?? null
 
   // ------------------------------------------------------------------ verify it landed
-  // Intuit defect 3 (open as of 2026-08-07): the API reports entries it did
-  // not apply as applied — every clear attempt returned totalImported:1 with
-  // the cell unchanged. So a commit is not "succeeded" because Intuit said
-  // so; it is succeeded because a fresh Export agrees. Dry runs skip this,
+  // Intuit defect 3 (2026-08-07; Intuit says fixed 2026-11): the API reported
+  // entries it did not apply as applied — every clear attempt returned
+  // totalImported:1 with the cell unchanged. Verified fixed 2026-11-09, but a
+  // commit is still not "succeeded" because Intuit said so; it is succeeded because a fresh Export agrees. Dry runs skip this,
   // having changed nothing by definition.
   let verification: ImportVerification | null = null
   if (!dryRun) {

@@ -10,7 +10,8 @@
  *   3  No delete / clear — a written value cannot be removed via the API
  *   4  API-written flag (importSource.isDetailImport) not set on API writes
  *
- * Result of the 2026-08-07 run: 1 and 2 FIXED, 3 and 4 STILL OPEN. Details
+ * Result of the 2026-08-07 run: 1 and 2 FIXED, 3 and 4 STILL OPEN. 4 fixed
+ * 2026-08-18; 3 fixed 2026-11-09 (`clear`: desc "" removed the value). Details
  * and evidence live in the skill's "Known Intuit defects" section.
  *
  * Commands
@@ -439,9 +440,9 @@ async function rawImport(
 
 /**
  * Read-only check of verifyEntriesLanded() against real Export data. The
- * sentinel return is the ideal fixture: s52/p25/c800 holds the probe text
- * that defect 3 refused to clear, so a "clear" of it must be reported as
- * clear_ignored — the exact case the helper exists to catch.
+ * sentinel return is the fixture: s52/p25/c800 held the probe text defect 3
+ * refused to clear until Intuit's fix — the 2026-11-09 `clear` run deleted it
+ * with desc: "", so a delete there must now verify as landed.
  */
 async function selftest(clientId: string, returnId: string) {
   await refreshTokenServerSide()
@@ -453,9 +454,9 @@ async function selftest(clientId: string, returnId: string) {
   }
   const { seriesId, ...addr } = TARGET
   const cases: Array<[string, any[], string | null]> = [
-    ["value that IS present → landed", [{ ...addr, desc: TARGET_TEXT }], null],
-    ["clear of a value that persisted → clear_ignored", [{ ...addr }], "clear_ignored"],
-    ["empty-string clear → clear_ignored", [{ ...addr, desc: "" }], "clear_ignored"],
+    ["omitted sub-fields mean unchanged → not checked", [{ ...addr }], null],
+    ["whitespace-only means unchanged → not checked", [{ ...addr, desc: " " }], null],
+    ["empty-string clear (landed 2026-11-09) → landed", [{ ...addr, desc: "" }], null],
     ["wrong text at a real address → value_mismatch", [{ ...addr, desc: "NOT WHAT IS THERE" }], "value_mismatch"],
     ["address that doesn't exist → absent", [{ ...addr, prefixId: "p99", desc: "x" }], "absent"],
     ["rejected entries are skipped, not counted", [{ ...addr, desc: "NOT WHAT IS THERE" }], null],
