@@ -230,6 +230,18 @@ async function lookupZoomContactEmailByName(
 }
 
 /**
+ * Meeting bots and devices that join calls as participants: AI notetakers
+ * (Fireflies, Otter, Read, Fathom, tl;dv, …) and phones / room systems. They
+ * are never clients.
+ */
+const NOTETAKER_OR_DEVICE =
+  /notetaker|n[oо]t[eе]t[aа]k[eе]r|fireflies|otter\.ai|\bread\.ai\b|fathom|tl;?dv|\bgong\b|avoma|grain\.com|meetgeek|ai companion|\bbot\b|^iphone\b|^ipad\b|^android\b|^galaxy\b|^samsung\b|^call-?in user|^\+?[\d\s().-]{7,}$/i
+
+export function isNotetakerOrDevice(name: string | null, email: string | null): boolean {
+  return NOTETAKER_OR_DEVICE.test(name ?? "") || NOTETAKER_OR_DEVICE.test(email ?? "")
+}
+
+/**
  * Process the participant list for one meeting. Idempotent: re-running
  * is safe because `findOrCreateHubContact` is dedupe-aware and the
  * `zoom_meeting_clients` upsert keys on (zoom_meeting_id, contact_id).
@@ -402,6 +414,18 @@ export async function processOneMeeting(
       } catch {
         // Directory lookup is best-effort only.
       }
+    }
+
+    // Only a participant with an email can become (or match) a Hub contact.
+    // findOrCreateHubContact cannot match on a name alone, so a name-only
+    // participant became a NEW contact on every session — one guest
+    // turned into dozens of duplicate contacts, and devices ("iPhone"),
+    // notetaker bots and teammates joining from personal accounts became
+    // "clients" whose meetings got summary notes. Name-only participants
+    // still go to ALFRED as room context.
+    if (!email || isNotetakerOrDevice(name, email)) {
+      enrichedParticipants.push({ name, email, matched_contact_id: null })
+      continue
     }
 
     try {
