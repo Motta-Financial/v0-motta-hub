@@ -42,7 +42,8 @@
  * Post-write verification:
  *   A commit re-exports the return and checks that each entry actually
  *   landed, because Intuit reports entries it did not apply as applied
- *   (open defect, confirmed 2026-08-07 — see verifyEntriesLanded). A job
+ *   (defect 3, confirmed 2026-08-07; Intuit shipped a fix 2026-11 — we
+ *   still verify, see verifyEntriesLanded). A job
  *   with unlanded entries is recorded as "partial", never "succeeded",
  *   and the per-entry addresses come back on `verification.unlanded`.
  *   That same Export doubles as the snapshot refresh.
@@ -306,6 +307,22 @@ export async function POST(
       })
       .eq("id", jobId)
 
+    // Intuit answers a read-only return with 409 ReturnReadOnly. This route
+    // already uses 409 for "stale dry run", so a lock always goes out as 423
+    // — the status callers treat as locked. The audit row keeps Intuit's 409.
+    if (result.error.kind === "locked") {
+      const reason = "This return is read-only in ProConnect."
+      return NextResponse.json(
+        {
+          jobId,
+          error: reason,
+          upstream: result.error,
+          lock: { locked: true, code: "proconnect_read_only", reason },
+          intuitTid: result.intuitTid,
+        },
+        { status: 423 },
+      )
+    }
     return NextResponse.json(
       { jobId, error: result.error, lock, intuitTid: result.intuitTid },
       { status: result.error.status || 500 },
@@ -315,9 +332,9 @@ export async function POST(
   const seriesResult = result.data.results?.[0] ?? null
 
   // ------------------------------------------------------------------ verify it landed
-  // Intuit defect 3 (open as of 2026-08-07): the API reports entries it did
-  // not apply as applied — every clear attempt returned totalImported:1 with
-  // the cell unchanged. So a commit is not "succeeded" because Intuit said
+  // Intuit defect 3 (2026-08-07; Intuit says fixed 2026-11): the API reported
+  // entries it did not apply as applied — every clear attempt returned
+  // totalImported:1 with the cell unchanged. So a commit is not "succeeded" because Intuit said
   // so; it is succeeded because a fresh Export agrees. Dry runs skip this,
   // having changed nothing by definition.
   let verification: ImportVerification | null = null

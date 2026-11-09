@@ -160,7 +160,7 @@ type ImportPhase =
 function unlanded_label(reason: UnlandedEntry["reason"]): string {
   switch (reason) {
     case "clear_ignored":
-      return "API cannot clear — old value remains"
+      return "Clear didn't take — old value remains"
     case "absent":
       return "Value never appeared on return"
     case "value_mismatch":

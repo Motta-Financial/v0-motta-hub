@@ -95,12 +95,18 @@ export type ImportEntry = {
   prefixId: string
   codeId: string
   suffixId: string
-  val?: string
-  desc?: string
-  src?: string
-  tsj?: "T" | "S" | "J" | "N" | ""
-  source?: string
-  cityAbbrev?: string
+  /**
+   * Sub-field semantics (Intuit, deployed 2026-11): omitted or `null` leaves
+   * the sub-field unchanged; exactly `""` deletes it; whitespace-only (" ")
+   * is treated as omitted — NOT a delete. Each sub-field is independent, so
+   * one entry may write `val` and delete `desc` in the same call.
+   */
+  val?: string | null
+  desc?: string | null
+  src?: string | null
+  tsj?: "T" | "S" | "J" | "N" | "" | null
+  source?: string | null
+  cityAbbrev?: string | null
 }
 
 export type ImportRequest = {
@@ -164,8 +170,12 @@ export type ProconnectApiError =
   /** 403 ACCESS_DENIED — token's firm doesn't own (clientId, returnId). */
   | { kind: "access_denied"; status: 403; body: string }
   | { kind: "not_found"; status: 404; body: string }
-  /** Export-side lock per §A.7 surfaces as 403 RETURN_LOCKED; import side is 423. */
-  | { kind: "locked"; status: 403 | 423; body: string; retryAfterMs?: number }
+  /**
+   * Export-side lock per §A.7 surfaces as 403 RETURN_LOCKED. Import on a
+   * read-only return answers 409 `{"reason":"ReturnReadOnly"}` (deployed
+   * 2026-11; it was a bare 500 before). 423 is the spec's import-side lock.
+   */
+  | { kind: "locked"; status: 403 | 409 | 423; body: string; retryAfterMs?: number }
   | { kind: "rate_limited"; status: 429; body: string; retryAfterMs?: number }
   | { kind: "payload_too_large"; status: 413; body: string }
   | { kind: "bad_request"; status: 400; body: string }
@@ -206,6 +216,9 @@ function classify(status: number, body: string): ProconnectApiError {
     return { kind: "scope_missing", status: 403, body }
   }
   if (status === 404) return { kind: "not_found", status, body }
+  // Any other 409 (e.g. a version conflict) stays "server" — only the
+  // read-only reason means the return is locked.
+  if (status === 409 && upstreamCode === "ReturnReadOnly") return { kind: "locked", status: 409, body }
   if (status === 423) return { kind: "locked", status: 423, body }
   if (status === 429) return { kind: "rate_limited", status, body }
   if (status === 413) return { kind: "payload_too_large", status, body }
@@ -227,9 +240,12 @@ function parseUpstreamErrorCode(body: string): string | null {
     //      same token returns 200. Reading only `errorCode` classified these as
     //      an unattributed 403 and lost the one diagnostic string that explains
     //      what happened.
-    const parsed = JSON.parse(body) as { errorCode?: string; code?: string }
+    //   3. Import on a read-only return (deployed 2026-11, was a bare 500):
+    //        409 { "status": "Failed", "error": "Return is readonly", "reason": "ReturnReadOnly" }
+    const parsed = JSON.parse(body) as { errorCode?: string; code?: string; reason?: string }
     if (typeof parsed.errorCode === "string") return parsed.errorCode
     if (typeof parsed.code === "string") return parsed.code
+    if (typeof parsed.reason === "string") return parsed.reason
     return null
   } catch {
     return null
@@ -486,11 +502,11 @@ export function flattenSeriesMap(data: SeriesMap | undefined): FlatCell[] {
 // ---------------------------------------------------------------------------
 // Post-write verification
 //
-// Intuit defect 3 (open as of 2026-08-07): an entry that the API cannot apply
-// is still reported as applied. Every attempt to clear a value came back
-// `{"totalImported":1,"totalErrors":0}` with a bumped series version and the
-// cell unchanged. So `summary.totalImported` is NOT evidence the return now
-// matches what was sent — the only evidence is a fresh Export.
+// Intuit defect 3 (open 2026-08-07, fixed by Intuit 2026-11): an entry the API
+// could not apply was still reported as applied — every clear came back
+// `{"totalImported":1,"totalErrors":0}` with the cell unchanged. Intuit now
+// deletes a sub-field sent as exactly "". We keep verifying anyway: a 200 is
+// still not evidence the return matches what was sent; only a fresh Export is.
 //
 // Callers that commit must therefore re-export and run the entries through
 // verifyEntriesLanded() before reporting success.
@@ -503,7 +519,7 @@ export type UnlandedEntry = {
   /**
    * absent            — the cell doesn't exist in the export at all
    * value_mismatch    — the cell exists but holds something else
-   * clear_ignored     — we sent an empty/absent value and the old one is still there
+   * clear_ignored     — we sent "" (a delete) and the old value is still there
    */
   reason: "absent" | "value_mismatch" | "clear_ignored"
 }
@@ -528,10 +544,23 @@ function sameValue(sent: string, got: string): boolean {
 }
 
 /**
+ * What a sub-field in an Import entry asks Intuit to do, per its semantics:
+ * omitted / null / whitespace-only → leave alone; exactly "" → delete;
+ * anything else → write.
+ */
+export function subFieldIntent(v: string | null | undefined): "unchanged" | "delete" | "write" {
+  if (v === undefined || v === null) return "unchanged"
+  if (v === "") return "delete"
+  if (v.trim() === "") return "unchanged"
+  return "write"
+}
+
+/**
  * Check that each entry actually landed, given an Export taken AFTER the
  * commit. `rejected` is the errors[] array Intuit returned — those entries
  * are already reported as failures and are skipped here so they aren't
- * counted twice.
+ * counted twice. `val` and `desc` are checked independently; an entry that
+ * asks for no change to either is not counted.
  */
 export function verifyEntriesLanded(
   exportData: ReturnExport,
@@ -549,35 +578,33 @@ export function verifyEntriesLanded(
   for (const entry of entries) {
     const addr = `${entry.prefixId}/${entry.codeId}/${entry.suffixId}`
     if (wasRejected.has(addr)) continue
+
+    const subs = (["val", "desc"] as const)
+      .map((k) => ({ k, sent: entry[k], intent: subFieldIntent(entry[k]) }))
+      .filter((x) => x.intent !== "unchanged")
+    if (subs.length === 0) continue
     checked++
 
     const cell = series?.[entry.prefixId]?.[entry.codeId]?.[entry.suffixId]
     const at = { prefixId: entry.prefixId, codeId: entry.codeId, suffixId: entry.suffixId }
 
-    // A clear: we sent no value, or an empty one. It landed only if the
-    // cell is now gone or empty. This is the case defect 3 always fails.
-    const sentVal = entry.val
-    const sentDesc = entry.desc
-    const isClear =
-      (sentVal === undefined || sentVal === "") && (sentDesc === undefined || sentDesc === "")
-    if (isClear) {
-      const stillSet =
-        cell != null && ((cell.val != null && cell.val !== "") || (cell.desc != null && cell.desc !== ""))
-      if (stillSet) unlanded.push({ ...at, reason: "clear_ignored" })
-      continue
+    let reason: UnlandedEntry["reason"] | null = null
+    for (const { k, sent, intent } of subs) {
+      const got = cell?.[k]
+      const isSet = got != null && String(got) !== ""
+      if (intent === "delete") {
+        // Landed if the cell is gone or this sub-field is now empty.
+        if (isSet) reason = reason ?? "clear_ignored"
+        continue
+      }
+      if (cell == null) {
+        reason = "absent"
+        break
+      }
+      const ok = k === "val" ? sameValue(sent as string, String(got ?? "")) : sent === String(got ?? "")
+      if (!ok) reason = "value_mismatch"
     }
-
-    if (cell == null) {
-      unlanded.push({ ...at, reason: "absent" })
-      continue
-    }
-    if (sentVal !== undefined && !sameValue(sentVal, String(cell.val ?? ""))) {
-      unlanded.push({ ...at, reason: "value_mismatch" })
-      continue
-    }
-    if (sentDesc !== undefined && sentDesc !== String(cell.desc ?? "")) {
-      unlanded.push({ ...at, reason: "value_mismatch" })
-    }
+    if (reason) unlanded.push({ ...at, reason })
   }
 
   return { checked, landed: checked - unlanded.length, unlanded }

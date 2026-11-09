@@ -103,10 +103,19 @@ type CommitState =
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * ProConnect Import treats exactly "" as a delete but whitespace-only as
+ * "leave unchanged" — so a field the user blanked to spaces would silently do
+ * nothing. Blank in the box always means clear.
+ */
+function toImportValue(v: string): string {
+  return v.trim() === "" ? "" : v
+}
+
 function unlanded_reason_label(reason: UnlandedEntry["reason"]): string {
   switch (reason) {
     case "clear_ignored":
-      return "The API cannot clear a value — it reported success but the old value is still on the return."
+      return "The clear didn't take — the API reported success but the old value is still on the return."
     case "absent":
       return "The value never appeared on the return after the write."
     case "value_mismatch":
@@ -182,8 +191,8 @@ export function FieldEditSheet({
     try {
       const entry =
         target.writeKey === "val"
-          ? { prefixId: target.prefixId, codeId: target.codeId, suffixId: target.suffixId, val: newValue }
-          : { prefixId: target.prefixId, codeId: target.codeId, suffixId: target.suffixId, desc: newValue }
+          ? { prefixId: target.prefixId, codeId: target.codeId, suffixId: target.suffixId, val: toImportValue(newValue) }
+          : { prefixId: target.prefixId, codeId: target.codeId, suffixId: target.suffixId, desc: toImportValue(newValue) }
 
       const res = await fetch(
         `/api/proconnect/returns/${target.returnId}/import/${target.seriesId}`,
@@ -225,8 +234,8 @@ export function FieldEditSheet({
     try {
       const entry =
         target.writeKey === "val"
-          ? { prefixId: target.prefixId, codeId: target.codeId, suffixId: target.suffixId, val: newValue }
-          : { prefixId: target.prefixId, codeId: target.codeId, suffixId: target.suffixId, desc: newValue }
+          ? { prefixId: target.prefixId, codeId: target.codeId, suffixId: target.suffixId, val: toImportValue(newValue) }
+          : { prefixId: target.prefixId, codeId: target.codeId, suffixId: target.suffixId, desc: toImportValue(newValue) }
 
       const res = await fetch(
         `/api/proconnect/returns/${target.returnId}/import/${target.seriesId}`,
@@ -552,7 +561,7 @@ export function FieldEditSheet({
                   </>
                 )}
                 <p className="text-destructive">
-                  This cannot be undone. The ProConnect API has no delete or clear — a wrong value can only be overwritten, never removed.
+                  This cannot be undone. A wrong value can be overwritten or cleared afterwards, but the old value is not kept.
                 </p>
               </div>
             </AlertDialogDescription>
