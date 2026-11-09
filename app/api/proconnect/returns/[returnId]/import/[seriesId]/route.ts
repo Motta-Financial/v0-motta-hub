@@ -347,9 +347,17 @@ export async function POST(
     }
     // Any other upstream 409 (e.g. a version conflict) must not reach the
     // caller as 409 — callers read this route's 409 as "stale dry run".
+    // `error` is always a string — both editors render it as text. The
+    // structured upstream error rides along on `upstream`.
     const outStatus = result.error.status === 409 ? 502 : result.error.status || 500
     return NextResponse.json(
-      { jobId, error: result.error, lock, intuitTid: result.intuitTid },
+      {
+        jobId,
+        error: `ProConnect rejected the import (HTTP ${result.error.status || "network"}, ${result.error.kind}).`,
+        upstream: result.error,
+        lock,
+        intuitTid: result.intuitTid,
+      },
       { status: outStatus },
     )
   }
