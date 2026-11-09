@@ -1131,7 +1131,7 @@ export function TaxIntakeClient({ setId }: { setId: string }) {
                   <strong>{data?.importPlan.batches.length} batches</strong> to the ProConnect return.
                 </p>
                 <p className="text-destructive">
-                  This cannot be undone. The ProConnect API has no delete or clear — a wrong value can only be overwritten, never removed.
+                  This cannot be undone. A wrong value can be overwritten or cleared afterwards, but the old value is not kept.
                 </p>
               </div>
             </AlertDialogDescription>

@@ -58,6 +58,7 @@ import {
   exportReturnData,
   verifyEntriesLanded,
   MAX_ENTRIES_PER_IMPORT,
+  IMPORT_SUB_FIELDS,
   type ImportEntry,
   type ImportRequest,
   type ImportVerification,
@@ -118,12 +119,33 @@ export async function POST(
     return NextResponse.json({ error: "version must be string or null" }, { status: 400 })
   }
 
+  // Intuit treats a whitespace-only sub-field as "leave unchanged", not a
+  // delete — so " " would return 200 and change nothing, and verification
+  // (which also reads it as unchanged) would call that a success. Refuse it:
+  // send "" to delete, or omit the key to leave the field alone.
+  const blank = body.entries.flatMap((e) =>
+    IMPORT_SUB_FIELDS.filter((k) => {
+      const v = (e as Record<string, unknown>)[k]
+      return typeof v === "string" && v !== "" && v.trim() === ""
+    }).map((k) => `${e.prefixId}/${e.codeId}/${e.suffixId}.${k}`),
+  )
+  if (blank.length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          'Whitespace-only values are ignored by ProConnect. Send "" to clear a field, or omit it to leave it unchanged.',
+        fields: blank,
+      },
+      { status: 400 },
+    )
+  }
+
   const dryRun = Boolean(body.dryRun)
 
   // ------------------------------------------------------------------ write allowlist
-  // Intuit has no delete/clear in the Import API, so a wrong returnId is
-  // not recoverable through the API — the only fix is deleting the whole
-  // return in the PTO UI. Commits are therefore restricted to returns
+  // A wrong write can now be cleared (Intuit added "" deletes 2026-11), but
+  // the overwritten value is gone for good, so a wrong returnId still means
+  // lost data on a real client's return. Commits are therefore restricted to returns
   // explicitly designated for testing. Fails CLOSED: an unset env var
   // means no return may be committed to.
   //
@@ -323,9 +345,12 @@ export async function POST(
         { status: 423 },
       )
     }
+    // Any other upstream 409 (e.g. a version conflict) must not reach the
+    // caller as 409 — callers read this route's 409 as "stale dry run".
+    const outStatus = result.error.status === 409 ? 502 : result.error.status || 500
     return NextResponse.json(
       { jobId, error: result.error, lock, intuitTid: result.intuitTid },
-      { status: result.error.status || 500 },
+      { status: outStatus },
     )
   }
 
@@ -334,8 +359,8 @@ export async function POST(
   // ------------------------------------------------------------------ verify it landed
   // Intuit defect 3 (2026-08-07; Intuit says fixed 2026-11): the API reported
   // entries it did not apply as applied — every clear attempt returned
-  // totalImported:1 with the cell unchanged. So a commit is not "succeeded" because Intuit said
-  // so; it is succeeded because a fresh Export agrees. Dry runs skip this,
+  // totalImported:1 with the cell unchanged. Verified fixed 2026-11-09, but a
+  // commit is still not "succeeded" because Intuit said so; it is succeeded because a fresh Export agrees. Dry runs skip this,
   // having changed nothing by definition.
   let verification: ImportVerification | null = null
   if (!dryRun) {

@@ -1,8 +1,9 @@
 /**
  * Import write allowlist.
  *
- * Intuit's Import API has no delete/clear (see the import-handoff doc), so a
- * commit to the wrong return is not recoverable through the API. Commits are
+ * Intuit's Import API can clear a field (`""`, since 2026-11) but never
+ * restores what a write overwrote, so a commit to the wrong return is not
+ * recoverable through the API. Commits are
  * therefore restricted to return ids explicitly listed in
  * PROCONNECT_WRITE_ALLOWED_RETURN_IDS (comma-separated, case-insensitive,
  * whitespace-trimmed). An unset env var means no return may be committed to

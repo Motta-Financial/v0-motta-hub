@@ -543,6 +543,9 @@ function sameValue(sent: string, got: string): boolean {
   return Number.isFinite(a) && Number.isFinite(b) && a === b
 }
 
+/** Every value-carrying sub-field an ImportEntry can write, delete or leave alone. */
+export const IMPORT_SUB_FIELDS = ["val", "desc", "src", "tsj", "source", "cityAbbrev"] as const
+
 /**
  * What a sub-field in an Import entry asks Intuit to do, per its semantics:
  * omitted / null / whitespace-only → leave alone; exactly "" → delete;
@@ -559,8 +562,8 @@ export function subFieldIntent(v: string | null | undefined): "unchanged" | "del
  * Check that each entry actually landed, given an Export taken AFTER the
  * commit. `rejected` is the errors[] array Intuit returned — those entries
  * are already reported as failures and are skipped here so they aren't
- * counted twice. `val` and `desc` are checked independently; an entry that
- * asks for no change to either is not counted.
+ * counted twice. Each sub-field in IMPORT_SUB_FIELDS is checked on its own;
+ * an entry that asks for no change to any of them is not counted.
  */
 export function verifyEntriesLanded(
   exportData: ReturnExport,
@@ -579,7 +582,7 @@ export function verifyEntriesLanded(
     const addr = `${entry.prefixId}/${entry.codeId}/${entry.suffixId}`
     if (wasRejected.has(addr)) continue
 
-    const subs = (["val", "desc"] as const)
+    const subs = IMPORT_SUB_FIELDS
       .map((k) => ({ k, sent: entry[k], intent: subFieldIntent(entry[k]) }))
       .filter((x) => x.intent !== "unchanged")
     if (subs.length === 0) continue
