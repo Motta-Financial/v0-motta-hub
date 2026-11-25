@@ -2,6 +2,12 @@ import { type NextRequest, NextResponse, after } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { runIntakeWorkItemFlow } from "@/lib/karbon/intake-work-item-flow"
 
+export const runtime = "nodejs"
+// PATCH can kick off the Karbon work item (create + status/date PATCHes
+// + pinned note) in `after()` when a lead is qualified — the budget is
+// for that, not for the PATCH itself.
+export const maxDuration = 120
+
 /**
  * Detail + triage actions for a single intake submission.
  *
@@ -151,6 +157,22 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
     if (body.organization_id !== undefined) {
       updates.organization_id = body.organization_id || null
+    }
+    // Record WHO made the prospect-side link. `link_method = 'manual'`
+    // is what tells the auto-linker (re-ingest of the same submission,
+    // the bulk sweep) that a person pinned this row — without it the
+    // link looked auto-managed, and the next pass that found no
+    // heuristic match would silently clear it. The cases where a human
+    // has to link by hand are exactly the cases the heuristics miss.
+    if (body.contact_id !== undefined || body.organization_id !== undefined) {
+      if (updates.contact_id || updates.organization_id) {
+        updates.link_method = "manual"
+        updates.linked_at = new Date().toISOString()
+      } else if (body.contact_id !== undefined && body.organization_id !== undefined) {
+        // Both cleared → unlinked, and back under the auto-linker's care.
+        updates.link_method = null
+        updates.linked_at = null
+      }
     }
     if (body.referral_contact_id !== undefined) {
       updates.referral_contact_id = body.referral_contact_id || null

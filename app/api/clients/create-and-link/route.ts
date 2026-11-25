@@ -239,6 +239,14 @@ export async function POST(request: NextRequest) {
         case "jotform_intake_submitter":
           tableName = "jotform_intake_submissions"
           idColumn = "id"
+          // A teammate chose this client. Mark the link `manual` so the
+          // auto-linker (re-ingest, bulk sweep) treats it as pinned and
+          // never clears or replaces it.
+          payload = {
+            ...updateData,
+            link_method: "manual",
+            linked_at: new Date().toISOString(),
+          }
           break
         case "jotform_intake_referral":
           tableName = "jotform_intake_submissions"
@@ -252,10 +260,23 @@ export async function POST(request: NextRequest) {
       }
 
       if (tableName) {
-        await supabase
+        const { error: linkError } = await supabase
           .from(tableName)
           .update(payload)
           .eq(idColumn, linkToRecord.id)
+        // The client now exists; a failed link must not be reported as
+        // success, or the teammate is left with an unlinked record and
+        // no reason to look again.
+        if (linkError) {
+          console.error("Client created but linking it failed:", linkError)
+          return NextResponse.json(
+            {
+              error: `Client was created, but linking it to this record failed: ${linkError.message}`,
+              client: { id: clientId, type, karbonKey },
+            },
+            { status: 500 },
+          )
+        }
       }
     }
 
