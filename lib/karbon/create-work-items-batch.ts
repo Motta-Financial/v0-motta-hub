@@ -20,6 +20,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createWorkItem } from "@/lib/karbon/create-work-item"
+import type { FinalizeWorkItemResult, LeadContext } from "@/lib/karbon/finalize-work-item"
 
 export interface WorkItemDraftPayload {
   template_key: string
@@ -29,7 +30,6 @@ export interface WorkItemDraftPayload {
   work_status_key?: string | null
   start_date?: string | null
   due_date?: string | null
-  budgeted_hours?: number | null
 }
 
 export interface BatchWorkItemResult {
@@ -39,6 +39,8 @@ export interface BatchWorkItemResult {
   workItemUrl?: string
   /** The `work_items` row id, once the created item is mirrored locally. */
   workItemRowId?: string
+  /** What the post-create step set in Karbon (status + tax dates). */
+  finalize?: FinalizeWorkItemResult
   error?: string
 }
 
@@ -50,6 +52,25 @@ export interface CreateWorkItemsBatchArgs {
   /** Hub ids, so the locally-mirrored rows are attributable. */
   contactId?: string | null
   organizationId?: string | null
+  /**
+   * Set ONLY when these work items are for a prospect (intake / prospect
+   * page). Tax-preparation items then move to "Lead | Meeting Schd" when
+   * the prospect has a Calendly meeting booked. Leave unset for existing
+   * clients (e.g. a debrief) — a returning client's new return is not a
+   * lead, however many check-ins they have on the calendar.
+   */
+  lead?: LeadContext | null
+  /**
+   * Called for each work item the moment Karbon confirms it exists —
+   * before its status/date follow-up runs. Lets a caller record the key
+   * on its own row (e.g. the intake's `karbon_work_item_key`) without
+   * waiting for the whole batch.
+   */
+  onItemCreated?: (created: {
+    workItemKey: string
+    title: string
+    workItemUrl: string
+  }) => Promise<void> | void
 }
 
 /**
@@ -88,6 +109,7 @@ async function mirrorWorkItemRow(
   args: {
     karbonWorkItemKey: string
     title: string
+    /** Work type NAME — what every other writer puts in this column. */
     workType?: string | null
     contactId?: string | null
     organizationId?: string | null
@@ -101,7 +123,7 @@ async function mirrorWorkItemRow(
       {
         karbon_work_item_key: args.karbonWorkItemKey,
         title: args.title,
-        work_type: args.workType ?? null,
+        ...(args.workType ? { work_type: args.workType } : {}),
         contact_id: args.contactId ?? null,
         organization_id: args.organizationId ?? null,
         karbon_client_key: args.karbonClientKey,
@@ -121,6 +143,35 @@ async function mirrorWorkItemRow(
     return null
   }
   return data?.id ?? null
+}
+
+/**
+ * Copy what the post-create step set in Karbon onto the local mirror row,
+ * so the Hub shows the right status and dates straight away instead of
+ * after the next Karbon sync. Best-effort.
+ */
+async function mirrorFinalizedFields(
+  supabase: SupabaseClient,
+  karbonWorkItemKey: string,
+  finalize: FinalizeWorkItemResult | undefined,
+): Promise<void> {
+  const applied = finalize?.applied
+  if (!applied || Object.keys(applied).length === 0) return
+  const day = (iso: string | undefined) => (iso ? iso.slice(0, 10) : undefined)
+
+  const patch: Record<string, unknown> = {}
+  if (applied.StartDate) patch.start_date = day(applied.StartDate)
+  if (applied.DueDate) patch.due_date = day(applied.DueDate)
+  if (applied.DeadlineDate) patch.deadline_date = day(applied.DeadlineDate)
+  if (applied.PrimaryStatus) patch.primary_status = applied.PrimaryStatus
+  if (applied.SecondaryStatus) patch.secondary_status = applied.SecondaryStatus
+  if (Object.keys(patch).length === 0) return
+
+  const { error } = await supabase
+    .from("work_items")
+    .update(patch)
+    .eq("karbon_work_item_key", karbonWorkItemKey)
+  if (error) console.warn("[karbon-batch] mirror of status/dates failed:", error.message)
 }
 
 export async function createWorkItemsBatch(
@@ -146,20 +197,46 @@ export async function createWorkItemsBatch(
     }
 
     try {
-      const created = await createWorkItem({
-        clientKey: args.clientKey,
-        clientType: args.clientType,
-        workTemplateKey: draft.template_key,
-        title: draft.title.trim(),
-        workType: draft.work_type_key ?? null,
-        assigneeEmail: draft.assignee_team_member_id
-          ? (emails.get(draft.assignee_team_member_id) ?? null)
-          : null,
-        startDate: draft.start_date ?? null,
-        dueDate: draft.due_date ?? null,
-        budgetedHours: draft.budgeted_hours ?? null,
-        workStatusKey: draft.work_status_key ?? null,
-      })
+      // Creates the item, then PATCHes the chosen status and — for tax
+      // preparation — the 12/31 start and statutory due / deadline dates.
+      //
+      // The local mirror row is written from `onCreated`, i.e. as soon as
+      // Karbon confirms the item and BEFORE that follow-up runs, so an
+      // interrupted follow-up can't leave a Karbon work item the Hub has
+      // no record of.
+      let rowId: string | null = null
+      const created = await createWorkItem(
+        {
+          clientKey: args.clientKey,
+          clientType: args.clientType,
+          workTemplateKey: draft.template_key,
+          title: draft.title.trim(),
+          workType: draft.work_type_key ?? null,
+          assigneeEmail: draft.assignee_team_member_id
+            ? (emails.get(draft.assignee_team_member_id) ?? null)
+            : null,
+          startDate: draft.start_date ?? null,
+          dueDate: draft.due_date ?? null,
+          workStatusKey: draft.work_status_key ?? null,
+          lead: args.lead ?? null,
+        },
+        undefined,
+        {
+          supabase,
+          onCreated: async (item) => {
+            rowId = await mirrorWorkItemRow(supabase, {
+              karbonWorkItemKey: item.workItemKey,
+              title: item.title,
+              workType: item.workTypeName,
+              contactId: args.contactId,
+              organizationId: args.organizationId,
+              karbonClientKey: args.clientKey,
+              karbonUrl: item.workItemUrl,
+            })
+            await args.onItemCreated?.(item)
+          },
+        },
+      )
 
       if (!created.ok || !created.workItemKey) {
         results.push({
@@ -170,15 +247,7 @@ export async function createWorkItemsBatch(
         continue
       }
 
-      const rowId = await mirrorWorkItemRow(supabase, {
-        karbonWorkItemKey: created.workItemKey,
-        title: created.title ?? draft.title,
-        workType: draft.work_type_key ?? null,
-        contactId: args.contactId,
-        organizationId: args.organizationId,
-        karbonClientKey: args.clientKey,
-        karbonUrl: created.workItemUrl ?? null,
-      })
+      await mirrorFinalizedFields(supabase, created.workItemKey, created.finalize)
 
       results.push({
         title: created.title ?? draft.title,
@@ -186,6 +255,7 @@ export async function createWorkItemsBatch(
         workItemKey: created.workItemKey,
         workItemUrl: created.workItemUrl,
         workItemRowId: rowId ?? undefined,
+        finalize: created.finalize,
       })
     } catch (err) {
       results.push({

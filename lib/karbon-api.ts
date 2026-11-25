@@ -106,7 +106,24 @@ export async function karbonFetch<T>(
       return { data: null, error: `${response.status}: ${response.statusText}${detail}` }
     }
 
-    const data = await response.json()
+    // PATCH / PUT / DELETE answer `204 No Content`. Calling `.json()` on
+    // an empty body throws "Unexpected end of JSON input", which turned
+    // every SUCCESSFUL Karbon write into a reported failure — so read the
+    // body as text and only parse when there is something to parse.
+    //
+    // Scoped to writes: an empty body on a GET is still an error. Readers
+    // such as the deletion check in process-webhook-event.ts treat
+    // "no data and no error" as "the record is gone", and must not be
+    // told that by a blank 200.
+    const raw = response.status === 204 ? "" : await response.text()
+    if (!raw.trim()) {
+      if (method === "GET") {
+        return { data: null, error: "Empty response body from Karbon" }
+      }
+      return { data: null, error: null }
+    }
+
+    const data = JSON.parse(raw)
     return {
       data: data.value !== undefined ? data.value : data,
       error: null,

@@ -433,6 +433,43 @@ matched to Hub contacts by email (`lib/calendly-invitee-match.ts`) — the
 only identifier Calendly provides. Matched events are linked to clients,
 services, and work items through the `calendly_event_*` join tables.
 
+**Bookings on any calendar.** The webhook subscription is
+organization-scoped and the sync has an org-wide pass, so a booking on any
+teammate's Calendly reaches the Hub — including teammates who never
+connected Calendly here. `resolveEventHost` places the meeting on the right
+teammate (active connection → any connection row → host email), and the
+Team Calendar (`/meetings/calendar`, plus the Home calendar tab) shows it
+under that host, or under the host's Calendly name when they aren't a Hub
+teammate yet. The Hub does **not** write to Outlook / Google calendars;
+Calendly adds the meeting to the host's own calendar when they have one
+connected in Calendly.
+
+**What a new booking triggers** (`lib/calendly/booking-pipeline.ts`, shared
+by the webhook and the sync so both leave identical state):
+
+1. The invitee is matched to a Hub contact, or one is created and pushed to
+   Karbon; the meeting is linked to that client and an open deal is moved
+   to `meeting_scheduled`.
+2. If the booking came from an intake's booking link
+   (`tracking.salesforce_uuid` = the intake row id) it is attributed to that
+   intake — which also stops the "still want to talk?" nudge.
+3. A firm-wide **New Meeting Booked** email (`lib/calendly/notify.ts`,
+   category `meeting_booked`, opt-out in notification preferences): whose
+   calendar, when, how to join, whether this is a new prospect / prospect /
+   existing client, ALFRED's brief (`lib/calendly/research.ts` — Hub
+   history, the intake on file, earlier meetings, open Karbon work and
+   proposals, and a web search when a business name or company email domain
+   is known), and the teammates already connected to the client.
+4. The prospect's Hub-created Karbon tax work item moves to
+   `Lead | Meeting Schd` (see `docs/karbon-api-alignment.md` §4a).
+
+One email per booking: the send is claimed with a conditional UPDATE on
+`calendly_events.team_notified_at`. The webhook is not trusted to be the
+only trigger — every cron sync ends with a sweep that announces any active,
+upcoming booking made in the last 24 hours that has not been announced
+(at most 8 per run, never anything older), so a missed or failed delivery
+costs minutes rather than the meeting going unnoticed.
+
 ### 5.3 Zoom
 
 Two OAuth apps: a **per-user** app (`zoom_connections`, 7 rows) and an

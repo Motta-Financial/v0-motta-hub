@@ -40,10 +40,11 @@ import {
   partsInTz,
   startOfDayInTz,
 } from "@/lib/calendar-tz"
-import type {
-  CalendarView,
-  EventTypeColorEntry,
-  TeamCalendarEvent,
+import {
+  hostKeyForEvent,
+  type CalendarView,
+  type EventTypeColorEntry,
+  type TeamCalendarEvent,
 } from "./types"
 
 const swrFetcher = (url: string) => fetch(url, { cache: "no-store" }).then((r) => r.json())
@@ -170,11 +171,13 @@ export function TeamCalendarView({ initialTz }: Props) {
   const hostsInWindow = useMemo(() => {
     const map = new Map<string, { id: string; name: string; count: number }>()
     for (const e of data?.events ?? []) {
-      // Prefer the linked team_members row; fall back to the
-      // calendly_user_name string for events whose host hasn't been
-      // matched to a team member yet.
-      const id = e.team_member_id ?? null
-      const name = e.team_members?.full_name ?? e.calendly_user_name ?? null
+      // Prefer the linked team_members row; fall back to the Calendly
+      // identity for events whose host hasn't been matched to a team
+      // member yet, so a booking on ANY teammate's calendar is listed
+      // (and filterable) rather than silently left out.
+      const id = hostKeyForEvent(e)
+      const name =
+        e.team_members?.full_name ?? e.calendly_user_name ?? e.calendly_user_email ?? null
       if (!id || !name) continue
       const cur = map.get(id) ?? { id, name, count: 0 }
       cur.count += 1

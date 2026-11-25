@@ -272,7 +272,12 @@ function Unlinked({
       )}
 
       <div className="flex flex-wrap gap-1.5">
-        <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+        {/* `modal`: this picker lives inside the intake Sheet (a modal
+            dialog). A modal popover owns its own pointer-events, focus
+            and scroll lock, so the list stays clickable, the search box
+            keeps focus and long result lists scroll — same idiom as the
+            other in-sheet pickers (ClientPicker, WorkItemPicker). */}
+        <Popover open={pickerOpen} onOpenChange={setPickerOpen} modal>
           <PopoverTrigger asChild>
             <Button type="button" size="sm" variant="outline" className="h-7 text-xs">
               <Search className="mr-1 h-3 w-3" /> Link to existing
@@ -468,14 +473,22 @@ function SearchPicker({
         const res = await fetch(
           `/api/contacts-and-orgs/search?q=${encodeURIComponent(trimmed)}&limit=8`,
         )
-        const json = await res.json()
+        const json = await res.json().catch(() => ({}))
         // Drop stale responses if the user has typed further in the
         // meantime — `lastQueryRef` always reflects the most recent
         // dispatched query.
         if (lastQueryRef.current !== trimmed) return
+        // A failed search (expired session, server error) must not be
+        // shown as "No clients match" — that reads as "this person
+        // isn't a client" and sends the teammate off to create a
+        // duplicate.
+        if (!res.ok) throw new Error(json?.error ?? `Search failed (${res.status})`)
         setResults(json.results ?? [])
+        setError(null)
       } catch (err) {
-        setError("Search failed")
+        if (lastQueryRef.current !== trimmed) return
+        setResults([])
+        setError("Search failed — try again, or refresh the page if it keeps happening.")
       } finally {
         setLoading(false)
       }
@@ -557,7 +570,7 @@ function SearchPicker({
             </button>
           </li>
         ))}
-        {!loading && q.trim().length >= 2 && results.length === 0 && (
+        {!loading && !error && q.trim().length >= 2 && results.length === 0 && (
           <li className="px-2 py-3 text-center text-xs text-muted-foreground">
             No clients match "{q}"
           </li>

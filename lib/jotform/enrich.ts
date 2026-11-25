@@ -36,7 +36,7 @@ const SUMMARY_MODEL = LEAD_ENRICHMENT_MODEL
 
 const PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1beta/search"
 
-interface ParallelResult {
+export interface ParallelResult {
   url: string
   title: string
   excerpts: string[]
@@ -113,8 +113,11 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
 /**
  * One Parallel Web search call. Returns null on any failure so the
  * caller can carry on with whatever else it has.
+ *
+ * Exported so the Calendly meeting brief (`lib/calendly/research.ts`)
+ * researches a booking's client/prospect through the same provider.
  */
-async function parallelSearch(query: string, objective: string): Promise<ParallelResult[] | null> {
+export async function parallelSearch(query: string, objective: string): Promise<ParallelResult[] | null> {
   const apiKey = process.env.PARALLELWEB_PARALLEL_API_KEY
   if (!apiKey) {
     console.log("[v0] enrich: PARALLELWEB_PARALLEL_API_KEY not configured")

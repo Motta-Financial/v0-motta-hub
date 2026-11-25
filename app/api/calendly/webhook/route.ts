@@ -4,21 +4,21 @@ import {
   calendlyListAll,
   extractUuid,
   verifyWebhookSignature,
-  type CalendlyConnectionRow,
 } from "@/lib/calendly-api"
-import {
-  extractPhoneFromInvitee,
-  matchInviteeToContact,
-  upsertAutoClientLink,
-} from "@/lib/calendly-invitee-match"
+import { extractPhoneFromInvitee } from "@/lib/calendly-invitee-match"
 import { runAlfredCalendlyTriage } from "@/lib/alfred/calendly-triage"
-import { findOrCreateHubContact } from "@/lib/hub/find-or-create-contact"
-import { findOrCreateDeal } from "@/lib/deals/find-or-create-deal"
-import { advanceDealStage } from "@/lib/deals/advance-stage"
 import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
-import { notifyTeamOfNewBooking } from "@/lib/calendly/notify"
-import { pushHubContactToKarbon } from "@/lib/karbon/client-sync"
+import {
+  attributeBookingToIntake,
+  loadHostDirectory,
+  normalizeInviteeWebhookPayload,
+  resolveEventHost,
+  resolveInviteeContact,
+  runBookingFollowUps,
+  type ResolvedHost,
+} from "@/lib/calendly/booking-pipeline"
 import { syncHubMeetings } from "@/lib/meetings/sync-hub-meetings"
+import { firmConfigSync } from "@/lib/firm-settings"
 
 /**
  * Calendly webhook receiver.
@@ -29,10 +29,33 @@ import { syncHubMeetings } from "@/lib/meetings/sync-hub-meetings"
  * connection token belonging to the host of the event — *not* a static
  * `CALENDLY_ACCESS_TOKEN` — so multi-team-member orgs work correctly.
  *
+ * The subscription is ORGANIZATION-scoped, so a delivery arrives for a
+ * booking on ANY teammate's calendar — including teammates who never
+ * connected Calendly to the Hub. Nothing here may assume the host has a
+ * connection row; see `resolveEventHost`.
+ *
+ * Everything that follows a booking (contact, intake attribution, the
+ * firm-wide email, the Karbon lead status) is shared with the polling
+ * sync through `lib/calendly/booking-pipeline.ts`, which also sweeps up
+ * any booking this handler misses.
+ *
  * Reference: https://developer.calendly.com/api-docs/ZG9jOjE2OTU3NzMx-webhook-signatures
  */
 
+export const runtime = "nodejs"
+// The response returns in well under a second; the budget is for the
+// `after()` work — ALFRED triage, the research pass behind the team
+// email, and the Karbon follow-up.
+export const maxDuration = 300
+
 const WEBHOOK_SIGNING_KEY = process.env.CALENDLY_WEBHOOK_SIGNING_KEY
+
+/**
+ * A delivery we understood well enough to know it can never be processed
+ * (unrecognised shape). Recorded on the ledger and acknowledged with a
+ * 200 — a retry of the same bytes would fail the same way.
+ */
+class UnprocessablePayloadError extends Error {}
 
 type WebhookEvent =
   | "invitee.created"
@@ -85,12 +108,18 @@ export async function POST(request: Request) {
   let ledgerId: string | null = null
   {
     const p = parsed.payload ?? {}
+    // v2 payloads carry the event under `scheduled_event` (and as a bare
+    // URI string in `event`); the legacy shape nests it under `event`.
+    const eventUri =
+      p?.scheduled_event?.uri ??
+      (typeof p?.event === "string" ? p.event : p?.event?.uri) ??
+      p?.invitee?.event ??
+      null
     const { data: ledger, error: ledgerErr } = await supabase
       .from("calendly_webhook_events")
       .insert({
         event_type: parsed.event,
-        calendly_event_uuid:
-          extractUuid(p?.event?.uri ?? p?.invitee?.event ?? null) ?? null,
+        calendly_event_uuid: extractUuid(eventUri) ?? null,
         signature_valid: !!WEBHOOK_SIGNING_KEY,
         dedupe_key: dedupeKey,
         payload: parsed,
@@ -98,15 +127,41 @@ export async function POST(request: Request) {
       .select("id")
       .single()
     if (ledgerErr) {
-      // 23505 = unique violation on dedupe_key → this exact delivery was
-      // already processed (retry or dual subscription). Acknowledge it.
-      if (ledgerErr.code === "23505") {
-        return NextResponse.json({ success: true, action: "duplicate_ignored" })
+      if (ledgerErr.code === "23505" && dedupeKey) {
+        // 23505 = unique violation on dedupe_key → we have seen this exact
+        // occurrence before. Only skip it if that attempt SUCCEEDED: a
+        // delivery whose first attempt errored is exactly what Calendly's
+        // retry is for, and swallowing it would lose the booking.
+        const { data: prior } = await supabase
+          .from("calendly_webhook_events")
+          .select("id, received_at, processed_at, processing_error")
+          .eq("dedupe_key", dedupeKey)
+          .maybeSingle()
+        const failed = !!prior?.processing_error
+        // Neither finished nor errored after two minutes: the first
+        // attempt died mid-flight (function timeout / crash).
+        const stalled =
+          !!prior &&
+          !prior.processed_at &&
+          !prior.processing_error &&
+          Date.now() - new Date(prior.received_at as string).getTime() > 2 * 60_000
+        if (!prior || !(failed || stalled)) {
+          // Processed, or still in flight (org + user subscriptions
+          // deliver the same occurrence milliseconds apart) — either
+          // way this copy has nothing to add.
+          return NextResponse.json({ success: true, action: "duplicate_ignored" })
+        }
+        ledgerId = prior.id
+        console.log(
+          `[calendly] reprocessing delivery whose first attempt ${failed ? `failed: ${prior.processing_error}` : "stalled"}`,
+        )
+      } else {
+        // Ledger write failing must not drop the webhook — process anyway.
+        console.error("[calendly] webhook ledger insert failed:", ledgerErr)
       }
-      // Ledger write failing must not drop the webhook — process anyway.
-      console.error("[calendly] webhook ledger insert failed:", ledgerErr)
+    } else {
+      ledgerId = ledger?.id ?? null
     }
-    ledgerId = ledger?.id ?? null
   }
 
   try {
@@ -135,20 +190,26 @@ export async function POST(request: Request) {
     if (ledgerId) {
       await supabase
         .from("calendly_webhook_events")
-        .update({ processed_at: new Date().toISOString() })
+        .update({ processed_at: new Date().toISOString(), processing_error: null })
         .eq("id", ledgerId)
     }
     return NextResponse.json(result)
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
     console.error("[calendly] webhook processing failed:", err)
     if (ledgerId) {
       await supabase
         .from("calendly_webhook_events")
-        .update({
-          processing_error: err instanceof Error ? err.message : String(err),
-        })
+        .update({ processing_error: message })
         .eq("id", ledgerId)
     }
+    if (err instanceof UnprocessablePayloadError) {
+      // Acknowledge: retrying identical bytes cannot succeed. The ledger
+      // row keeps the payload and the reason for whoever investigates.
+      return NextResponse.json({ success: false, error: message })
+    }
+    // Anything else may be transient (database, network) — a 5xx asks
+    // Calendly to redeliver, and the ledger lets that retry through.
     return NextResponse.json({ error: "Webhook processing failed" }, { status: 500 })
   }
 }
@@ -181,48 +242,29 @@ export async function GET() {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * Connection resolution
- * ───────────────────────────────────────────────────────────────────────
- * Webhooks deliver a partial event payload that contains a host URI
- * (`event_memberships[].user`). We use that to find the matching
- * connection so subsequent API calls are made with the correct token.
- */
-async function findConnectionForEvent(
-  supabase: ReturnType<typeof createAdminClient>,
-  event: any,
-): Promise<CalendlyConnectionRow | null> {
-  const memberships = event?.event_memberships || []
-  const userUris = [event?.host_user, ...memberships.map((m: any) => m?.user)].filter(Boolean)
-
-  for (const uri of userUris) {
-    const { data } = await supabase
-      .from("calendly_connections")
-      .select("*")
-      .eq("calendly_user_uri", uri)
-      .eq("is_active", true)
-      .maybeSingle()
-    if (data) return data as CalendlyConnectionRow
-  }
-  return null
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
  * Persistence helpers
  * ─────────────────────────────────────────────────────────────────────── */
 
+type AdminSupabase = ReturnType<typeof createAdminClient>
+
 async function upsertEvent(
-  supabase: ReturnType<typeof createAdminClient>,
+  supabase: AdminSupabase,
   event: any,
   status: "active" | "canceled",
-  connection: CalendlyConnectionRow | null,
+  host: ResolvedHost,
 ) {
   const uuid = extractUuid(event.uri)
   if (!uuid) return null
 
   // Full field capture lives in the shared mapper so the webhook and the
   // polling sync stay identical. We override `status` with the value the
-  // caller derived from the event type (created vs canceled) and add the
-  // webhook-only host resolution + connection linkage on top.
+  // caller derived and add the host attribution on top.
+  //
+  // Attribution columns are written ONLY when resolved. This is an
+  // upsert on `calendly_uuid`, so an unconditional `null` would erase
+  // the teammate link the sync had already worked out — and a booking on
+  // a calendar with no Hub connection would fall off the Team Calendar's
+  // host filter every time Calendly sent an update for it.
   const { data, error } = await supabase
     .from("calendly_events")
     .upsert(
@@ -230,17 +272,12 @@ async function upsertEvent(
         ...mapCalendlyEventFields(event),
         calendly_uuid: uuid,
         calendly_uri: event.uri,
-        calendly_connection_id: connection?.id ?? null,
-        team_member_id: connection?.team_member_id ?? null,
+        ...(host.connection ? { calendly_connection_id: host.connection.id } : {}),
+        ...(host.teamMemberId ? { team_member_id: host.teamMemberId } : {}),
+        ...(host.userUri ? { calendly_user_uri: host.userUri } : {}),
+        ...(host.userName ? { calendly_user_name: host.userName } : {}),
+        ...(host.userEmail ? { calendly_user_email: host.userEmail } : {}),
         status,
-        // Host resolution: the webhook payload carries event_memberships
-        // inline, so prefer that over the connection's owner identity.
-        calendly_user_uri:
-          event.event_memberships?.[0]?.user ?? connection?.calendly_user_uri ?? null,
-        calendly_user_name:
-          event.event_memberships?.[0]?.user_name ?? connection?.calendly_user_name ?? null,
-        calendly_user_email:
-          event.event_memberships?.[0]?.user_email ?? connection?.calendly_user_email ?? null,
         raw_data: event,
         synced_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -254,20 +291,23 @@ async function upsertEvent(
     console.error("[calendly] event upsert failed:", error)
     return null
   }
-  return data
+  return data as { id: string; calendly_uuid: string }
 }
 
-async function upsertInvitee(
-  supabase: ReturnType<typeof createAdminClient>,
-  invitee: any,
-  eventId: string,
-  eventUuid: string,
-): Promise<{
+interface ProcessedInvitee {
   inviteeUuid: string | null
   deterministicMatch: { contactId: string | null; matchMethod: "email" | "name_phone" | "name" | null }
   wasNewContact: boolean
   invitee: any
-}> {
+}
+
+async function upsertInvitee(
+  supabase: AdminSupabase,
+  invitee: any,
+  eventId: string,
+  eventUuid: string,
+  options: { resolveContact: boolean },
+): Promise<ProcessedInvitee> {
   const uuid = extractUuid(invitee.uri)
   if (!uuid)
     return {
@@ -277,105 +317,25 @@ async function upsertInvitee(
       invitee,
     }
 
-  // Match invitee → CRM contact using email → name+phone → name. The
-  // helper returns null when nothing matches, in which case the invitee
-  // (and the meeting) stays unlinked exactly like before. When a match
-  // *is* found we also write a `calendly_event_clients` row tagged as
-  // an auto-link so the Team Calendar can render it as a "client" tag
-  // alongside any manual tags users add later.
-  const inviteePhone = extractPhoneFromInvitee(invitee)
-  const match = await matchInviteeToContact(supabase, {
-    email: invitee.email,
-    name: invitee.name,
-    phone: inviteePhone,
-  })
-  let contactId = match?.contactId ?? null
-  let contactMatchMethod: "email" | "name_phone" | "name" | "auto_created" | null =
-    match?.matchMethod ?? null
-
-  // Hub-first: when nothing matched, auto-create a Master Hub Contact
-  // for the invitee. Calendly bookings are one of the three canonical
-  // intake channels (alongside Jotform and Zoom) — every booked
-  // invitee should exist as a Hub contact even if a teammate has not
-  // yet manually linked them. We tag the row with source=calendly and
-  // is_prospect=true; pushing to Karbon happens fire-and-forget below.
-  let wasNewContact = false
-  if (!contactId && (invitee.email || invitee.name)) {
-    try {
-      const created = await findOrCreateHubContact(
+  // Match invitee → CRM contact (email → name+phone → name), creating a
+  // Hub contact on a miss, tagging the meeting with that client and
+  // opening the deal. Shared with the cron backstop so a booking the
+  // webhook misses ends up in exactly the same state.
+  //
+  // A cancellation does not create anything: it only needs to find the
+  // contact it was already linked to.
+  const resolved = options.resolveContact
+    ? await resolveInviteeContact(
+        supabase,
         {
           email: invitee.email ?? null,
-          fullName: invitee.name ?? null,
-          phone: inviteePhone,
+          name: invitee.name ?? null,
+          phone: extractPhoneFromInvitee(invitee),
         },
-        { source: "calendly", supabase, skipInternal: true },
+        eventId,
+        { defer: (task) => after(task) },
       )
-      if (created.contact_id) {
-        contactId = created.contact_id
-        wasNewContact = !!created.created
-        contactMatchMethod = created.created ? "auto_created" : "email"
-        console.log(
-          `[calendly] hub auto-${created.created ? "created" : "matched"} contact ${created.contact_id}: ${created.reason}`,
-        )
-
-        // Fire-and-forget Karbon push for newly-created contacts only.
-        // This ensures direct Calendly bookings (prospects who skipped
-        // the intake form) still land in Karbon. Existing contacts
-        // already have a Karbon key or will be linked manually.
-        if (wasNewContact) {
-          const newContactId = contactId
-          after(() =>
-            pushHubContactToKarbon(newContactId, { source: "Calendly Booking" }).catch((err) => {
-              console.error("[calendly] karbon push failed (non-blocking):", err)
-            }),
-          )
-        }
-      }
-    } catch (err) {
-      console.error("[calendly] hub auto-create failed (non-blocking):", err)
-    }
-  }
-
-  if (contactId && eventId) {
-    await upsertAutoClientLink(supabase, {
-      calendlyEventId: eventId,
-      contactId,
-      // `calendly_event_clients.match_method` is constrained to the
-      // legacy enum; coerce auto_created → "email" since email was the
-      // primary signal we used to build the new contact. Source-of-
-      // truth for "this contact came from Calendly" lives on
-      // contacts.source.
-      matchMethod:
-        contactMatchMethod === "auto_created"
-          ? "email"
-          : (contactMatchMethod ?? "email"),
-    })
-
-    // Open (or reuse) the contact's single open Deal. A Calendly booking
-    // is one of the three canonical ways a prospect enters the Hub, so
-    // the meeting we just linked should hang off an opportunity. The
-    // Calendly→Zoom bridge + hub-meetings sync attach the actual meeting
-    // row to this deal. Best-effort: never block webhook processing.
-    try {
-      const deal = await findOrCreateDeal(
-        {
-          contactId,
-          title: invitee.name ?? invitee.email ?? "Calendly Prospect",
-          source: "calendly",
-        },
-        { supabase },
-      )
-      // A booking is the definition of `meeting_scheduled`. Monotonic, so
-      // a second booking on an already-debriefed deal is a no-op rather
-      // than a regression.
-      const moved = await advanceDealStage(supabase, deal.deal_id, "meeting_scheduled")
-      if (moved.advanced) {
-        console.log(`[calendly] deal ${deal.deal_id} stage ${moved.reason}`)
-      }
-    } catch (err) {
-      console.error("[calendly] deal create failed (non-blocking):", err)
-    }
-  }
+    : { contactId: null, matchMethod: null, wasNewContact: false }
 
   const { error } = await supabase.from("calendly_invitees").upsert(
     {
@@ -384,7 +344,8 @@ async function upsertInvitee(
       calendly_uri: invitee.uri,
       calendly_event_id: eventId,
       calendly_event_uuid: eventUuid,
-      contact_id: contactId,
+      // Never blank an existing link when we chose not to (re)resolve.
+      ...(options.resolveContact ? { contact_id: resolved.contactId } : {}),
       raw_data: invitee,
       synced_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -394,27 +355,24 @@ async function upsertInvitee(
   if (error) console.error("[calendly] invitee upsert failed:", error)
   return {
     inviteeUuid: uuid,
-    deterministicMatch: {
-      contactId,
-      matchMethod:
-        contactMatchMethod === "auto_created" ? "email" : contactMatchMethod,
-    },
-    wasNewContact,
+    deterministicMatch: { contactId: resolved.contactId, matchMethod: resolved.matchMethod },
+    wasNewContact: resolved.wasNewContact,
     invitee,
   }
 }
 
 /**
- * Notifies the appropriate audience about a new/canceled meeting.
- * If we know which connection the event belongs to we notify that
- * specific team member by default; otherwise we fall back to broadcast.
+ * In-app notification for a new / cancelled meeting. Goes to the host
+ * when we know which teammate that is; otherwise it is broadcast.
  */
 async function notifyTeamMembers(
-  supabase: ReturnType<typeof createAdminClient>,
+  supabase: AdminSupabase,
   event: any,
   invitee: any,
-  kind: "created" | "canceled",
-  connection: CalendlyConnectionRow | null,
+  kind: "created" | "rescheduled" | "canceled",
+  host: ResolvedHost,
+  /** `calendly_events.id` — the row the notification points at. */
+  eventRowId: string,
 ) {
   const inviteeName = invitee?.name || invitee?.email || "A client"
   const eventName = event?.name || "Meeting"
@@ -426,20 +384,28 @@ async function notifyTeamMembers(
         hour: "numeric",
         minute: "2-digit",
         timeZoneName: "short",
+        // The server runs in UTC; show the firm's own clock.
+        timeZone: firmConfigSync().timezone || "America/New_York",
       })
     : ""
 
-  const isCreated = kind === "created"
-  const title = isCreated ? "New Meeting Scheduled" : "Meeting Canceled"
-  const message = isCreated
-    ? `${inviteeName} booked a ${eventName} for ${startTime}`
-    : `${inviteeName} canceled their ${eventName} scheduled for ${startTime}`
-  const notificationType = isCreated ? "meeting_scheduled" : "meeting_canceled"
+  const title =
+    kind === "created"
+      ? "New Meeting Scheduled"
+      : kind === "rescheduled"
+        ? "Meeting Rescheduled"
+        : "Meeting Canceled"
+  const message =
+    kind === "created"
+      ? `${inviteeName} booked a ${eventName} for ${startTime}`
+      : kind === "rescheduled"
+        ? `${inviteeName} moved their ${eventName} to ${startTime}`
+        : `${inviteeName} canceled their ${eventName} scheduled for ${startTime}`
+  const notificationType = kind === "canceled" ? "meeting_canceled" : "meeting_scheduled"
 
-  // Determine recipients: the connected host first, plus any other admins.
   let recipients: { id: string }[] = []
-  if (connection?.team_member_id) {
-    recipients = [{ id: connection.team_member_id }]
+  if (host.teamMemberId) {
+    recipients = [{ id: host.teamMemberId }]
   } else {
     const { data: members } = await supabase
       .from("team_members")
@@ -449,22 +415,18 @@ async function notifyTeamMembers(
   }
   if (recipients.length === 0) return
 
+  // Column names follow the `notifications` table as every other writer
+  // uses it (entity_type / entity_id / action_url). This insert used to
+  // send `related_entity_type`, `related_entity_id` and `metadata`, none
+  // of which exist, so it could only ever fail.
   const rows = recipients.map((member) => ({
     team_member_id: member.id,
     notification_type: notificationType,
     title,
     message,
-    related_entity_type: "calendly_event",
-    related_entity_id: extractUuid(event.uri),
-    metadata: {
-      event_name: eventName,
-      invitee_name: inviteeName,
-      invitee_email: invitee?.email,
-      start_time: event?.start_time,
-      end_time: event?.end_time,
-      join_url: event?.location?.join_url,
-      calendly_event_uri: event?.uri,
-    },
+    entity_type: "calendly_event",
+    entity_id: eventRowId,
+    action_url: "/meetings/calendar",
     is_read: false,
     created_at: new Date().toISOString(),
   }))
@@ -482,11 +444,11 @@ async function notifyTeamMembers(
  * next 30-minute cron tick.
  */
 async function mirrorMeetingRealtime(
-  supabase: ReturnType<typeof createAdminClient>,
+  supabase: AdminSupabase,
   event: any,
   savedEventId: string,
   status: "active" | "canceled",
-  connection: CalendlyConnectionRow | null,
+  hostTeamMemberId: string | null,
 ) {
   const location = event?.location || {}
   const { error } = await supabase.from("meetings").upsert(
@@ -501,7 +463,8 @@ async function mirrorMeetingRealtime(
       location_type: location.type || "virtual",
       video_link: location.join_url ?? null,
       meeting_type: "client_meeting",
-      host_id: connection?.team_member_id ?? null,
+      // Same rule as the event row: never overwrite a known host with null.
+      ...(hostTeamMemberId ? { host_id: hostTeamMemberId } : {}),
       updated_at: new Date().toISOString(),
     },
     { onConflict: "calendly_event_id", ignoreDuplicates: false },
@@ -517,96 +480,66 @@ async function mirrorMeetingRealtime(
   )
 }
 
-/**
- * Attribute a booking back to the intake submission that produced it.
- *
- * The intake pipeline hands each prospect a Calendly link carrying
- * `salesforce_uuid=<jotform_intake_submissions.id>` (see
- * lib/intake/booking-link.ts). Calendly round-trips that value into
- * `invitee.tracking`, so a booking made from an intake link tells us
- * exactly which intake it came from — no email-matching heuristics.
- *
- * Without this the only link between the two halves of the funnel was
- * an implicit join on contact_id, which broke whenever a prospect
- * booked with a different address than they typed on the form.
- *
- * First booking wins: `.is("calendly_event_id", null)` means a
- * reschedule or a second meeting never overwrites the original
- * conversion event.
- */
-async function attributeBookingToIntake(
-  supabase: ReturnType<typeof createAdminClient>,
-  invitee: any,
-  calendlyEventId: string,
-  startTime: string | null,
-): Promise<void> {
-  const raw = invitee?.tracking?.salesforce_uuid
-  if (typeof raw !== "string") return
-  const submissionRowId = raw.trim()
-  // Guard the shape before it reaches Postgres: a non-uuid value in a
-  // uuid comparison is a 22P02 error, not a no-op.
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(submissionRowId)) {
-    return
-  }
-
-  const { error } = await supabase
-    .from("jotform_intake_submissions")
-    .update({
-      calendly_event_id: calendlyEventId,
-      first_booked_at: startTime ?? new Date().toISOString(),
-    })
-    .eq("id", submissionRowId)
-    .is("calendly_event_id", null)
-
-  if (error) {
-    console.error("[calendly] intake attribution failed:", error.message)
-  } else {
-    console.log(`[calendly] attributed booking to intake ${submissionRowId}`)
-  }
-}
-
 /* ─────────────────────────────────────────────────────────────────────────
  * Event handlers
  * ─────────────────────────────────────────────────────────────────────── */
 
+/** Calendly reports the event's own status; trust it over the hook name. */
+function eventStatus(scheduledEvent: any): "active" | "canceled" {
+  return scheduledEvent?.status === "canceled" ? "canceled" : "active"
+}
+
 async function handleInviteeCreated(payload: any) {
-  const { event, invitee } = payload
+  const booking = normalizeInviteeWebhookPayload(payload)
+  if (!booking) {
+    throw new UnprocessablePayloadError("invitee.created payload has no scheduled event")
+  }
+  const { scheduledEvent, invitee } = booking
   const supabase = createAdminClient()
-  const connection = await findConnectionForEvent(supabase, event)
 
-  // Webhook payloads usually include the invitee inline; if they don't
-  // we hydrate using the connection's token.
-  const saved = await upsertEvent(supabase, event, "active", connection)
-  if (!saved) return { success: false, error: "event upsert failed" }
+  const host = resolveEventHost(scheduledEvent, await loadHostDirectory(supabase))
+  const status = eventStatus(scheduledEvent)
 
-  await mirrorMeetingRealtime(supabase, event, saved.id, "active", connection)
+  const saved = await upsertEvent(supabase, scheduledEvent, status, host)
+  // Throwing (→ 500) asks Calendly to redeliver; the ledger lets the
+  // retry through because this attempt is recorded as failed.
+  if (!saved) throw new Error("calendly_events upsert failed")
 
-  // Track every invitee we processed so ALFRED can run a triage pass
-  // per invitee. The deterministic matcher already wrote a contact tag
-  // (when it found one); ALFRED supplements with org / work / service
-  // tags and can upgrade an unmatched invitee to a confident contact.
-  const processed: Array<Awaited<ReturnType<typeof upsertInvitee>>> = []
-  if (invitee?.uri) {
-    processed.push(await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid))
-  } else if (connection) {
-    const fetched = await calendlyListAll<any>(connection, supabase, `${event.uri}/invitees`, {
-      query: { count: 100 },
-    }).catch(() => [])
+  await mirrorMeetingRealtime(supabase, scheduledEvent, saved.id, status, host.teamMemberId)
+
+  // v2 payloads always carry the invitee inline. If one ever doesn't, we
+  // hydrate with the token of a connected host.
+  const processed: ProcessedInvitee[] = []
+  if (invitee) {
+    processed.push(
+      await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid, { resolveContact: true }),
+    )
+  } else if (host.connection) {
+    const fetched = await calendlyListAll<any>(
+      host.connection,
+      supabase,
+      `${scheduledEvent.uri}/invitees`,
+      { query: { count: 100 } },
+    ).catch(() => [])
     for (const i of fetched) {
-      processed.push(await upsertInvitee(supabase, i, saved.id, saved.calendly_uuid))
+      processed.push(
+        await upsertInvitee(supabase, i, saved.id, saved.calendly_uuid, { resolveContact: true }),
+      )
     }
   }
 
   // Close the intake → booking loop before any of the async work below,
   // so the conversion is recorded even if a later step times out.
+  let intakeSubmissionId: string | null = null
   for (const p of processed) {
     if (!p?.invitee) continue
-    await attributeBookingToIntake(
+    const attributed = await attributeBookingToIntake(
       supabase,
-      p.invitee,
+      p.invitee.tracking,
       saved.id,
-      event?.start_time ?? null,
+      scheduledEvent.created_at ?? null,
     )
+    intakeSubmissionId = intakeSubmissionId ?? attributed
   }
 
   // Run ALFRED triage for each invitee. We deliberately do NOT block
@@ -622,9 +555,9 @@ async function handleInviteeCreated(payload: any) {
         calendlyEventId: saved.id,
         calendlyEventUuid: saved.calendly_uuid,
         calendlyInviteeUuid: p.inviteeUuid,
-        eventName: event?.name ?? null,
-        eventTypeName: event?.name ?? null,
-        startTime: event?.start_time ?? null,
+        eventName: scheduledEvent?.name ?? null,
+        eventTypeName: scheduledEvent?.name ?? null,
+        startTime: scheduledEvent?.start_time ?? null,
         invitee: {
           name: p.invitee?.name ?? null,
           email: p.invitee?.email ?? null,
@@ -638,33 +571,34 @@ async function handleInviteeCreated(payload: any) {
     )
   }
 
-  await notifyTeamMembers(supabase, event, invitee, "created", connection)
+  const first = processed[0]
+  // A reschedule arrives as a brand-new invitee that points back at the
+  // one it replaces.
+  const isReschedule = !!first?.invitee?.old_invitee
+  if (status === "active") {
+    await notifyTeamMembers(
+      supabase,
+      scheduledEvent,
+      first?.invitee ?? invitee,
+      isReschedule ? "rescheduled" : "created",
+      host,
+      saved.id,
+    )
+  }
 
-  // Fire-and-forget ALFRED email to all team members (opt-out honored via
-  // the meeting_booked email category). The email includes everything the
-  // team needs at a glance: who booked, when, whether they're new or
-  // existing, and a link to the Hub record. Dedupe happens inside
-  // notifyTeamOfNewBooking via the team_notified_at column.
-  const firstInvitee = processed[0]
-  if (firstInvitee?.inviteeUuid) {
+  // Off the response path: the firm-wide ALFRED email (opt-out honoured
+  // via the `meeting_booked` category) and the Karbon lead-status
+  // update. Both are idempotent — the email claims `team_notified_at`
+  // atomically — so the cron backstop can safely overlap with this.
+  if (first?.inviteeUuid && status === "active") {
     after(() =>
-      notifyTeamOfNewBooking({
+      runBookingFollowUps(supabase, {
         eventId: saved.id,
-        eventUuid: saved.calendly_uuid,
-        eventName: event?.name ?? "Meeting",
-        startTime: event?.start_time ?? new Date().toISOString(),
-        endTime: event?.end_time ?? new Date().toISOString(),
-        joinUrl: event?.location?.join_url ?? null,
-        hostName: connection?.calendly_user_name ?? null,
-        inviteeName: firstInvitee.invitee?.name ?? "Unknown",
-        inviteeEmail: firstInvitee.invitee?.email ?? "",
-        inviteePhone: extractPhoneFromInvitee(firstInvitee.invitee),
-        wasNewContact: firstInvitee.wasNewContact ?? false,
-        contactId: firstInvitee.deterministicMatch?.contactId ?? null,
-        karbonKey: null, // Karbon push is async; email goes out immediately
-        questionsAndAnswers: firstInvitee.invitee?.questions_and_answers ?? null,
+        contactId: first.deterministicMatch.contactId,
+        intakeSubmissionId,
+        wasNewContact: first.wasNewContact,
       }).catch((err) => {
-        console.error("[calendly] team email failed (non-blocking):", err)
+        console.error("[calendly] booking follow-ups failed (non-blocking):", err)
       }),
     )
   }
@@ -673,18 +607,32 @@ async function handleInviteeCreated(payload: any) {
 }
 
 async function handleInviteeCanceled(payload: any) {
-  const { event, invitee } = payload
+  const booking = normalizeInviteeWebhookPayload(payload)
+  if (!booking) {
+    throw new UnprocessablePayloadError("invitee.canceled payload has no scheduled event")
+  }
+  const { scheduledEvent, invitee } = booking
   const supabase = createAdminClient()
-  const connection = await findConnectionForEvent(supabase, event)
-  const saved = await upsertEvent(supabase, event, "canceled", connection)
-  if (saved && invitee?.uri) {
-    await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid)
+
+  const host = resolveEventHost(scheduledEvent, await loadHostDirectory(supabase))
+  // One invitee leaving a group event does not cancel the event — take
+  // the event's status from Calendly rather than from the hook name.
+  const status = eventStatus(scheduledEvent)
+
+  const saved = await upsertEvent(supabase, scheduledEvent, status, host)
+  if (!saved) throw new Error("calendly_events upsert failed")
+
+  if (invitee) {
+    await upsertInvitee(supabase, invitee, saved.id, saved.calendly_uuid, { resolveContact: false })
   }
-  if (saved) {
-    await mirrorMeetingRealtime(supabase, event, saved.id, "canceled", connection)
+  await mirrorMeetingRealtime(supabase, scheduledEvent, saved.id, status, host.teamMemberId)
+
+  // The cancelled half of a reschedule is not a cancellation worth
+  // announcing — the new booking's own notification says it moved.
+  if (!invitee?.rescheduled) {
+    await notifyTeamMembers(supabase, scheduledEvent, invitee, "canceled", host, saved.id)
   }
-  await notifyTeamMembers(supabase, event, invitee, "canceled", connection)
-  return { success: true, action: "invitee_canceled" }
+  return { success: true, action: invitee?.rescheduled ? "invitee_rescheduled" : "invitee_canceled" }
 }
 
 /**
@@ -781,17 +729,19 @@ async function handleRoutingFormSubmission(payload: any) {
     .limit(1)
 
   if (members && members.length > 0) {
-    await supabase.from("notifications").insert({
+    // `entity_id` is a uuid column and Calendly's submission id is not
+    // one, so only the type is recorded; the submission itself is in
+    // `calendly_routing_form_submissions` (written above).
+    const { error } = await supabase.from("notifications").insert({
       team_member_id: members[0].id,
       notification_type: "routing_form_submission",
       title: "Routing form submitted",
       message: `New Calendly routing form submission received`,
-      related_entity_type: "calendly_routing_form",
-      related_entity_id: subUuid ?? null,
-      metadata: payload,
+      entity_type: "calendly_routing_form",
       is_read: false,
       created_at: new Date().toISOString(),
     })
+    if (error) console.error("[calendly] routing form notification insert failed:", error)
   }
   return { success: true, action: "routing_form_submission_saved" }
 }

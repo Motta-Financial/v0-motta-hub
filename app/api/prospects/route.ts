@@ -106,7 +106,6 @@ interface CreateProspectBody {
     assignee_id?: string | null
     start_date?: string | null
     due_date?: string | null
-    budgeted_hours?: number | null
     work_status_key?: string | null
   } | null
 
@@ -330,7 +329,6 @@ export async function POST(req: NextRequest) {
               assignee_id: body.work_item.assignee_id ?? null,
               start_date: body.work_item.start_date ?? null,
               due_date: body.work_item.due_date ?? null,
-              budgeted_hours: body.work_item.budgeted_hours ?? null,
               work_status_key: body.work_item.work_status_key ?? null,
             }
           : null,
@@ -792,31 +790,50 @@ export async function POST(req: NextRequest) {
             .maybeSingle()
           assigneeEmail = tm?.email ?? null
         }
-        const wi = await createWorkItem({
-          clientKey: karbonKey,
-          clientType: finalOrganizationId ? "Organization" : "Contact",
-          workTemplateKey: body.work_item.template_key,
-          title: body.work_item.title?.trim() || body.business_name?.trim() || fullName || "Prospect work",
-          workType: body.work_item.work_type ?? null,
-          assigneeEmail,
-          startDate: body.work_item.start_date ?? null,
-          dueDate: body.work_item.due_date ?? null,
-          budgetedHours:
-            typeof body.work_item.budgeted_hours === "number"
-              ? body.work_item.budgeted_hours
-              : null,
-          workStatusKey: body.work_item.work_status_key ?? null,
-        })
+        const wi = await createWorkItem(
+          {
+            clientKey: karbonKey,
+            clientType: finalOrganizationId ? "Organization" : "Contact",
+            workTemplateKey: body.work_item.template_key,
+            title: body.work_item.title?.trim() || body.business_name?.trim() || fullName || "Prospect work",
+            workType: body.work_item.work_type ?? null,
+            assigneeEmail,
+            startDate: body.work_item.start_date ?? null,
+            dueDate: body.work_item.due_date ?? null,
+            workStatusKey: body.work_item.work_status_key ?? null,
+            // A prospect: tax-prep work lands in the lead funnel — "Lead |
+            // Meeting Schd" when they have a Calendly meeting booked,
+            // "Lead | Awaiting Intake" until then. A status the teammate
+            // picked in the form still wins.
+            lead: {
+              contactId: finalContactId ?? null,
+              email: body.submitter_email?.trim() || null,
+            },
+          },
+          undefined,
+          {
+            supabase,
+            // Record the key the moment Karbon confirms the work item,
+            // before the status/date follow-up runs.
+            onCreated: async (created) => {
+              await supabase
+                .from("prospect_submissions")
+                .update({
+                  karbon_work_item_key: created.workItemKey,
+                  karbon_work_item_title: created.title ?? null,
+                  karbon_work_item_url: created.workItemUrl ?? null,
+                })
+                .eq("id", inserted.id)
+            },
+          },
+        )
         if (wi.ok && wi.workItemKey) {
           workItemInfo = { title: wi.title || "Work item", url: wi.workItemUrl ?? null }
-          await supabase
-            .from("prospect_submissions")
-            .update({
-              karbon_work_item_key: wi.workItemKey,
-              karbon_work_item_title: wi.title ?? null,
-              karbon_work_item_url: wi.workItemUrl ?? null,
-            })
-            .eq("id", inserted.id)
+          if (wi.finalize && !wi.finalize.ok) {
+            console.warn(
+              `[v0] POST /api/prospects work item ${wi.workItemKey} created, but the Karbon status/date update was incomplete: ${wi.finalize.error ?? wi.finalize.notes.join(" | ")}`,
+            )
+          }
 
           // Pin the full intake form onto the new work item's timeline so
           // it sits at the top of the work item the moment it's created.

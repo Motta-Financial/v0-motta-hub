@@ -76,6 +76,10 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { IntakeClientLink } from "@/components/intake/intake-client-link"
+import { TaxWorkItemPreview } from "@/components/karbon/tax-work-item-preview"
+import { KarbonSetupNotice, describeKarbonSetup } from "@/components/karbon/karbon-setup-notice"
+import type { FinalizeWorkItemResult } from "@/lib/karbon/finalize-work-item"
+import { defaultProspectTaxYear } from "@/lib/karbon/tax-work-item-defaults"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -320,13 +324,18 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
   // ── Karbon work-item action ──────────────────────────────────────
   // The action is gated on (a) a linked Karbon contact and (b) an
   // assigned teammate; the server enforces the same prereqs. The
-  // fiscal-year field defaults to the current calendar year — matching
-  // the firm convention demonstrated by the example "Le, Dat | 2026".
+  // fiscal-year field defaults to the TAX year the return covers: the
+  // current year for most of the year ("Doe, Jane | 2026"), but last year
+  // during filing season (Jan 1 – Apr 15), when a new prospect needs
+  // the return that's due this April.
   const [fiscalYearDraft, setFiscalYearDraft] = useState(
-    () => String(new Date().getUTCFullYear()),
+    () => String(defaultProspectTaxYear()),
   )
   const [creatingWorkItem, setCreatingWorkItem] = useState(false)
   const [workItemError, setWorkItemError] = useState<string | null>(null)
+  // What the Hub set in Karbon right after creating the work item
+  // (status + start / due / deadline) — or what Karbon refused.
+  const [workItemSetup, setWorkItemSetup] = useState<FinalizeWorkItemResult | null>(null)
 
   // Keep the notes draft in sync whenever a new submission is loaded.
   // Also reset the work-item action's transient UI state so opening
@@ -336,11 +345,12 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
       setNotesDraft(submission.triage_notes ?? "")
       setNotesDirty(false)
       setWorkItemError(null)
+      setWorkItemSetup(null)
       setCreatingWorkItem(false)
       // Default fiscal year on a per-row basis so opening a different
-      // intake reflects "the current year" rather than whatever the
+      // intake reflects the default tax year rather than whatever the
       // previous row's teammate typed in.
-      setFiscalYearDraft(String(new Date().getUTCFullYear()))
+      setFiscalYearDraft(String(defaultProspectTaxYear()))
     }
   }, [submission?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -382,7 +392,12 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
         error?: string
         created?: number
         failed?: number
-        results?: Array<{ title: string; ok: boolean; error?: string }>
+        results?: Array<{
+          title: string
+          ok: boolean
+          error?: string
+          finalize?: FinalizeWorkItemResult
+        }>
       }
       if (!res.ok) {
         throw new Error(json?.error || `Work item creation failed (${res.status})`)
@@ -395,8 +410,24 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
           `${failedItems.length} failed: ${failedItems.map((f) => `${f.title} (${f.error})`).join("; ")}`,
         )
       }
+      // Created, but Karbon refused the follow-up status/date update:
+      // say so, or the teammate will assume the item is fully set up.
+      const partial = (json.results ?? []).filter(
+        (r) => r.ok && r.finalize?.attempted && !r.finalize.ok,
+      )
+      if (partial.length > 0) {
+        const note = `${partial.length} created, but Karbon didn't accept the status/dates — check in Karbon: ${partial.map((r) => r.title).join("; ")}`
+        setDraftsError((prev) => (prev ? `${prev} · ${note}` : note))
+      }
       if ((json.created ?? 0) > 0) {
-        setDraftsResult(`Created ${json.created} work item${json.created === 1 ? "" : "s"} in Karbon.`)
+        const setups = (json.results ?? [])
+          .filter((r) => r.ok && r.finalize?.ok)
+          .map((r) => describeKarbonSetup(r.finalize))
+          .filter(Boolean)
+        setDraftsResult(
+          `Created ${json.created} work item${json.created === 1 ? "" : "s"} in Karbon.` +
+            (setups.length ? ` Set: ${setups.join("; ")}.` : ""),
+        )
         // Only clear the drafts that actually landed — anything that
         // failed stays on screen so it can be fixed and retried.
         const okTitles = new Set(
@@ -434,10 +465,12 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
           url: string | null
           createdAt: string | null
         }
+        finalize?: FinalizeWorkItemResult | null
       }
       if (!res.ok) {
         throw new Error(json?.error || `Karbon work item failed (${res.status})`)
       }
+      setWorkItemSetup(json.finalize ?? null)
       await mutate()
       onChanged?.()
     } catch (err: any) {
@@ -802,7 +835,8 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
 
                     <div className="space-y-1">
                       <Label className="text-[10px] text-muted-foreground">Due Date</Label>
-                      <Popover>
+                      {/* `modal`: popover inside this (modal) Sheet. */}
+                      <Popover modal>
                         <PopoverTrigger asChild>
                           <Button
                             type="button"
@@ -913,6 +947,11 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                       )}
                     </div>
                   </div>
+                  {workItemSetup ? (
+                    <div className="mt-2">
+                      <KarbonSetupNotice finalize={workItemSetup} />
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <>
@@ -977,6 +1016,13 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                       {(submission.submitter_first_name ?? "First")} |{" "}
                       {fiscalYearDraft.trim() || "—"}
                     </div>
+                    {/* The follow-up the Hub makes in Karbon right after
+                        the create: 12/31 start, 4/15 due + deadline. */}
+                    <TaxWorkItemPreview
+                      kind="1040"
+                      fiscalYear={fiscalYearDraft}
+                      className="mt-2 text-[11px] leading-relaxed text-muted-foreground"
+                    />
                   </div>
 
                   {workItemError && (
@@ -1035,6 +1081,7 @@ export function IntakeDetailSheet({ submissionId, open, onOpenChange, onChanged 
                         .filter((m) => !!m.full_name)
                         .map((m) => ({ id: m.id, full_name: m.full_name as string }))}
                       defaultAssigneeTeamMemberId={submission.assigned_to_id}
+                      leadFunnel
                       disabled={creatingDrafts}
                     />
 

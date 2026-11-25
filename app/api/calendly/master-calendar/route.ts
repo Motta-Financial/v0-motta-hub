@@ -5,13 +5,18 @@ import {
   extractUuid,
   type CalendlyConnectionRow,
 } from "@/lib/calendly-api"
+import { runCalendlySync } from "@/lib/calendly-sync"
+
+export const runtime = "nodejs"
+// POST runs a full Calendly sync inline (~20s today).
+export const maxDuration = 120
 
 /**
  * "Master calendar" view: aggregates upcoming events from every active
  * Calendly connection in the org into a single chronological list.
  *
  * GET  → live read-through (does not write to the DB)
- * POST → triggers /api/calendly/sync to persist + fan out notifications
+ * POST → runs the Calendly sync so the Team Calendar picks up new bookings
  */
 
 export async function GET(request: NextRequest) {
@@ -111,20 +116,25 @@ export async function GET(request: NextRequest) {
 }
 
 /**
- * Persists the current master-calendar snapshot via the canonical sync
- * route, ensuring a single code path owns DB writes. Any caller that
- * just wants to refresh data + send notifications should POST here.
+ * "Sync now" for the Team Calendar: pulls every connected teammate's
+ * Calendly bookings — plus the org-wide catch-all for teammates who
+ * aren't connected — into the Hub.
+ *
+ * Calls the sync engine directly. This used to `fetch()` our own
+ * `/api/calendly/sync` over HTTP, but that server-side request carried
+ * no session cookie, so the auth middleware answered 401 and the button
+ * failed every time it was pressed.
  */
-export async function POST(request: NextRequest) {
+export async function POST() {
   try {
-    const origin = request.nextUrl.origin
-    const res = await fetch(`${origin}/api/calendly/sync`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ syncPast: false, daysForward: 30, syncEventTypes: false }),
+    const result = await runCalendlySync({
+      // Include the past week so cancellations and reschedules reconcile.
+      syncPast: true,
+      daysBack: 7,
+      daysForward: 90,
+      syncEventTypes: false,
     })
-    const json = await res.json()
-    return NextResponse.json(json, { status: res.status })
+    return NextResponse.json(result, { status: result.success ? 200 : 500 })
   } catch (err) {
     console.error("[calendly] master-calendar sync trigger failed:", err)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

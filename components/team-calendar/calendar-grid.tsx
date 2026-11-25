@@ -10,7 +10,7 @@ import {
   startOfDayInTz,
 } from "@/lib/calendar-tz"
 import { Users, MessageSquare, Tag } from "lucide-react"
-import type { TeamCalendarEvent, CalendarView } from "./types"
+import { hostKeyForEvent, type TeamCalendarEvent, type CalendarView } from "./types"
 
 /**
  * Calendar grid renderer for the Team Calendar.
@@ -41,7 +41,7 @@ interface Props {
   tz: string
   /** Events sorted by start_time ascending. */
   events: TeamCalendarEvent[]
-  /** Optional: only render events whose host team_member_id is in this set. */
+  /** Optional: only render events whose host key (`hostKeyForEvent`) is in this set. */
   hostFilter?: Set<string> | null
   /**
    * Pre-resolved firm-wide color for each event_type_name. When present,
@@ -694,7 +694,12 @@ export function CalendarGrid({
 }: Props) {
   const filtered = useMemo(() => {
     if (!hostFilter || hostFilter.size === 0) return events
-    return events.filter((e) => e.team_member_id && hostFilter.has(e.team_member_id))
+    // Same key the Hosts list is built from — includes hosts that aren't
+    // linked to a Hub teammate yet.
+    return events.filter((e) => {
+      const key = hostKeyForEvent(e)
+      return !!key && hostFilter.has(key)
+    })
   }, [events, hostFilter])
 
   const sharedProps = { tz, events: filtered, typeColorMap, onSelectEvent }

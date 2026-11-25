@@ -15,7 +15,9 @@
  *     pressure, and the firm's reputation is worth more than the
  *     marginal booking.
  *   • skipped once `calendly_event_id` is set, so a prospect who books
- *     inside the window never hears from us.
+ *     inside the window never hears from us — and, independently of
+ *     that attribution, skipped when the prospect has any active
+ *     Calendly booking made since the intake (`hasActiveBookingSince`).
  *   • skipped when a human has already moved the row off `new` —
  *     if a teammate has picked this up and called them, an automated
  *     "you haven't booked yet!" is actively unhelpful.
@@ -26,6 +28,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { sendEmail } from "@/lib/email"
 import { getFirmConfig } from "@/lib/firm-settings"
+import { hasActiveBookingSince } from "@/lib/calendly/has-booking"
 
 const BRAND = {
   primary: "#6B745D",
@@ -48,6 +51,8 @@ export interface NudgeResult {
   scanned: number
   sent: number
   failed: number
+  /** Held back because the prospect turned out to have a booking on file. */
+  skippedBooked: number
   errors: string[]
 }
 
@@ -107,7 +112,7 @@ export function buildNudgeHtml(
 export async function sweepBookingNudges(
   supabase: SupabaseClient,
 ): Promise<NudgeResult> {
-  const result: NudgeResult = { scanned: 0, sent: 0, failed: 0, errors: [] }
+  const result: NudgeResult = { scanned: 0, sent: 0, failed: 0, skippedBooked: 0, errors: [] }
 
   const now = Date.now()
   const dueBefore = new Date(now - NUDGE_AFTER_HOURS * 3600_000).toISOString()
@@ -116,7 +121,7 @@ export async function sweepBookingNudges(
   const { data: rows, error } = await supabase
     .from("jotform_intake_submissions")
     .select(
-      "id, submitter_full_name, submitter_email, booking_url, prospect_confirmation_sent_at, lead_status",
+      "id, submitter_full_name, submitter_email, booking_url, prospect_confirmation_sent_at, lead_status, contact_id, jotform_created_at, created_at",
     )
     .not("prospect_confirmation_sent_at", "is", null)
     .lte("prospect_confirmation_sent_at", dueBefore)
@@ -145,6 +150,27 @@ export async function sweepBookingNudges(
     // A teammate has already engaged this lead — an automated nudge
     // would talk over a live human conversation.
     if (row.lead_status && row.lead_status !== "new") continue
+
+    // Belt and braces: `calendly_event_id` (filtered above) only knows
+    // about bookings that could be attributed to this intake row. Look
+    // at the bookings themselves too, so a prospect who booked with a
+    // different email on the Calendly form — or whose attribution hasn't
+    // been written yet — is never asked "still want to talk?".
+    // If the check can't run, skip this row for today rather than risk it.
+    try {
+      const alreadyBooked = await hasActiveBookingSince(
+        supabase,
+        { contactId: row.contact_id as string | null, email: row.submitter_email as string | null },
+        (row.jotform_created_at as string | null) ?? (row.created_at as string | null) ?? null,
+      )
+      if (alreadyBooked) {
+        result.skippedBooked += 1
+        continue
+      }
+    } catch (err) {
+      result.errors.push(`${row.id}: booking check failed — ${(err as Error).message}`)
+      continue
+    }
 
     const firstName =
       row.submitter_full_name?.trim().split(/\s+/)[0] ?? null

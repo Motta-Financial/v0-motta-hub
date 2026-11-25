@@ -53,6 +53,10 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { TaxWorkItemPreview } from "@/components/karbon/tax-work-item-preview"
+import { KarbonSetupNotice } from "@/components/karbon/karbon-setup-notice"
+import type { FinalizeWorkItemResult } from "@/lib/karbon/finalize-work-item"
+import { defaultProspectTaxYear } from "@/lib/karbon/tax-work-item-defaults"
 import {
   Select,
   SelectContent,
@@ -204,11 +208,15 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
   const [notesDraft, setNotesDraft] = useState("")
   const [notesDirty, setNotesDirty] = useState(false)
 
+  // Karbon work item year = the TAX year the return covers (last year
+  // during filing season, otherwise this year). Stays editable.
   const [fiscalYearDraft, setFiscalYearDraft] = useState(
-    () => String(new Date().getUTCFullYear()),
+    () => String(defaultProspectTaxYear()),
   )
   const [creatingWorkItem, setCreatingWorkItem] = useState(false)
   const [workItemError, setWorkItemError] = useState<string | null>(null)
+  // What the Hub set in Karbon right after creating the work item.
+  const [workItemSetup, setWorkItemSetup] = useState<FinalizeWorkItemResult | null>(null)
 
   const [returnTypeDraft, setReturnTypeDraft] = useState<string>("IND")
   const [returnYearDraft, setReturnYearDraft] = useState(defaultReturnTaxYear)
@@ -225,8 +233,9 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
       setNotesDraft(prospect.triage_notes ?? "")
       setNotesDirty(false)
       setWorkItemError(null)
+      setWorkItemSetup(null)
       setCreatingWorkItem(false)
-      setFiscalYearDraft(String(new Date().getUTCFullYear()))
+      setFiscalYearDraft(String(defaultProspectTaxYear()))
       setReturnYearDraft(defaultReturnTaxYear())
       setTaxReturnError(null)
       setTaxReturnResult(null)
@@ -286,6 +295,7 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
       if (!res.ok) {
         throw new Error(json?.error || `Karbon work item failed (${res.status})`)
       }
+      setWorkItemSetup((json?.finalize as FinalizeWorkItemResult | null | undefined) ?? null)
       await mutate()
     } catch (err: any) {
       console.error("[v0] create prospect karbon work item error:", err)
@@ -542,6 +552,11 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
                   )}
                 </div>
               </div>
+              {workItemSetup ? (
+                <div className="mt-2">
+                  <KarbonSetupNotice finalize={workItemSetup} />
+                </div>
+              ) : null}
             </div>
           ) : (
             <>
@@ -587,6 +602,11 @@ export function ProspectDetail({ prospectId }: { prospectId: string }) {
                   TAX | Individual (1040) | {prospect.submitter_last_name ?? "Last"},{" "}
                   {prospect.submitter_first_name ?? "First"} | {fiscalYearDraft.trim() || "—"}
                 </div>
+                <TaxWorkItemPreview
+                  kind="1040"
+                  fiscalYear={fiscalYearDraft}
+                  className="mt-2 text-[11px] leading-relaxed text-muted-foreground"
+                />
               </div>
 
               {workItemError && (

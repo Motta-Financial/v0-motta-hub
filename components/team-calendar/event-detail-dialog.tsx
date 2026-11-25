@@ -395,6 +395,28 @@ export function EventDetailDialog({ event, open, onOpenChange, timeZone, current
                 </div>
               </div>
             )}
+            {/* Host whose Calendly account isn't linked to a Hub teammate
+                yet — still say whose calendar this landed on. */}
+            {!event.team_members && (event.calendly_user_name || event.calendly_user_email) && (
+              <div className="flex items-center gap-3 rounded-lg bg-muted p-3">
+                <Avatar>
+                  <AvatarFallback>
+                    {initials(event.calendly_user_name ?? event.calendly_user_email)}
+                  </AvatarFallback>
+                </Avatar>
+                <div>
+                  <p className="text-sm font-medium">
+                    Hosted by {event.calendly_user_name ?? event.calendly_user_email}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {event.calendly_user_name && event.calendly_user_email
+                      ? `${event.calendly_user_email} · `
+                      : ""}
+                    Calendly host not linked to a Hub teammate
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* Time */}
             <div className="flex items-start gap-3">

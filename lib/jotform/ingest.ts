@@ -111,6 +111,13 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
       }
       if (persisted) {
       persistedRowId = persisted.id
+      // A teammate linked this intake by hand. Leave it exactly as they
+      // set it: `autoLinkIntakeSubmission` already stands down (returns
+      // null), and the find-or-create fallback below must as well —
+      // otherwise a webhook redelivery would replace their choice and
+      // could mint a duplicate Karbon contact along the way.
+      const manuallyLinked = persisted.link_method === "manual"
+
       // First try the standard auto-link (Supabase-only)
       let result = await autoLinkIntakeSubmission(supabase, persisted.id, persisted)
 
@@ -128,7 +135,9 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
       // We still preserve the existing behaviour of auto-pushing to
       // Karbon for Jotform (per the user's intake-routing decision) —
       // the Hub-first call is purely a safety net + dedupe key.
-      if (!result?.link_method) {
+      if (manuallyLinked) {
+        console.log(`[Jotform] intake ${submission.id} is manually linked — leaving it untouched`)
+      } else if (!result?.link_method) {
         linkAttempted = true
         let hubFallback: { contact_id: string | null; organization_id: string | null } = {
           contact_id: null,
@@ -208,15 +217,48 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
               : karbonResult.contact_id || karbonResult.organization_id
                 ? "auto_karbon_match"
                 : "auto_hub_created"
-          await supabase
+          // Write the link — and CHECK that it landed.
+          //
+          // `link_method` is constrained in the database to a short
+          // list (auto_email / auto_business_name / auto_name / manual).
+          // The three richer values above are not on it, so this UPDATE
+          // was being rejected with a CHECK violation, and because the
+          // error was never read the whole statement — `contact_id`
+          // included — vanished without a trace. The Hub contact had
+          // been created, the Karbon contact had been created, and the
+          // intake row still said "not linked": 29 of 43 website intakes
+          // between September and November ended up that way, each one
+          // waiting for someone to link it by hand.
+          //
+          // Try the precise value first (it works once migration 437
+          // widens the constraint); if the database refuses it, fall
+          // back to the nearest value it does accept rather than lose
+          // the link. Any other failure is recorded on the row.
+          const linkWrite = {
+            contact_id: finalContactId,
+            organization_id: finalOrganizationId,
+            linked_at: new Date().toISOString(),
+          }
+          let { error: linkWriteErr } = await supabase
             .from("jotform_intake_submissions")
-            .update({
-              contact_id: finalContactId,
-              organization_id: finalOrganizationId,
-              link_method: linkMethod,
-              linked_at: new Date().toISOString(),
-            })
+            .update({ ...linkWrite, link_method: linkMethod })
             .eq("id", persisted.id)
+          if (linkWriteErr?.code === "23514") {
+            const legacyMethod = persisted.submitter_email
+              ? "auto_email"
+              : finalOrganizationId && !finalContactId
+                ? "auto_business_name"
+                : "auto_name"
+            ;({ error: linkWriteErr } = await supabase
+              .from("jotform_intake_submissions")
+              .update({ ...linkWrite, link_method: legacyMethod })
+              .eq("id", persisted.id))
+          }
+          if (linkWriteErr) {
+            const msg = `link write: ${linkWriteErr.message}`
+            linkError = linkError ? `${linkError}; ${msg}` : msg
+            console.error("[Jotform] failed to write intake link:", linkWriteErr.message)
+          }
 
           // Remember whether we minted a brand-new Karbon entity so the
           // post-processing block can post the legacy "new intake"
@@ -274,7 +316,7 @@ export async function upsertIntakeSubmission(submission: JotformSubmission) {
           }
         }
       } else {
-        console.log(`[Jotform] auto-linked intake ${submission.id} via ${result.link_method}: ${result.reason}`)
+        console.log(`[Jotform] auto-linked intake ${submission.id} via ${result?.link_method}: ${result?.reason}`)
       }
 
       // ── Open an opportunity ─────────────────────────────────────────
