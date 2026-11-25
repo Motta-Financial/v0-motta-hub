@@ -126,3 +126,25 @@ export interface EventTypeColorEntry {
   isOverride: boolean
   count: number
 }
+
+/**
+ * Stable identity for "whose meeting is this" on the Team Calendar.
+ *
+ * Clients can book on any teammate's Calendly, including teammates whose
+ * Calendly account isn't linked to a Hub profile yet. Those meetings have
+ * no `team_member_id`, and keying the host filter on that column alone
+ * silently dropped them from the Hosts list and hid them whenever any
+ * host was selected. Falling back to the Calendly identity keeps every
+ * booking selectable, under the name Calendly reports for its host.
+ */
+export function hostKeyForEvent(
+  e: Pick<TeamCalendarEvent, "team_member_id" | "calendly_user_email" | "calendly_user_name">,
+): string | null {
+  if (e.team_member_id) return e.team_member_id
+  const email = e.calendly_user_email?.trim().toLowerCase()
+  if (email) return `calendly-email:${email}`
+  const name = e.calendly_user_name?.trim().toLowerCase()
+  if (name) return `calendly-name:${name}`
+  return null
+}
+

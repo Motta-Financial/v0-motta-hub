@@ -17,6 +17,13 @@ import {
 } from "@/lib/calendly-invitee-match"
 import { mapCalendlyEventFields, mapCalendlyInviteeFields } from "@/lib/calendly-field-mapping"
 import { syncHubMeetings } from "@/lib/meetings/sync-hub-meetings"
+import {
+  announceUnnotifiedBookings,
+  backfillIntakeAttribution,
+  loadHostDirectory,
+  resolveEventHost,
+  type BookingSweepResult,
+} from "@/lib/calendly/booking-pipeline"
 
 /**
  * Reusable Calendly sync engine.
@@ -33,6 +40,13 @@ export interface SyncBody {
   daysForward?: number
   syncEventTypes?: boolean
   teamMemberId?: string
+  /**
+   * Run the booking backstop after the sync: announce any recent booking
+   * the team has not been emailed about. Set by the scheduled cron only —
+   * a teammate pressing "Sync now" should get a fast sync, not wait on
+   * research passes and all-staff emails.
+   */
+  announceBookings?: boolean
 }
 
 export interface SyncResult {
@@ -47,6 +61,8 @@ export interface SyncResult {
     routingFormSubmissions: number
   }
   webhookHealth?: { orgSubscribed: boolean; userSubscriptions: number; error?: string }
+  /** Bookings attributed to their intake + announced to the team this run. */
+  bookings?: { intakesAttributed: number; sweep: BookingSweepResult }
   dateRange?: { from: string; to: string }
   connectionsProcessed: number
   errors?: string[]
@@ -69,7 +85,10 @@ type AdminSupabase = ReturnType<typeof createAdminClient>
  *   · runs an org-wide catch-all so bookings hosted by team members
  *     whose OAuth connection lapsed still land in Supabase;
  *   · syncs routing forms + submissions;
- *   · refreshes the unified Hub `meetings` mirror.
+ *   · refreshes the unified Hub `meetings` mirror;
+ *   · backstops the webhook's follow-ups: attributes bookings to the
+ *     intake that produced them and announces any recent booking the
+ *     team hasn't been told about (lib/calendly/booking-pipeline.ts).
  */
 export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> {
   const supabase = createAdminClient()
@@ -79,6 +98,7 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
     daysForward = 90,
     syncEventTypes = true,
     teamMemberId,
+    announceBookings = false,
   } = body
 
   const { data: syncLog } = await supabase
@@ -225,6 +245,24 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
     console.error("[calendly-sync] hub meetings refresh failed:", err)
   }
 
+  // Backstop for the real-time webhook. Both steps are idempotent and
+  // never throw.
+  //   1. Tie bookings back to the intake that produced them. Cheap, so it
+  //      runs on every sync: it repairs the history a dead webhook left
+  //      behind and keeps the "still want to talk?" nudge away from
+  //      prospects who already booked.
+  //   2. Announce any recent booking the team hasn't been told about —
+  //      scheduled runs only (see `announceBookings`).
+  const intakesAttributed = await backfillIntakeAttribution(supabase)
+  const sweep: BookingSweepResult =
+    announceBookings && !teamMemberId
+      ? await announceUnnotifiedBookings(supabase)
+      : { candidates: 0, announced: 0, skipped: 0, errors: [] }
+  const bookings: SyncResult["bookings"] = { intakesAttributed, sweep }
+  if (sweep.errors.length > 0) {
+    console.error("[calendly-sync] booking sweep errors:", sweep.errors)
+  }
+
   // Apply client-provided intake/Calendly data to Hub contacts
   // (migration 384, superset of 383's state propagation): missing
   // email/phone/state fill automatically; values that CONFLICT with the
@@ -254,6 +292,7 @@ export async function runCalendlySync(body: SyncBody = {}): Promise<SyncResult> 
       routingFormSubmissions: routing.submissions,
     },
     webhookHealth,
+    bookings,
     dateRange: { from: minStartTime, to: maxStartTime },
     connectionsProcessed: activeConnections.length,
     errors: errors.length > 0 ? errors : undefined,
@@ -595,7 +634,12 @@ async function processScheduledEvent(
           calendly_uri: invitee.uri,
           calendly_event_id: savedEvent?.id,
           calendly_event_uuid: uuid,
-          contact_id: contactId,
+          // Written only on a match. The webhook / booking sweep can
+          // link an invitee to a contact they just CREATED, which this
+          // deterministic matcher may not find again (e.g. the invitee
+          // typed a different email); an unconditional `null` here would
+          // unlink them on the next sync.
+          ...(contactId ? { contact_id: contactId } : {}),
           raw_data: invitee,
           synced_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -724,16 +768,12 @@ async function syncOrgWideEvents(
   const coveredUserUris = new Set(connections.map((c) => c.calendly_user_uri))
   let ingested = 0
 
-  // Uncovered hosts can still be Hub team members (their OAuth token
-  // lapsed) — resolve by email so their meetings keep proper attribution.
-  const teamMemberByEmail = new Map<string, string>()
-  const { data: teamMembers } = await supabase
-    .from("team_members")
-    .select("id, email")
-    .eq("status", "active")
-  for (const tm of teamMembers ?? []) {
-    if (tm.email) teamMemberByEmail.set(String(tm.email).toLowerCase(), tm.id)
-  }
+  // Uncovered hosts can still be Hub team members — their OAuth token
+  // lapsed, or they never connected. The shared resolver places them by
+  // any connection row for that Calendly user (active or not) and then
+  // by email, checking every host on the event, so their meetings keep
+  // proper attribution on the Team Calendar. Same logic as the webhook.
+  const hostDirectory = await loadHostDirectory(supabase)
 
   // Once a lens proves usable it serves both statuses; a 403 rotates to
   // the next candidate instead of surfacing as a per-run error.
@@ -797,14 +837,13 @@ async function syncOrgWideEvents(
     )
 
     for (const event of uncovered) {
-      const host = event.event_memberships?.[0] ?? {}
-      const hostEmail = host.user_email ? String(host.user_email).toLowerCase() : null
+      const host = resolveEventHost(event, hostDirectory)
       const result = await processScheduledEvent(usedLens, supabase, event, known, errors, {
         connectionId: null,
-        teamMemberId: hostEmail ? (teamMemberByEmail.get(hostEmail) ?? null) : null,
-        userUri: host.user ?? null,
-        userName: host.user_name ?? null,
-        userEmail: host.user_email ?? null,
+        teamMemberId: host.teamMemberId,
+        userUri: host.userUri,
+        userName: host.userName,
+        userEmail: host.userEmail,
       })
       if (result.eventSaved) ingested += 1
     }

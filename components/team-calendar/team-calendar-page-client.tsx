@@ -1,5 +1,6 @@
 "use client"
 
+import { mutate as globalMutate } from "swr"
 import { useEffect, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { Card } from "@/components/ui/card"
@@ -113,12 +114,15 @@ export function TeamCalendarPageClient({
   const handleSyncAll = async () => {
     try {
       setSyncing(true)
-      // POST is the legacy "sync everyone" endpoint that triggers the
-      // Calendly→Supabase ingestion job. Once it completes, the
-      // TeamCalendarView's SWR cache picks up the new rows on its next
-      // revalidation (or via the manual refresh button there).
+      // Runs the Calendly→Supabase sync for the whole team (every
+      // connected teammate plus the org-wide catch-all), then
+      // revalidates the TeamCalendarView's SWR cache below.
       const res = await fetch("/api/calendly/master-calendar", { method: "POST" })
       if (!res.ok) throw new Error("sync failed")
+      // Redraw the calendar with whatever the sync just brought in.
+      await globalMutate(
+        (key) => typeof key === "string" && key.startsWith("/api/calendly/team-calendar"),
+      )
     } catch (e) {
       console.error(e)
       setError("Sync failed — try again in a minute.")

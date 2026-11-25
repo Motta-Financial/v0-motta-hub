@@ -1,6 +1,19 @@
 import { NextResponse } from "next/server"
 import { runCalendlySync } from "@/lib/calendly-sync"
 
+export const runtime = "nodejs"
+// The sync itself takes ~20s; the rest of the budget covers the booking
+// backstop at the end of each run (a research pass + team email for any
+// booking the webhook didn't announce, capped per run).
+export const maxDuration = 300
+
+// How far ahead the scheduled sync looks. Bookings are usually made days
+// out, but nothing stops a client booking months ahead — and a meeting
+// the sync never lists never reaches the Team Calendar unless the
+// webhook delivered it. Unchanged events cost one list row each, so a
+// wide window is cheap.
+const SYNC_DAYS_FORWARD = 180
+
 /**
  * Periodic Calendly sync.
  *
@@ -41,8 +54,11 @@ export async function GET(request: Request) {
     const result = await runCalendlySync({
       syncPast: true,
       daysBack: 7,
-      daysForward: 60,
+      daysForward: SYNC_DAYS_FORWARD,
       syncEventTypes: true,
+      // The scheduled run is the webhook's safety net: announce any
+      // recent booking the team hasn't been emailed about.
+      announceBookings: true,
     })
     return NextResponse.json(result)
   } catch (err) {
@@ -81,9 +97,12 @@ export async function POST(request: Request) {
     const result = await runCalendlySync({
       syncPast: body.syncPast ?? true,
       daysBack: typeof body.daysBack === "number" ? body.daysBack : 7,
-      daysForward: typeof body.daysForward === "number" ? body.daysForward : 60,
+      daysForward: typeof body.daysForward === "number" ? body.daysForward : SYNC_DAYS_FORWARD,
       syncEventTypes: body.syncEventTypes ?? true,
       teamMemberId: body.teamMemberId,
+      // Operator backfills (wide date ranges) default to NOT emailing
+      // the firm; pass `announceBookings: true` to opt in.
+      announceBookings: body.announceBookings === true,
     })
     return NextResponse.json(result)
   } catch (err) {

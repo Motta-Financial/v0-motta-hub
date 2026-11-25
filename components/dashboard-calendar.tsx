@@ -1,5 +1,6 @@
 "use client"
 
+import { mutate as globalMutate } from "swr"
 import { useEffect, useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -92,6 +93,10 @@ export function DashboardCalendar() {
       setSyncing(true)
       const res = await fetch("/api/calendly/master-calendar", { method: "POST" })
       if (!res.ok) throw new Error("sync failed")
+      // Redraw the calendar with whatever the sync just brought in.
+      await globalMutate(
+        (key) => typeof key === "string" && key.startsWith("/api/calendly/team-calendar"),
+      )
     } catch (e) {
       console.error(e)
       setError("Sync failed — try again in a minute.")
