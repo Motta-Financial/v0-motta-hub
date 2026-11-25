@@ -23,7 +23,18 @@
  * will be posted, without having to round-trip through this module.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { getKarbonCredentials, karbonFetch, type KarbonApiConfig } from "@/lib/karbon-api"
+import {
+  finalizeKarbonWorkItem,
+  type FinalizeWorkItemResult,
+  type LeadContext,
+} from "@/lib/karbon/finalize-work-item"
+import {
+  resolveTaxYear,
+  taxReturnSchedule,
+  toKarbonDateTime,
+} from "@/lib/karbon/tax-work-item-defaults"
 
 // ── Constants pulled directly from the Zapier flow ────────────────────
 // (See the user-supplied screenshots: Step 10 "SCRIPT | Create Work
@@ -84,10 +95,16 @@ export interface CreateIntakeWorkItemArgs {
   assigneeEmail: string
   /**
    * StartDate posted to Karbon, ISO 8601. The Zapier flow used
-   * `2025-12-31T00:00:00Z` — Dec 31 of the year the work begins.
-   * Defaults to Dec 31 of the current calendar year when omitted.
+   * `2025-12-31T00:00:00Z` — Dec 31 of the tax year the return covers.
+   * Defaults to Dec 31 of the tax year named by `fiscalYear` (or, when
+   * that isn't a year — "LEAD" — the seasonal default tax year).
    */
   startDate?: string
+  /**
+   * Who the work item is for. Lets the post-create step move the item to
+   * "Lead | Meeting Schd" when this prospect has a Calendly meeting booked.
+   */
+  lead?: LeadContext | null
 }
 
 export interface CreateIntakeWorkItemResult {
@@ -102,21 +119,46 @@ export interface CreateIntakeWorkItemResult {
   error?: string
   /** Set when ok=false and we never even reached Karbon. */
   skipped?: "no_credentials"
+  /** Outcome of the post-create status / start / due / deadline update. */
+  finalize?: FinalizeWorkItemResult
 }
 
 /**
- * Default StartDate when the caller doesn't supply one. Dec 31 of the
- * current calendar year in UTC, matching the convention from the
- * legacy Zapier flow (which hard-coded `2025-12-31T00:00:00Z`).
+ * The firm-convention dates for this 1040: start 12/31 of the tax year,
+ * due + deadline 4/15 of the following year. The tax year is the one the
+ * teammate typed into the fiscal-year field; a non-year value ("LEAD")
+ * falls back to the seasonal default (see `defaultProspectTaxYear`).
+ *
+ * The legacy Zapier flow hard-coded `2025-12-31T00:00:00Z`, and the first
+ * Hub version used "Dec 31 of the current calendar year" — which is a
+ * year late for anyone who walks in during filing season.
  */
-function defaultStartDate(): string {
-  const year = new Date().getUTCFullYear()
-  return `${year}-12-31T00:00:00Z`
+function startDateFor(fiscalYear: string): string {
+  const { taxYear } = resolveTaxYear({ fiscalYear })
+  return taxReturnSchedule("1040", taxYear)?.startDate ?? `${taxYear}-12-31`
+}
+
+/** What the caller is told the moment the work item exists in Karbon. */
+export interface CreatedWorkItem {
+  workItemKey: string
+  title: string
+  workItemUrl: string
 }
 
 export async function createIntakeWorkItem(
   args: CreateIntakeWorkItemArgs,
   credentialsOverride?: KarbonApiConfig,
+  deps: {
+    supabase?: SupabaseClient
+    /**
+     * Called as soon as Karbon has created the work item — BEFORE the
+     * status/date follow-up. Callers persist the key here: the follow-up
+     * can take several seconds (two PATCHes with retries), and a work
+     * item that exists in Karbon but isn't recorded locally is exactly
+     * how a second click mints a duplicate.
+     */
+    onCreated?: (created: CreatedWorkItem) => Promise<void> | void
+  } = {},
 ): Promise<CreateIntakeWorkItemResult> {
   const credentials = credentialsOverride ?? getKarbonCredentials()
   if (!credentials) {
@@ -131,10 +173,11 @@ export async function createIntakeWorkItem(
   })
 
   // Payload key names mirror Karbon's WorkItemDTO exactly (PascalCase).
-  // Fields beyond these are accepted by Karbon but rejected by our
-  // intake convention — we intentionally don't pass `WorkStatus`,
-  // `Description`, `Deadline`, etc. so the work template's own
-  // defaults (planned status, no description) apply.
+  // The create call stays minimal on purpose: status and the due /
+  // deadline dates are applied by the finalize step AFTER the work item
+  // exists (below), so Karbon sees them as changes to a live work item
+  // and its workflow automations run. StartDate is the one date that
+  // must be here — Karbon requires it on create.
   const payload = {
     Title: title,
     ClientKey: args.contactKey,
@@ -142,7 +185,7 @@ export async function createIntakeWorkItem(
     WorkType: INDIVIDUAL_1040_WORK_TYPE,
     WorkTemplateKey: INDIVIDUAL_1040_WORK_TEMPLATE_KEY,
     AssigneeEmailAddress: args.assigneeEmail,
-    StartDate: args.startDate || defaultStartDate(),
+    StartDate: args.startDate || toKarbonDateTime(startDateFor(args.fiscalYear)),
   }
 
   const { data, error } = await karbonFetch<{ WorkItemKey?: string }>(
@@ -156,10 +199,39 @@ export async function createIntakeWorkItem(
     return { ok: false, error: error || "Karbon did not return a WorkItemKey" }
   }
 
+  const workItemUrl = `${KARBON_TENANT_BASE}/work/${data.WorkItemKey}`
+
+  // Let the caller record the key before anything else can go wrong.
+  try {
+    await deps.onCreated?.({ workItemKey: data.WorkItemKey, title, workItemUrl })
+  } catch (err) {
+    console.error("[karbon-intake-work-item] onCreated handler failed:", err)
+  }
+
+  // Step 2 — now that the work item exists, set the status the firm's
+  // Karbon workflow expects ("Lead | Meeting Schd" when the prospect has
+  // a Calendly meeting booked, "Lead | Awaiting Intake" until then) and
+  // the start / due / deadline dates (12/31 of the tax year → 4/15).
+  // Never throws, and never fails the create: the work item is already
+  // in Karbon either way.
+  const finalize = await finalizeKarbonWorkItem(
+    {
+      workItemKey: data.WorkItemKey,
+      workTypeName: INDIVIDUAL_1040_WORK_TYPE,
+      workTemplateKey: INDIVIDUAL_1040_WORK_TEMPLATE_KEY,
+      title,
+      fiscalYear: args.fiscalYear,
+      explicitStartDate: args.startDate ?? null,
+      lead: args.lead ?? null,
+    },
+    { supabase: deps.supabase, credentials },
+  )
+
   return {
     ok: true,
     workItemKey: data.WorkItemKey,
     title,
-    workItemUrl: `${KARBON_TENANT_BASE}/work/${data.WorkItemKey}`,
+    workItemUrl,
+    finalize,
   }
 }

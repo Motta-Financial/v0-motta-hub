@@ -15,6 +15,11 @@
  *     timeline entry reads "Internal Prospect Form" rather than
  *     "Intake Form".
  *
+ * As on the intake variant, a follow-up PATCH after the create sets the
+ * Karbon status ("Lead | Meeting Schd" when the prospect has a Calendly
+ * meeting booked) and the start / due / deadline dates (12/31 of the tax
+ * year → 4/15). See `lib/karbon/finalize-work-item.ts`.
+ *
  * Request body (all optional):
  *   { fiscalYear?: string, startDate?: string }
  */
@@ -26,6 +31,14 @@ import {
   createIntakeWorkItem,
 } from "@/lib/karbon/create-intake-work-item"
 import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
+import { defaultProspectTaxYear } from "@/lib/karbon/tax-work-item-defaults"
+
+export const runtime = "nodejs"
+// Creating a Karbon work item is a POST followed by the status/date
+// PATCHes (each with a short retry), plus the cross-link note. Give the
+// whole sequence room so it is never cut off between the create and the
+// follow-up.
+export const maxDuration = 60
 
 type RequestBody = {
   fiscalYear?: string
@@ -191,41 +204,62 @@ export async function POST(
     }
 
     // ── 6. Default fiscal year ─────────────────────────────────────
+    // Tax year, not calendar year: during filing season (Jan 1 – Apr 15)
+    // a new prospect needs LAST year's return.
     const fiscalYear =
-      (body.fiscalYear || "").trim() || String(new Date().getUTCFullYear())
+      (body.fiscalYear || "").trim() || String(defaultProspectTaxYear())
     const previewTitle = buildIntakeWorkItemTitle({ firstName, lastName, fiscalYear })
 
     // ── 7. Hit Karbon ──────────────────────────────────────────────
-    const result = await createIntakeWorkItem({
-      contactKey: contact.karbon_contact_key,
-      firstName,
-      lastName,
-      fiscalYear,
-      assigneeEmail: assignee.email,
-      startDate: body.startDate,
-    })
+    // Creates the work item, then (inside createIntakeWorkItem) PATCHes
+    // the status + start / due / deadline dates onto it. `lead` is what
+    // lets that step see this prospect's Calendly bookings.
+    //
+    // ── 8. Persist on the prospect row ─────────────────────────────
+    // Done from `onCreated`, the moment Karbon confirms the work item
+    // exists and BEFORE the status/date follow-up: if that follow-up
+    // were interrupted with the key unsaved, the idempotency guard above
+    // would miss it and a second click would create a duplicate.
+    let nowIso = new Date().toISOString()
+    const result = await createIntakeWorkItem(
+      {
+        contactKey: contact.karbon_contact_key,
+        firstName,
+        lastName,
+        fiscalYear,
+        assigneeEmail: assignee.email,
+        startDate: body.startDate,
+        lead: {
+          contactId: row.contact_id as string,
+          email: (row.submitter_email as string | null) ?? null,
+        },
+      },
+      undefined,
+      {
+        supabase,
+        onCreated: async (created) => {
+          nowIso = new Date().toISOString()
+          const { error: updateError } = await supabase
+            .from("prospect_submissions")
+            .update({
+              karbon_work_item_key: created.workItemKey,
+              karbon_work_item_title: created.title ?? previewTitle,
+              karbon_work_item_url: created.workItemUrl ?? null,
+              karbon_work_item_created_at: nowIso,
+            })
+            .eq("id", id)
+          if (updateError) {
+            console.error("[prospect-karbon-work-item] persist error:", updateError.message)
+          }
+        },
+      },
+    )
 
     if (!result.ok || !result.workItemKey) {
       return NextResponse.json(
         { error: result.error || "Karbon refused the work item", previewTitle },
         { status: 502 },
       )
-    }
-
-    // ── 8. Persist on the prospect row ─────────────────────────────
-    const nowIso = new Date().toISOString()
-    const { error: updateError } = await supabase
-      .from("prospect_submissions")
-      .update({
-        karbon_work_item_key: result.workItemKey,
-        karbon_work_item_title: result.title ?? previewTitle,
-        karbon_work_item_url: result.workItemUrl ?? null,
-        karbon_work_item_created_at: nowIso,
-      })
-      .eq("id", id)
-
-    if (updateError) {
-      console.error("[prospect-karbon-work-item] persist error:", updateError.message)
     }
 
     // ── 9. Cross-link Karbon timeline note ─────────────────────────
@@ -266,6 +300,8 @@ export async function POST(
         url: result.workItemUrl ?? null,
         createdAt: nowIso,
       },
+      // What the post-create step set in Karbon (status + dates).
+      finalize: result.finalize ?? null,
     })
   } catch (err: any) {
     console.error("[v0] POST /api/prospects/[id]/karbon-work-item error:", err)

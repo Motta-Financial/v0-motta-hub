@@ -28,6 +28,9 @@ import {
 } from "@/lib/karbon/create-work-items-batch"
 
 export const runtime = "nodejs"
+// One Karbon POST plus the status/date PATCHes per queued work item,
+// created sequentially.
+export const maxDuration = 120
 
 function isUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
@@ -53,7 +56,7 @@ export async function POST(
 
     const { data: submission, error: subErr } = await supabase
       .from("jotform_intake_submissions")
-      .select("id, contact_id, organization_id")
+      .select("id, contact_id, organization_id, submitter_email")
       .eq("id", id)
       .maybeSingle()
 
@@ -116,25 +119,33 @@ export async function POST(
       clientType,
       contactId: submission.contact_id,
       organizationId: submission.organization_id,
+      // An intake is a prospect: tax-prep items go to "Lead | Meeting
+      // Schd" when this person has a Calendly meeting on the books.
+      lead: {
+        intakeSubmissionId: submission.id,
+        contactId: submission.contact_id,
+        email: submission.submitter_email,
+      },
+      // Record the first created key on the intake row when it has none,
+      // so the sheet's existing "work item created" state reflects
+      // reality and the singular route's idempotency guard stays honest.
+      // Done per item, as soon as Karbon confirms it — not after the whole
+      // batch — and `.is(…, null)` makes "first one wins" atomic.
+      onItemCreated: async (item) => {
+        await supabase
+          .from("jotform_intake_submissions")
+          .update({
+            karbon_work_item_key: item.workItemKey,
+            karbon_work_item_title: item.title,
+            karbon_work_item_url: item.workItemUrl ?? null,
+            karbon_work_item_created_at: new Date().toISOString(),
+          })
+          .eq("id", id)
+          .is("karbon_work_item_key", null)
+      },
     })
 
     const created = results.filter((r) => r.ok)
-
-    // Record the first created key on the intake row when it has none, so
-    // the sheet's existing "work item created" state reflects reality and
-    // the singular route's idempotency guard stays honest.
-    if (created.length > 0 && created[0].workItemKey) {
-      await supabase
-        .from("jotform_intake_submissions")
-        .update({
-          karbon_work_item_key: created[0].workItemKey,
-          karbon_work_item_title: created[0].title,
-          karbon_work_item_url: created[0].workItemUrl ?? null,
-          karbon_work_item_created_at: new Date().toISOString(),
-        })
-        .eq("id", id)
-        .is("karbon_work_item_key", null)
-    }
 
     return NextResponse.json({
       ok: created.length > 0,

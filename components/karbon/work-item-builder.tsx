@@ -47,11 +47,18 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { TaxWorkItemPreview } from "@/components/karbon/tax-work-item-preview"
+import {
+  classifyTaxPrepWorkType,
+  defaultProspectTaxYear,
+} from "@/lib/karbon/tax-work-item-defaults"
 
 export interface WorkTemplate {
   key: string
   title: string
   workTypeKey: string | null
+  /** Karbon work type NAME, e.g. "TAX | Individual (1040)". */
+  workTypeName?: string | null
   estimatedBudgetMinutes: number | null
 }
 
@@ -76,6 +83,8 @@ export interface WorkItemDraft {
   templateKey: string
   templateTitle: string
   workTypeKey: string | null
+  /** Work type NAME of the chosen template — drives the tax-date preview. */
+  workTypeName?: string | null
   title: string
   /** True once the user edits the title, which stops auto-regeneration. */
   titleTouched: boolean
@@ -83,7 +92,6 @@ export interface WorkItemDraft {
   workStatusKey: string
   startDate: Date | null
   dueDate: Date | null
-  budgetHours: string
 }
 
 export function makeWorkItemDraft(partial?: Partial<WorkItemDraft>): WorkItemDraft {
@@ -92,13 +100,13 @@ export function makeWorkItemDraft(partial?: Partial<WorkItemDraft>): WorkItemDra
     templateKey: "",
     templateTitle: "",
     workTypeKey: null,
+    workTypeName: null,
     title: "",
     titleTouched: false,
     assigneeTeamMemberId: "",
     workStatusKey: "",
     startDate: null,
     dueDate: null,
-    budgetHours: "",
     ...partial,
   }
 }
@@ -113,6 +121,12 @@ interface Props {
   defaultAssigneeTeamMemberId?: string | null
   /** Rendered above the list; callers give their own framing. */
   description?: string
+  /**
+   * These work items are for a prospect (intake / prospect form), so a
+   * tax-preparation item with no status picked lands in the lead funnel.
+   * Leave off for existing-client work such as a debrief.
+   */
+  leadFunnel?: boolean
   disabled?: boolean
 }
 
@@ -123,6 +137,7 @@ export function WorkItemBuilder({
   teamMembers,
   defaultAssigneeTeamMemberId,
   description,
+  leadFunnel = false,
   disabled,
 }: Props) {
   const [templates, setTemplates] = useState<WorkTemplate[]>([])
@@ -131,42 +146,59 @@ export function WorkItemBuilder({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [openPicker, setOpenPicker] = useState<string | null>(null)
 
-  // Load once, lazily — only when the section is actually used. The
-  // templates list is small and static enough that one fetch per mount is
-  // cheaper than any caching layer we'd add around it.
+  // Load once, when the builder mounts. The templates list is small and
+  // static enough that one fetch per mount is cheaper than any caching
+  // layer we'd add around it.
+  //
+  // This effect must NOT depend on `loading`. It used to (`[templates.
+  // length, loading]`): calling `setLoading(true)` then re-ran the
+  // effect, whose cleanup flagged the in-flight request as cancelled, so
+  // the response was thrown away and `loading` never went back to false.
+  // The picker sat on "Loading templates…" forever and no template-based
+  // work item could be created from the intake sheet or the debrief.
   useEffect(() => {
-    if (templates.length > 0 || loading) return
-    let cancelled = false
-    const load = async () => {
-      setLoading(true)
-      setLoadError(null)
-      try {
-        const res = await fetch("/api/karbon/work-templates")
+    let active = true
+    setLoading(true)
+    setLoadError(null)
+    fetch("/api/karbon/work-templates")
+      .then(async (res) => {
         if (!res.ok) throw new Error(`Failed to load templates (${res.status})`)
-        const data = await res.json()
-        if (cancelled) return
+        return res.json()
+      })
+      .then((data) => {
+        if (!active) return
         setTemplates(data.templates || [])
         setStatuses(data.statuses || [])
-      } catch (err) {
-        if (!cancelled) setLoadError(err instanceof Error ? err.message : "Failed to load")
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    void load()
+      })
+      .catch((err) => {
+        if (active) setLoadError(err instanceof Error ? err.message : "Failed to load")
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
     return () => {
-      cancelled = true
+      active = false
     }
-  }, [templates.length, loading])
+  }, [])
 
-  const year = useMemo(() => String(new Date().getFullYear()), [])
+  // The year in the title is what the server reads as the TAX year for a
+  // tax-preparation template, so it follows the tax calendar there (last
+  // year during filing season). Everything else keeps the calendar year.
+  const years = useMemo(
+    () => ({
+      calendar: String(new Date().getFullYear()),
+      tax: String(defaultProspectTaxYear()),
+    }),
+    [],
+  )
 
   const autoTitle = useCallback(
-    (templateTitle: string) => {
+    (template: WorkTemplate) => {
+      const year = classifyTaxPrepWorkType(template.workTypeName) ? years.tax : years.calendar
       const who = clientName?.trim()
-      return who ? `${templateTitle} | ${who} | ${year}` : `${templateTitle} | ${year}`
+      return who ? `${template.title} | ${who} | ${year}` : `${template.title} | ${year}`
     },
-    [clientName, year],
+    [clientName, years],
   )
 
   const update = (id: string, patch: Partial<WorkItemDraft>) => {
@@ -189,13 +221,11 @@ export function WorkItemBuilder({
       templateKey: t.key,
       templateTitle: t.title,
       workTypeKey: t.workTypeKey,
+      workTypeName: t.workTypeName ?? null,
       // Regenerate the title unless the user has taken it over.
-      ...(draft.titleTouched ? {} : { title: autoTitle(t.title) }),
+      ...(draft.titleTouched ? {} : { title: autoTitle(t) }),
       // A status from the previous template's work type would be invalid.
       workStatusKey: "",
-      ...(t.estimatedBudgetMinutes && !draft.budgetHours
-        ? { budgetHours: String(Math.round((t.estimatedBudgetMinutes / 60) * 10) / 10) }
-        : {}),
     })
     setOpenPicker(null)
   }
@@ -221,6 +251,10 @@ export function WorkItemBuilder({
 
       {value.map((draft, idx) => {
         const available = statusesFor(draft)
+        // Tax-preparation templates get their dates from the firm
+        // convention (12/31 of the tax year → statutory due date) for
+        // anything the teammate leaves blank.
+        const taxKind = classifyTaxPrepWorkType(draft.workTypeName)
         return (
           <div key={draft.id} className="space-y-4 rounded-md border bg-muted/30 p-4">
             <div className="flex items-center justify-between">
@@ -243,7 +277,12 @@ export function WorkItemBuilder({
               <Label>
                 Work template <span className="text-destructive">*</span>
               </Label>
+              {/* `modal`: the builder is used inside modal sheets and
+                  dialogs. Without it the host's scroll lock swallows
+                  wheel events over this list, and with ~60 templates
+                  most of them could only be reached by typing. */}
               <Popover
+                modal
                 open={openPicker === draft.id}
                 onOpenChange={(o) => setOpenPicker(o ? draft.id : null)}
               >
@@ -373,18 +412,23 @@ export function WorkItemBuilder({
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <Label>Budgeted hours</Label>
-              <Input
-                type="number"
-                min="0"
-                step="0.25"
-                value={draft.budgetHours}
-                disabled={disabled}
-                onChange={(e) => update(draft.id, { budgetHours: e.target.value })}
-                placeholder="Template default"
-              />
-            </div>
+            {taxKind ? (
+              <div className="rounded-md border border-dashed bg-muted/40 p-2.5">
+                <TaxWorkItemPreview
+                  kind={taxKind}
+                  title={draft.title}
+                  startPicked={!!draft.startDate}
+                  duePicked={!!draft.dueDate}
+                  // A status picked above is what gets set; otherwise a
+                  // prospect's return lands in the lead funnel.
+                  showStatus={leadFunnel && !draft.workStatusKey}
+                  className="text-[11px] leading-relaxed text-muted-foreground"
+                />
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  The tax year comes from the end of the title.
+                </p>
+              </div>
+            ) : null}
           </div>
         )
       })}
@@ -414,7 +458,7 @@ function DatePick({
 }) {
   const [open, setOpen] = useState(false)
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen} modal>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -459,6 +503,5 @@ export function serializeWorkItemDrafts(drafts: WorkItemDraft[]) {
     work_status_key: d.workStatusKey || null,
     start_date: d.startDate ? format(d.startDate, "yyyy-MM-dd") : null,
     due_date: d.dueDate ? format(d.dueDate, "yyyy-MM-dd") : null,
-    budgeted_hours: d.budgetHours ? Number(d.budgetHours) : null,
   }))
 }

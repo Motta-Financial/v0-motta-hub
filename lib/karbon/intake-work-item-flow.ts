@@ -26,6 +26,8 @@ import {
   createIntakeWorkItem,
 } from "@/lib/karbon/create-intake-work-item"
 import { postIntakeNoteToKarbon } from "@/lib/karbon/post-intake-note"
+import type { FinalizeWorkItemResult } from "@/lib/karbon/finalize-work-item"
+import { defaultProspectTaxYear } from "@/lib/karbon/tax-work-item-defaults"
 
 /** Columns the flow reads off `jotform_intake_submissions`. */
 export const INTAKE_WORK_ITEM_COLUMNS = [
@@ -75,7 +77,12 @@ export interface WorkItemSummary {
  * Karbon itself refused.
  */
 export type IntakeWorkItemOutcome =
-  | { status: "created"; workItem: WorkItemSummary }
+  | {
+      status: "created"
+      workItem: WorkItemSummary
+      /** What the post-create step set on the work item (status + dates). */
+      finalize?: FinalizeWorkItemResult
+    }
   | { status: "exists"; workItem: WorkItemSummary }
   | {
       status: "skipped"
@@ -91,9 +98,12 @@ export type IntakeWorkItemOutcome =
   | { status: "failed"; message: string; previewTitle?: string }
 
 export interface RunIntakeWorkItemOptions {
-  /** Overrides the default "current calendar year". */
+  /**
+   * Overrides the default tax year (last year during filing season,
+   * otherwise the current year — see `defaultProspectTaxYear`).
+   */
   fiscalYear?: string
-  /** ISO date; `createIntakeWorkItem` defaults to Dec 31 of this year. */
+  /** ISO date; `createIntakeWorkItem` defaults to Dec 31 of the tax year. */
   startDate?: string
 }
 
@@ -206,17 +216,55 @@ export async function runIntakeWorkItemFlow(
   }
 
   const fiscalYear =
-    (options.fiscalYear || "").trim() || String(new Date().getUTCFullYear())
+    (options.fiscalYear || "").trim() || String(defaultProspectTaxYear())
   const previewTitle = buildIntakeWorkItemTitle({ firstName, lastName, fiscalYear })
 
-  const result = await createIntakeWorkItem({
-    contactKey: contact.karbon_contact_key,
-    firstName,
-    lastName,
-    fiscalYear,
-    assigneeEmail: assignee.email,
-    startDate: options.startDate,
-  })
+  // The key is written to the intake row from `onCreated` — i.e. the
+  // instant Karbon confirms the work item exists, BEFORE the status/date
+  // follow-up runs. That follow-up is two PATCHes with retries; if the
+  // function were cut off in the middle with the key still unsaved, the
+  // idempotency guard above would not see it and the next click (or
+  // re-qualify) would mint a second work item.
+  let createdAtIso: string | null = null
+  const persistKey = async (created: { workItemKey: string; title: string; workItemUrl: string }) => {
+    createdAtIso = new Date().toISOString()
+    const { error: updateError } = await supabase
+      .from("jotform_intake_submissions")
+      .update({
+        karbon_work_item_key: created.workItemKey,
+        karbon_work_item_title: created.title ?? previewTitle,
+        karbon_work_item_url: created.workItemUrl ?? null,
+        karbon_work_item_created_at: createdAtIso,
+      })
+      .eq("id", submissionId)
+    if (updateError) {
+      // The work item exists in Karbon regardless — Karbon is its own
+      // source of truth. Log for reconciliation rather than failing.
+      console.error("[karbon-work-item] persist error:", updateError.message)
+    }
+  }
+
+  // `lead` tells the post-create step whose Calendly bookings to look
+  // for: a prospect with a meeting on the books lands in "Lead | Meeting
+  // Schd", one without in "Lead | Awaiting Intake" — instead of the
+  // template's bare "Planned".
+  const result = await createIntakeWorkItem(
+    {
+      contactKey: contact.karbon_contact_key,
+      firstName,
+      lastName,
+      fiscalYear,
+      assigneeEmail: assignee.email,
+      startDate: options.startDate,
+      lead: {
+        intakeSubmissionId: submissionId,
+        contactId: row.contact_id as string,
+        email: (row.submitter_email as string | null) ?? null,
+      },
+    },
+    undefined,
+    { supabase, onCreated: persistKey },
+  )
 
   if (!result.ok || !result.workItemKey) {
     return {
@@ -226,22 +274,7 @@ export async function runIntakeWorkItemFlow(
     }
   }
 
-  const nowIso = new Date().toISOString()
-  const { error: updateError } = await supabase
-    .from("jotform_intake_submissions")
-    .update({
-      karbon_work_item_key: result.workItemKey,
-      karbon_work_item_title: result.title ?? previewTitle,
-      karbon_work_item_url: result.workItemUrl ?? null,
-      karbon_work_item_created_at: nowIso,
-    })
-    .eq("id", submissionId)
-
-  if (updateError) {
-    // The work item exists in Karbon regardless — Karbon is its own
-    // source of truth. Log for reconciliation rather than failing.
-    console.error("[karbon-work-item] persist error:", updateError.message)
-  }
+  const nowIso = createdAtIso ?? new Date().toISOString()
 
   // Fire-and-forget cross-link note, pinned to BOTH the contact timeline
   // and the new work item so the full intake context sits at the top of
@@ -268,5 +301,6 @@ export async function runIntakeWorkItemFlow(
       url: result.workItemUrl ?? null,
       createdAt: nowIso,
     },
+    finalize: result.finalize,
   }
 }

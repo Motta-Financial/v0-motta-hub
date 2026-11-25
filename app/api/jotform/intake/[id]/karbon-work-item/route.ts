@@ -2,6 +2,13 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/server"
 import { runIntakeWorkItemFlow } from "@/lib/karbon/intake-work-item-flow"
 
+export const runtime = "nodejs"
+// Creating a Karbon work item is a POST followed by the status/date
+// PATCHes (each with a short retry), plus the cross-link note. Give the
+// whole sequence room so it is never cut off between the create and the
+// follow-up.
+export const maxDuration = 60
+
 /**
  * POST /api/jotform/intake/[id]/karbon-work-item
  *
@@ -23,10 +30,15 @@ import { runIntakeWorkItemFlow } from "@/lib/karbon/intake-work-item-flow"
  * the route returns the existing work item record without calling
  * Karbon again. The UI uses this to render a "View in Karbon" link.
  *
+ * After the work item exists, a follow-up PATCH sets the Karbon status
+ * ("Lead | Meeting Schd" when the prospect has a Calendly meeting booked)
+ * and the start / due / deadline dates (12/31 of the tax year → 4/15).
+ * See `lib/karbon/finalize-work-item.ts`.
+ *
  * Request body (all optional):
  *   {
  *     "fiscalYear": "2026" | "LEAD" | "[NEW CLIENT]" | string,
- *     "startDate":  "2026-12-31T00:00:00Z"   // ISO; defaults to Dec 31 of current year
+ *     "startDate":  "2026-12-31T00:00:00Z"   // ISO; defaults to Dec 31 of the tax year
  *   }
  */
 
@@ -67,7 +79,14 @@ export async function POST(
       case "exists":
         return NextResponse.json({ ok: true, alreadyExists: true, workItem: outcome.workItem })
       case "created":
-        return NextResponse.json({ ok: true, alreadyExists: false, workItem: outcome.workItem })
+        return NextResponse.json({
+          ok: true,
+          alreadyExists: false,
+          workItem: outcome.workItem,
+          // What the post-create step set in Karbon (status + start /
+          // due / deadline), so the sheet can tell the teammate.
+          finalize: outcome.finalize ?? null,
+        })
       case "skipped":
         return NextResponse.json(
           { error: outcome.message, code: outcome.code },

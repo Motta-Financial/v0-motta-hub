@@ -13,6 +13,7 @@
  *       key: string,            // WorkTemplateKey
  *       title: string,
  *       workTypeKey: string | null,
+ *       workTypeName: string | null,  // e.g. "TAX | Individual (1040)"
  *       estimatedBudgetMinutes: number | null
  *     }>,
  *     statuses: Array<{
@@ -43,7 +44,7 @@ export async function GET() {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 })
   }
 
-  const [templatesRes, statusesRes] = await Promise.all([
+  const [templatesRes, statusesRes, workTypesRes] = await Promise.all([
     supabase
       .from("work_templates")
       .select("karbon_work_template_key, karbon_work_type_key, title, estimated_budget_minutes")
@@ -54,6 +55,10 @@ export async function GET() {
       .select("karbon_status_key, name, primary_status_name, secondary_status_name, work_type_keys, display_order")
       .eq("is_active", true)
       .order("display_order", { ascending: true }),
+    // Work type NAMES let the builder recognise tax-preparation templates
+    // and preview the dates the Hub will set (12/31 → statutory due date).
+    // Best-effort: a failure here just means no preview.
+    supabase.from("work_types").select("karbon_work_type_key, name"),
   ])
 
   if (templatesRes.error) {
@@ -63,10 +68,18 @@ export async function GET() {
     return NextResponse.json({ error: statusesRes.error.message }, { status: 500 })
   }
 
+  const workTypeNames = new Map<string, string>()
+  for (const wt of workTypesRes.data ?? []) {
+    if (wt.karbon_work_type_key && wt.name) {
+      workTypeNames.set(wt.karbon_work_type_key as string, wt.name as string)
+    }
+  }
+
   const templates = (templatesRes.data ?? []).map((t) => ({
     key: t.karbon_work_template_key as string,
     title: (t.title as string) || "(untitled template)",
     workTypeKey: (t.karbon_work_type_key as string) || null,
+    workTypeName: workTypeNames.get((t.karbon_work_type_key as string) || "") ?? null,
     estimatedBudgetMinutes: (t.estimated_budget_minutes as number) ?? null,
   }))
 

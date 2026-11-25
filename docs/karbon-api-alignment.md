@@ -40,8 +40,8 @@ hasn't blown up is that we currently **only read** PrimaryStatus from Karbon
 (into `work_items.primary_status`) — we don't filter on it server-side or POST
 work items with it. But:
 
-- Our intake creator (`lib/karbon/create-intake-work-item.ts`) does send a
-  PrimaryStatus, and it has to use a real one.
+- Statuses are now written after creation by `lib/karbon/finalize-work-item.ts`
+  (§4a), which sends the enum form (`InProgress`) via `toKarbonPrimaryStatus`.
 - The `/api/karbon/work-items?status=Not%20Started` query builder will silently
   return nothing.
 - ALFRED's prompt and tools use the wrong vocabulary when reasoning about
@@ -78,23 +78,75 @@ engagement profitability we've been chasing.
 hourly rate at the work-item level — it's per-user via `EstimateSummaries`),
 and run a one-time backfill via the webhook re-fetch path.
 
-### 3. PATCH /WorkItems supports only `Description` and `DeadlineDate`
+### 3. PATCH /WorkItems — what it accepts (updated 2026-11)
 
-We don't currently call PATCH from the app, but `lib/karbon/upsert.ts` and the
-ALFRED tool surface should explicitly refuse PATCH bodies that contain anything
-else. Today, a future PATCH attempt with e.g. `{ Title, AssigneeEmailAddress }`
-would 400 in production.
+> **Superseded.** This section used to say PATCH supports only `Description`
+> and `DeadlineDate`. Karbon has since widened the endpoint; the facts below
+> are from the current reference and are what the Hub now relies on.
 
-**Fix:** add a typed wrapper `karbonPatchWorkItem(key, { Description?, DeadlineDate? })`
-that's the only sanctioned way to PATCH, and document the constraint in JSDoc.
+`PATCH /v3/WorkItems/{WorkItemKey}` accepts exactly these properties — any
+other key in the body is a `400`:
+
+`Title`, `Description`, `StartDate`, `DueDate`, `DeadlineDate`,
+`AssigneeEmailAddress`, `WorkType`, `UserRoleAssignments`, `PrimaryStatus`,
+`SecondaryStatus`, `FeeSettings`
+
+Rules that matter in practice:
+
+- **Statuses are written by NAME.** There is no `WorkStatusKey` on a work
+  item. `SecondaryStatus` requires `PrimaryStatus` in the same body, must
+  belong to that primary, and must be enabled for the work item's
+  `WorkType` — otherwise `400`. Sending `PrimaryStatus` alone *clears* the
+  secondary status.
+- `PrimaryStatus` is the fixed enum `Planned | ReadyToStart | InProgress |
+  Waiting | Completed` (reads may return the spaced form, "In Progress").
+- Success is **`204 No Content`** — an empty body. `karbonFetch` treats an
+  empty body on a write as success (it used to throw on `.json()` and
+  report every successful PATCH as a failure).
+- `409` is an optimistic-concurrency conflict and is routine immediately
+  after a create, while Karbon is still applying the template. `429` is the
+  rate limit. Both are retried (`patchKarbonWorkItem`).
+- There is no `Budget` / `BudgetedHours` on a work item. Time budgets live
+  in per-user `EstimateSummaries`.
+
+**Where the Hub uses it:** `lib/karbon/finalize-work-item.ts` — the
+post-create step every Hub work-item creator runs (see §4a).
 
 ### 4. POST /WorkItems required fields not validated client-side
 
 **Spec required:** `AssigneeEmailAddress, Title, ClientKey, ClientType, StartDate`.
 
-`lib/karbon/create-intake-work-item.ts` is the only POST path. Add a runtime
-guard so we fail fast (with our own error message) rather than getting a
-generic 400 from Karbon.
+There are two POST paths: `lib/karbon/create-intake-work-item.ts` (the
+one-click prospect 1040) and `lib/karbon/create-work-item.ts` (any template,
+used by the work-item builder, the prospect form and debriefs). The generic
+creator refuses to POST without an assignee and always sends a `StartDate`.
+It no longer sends `WorkStatusKey` or `Budget` — neither is a WorkItem
+property — and sends `WorkType` as the work type's **name**, not its key.
+
+### 4a. Post-create set-up of Hub-created work items (added 2026-11)
+
+Creating a work item from a template leaves it on the template's defaults.
+Once the item exists, `finalizeKarbonWorkItem` follows up with two PATCHes —
+dates first, then status, so an automator that fires on the status change
+already sees the right dates, and a rejected status can't take the dates
+down with it.
+
+| What | Rule |
+|---|---|
+| **Applies to** | Tax-preparation work types only, matched on the form number in the work type name: 1040, 1065, 1120-S, 1120, 1041 (Trusts & Estates), 709, 990. Planning, estimates, IRS support, S-Corp election etc. are left alone. |
+| **Tax year** | The fiscal-year field if it holds a year, else the last `\|` segment of the title, else the seasonal default (Jan 1 – Apr 15 Eastern → last year; otherwise this year). |
+| **StartDate** | 12/31 of the tax year. |
+| **DueDate / DeadlineDate** | The return's original filing date in the following year: 4/15 for 1040 / 1120 / 1041 / 709, 3/15 for 1065 / 1120-S. Nominal dates — no weekend roll — matching how the firm's existing work items are dated. **990s get no automatic dates** (fiscal-year filers). |
+| **Status (prospect / intake work)** | `In Progress › Lead \| Meeting Schd` when the prospect has an active, upcoming Calendly meeting; otherwise `In Progress › Lead \| Awaiting Intake`. The live status name is looked up in the `work_status` mirror so a rename in Karbon keeps working. |
+| **Status (existing-client work, e.g. from a debrief)** | Left on the template default. |
+| **Teammate's choices win** | A start / due date or a status picked in the Hub is sent as chosen. |
+| **Booking after the work item exists** | When a Calendly booking lands, `advanceLeadWorkItemsOnBooking` re-reads each of that prospect's Hub-created tax work items **from Karbon** and moves it to `Lead \| Meeting Schd` only if it is still on `Lead \| Awaiting Intake`, `LEAD \| Prospect`, or the untouched template default. Anything further along (debrief, discovery, proposal, prep, completed) is never pulled back. |
+
+The step never fails a create — the work item already exists — but its
+outcome is returned as `finalize` and shown to the teammate, so a status
+Karbon refused is visible rather than silent. The pure rules live in
+`lib/karbon/tax-work-item-defaults.ts`; `scripts/435-…` and `scripts/436-…`
+exercise them offline.
 
 ---
 

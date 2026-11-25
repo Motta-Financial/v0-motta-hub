@@ -75,6 +75,11 @@ function mapKarbonToSupabase(item: any) {
     // Date fields (only columns that exist)
     start_date: item.StartDate ? item.StartDate.split("T")[0] : null,
     due_date: item.DueDate ? item.DueDate.split("T")[0] : null,
+    // The external (IRS) deadline. The webhook mapper already carried it;
+    // this bulk-import mapper did not, so a deadline set in Karbon — or by
+    // the Hub's post-create step — only appeared here if a webhook
+    // happened to deliver.
+    deadline_date: item.DeadlineDate ? String(item.DeadlineDate).split("T")[0] : null,
     completed_date: item.CompletedDate ? item.CompletedDate.split("T")[0] : null,
     year_end: item.YearEnd ? item.YearEnd.split("T")[0] : null,
     tax_year: parseTaxYear(item),

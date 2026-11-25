@@ -38,6 +38,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { format } from "date-fns"
+import { TaxWorkItemPreview } from "@/components/karbon/tax-work-item-preview"
+import {
+  classifyTaxPrepWorkType,
+  defaultProspectTaxYear,
+} from "@/lib/karbon/tax-work-item-defaults"
 import {
   Building2,
   CalendarIcon,
@@ -198,6 +203,8 @@ interface WorkTemplate {
   key: string
   title: string
   workTypeKey: string | null
+  /** Karbon work type NAME, e.g. "TAX | Individual (1040)". */
+  workTypeName?: string | null
   estimatedBudgetMinutes: number | null
 }
 
@@ -339,7 +346,9 @@ export function ProspectForm() {
   const [wiAssigneeId, setWiAssigneeId] = useState("")
   const [wiStartDate, setWiStartDate] = useState<Date | null>(null)
   const [wiDueDate, setWiDueDate] = useState<Date | null>(null)
-  const [wiBudgetHours, setWiBudgetHours] = useState("")
+  // No budget input: Karbon's work item API has no budget-hours field
+  // (time budgets live in per-user estimates that can't be set at
+  // creation), so the template's own estimate always applies.
   const [wiStatusKey, setWiStatusKey] = useState("")
 
   const [submitting, setSubmitting] = useState(false)
@@ -410,9 +419,19 @@ export function ProspectForm() {
       showBusiness && businessName.trim()
         ? businessName.trim()
         : [lastName.trim(), firstName.trim()].filter(Boolean).join(", ")
-    const fy = String(new Date().getUTCFullYear())
+    // The year at the end of the title is what the server reads as the
+    // TAX year for a tax-preparation template (start 12/31 of that year,
+    // due on the filing date after it), so it follows the tax calendar:
+    // last year during filing season. Other work keeps the calendar year.
+    const fy = classifyTaxPrepWorkType(selectedTemplate.workTypeName)
+      ? String(defaultProspectTaxYear())
+      : String(new Date().getFullYear())
     setWiTitle(who ? `${selectedTemplate.title} | ${who} | ${fy}` : selectedTemplate.title)
   }, [selectedTemplate, wiTitleTouched, showBusiness, businessName, firstName, lastName])
+
+  // Tax-preparation templates get their dates from the firm convention
+  // for anything left blank — shown to the teammate before they submit.
+  const wiTaxKind = classifyTaxPrepWorkType(selectedTemplate?.workTypeName)
 
   // Statuses available for the selected template's work type.
   const availableStatuses = useMemo(() => {
@@ -640,9 +659,10 @@ export function ProspectForm() {
               work_type: selectedTemplate?.workTypeKey ?? null,
               title: wiTitle.trim() || selectedTemplate?.title || "",
               assignee_id: wiAssigneeId || null,
-              start_date: wiStartDate?.toISOString().split("T")[0] || null,
-              due_date: wiDueDate?.toISOString().split("T")[0] || null,
-              budgeted_hours: wiBudgetHours.trim() ? Number(wiBudgetHours) : null,
+              // Local calendar date, not `toISOString()` — that converts to
+              // UTC first and can land on the neighbouring day.
+              start_date: wiStartDate ? format(wiStartDate, "yyyy-MM-dd") : null,
+              due_date: wiDueDate ? format(wiDueDate, "yyyy-MM-dd") : null,
               work_status_key: wiStatusKey || null,
             }
           : null
@@ -1599,20 +1619,26 @@ export function ProspectForm() {
                     </PopoverContent>
                   </Popover>
                 </div>
-
-                <div className="space-y-1.5">
-                  <Label htmlFor="wi-budget">Budget (hours)</Label>
-                  <Input
-                    id="wi-budget"
-                    type="number"
-                    min="0"
-                    step="0.25"
-                    value={wiBudgetHours}
-                    onChange={(e) => setWiBudgetHours(e.target.value)}
-                    placeholder="e.g. 4"
-                  />
-                </div>
               </div>
+
+              {wiTaxKind ? (
+                <div className="rounded-md border border-dashed bg-muted/40 p-2.5">
+                  <TaxWorkItemPreview
+                    kind={wiTaxKind}
+                    title={wiTitle}
+                    startPicked={!!wiStartDate}
+                    duePicked={!!wiDueDate}
+                    // A status picked above is what gets set; otherwise the
+                    // prospect lands in the lead funnel automatically.
+                    showStatus={!wiStatusKey}
+                    className="text-[11px] leading-relaxed text-muted-foreground"
+                  />
+                  <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                    The tax year comes from the end of the title.
+                    {wiStatusKey ? " The status you picked above is what gets set." : ""}
+                  </p>
+                </div>
+              ) : null}
             </div>
           )}
         </CardContent>
